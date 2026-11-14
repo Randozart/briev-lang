@@ -20,7 +20,9 @@
 // - Hex literals parse as DataValue::String; typed accessors return the raw
 //   string and let the caller radix-parse (matches the resolver today).
 
-use crate::dbriev::v2::{parse_document, parse_document_quoted, DataEntry, DataField, DataValue, DbrievDocument};
+use crate::dbriev::v2::{
+    DataEntry, DataField, DataValue, DbrievDocument, parse_document, parse_document_quoted,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -67,7 +69,11 @@ impl ConfigDb {
             entries.push(entry.clone());
             index.insert(key.to_uppercase(), idx);
         }
-        Ok(ConfigDb { doc, index, entries })
+        Ok(ConfigDb {
+            doc,
+            index,
+            entries,
+        })
     }
 
     /// Pull in schemas referenced by `>schema Name from "path"` directives.
@@ -114,7 +120,9 @@ impl ConfigDb {
     /// Case-insensitive keyed lookup (matches `resolve_address`'s lowercase
     /// contract).
     pub fn get(&self, key: &str) -> Option<&DataEntry> {
-        self.index.get(&key.to_uppercase()).map(|i| &self.entries[*i])
+        self.index
+            .get(&key.to_uppercase())
+            .map(|i| &self.entries[*i])
     }
 
     /// Positional field value at `idx`, if present.
@@ -348,7 +356,10 @@ TIMER: 0xFE002000; 0x4;\n";
         let bare = ConfigDb::from_str(
             ">schema Strategy\nHOT_LOOP: \"%{v}_p = call ptr @pool_alloc(i64 {size})\";\n",
         );
-        assert!(bare.is_err(), "bare mode must reject brace-containing templates");
+        assert!(
+            bare.is_err(),
+            "bare mode must reject brace-containing templates"
+        );
     }
 
     #[test]
@@ -450,8 +461,10 @@ DMA0: 0xFE005000; 0x1000;\n";
 
         // Every name in config/address-map.dbvl resolves to the same address
         // through the DB table as through the current resolver.
-        for name in ["uart", "uart0", "gpio", "gpio0", "timer", "timer0",
-                     "spi", "spi0", "i2c", "i2c0", "dma", "dma0"] {
+        for name in [
+            "uart", "uart0", "gpio", "gpio0", "timer", "timer0", "spi", "spi0", "i2c", "i2c0",
+            "dma", "dma0",
+        ] {
             let upper = name.to_uppercase();
             let addr = db.field_string(&upper, 0).map(radix_parse_hex).unwrap();
             assert_eq!(
@@ -468,7 +481,9 @@ DMA0: 0xFE005000; 0x1000;\n";
         // board map owns UART1/GPIOA at their real addresses and the register
         // detail table carries per-register rows.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("lib").join("boards").join("stm32f407");
+            .join("lib")
+            .join("boards")
+            .join("stm32f407");
 
         let mut addrs = ConfigDb::from_file(&dir.join("addresses.dbvl"), false).unwrap();
         addrs.resolve_schema_imports(&[dir.clone()]);
@@ -545,7 +560,10 @@ target.wasm32: 4294967295; 4.0; 4;
 ";
         let db = ConfigDb::from_str(src).unwrap();
         assert_eq!(db.field_int("encoding.UTF-8", 0), Some(0));
-        assert_eq!(db.field_string("encoding.UTF-8", 1), Some("std.encoding.UTF8.index_at"));
+        assert_eq!(
+            db.field_string("encoding.UTF-8", 1),
+            Some("std.encoding.UTF8.index_at")
+        );
         assert_eq!(db.field_int("encoding.ASCII", 0), Some(1));
         assert_eq!(db.field_int("target.x86_64", 0), Some(16));
         assert_eq!(db.field("target.x86_64", 1), Some(&DataValue::Float(4.0)));
@@ -563,7 +581,10 @@ target.wasm32: 4294967295; 4.0; 4;
         assert_eq!(db.field_string(".bv", 0), Some("llvm"));
         // Space-separated list fields round-trip as a single string.
         assert_eq!(db.field_string(".bv", 1), Some("--budget 256"));
-        assert_eq!(db.field_string(".bv", 2), Some("prelude env print entry script"));
+        assert_eq!(
+            db.field_string(".bv", 2),
+            Some("prelude env print entry script")
+        );
         assert_eq!(db.field_int(".bv", 4), Some(50));
         // Optional trailing fields simply absent.
         assert_eq!(db.field_string(".sbv", 3), None);
@@ -580,12 +601,17 @@ wasm32-wasi: { \"#System\": \"wasi_snapshot_preview1\"; \"#Vendor\": \"custom\" 
 ";
         let db = ConfigDb::from_quoted_str(src).unwrap();
         match db.field("x86_64-linux", 0) {
-            Some(DataValue::Map(m)) => assert_eq!(m.get("#System"), Some(&DataValue::String("c".into()))),
+            Some(DataValue::Map(m)) => {
+                assert_eq!(m.get("#System"), Some(&DataValue::String("c".into())))
+            }
             other => panic!("expected map, got {:?}", other),
         }
         match db.field("wasm32-wasi", 0) {
             Some(DataValue::Map(m)) => {
-                assert_eq!(m.get("#System"), Some(&DataValue::String("wasi_snapshot_preview1".into())));
+                assert_eq!(
+                    m.get("#System"),
+                    Some(&DataValue::String("wasi_snapshot_preview1".into()))
+                );
                 assert_eq!(m.get("#Vendor"), Some(&DataValue::String("custom".into())));
             }
             other => panic!("expected map, got {:?}", other),

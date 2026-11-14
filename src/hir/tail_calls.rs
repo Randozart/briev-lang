@@ -78,7 +78,11 @@ fn collect_tail_expr(name: &str, expr: &HirExpr, out: &mut Vec<HirTailCall>) {
             node: expr.id,
             args: args.iter().map(|arg| arg.id).collect(),
         }),
-        HirExprKind::If { then_branch, else_branch, .. } => {
+        HirExprKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_tail_expr(name, then_branch, out);
             if let Some(else_branch) = else_branch {
                 collect_tail_expr(name, else_branch, out);

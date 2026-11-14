@@ -30,7 +30,10 @@ fn arb_garbage_input() -> impl Strategy<Value = String> {
         // Random printable ASCII
         proptest::string::string_regex("[ -~]{0,200}").unwrap(),
         // Mixed valid Briv keywords with garbage
-        proptest::string::string_regex("[a-z_]{0,50}(let|txn|defn|sig|term|escape|true|false)[a-z_]{0,50}").unwrap(),
+        proptest::string::string_regex(
+            "[a-z_]{0,50}(let|txn|defn|sig|term|escape|true|false)[a-z_]{0,50}"
+        )
+        .unwrap(),
         // Repeated special characters
         proptest::string::string_regex("([!@#$%^&*()+=<>?/\\\\|~`]){1,100}").unwrap(),
         // Nested brackets without content
@@ -92,7 +95,7 @@ proptest! {
         };
         let mut parser = Parser::new(tokens, &input);
         let result = parser.parse_program();
-        
+
         // Either Ok(Program) or Err(SyntaxError) is acceptable
         // The important thing is no panic
         match result {
@@ -114,7 +117,7 @@ proptest! {
         };
         let mut parser = Parser::new(tokens, &input);
         let result = parser.parse_program();
-        
+
         match result {
             Ok(_) => {
                 // Sometimes invalid-looking input is actually valid
@@ -129,12 +132,12 @@ proptest! {
     fn test_lexer_parser_roundtrip(input in arb_garbage_input()) {
         // Test that lexer output can always be consumed by parser without panic
         let _lexer = Token::lexer(&input);
-        
+
         // Now parse the same input (lex error = fine)
         let Ok(tokens) = briev_compiler::lexer::tokenize(&input) else { return Ok(()); };
         let mut parser = Parser::new(tokens, &input);
         let _ = parser.parse_program();
-        
+
         // No panic = success
     }
 }
@@ -152,16 +155,28 @@ mod unit_tests {
 
     #[test]
     fn test_whitespace_only() {
-        let mut parser = Parser::new(briev_compiler::lexer::tokenize("   \n\t  \n  ").unwrap(), "   \n\t  \n  ");
+        let mut parser = Parser::new(
+            briev_compiler::lexer::tokenize("   \n\t  \n  ").unwrap(),
+            "   \n\t  \n  ",
+        );
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Whitespace-only input should parse to empty program");
+        assert!(
+            result.is_ok(),
+            "Whitespace-only input should parse to empty program"
+        );
     }
 
     #[test]
     fn test_comments_only() {
-        let mut parser = Parser::new(briev_compiler::lexer::tokenize("// comment 1\n// comment 2\n").unwrap(), "// comment 1\n// comment 2\n");
+        let mut parser = Parser::new(
+            briev_compiler::lexer::tokenize("// comment 1\n// comment 2\n").unwrap(),
+            "// comment 1\n// comment 2\n",
+        );
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Comments-only input should parse to empty program");
+        assert!(
+            result.is_ok(),
+            "Comments-only input should parse to empty program"
+        );
     }
 
     #[test]
@@ -190,7 +205,7 @@ mod unit_tests {
             "\u{200B}", // Zero-width space
             "\u{FEFF}", // BOM
         ];
-        
+
         for input in inputs {
             let Ok(tokens) = briev_compiler::lexer::tokenize(input) else {
                 continue; // lex error is a valid outcome for exotic input
@@ -267,7 +282,9 @@ mod unit_tests {
                     return;
                 };
                 let mut parser = Parser::new(tokens, &input);
-                let err = parser.parse_program().expect_err("deep nesting must be rejected");
+                let err = parser
+                    .parse_program()
+                    .expect_err("deep nesting must be rejected");
                 assert!(
                     format!("{err}").contains("complexity limit"),
                     "expected a complexity-limit diagnostic, got: {err}"

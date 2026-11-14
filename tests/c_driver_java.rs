@@ -26,7 +26,11 @@ fn jdk_bin() -> Option<std::path::PathBuf> {
     if let Ok(entries) = std::fs::read_dir(&tools) {
         for entry in entries.flatten() {
             let dir = entry.path();
-            if dir.is_dir() && dir.file_name().map_or(false, |n| n.to_string_lossy().starts_with("jdk-")) {
+            if dir.is_dir()
+                && dir
+                    .file_name()
+                    .map_or(false, |n| n.to_string_lossy().starts_with("jdk-"))
+            {
                 let bin = dir.join("bin");
                 if bin.join("javac").exists() && bin.join("java").exists() {
                     return Some(bin);
@@ -57,12 +61,18 @@ fn java_roundtrip() {
     let bv = format!("{}/examples/glue-host/boundary.bv", PROJECT_ROOT);
     let build = Command::new(brievc)
         .args(["build", &bv, "--library", "--out", &base.to_string_lossy()])
-        .output().expect("failed brievc build --library");
-    assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
+        .output()
+        .expect("failed brievc build --library");
+    assert!(
+        build.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let ext = Command::new(brievc)
         .args(["extension", &bv, "java", "--out", &base.to_string_lossy()])
-        .output().expect("failed brievc extension java");
+        .output()
+        .expect("failed brievc extension java");
     if !ext.status.success() {
         let stderr = String::from_utf8_lossy(&ext.stderr);
         if stderr.contains("jni.h") {
@@ -71,15 +81,25 @@ fn java_roundtrip() {
         }
         panic!("java ext failed: {stderr}");
     }
-    assert!(base.join("libboundary.so").exists(), "libboundary.so missing");
+    assert!(
+        base.join("libboundary.so").exists(),
+        "libboundary.so missing"
+    );
 
     let export = Command::new(brievc)
         .args(["export", &bv, "java", "--out", &base.to_string_lossy()])
-        .output().expect("failed brievc export java");
-    assert!(export.status.success(), "java export failed: {}", String::from_utf8_lossy(&export.stderr));
+        .output()
+        .expect("failed brievc export java");
+    assert!(
+        export.status.success(),
+        "java export failed: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
 
     let src = base.join("boundary-bridge");
-    std::fs::write(src.join("Main.java"), r#"
+    std::fs::write(
+        src.join("Main.java"),
+        r#"
 public class Main {
     public static void main(String[] args) {
         if (!boundary.Echo("hello").equals("hello")) throw new RuntimeException("echo");
@@ -89,20 +109,35 @@ public class Main {
         System.out.println("JAVA OK");
     }
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let javac = jbin.join("javac");
     let java = jbin.join("java");
     let compile = Command::new(&javac)
         .current_dir(&src)
         .args(["Bridge.java", "Main.java"])
-        .output().expect("failed javac");
-    assert!(compile.status.success(), "javac failed: {}", String::from_utf8_lossy(&compile.stderr));
+        .output()
+        .expect("failed javac");
+    assert!(
+        compile.status.success(),
+        "javac failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
 
     let run = Command::new(&java)
         .current_dir(&src)
-        .args([format!("-Djava.library.path={}", base.to_string_lossy()), "Main".to_string()])
-        .output().expect("failed java");
-    assert!(run.status.success(), "java failed: {}", String::from_utf8_lossy(&run.stderr));
+        .args([
+            format!("-Djava.library.path={}", base.to_string_lossy()),
+            "Main".to_string(),
+        ])
+        .output()
+        .expect("failed java");
+    assert!(
+        run.status.success(),
+        "java failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert!(String::from_utf8_lossy(&run.stdout).contains("JAVA OK"));
 }

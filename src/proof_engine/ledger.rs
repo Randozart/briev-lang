@@ -42,9 +42,7 @@ pub fn dump() {
     }
     LEDGER.with(|l| {
         for ((family, consumer), count) in l.borrow().iter() {
-            eprintln!(
-                "PROOF_LEDGER family={family} consumer={consumer} count={count}"
-            );
+            eprintln!("PROOF_LEDGER family={family} consumer={consumer} count={count}");
         }
     });
 }

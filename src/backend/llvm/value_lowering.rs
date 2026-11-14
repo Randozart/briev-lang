@@ -14,10 +14,9 @@
 // it yet.
 
 use crate::analysis::destination_model::{
-    BoundaryConversion, BoundaryPlan, CallPlan, CallableId, CallablePlan,
-    DestinationId, GeneralDestinationClass, GeneralValueFact,
-    GeneralizedDestinationOwnershipPlan, LoopPlan, ProgramPoint, ProofReason, ProofStatus,
-    SemanticValueId,
+    BoundaryConversion, BoundaryPlan, CallPlan, CallableId, CallablePlan, DestinationId,
+    GeneralDestinationClass, GeneralValueFact, GeneralizedDestinationOwnershipPlan, LoopPlan,
+    ProgramPoint, ProofReason, ProofStatus, SemanticValueId,
 };
 use std::fmt::Write;
 
@@ -149,7 +148,10 @@ pub fn plan_conversion(
         }
         _ if same_class && proven => ConversionKind::Move,
         (GeneralDestinationClass::ScalarValue, GeneralDestinationClass::CallerDestination)
-            if proven => ConversionKind::StoreToCallerDestination,
+            if proven =>
+        {
+            ConversionKind::StoreToCallerDestination
+        }
         (_, GeneralDestinationClass::StableCarrier) if !same_class => {
             ConversionKind::CopyToStableCarrier
         }
@@ -236,11 +238,7 @@ pub fn emit_copy_to_destination(
 }
 
 /// Emit zero-fill for a fresh destination image.
-pub fn emit_zero_destination(
-    out: &mut String,
-    indent: &str,
-    destination: MemoryRange<'_>,
-) {
+pub fn emit_zero_destination(out: &mut String, indent: &str, destination: MemoryRange<'_>) {
     let bytes = destination.bytes.to_string();
     let _ = writeln!(
         out,
@@ -267,9 +265,7 @@ pub fn proof_has(proof: &ProofStatus, reason: ProofReason) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::destination_model::{
-        SemanticValueKind, ValueShape, ValueShapeKind,
-    };
+    use crate::analysis::destination_model::{SemanticValueKind, ValueShape, ValueShapeKind};
     use crate::ast::Type;
     use std::collections::BTreeSet;
 
@@ -312,10 +308,19 @@ mod tests {
             },
         );
         let context = ValueLoweringContext::new(&plan);
-        assert_eq!(context.destination_class(&value), GeneralDestinationClass::Boxed);
+        assert_eq!(
+            context.destination_class(&value),
+            GeneralDestinationClass::Boxed
+        );
         assert_eq!(context.proof(&value), ProofStatus::Unknown);
-        let missing = SemanticValueId { path: "missing".to_string(), ..value };
-        assert_eq!(context.destination_class(&missing), GeneralDestinationClass::Unknown);
+        let missing = SemanticValueId {
+            path: "missing".to_string(),
+            ..value
+        };
+        assert_eq!(
+            context.destination_class(&missing),
+            GeneralDestinationClass::Unknown
+        );
     }
 
     #[test]
@@ -394,8 +399,16 @@ mod tests {
         emit_copy_to_destination(
             &mut out,
             "  ",
-            MemoryRange { pointer: "%dst", bytes: 24, alignment: 8 },
-            MemoryRange { pointer: "%src", bytes: 24, alignment: 8 },
+            MemoryRange {
+                pointer: "%dst",
+                bytes: 24,
+                alignment: 8,
+            },
+            MemoryRange {
+                pointer: "%src",
+                bytes: 24,
+                alignment: 8,
+            },
         );
         assert_eq!(
             out,
@@ -409,7 +422,11 @@ mod tests {
         emit_zero_destination(
             &mut out,
             "",
-            MemoryRange { pointer: "%dst", bytes: 16, alignment: 8 },
+            MemoryRange {
+                pointer: "%dst",
+                bytes: 16,
+                alignment: 8,
+            },
         );
         assert_eq!(
             out,

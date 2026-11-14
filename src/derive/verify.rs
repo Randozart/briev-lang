@@ -8,10 +8,10 @@
 // rejected and search continues for a different expression.
 
 use crate::ast::{Expr, Type};
-use crate::interpreter::Atom;
-use crate::derive::engine::evaluate_synthesized;
-use crate::derive::engine::SynthesisEvalContext;
 use crate::derive::SynthesizeError;
+use crate::derive::engine::SynthesisEvalContext;
+use crate::derive::engine::evaluate_synthesized;
+use crate::interpreter::Atom;
 
 /// Result of candidate verification.
 #[derive(Debug)]
@@ -31,10 +31,7 @@ pub enum VerifyResult {
 /// Generate test inputs for a function with given parameters.
 /// Returns `sample_count` input vectors, each with one Expr per parameter.
 /// Mix: boundary values (0, 1, -1, MAX, MIN) + random + example-adjacent.
-pub fn generate_test_inputs(
-    params: &[(String, Type)],
-    sample_count: usize,
-) -> Vec<Vec<Expr>> {
+pub fn generate_test_inputs(params: &[(String, Type)], sample_count: usize) -> Vec<Vec<Expr>> {
     let mut inputs = Vec::new();
 
     // Boundary values for Int params
@@ -64,10 +61,14 @@ pub fn generate_test_inputs(
         let mut row = Vec::new();
         for (_, ty) in params {
             if ty == &Type::int() || ty == &Type::bits(64) {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                rng_state = rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 row.push(Expr::Decimal(rng_state.wrapping_abs()));
             } else if ty == &Type::bool_() {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                rng_state = rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 row.push(Expr::Bool(rng_state & 1 == 1));
             } else {
                 row.push(Expr::Decimal(0));
@@ -182,7 +183,9 @@ pub fn verify_candidate(
             }
             let mut heap = crate::interpreter::VirtualHeap::new();
             let ref_result = crate::interpreter::eval_expr(
-                ref_expr, &mut heap, &mut ref_ctx.bindings,
+                ref_expr,
+                &mut heap,
+                &mut ref_ctx.bindings,
                 &std::collections::HashMap::new(),
             );
             let ref_val = match ref_result {
@@ -204,7 +207,10 @@ pub fn verify_candidate(
                 return VerifyResult::Fail(
                     vec![input_row.clone()],
                     Some(correct_output),
-                    format!("reference mismatch: candidate={:?} ref={:?}", result, ref_val),
+                    format!(
+                        "reference mismatch: candidate={:?} ref={:?}",
+                        result, ref_val
+                    ),
                 );
             }
         }
@@ -219,7 +225,11 @@ pub fn verify_candidate(
             return VerifyResult::Fail(
                 vec![],
                 None,
-                format!("constant output {} for all {} test inputs", first, seen_outputs.len()),
+                format!(
+                    "constant output {} for all {} test inputs",
+                    first,
+                    seen_outputs.len()
+                ),
             );
         }
     }
@@ -237,7 +247,10 @@ fn val_to_expr_output(val: &crate::interpreter::Value) -> Expr {
             if b.len() == 1 && (b[0] == 0 || b[0] == 1) {
                 Expr::Bool(b[0] == 1)
             } else {
-                Expr::Decimal(b.iter().fold(0i64, |acc, &x| acc.wrapping_shl(8) | x as i64))
+                Expr::Decimal(
+                    b.iter()
+                        .fold(0i64, |acc, &x| acc.wrapping_shl(8) | x as i64),
+                )
             }
         }
         _ => Expr::Decimal(0),
@@ -273,9 +286,13 @@ mod tests {
     fn test_generate_test_inputs_includes_boundaries() {
         let params = int_params(1);
         let inputs = generate_test_inputs(&params, 10);
-        let all_vals: Vec<i64> = inputs.iter()
+        let all_vals: Vec<i64> = inputs
+            .iter()
             .filter_map(|row| row.first())
-            .filter_map(|e| match e { Expr::Decimal(n) => Some(*n), _ => None })
+            .filter_map(|e| match e {
+                Expr::Decimal(n) => Some(*n),
+                _ => None,
+            })
             .collect();
         assert!(all_vals.contains(&0), "should contain 0");
         assert!(all_vals.contains(&1), "should contain 1");
@@ -301,8 +318,11 @@ mod tests {
         let result = verify_candidate(&candidate, &params, None, 20, None);
         match result {
             VerifyResult::Fail(_, _, ref msg) => {
-                assert!(msg.contains("constant output"),
-                    "expected constant output message, got: {}", msg);
+                assert!(
+                    msg.contains("constant output"),
+                    "expected constant output message, got: {}",
+                    msg
+                );
             }
             _ => panic!("constant should be detected: {:?}", result),
         }
@@ -317,7 +337,11 @@ mod tests {
         // Postcondition: just `true` (always passes)
         let post = Expr::Bool(true);
         let result = verify_candidate(&candidate, &params, Some(&post), 100, None);
-        assert!(matches!(result, VerifyResult::Pass), "should pass postcondition: {:?}", result);
+        assert!(
+            matches!(result, VerifyResult::Pass),
+            "should pass postcondition: {:?}",
+            result
+        );
     }
 
     #[test]

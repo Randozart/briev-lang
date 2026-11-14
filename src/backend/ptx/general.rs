@@ -2088,7 +2088,7 @@ impl<'a> Gen<'a> {
                         return Err(format!(
                             "ptx general: index arithmetic {:?} outside the supported surface (Add/Sub/Mul/Div)",
                             other
-                        ))
+                        ));
                     }
                 };
                 body.push_str(&format!("    {} {}, {}, {};\n", op, out, lr, rr));
@@ -2178,7 +2178,7 @@ impl<'a> Gen<'a> {
                         return Err(format!(
                             "ptx general: binary op {:?} outside the elementwise surface",
                             kind
-                        ))
+                        ));
                     }
                 };
                 body.push_str(&format!("    {} {}, {}, {};\n", op, out, lreg, rreg));
@@ -2221,7 +2221,7 @@ impl<'a> Gen<'a> {
                 return Err(format!(
                     "ptx general: expression {:?} outside the elementwise surface",
                     other
-                ))
+                ));
             }
         }
         Ok(())
@@ -6537,10 +6537,10 @@ pub fn emit_deferred_combine_ptx(
     let out_off = off(out_buf)?;
     let stride = 2 + dim;
     let log2e = "0f3FB8AA3B"; // 1.4426950408889634
-                              // 2026-10-01 (split device-validation): derived via `f32_imm` — the
-                              // hand-written "0ff800000" was one hex nibble short of `-inf`
-                              // (`0fFF800000`), a PTX parse error the CUDA lane died on. Immediates
-                              // are never hand-typed; `assert_ptx_well_formed` pins the digit count.
+    // 2026-10-01 (split device-validation): derived via `f32_imm` — the
+    // hand-written "0ff800000" was one hex nibble short of `-inf`
+    // (`0fFF800000`), a PTX parse error the CUDA lane died on. Immediates
+    // are never hand-typed; `assert_ptx_well_formed` pins the digit count.
     let neg_inf = f32_imm(f32::NEG_INFINITY);
     let mut out = String::new();
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");

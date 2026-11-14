@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod v2;
-pub mod validate;
-pub mod serialize;
 pub mod bridge;
 pub mod config_db;
+pub mod serialize;
+pub mod v2;
+pub mod validate;
 
 pub use v2::*;

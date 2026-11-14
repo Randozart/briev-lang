@@ -12,7 +12,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use briev_compiler::library;
-use briev_compiler::target::{get_extension, BackendKind, TargetConfig};
+use briev_compiler::target::{BackendKind, TargetConfig, get_extension};
 use briev_compiler::vocab;
 use compile::BeastFilter;
 
@@ -136,7 +136,10 @@ fn print_usage(program: &str) {
         "  {} lsp                             Run the language server (stdio; VS Code extension)",
         name
     );
-    eprintln!("  {} test <file|dir>                 Run *.bv tests (exit 0 passes; <name>.golden pins stdout)", name);
+    eprintln!(
+        "  {} test <file|dir>                 Run *.bv tests (exit 0 passes; <name>.golden pins stdout)",
+        name
+    );
     eprintln!(
         "  {} build <file.bv> --llvm           Emit LLVM IR only, no binary",
         name
@@ -153,7 +156,10 @@ fn print_usage(program: &str) {
         "  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu",
         name
     );
-    eprintln!("  {} build <file.rbv> --split          Emit separate web assets (default: one bundled HTML)", name);
+    eprintln!(
+        "  {} build <file.rbv> --split          Emit separate web assets (default: one bundled HTML)",
+        name
+    );
     eprintln!(
         "  {} build <file.bv> --emit-beast [stage]  Emit AST (.beast) / IR (.ir) snapshots",
         name
@@ -186,7 +192,10 @@ fn print_usage(program: &str) {
         "  {} build <file.bv> --enable-plugin <name>   Enable only specific plugins",
         name
     );
-    eprintln!("  {} build <file.bv> --macro-budget <n>       Set instruction limit for macros (0 = unlimited)", name);
+    eprintln!(
+        "  {} build <file.bv> --macro-budget <n>       Set instruction limit for macros (0 = unlimited)",
+        name
+    );
     eprintln!(
         "  {} build <file.bv> --allow-read             Allow macros to read files",
         name
@@ -207,7 +216,10 @@ fn print_usage(program: &str) {
         "  {} build <file.bv> --allow-net              Allow macros network access",
         name
     );
-    eprintln!("  {} build <file.bv> --dump-vfs               Print virtual filesystem contents after build", name);
+    eprintln!(
+        "  {} build <file.bv> --dump-vfs               Print virtual filesystem contents after build",
+        name
+    );
     eprintln!(
         "  {} build <file.bv> --dump-traces            Print macro expansion traces after build",
         name
@@ -220,12 +232,30 @@ fn print_usage(program: &str) {
         "  {} targets                            List extension→target support rows",
         name
     );
-    eprintln!("  {} build <file.bv> --target <name>           Build for a specific target profile from folio.toml", name);
-    eprintln!("  {} build <file.bv> --accel-cpu-fallback <n>  Min work items for GPU dispatch; below n runs the CPU loop", name);
-    eprintln!("  {} build <file.bv> --sysquery <key=value>    Override a SysQuery$ result (repeatable, highest priority)", name);
-    eprintln!("  {} build <file.bv> --sysquery-file <path>    Load SysQuery$ overrides from a key=value file", name);
-    eprintln!("  {} build <file.bv> --update-lockfile        Regenerate macro-lock.toml from plugin files", name);
-    eprintln!("  {} audit [file.bv]                Scan for $ intrinsic usage and capability requirements", name);
+    eprintln!(
+        "  {} build <file.bv> --target <name>           Build for a specific target profile from folio.toml",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --accel-cpu-fallback <n>  Min work items for GPU dispatch; below n runs the CPU loop",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --sysquery <key=value>    Override a SysQuery$ result (repeatable, highest priority)",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --sysquery-file <path>    Load SysQuery$ overrides from a key=value file",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --update-lockfile        Regenerate macro-lock.toml from plugin files",
+        name
+    );
+    eprintln!(
+        "  {} audit [file.bv]                Scan for $ intrinsic usage and capability requirements",
+        name
+    );
     eprintln!("  {} check <file.bv>               Type-check only", name);
     eprintln!(
         "  {} derive <file.bv>              Synthesize derivation blocks",
@@ -283,14 +313,26 @@ fn print_usage(program: &str) {
         "  {} install-deps                 Download optional deps (z3, dwarfdump)",
         name
     );
-    eprintln!("  {} install-highlighter [--vsix-only]  Build & install the syntax highlighter .vsix for VS Code / VSCodium", name);
-    eprintln!("  {} vocab [path]                 Emit the canonical language vocabulary manifest (default: stdout)", name);
-    eprintln!("  {} grammar <path>               Regenerate the TextMate grammar keyword/type patterns from the vocab", name);
+    eprintln!(
+        "  {} install-highlighter [--vsix-only]  Build & install the syntax highlighter .vsix for VS Code / VSCodium",
+        name
+    );
+    eprintln!(
+        "  {} vocab [path]                 Emit the canonical language vocabulary manifest (default: stdout)",
+        name
+    );
+    eprintln!(
+        "  {} grammar <path>               Regenerate the TextMate grammar keyword/type patterns from the vocab",
+        name
+    );
     eprintln!(
         "  {} fmt <file> [--stdout|--check]  Format a source file canonically (round-trip safe)",
         name
     );
-    eprintln!("  {} freshness                     Check the brievc binary is newer than src/ + config/ (stale-binary guard)", name);
+    eprintln!(
+        "  {} freshness                     Check the brievc binary is newer than src/ + config/ (stale-binary guard)",
+        name
+    );
     eprintln!("  {} help                          Show this help", name);
 }
 
@@ -576,9 +618,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
                 }
                 _ => {
                     return Err(format!(
-                    "invalid --accel value: '{}' (keyword-only | try-all | force | try-all-force)",
-                    val
-                ))
+                        "invalid --accel value: '{}' (keyword-only | try-all | force | try-all-force)",
+                        val
+                    ));
                 }
             });
             i += consumed;
@@ -1702,11 +1744,7 @@ fn find_changed_rbv(
     walk_rbv(dir, &mut newest);
     newest.and_then(
         |(mtime, path)| {
-            if mtime > *since {
-                Some(path)
-            } else {
-                None
-            }
+            if mtime > *since { Some(path) } else { None }
         },
     )
 }
@@ -1811,7 +1849,10 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
         ai += 1;
     }
     if file_path.is_empty() {
-        return Err("usage: brievc memcheck [--deny-memory-ambiguity] [--stdlib-path <dir>] <file.bv>".to_string());
+        return Err(
+            "usage: brievc memcheck [--deny-memory-ambiguity] [--stdlib-path <dir>] <file.bv>"
+                .to_string(),
+        );
     }
     let source = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
@@ -1844,29 +1885,37 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
         };
         let mut resolver = briev_compiler::import_resolver::ImportResolver::new()
             .with_stdlib_path(Some(sp.clone()));
-        resolver.plugin_factory =
-            Some(briev_compiler::pipeline::module_plugin_factory(&opts, &file_path));
+        resolver.plugin_factory = Some(briev_compiler::pipeline::module_plugin_factory(
+            &opts, &file_path,
+        ));
         items = resolver
             .resolve_imports(items, &std::path::PathBuf::from(&file_path))
             .map_err(|e| format!("import resolution failed: {}", e))?;
     }
     if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
-        let names: Vec<&str> = items.iter().filter_map(|i| match i {
-            briev_compiler::ast::TopLevel::Definition(d) => Some(d.name.as_str()),
-            _ => None,
-        }).collect();
-        eprintln!("[memcheck-dbg] defs={} fresh_string={} b64_char={} concat={}",
+        let names: Vec<&str> = items
+            .iter()
+            .filter_map(|i| match i {
+                briev_compiler::ast::TopLevel::Definition(d) => Some(d.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        eprintln!(
+            "[memcheck-dbg] defs={} fresh_string={} b64_char={} concat={}",
             names.len(),
             names.contains(&"fresh_string"),
             names.contains(&"b64_char"),
-            names.contains(&"concat"));
+            names.contains(&"concat")
+        );
     }
     // 2026-11-13: the prelude plugin stage (cast_lanes.bv injection) runs in
     // the build pipeline, not in bare resolve_imports. Inline cast_lanes
     // directly when absent so prelude-defined helpers participate in the
     // census instead of resolving as unknown calls.
-    let has_fresh = items.iter().any(|i| matches!(i,
-        briev_compiler::ast::TopLevel::Definition(d) if d.name == "fresh_string"));
+    let has_fresh = items.iter().any(|i| {
+        matches!(i,
+        briev_compiler::ast::TopLevel::Definition(d) if d.name == "fresh_string")
+    });
     if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
         eprintln!("[inline-dbg] has_fresh={has_fresh} stdlib_path={stdlib_path:?}");
     }
@@ -1907,19 +1956,34 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     let graph = briev_compiler::casting::graph::CastingGraph::new();
     briev_compiler::hir::typing::annotate_types(&mut program, &universe, &graph);
     if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
-        let items_fresh = items.iter().filter(|i| matches!(i,
-            briev_compiler::ast::TopLevel::Definition(d) if d.name == "fresh_string")).count();
-        let items_coll = items.iter().filter(|i| matches!(i,
-            briev_compiler::ast::TopLevel::Definition(d) if d.name == "coll_destroy")).count();
-        eprintln!("[owned-dbg] items fresh_string defs={items_fresh} coll_destroy defs={items_coll} total={}",
-            items.len());
+        let items_fresh = items
+            .iter()
+            .filter(|i| {
+                matches!(i,
+            briev_compiler::ast::TopLevel::Definition(d) if d.name == "fresh_string")
+            })
+            .count();
+        let items_coll = items
+            .iter()
+            .filter(|i| {
+                matches!(i,
+            briev_compiler::ast::TopLevel::Definition(d) if d.name == "coll_destroy")
+            })
+            .count();
+        eprintln!(
+            "[owned-dbg] items fresh_string defs={items_fresh} coll_destroy defs={items_coll} total={}",
+            items.len()
+        );
     }
     let escapes = briev_compiler::analysis::allocation::summarize_escapes_pub(&items);
     if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
         let names: Vec<String> = program.callables.iter().map(|c| c.name.clone()).collect();
         let fresh: Vec<_> = names.iter().filter(|n| n.contains("fresh")).collect();
-        eprintln!("[owned-dbg] post-lower callables={} fresh-names={fresh:?} has_fresh_string={}",
-            names.len(), names.contains(&"fresh_string".to_string()));
+        eprintln!(
+            "[owned-dbg] post-lower callables={} fresh-names={fresh:?} has_fresh_string={}",
+            names.len(),
+            names.contains(&"fresh_string".to_string())
+        );
     }
     let events = briev_compiler::hir::owned_storage::memcheck_owned(&program, &escapes);
     let mut releases = 0usize;
@@ -1929,7 +1993,9 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     for e in &events {
         match &e.kind {
             briev_compiler::hir::owned_storage::OwnedEventKind::Release { .. } => releases += 1,
-            briev_compiler::hir::owned_storage::OwnedEventKind::UndecidedInit(_) => undecided.push(e),
+            briev_compiler::hir::owned_storage::OwnedEventKind::UndecidedInit(_) => {
+                undecided.push(e)
+            }
             briev_compiler::hir::owned_storage::OwnedEventKind::Static => statics.push(e),
             _ => drops.push(e),
         }
@@ -1937,7 +2003,10 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     println!("=== memcheck — owned String/List locals ===");
     println!("  releases inserted: {releases}");
     if !undecided.is_empty() {
-        println!("  undecided owners ({}) — the pass could not prove freshness:", undecided.len());
+        println!(
+            "  undecided owners ({}) — the pass could not prove freshness:",
+            undecided.len()
+        );
         for e in &undecided {
             let why = match &e.kind {
                 briev_compiler::hir::owned_storage::OwnedEventKind::UndecidedInit(w) => w.as_str(),
@@ -1947,21 +2016,41 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
         }
     }
     if !statics.is_empty() {
-        println!("  static-backed locals (no allocation, no owner): {}", statics.len());
-        for e in &statics { println!("    {} in {}", e.name, e.function); }
+        println!(
+            "  static-backed locals (no allocation, no owner): {}",
+            statics.len()
+        );
+        for e in &statics {
+            println!("    {} in {}", e.name, e.function);
+        }
     }
     if !drops.is_empty() {
-        println!("  conservative drops (leaks by design, never unsound): {}", drops.len());
+        println!(
+            "  conservative drops (leaks by design, never unsound): {}",
+            drops.len()
+        );
         for e in &drops {
             let why = match &e.kind {
                 briev_compiler::hir::owned_storage::OwnedEventKind::Alias => "aliased".to_string(),
-                briev_compiler::hir::owned_storage::OwnedEventKind::EscapeCall(c) => format!("escapes via {c}"),
-                briev_compiler::hir::owned_storage::OwnedEventKind::ConsumeCall(c) => format!("consumed by {c}"),
+                briev_compiler::hir::owned_storage::OwnedEventKind::EscapeCall(c) => {
+                    format!("escapes via {c}")
+                }
+                briev_compiler::hir::owned_storage::OwnedEventKind::ConsumeCall(c) => {
+                    format!("consumed by {c}")
+                }
                 briev_compiler::hir::owned_storage::OwnedEventKind::Kept => "keep".to_string(),
-                briev_compiler::hir::owned_storage::OwnedEventKind::ExplicitFree => "explicit free".to_string(),
-                briev_compiler::hir::owned_storage::OwnedEventKind::Store => "stored into state/collection".to_string(),
-                briev_compiler::hir::owned_storage::OwnedEventKind::ReturnBorrow => "returned expression borrows it".to_string(),
-                briev_compiler::hir::owned_storage::OwnedEventKind::Borrow => "borrow-shaped init (container storage)".to_string(),
+                briev_compiler::hir::owned_storage::OwnedEventKind::ExplicitFree => {
+                    "explicit free".to_string()
+                }
+                briev_compiler::hir::owned_storage::OwnedEventKind::Store => {
+                    "stored into state/collection".to_string()
+                }
+                briev_compiler::hir::owned_storage::OwnedEventKind::ReturnBorrow => {
+                    "returned expression borrows it".to_string()
+                }
+                briev_compiler::hir::owned_storage::OwnedEventKind::Borrow => {
+                    "borrow-shaped init (container storage)".to_string()
+                }
                 _ => "other".to_string(),
             };
             println!("    {} in {}: {why}", e.name, e.function);

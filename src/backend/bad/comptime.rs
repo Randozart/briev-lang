@@ -113,7 +113,10 @@ impl<'s> Parser<'s> {
             return p.primary_paren(resolve);
         }
         let tok = p.token_at_pos();
-        let next = Self { src: p.src, pos: p.pos + tok.len() };
+        let next = Self {
+            src: p.src,
+            pos: p.pos + tok.len(),
+        };
         let v = classify_token(tok, resolve)?;
         Ok((v, next))
     }
@@ -180,7 +183,11 @@ mod tests {
         let r = names(&[("A", 1)]);
         assert!(eval("1 / 0", &r).unwrap_err().contains("divides by zero"));
         assert!(eval("1 +", &r).unwrap_err().contains("unexpected token"));
-        assert!(eval("A + NOPE", &r).unwrap_err().contains("unknown constant"));
+        assert!(
+            eval("A + NOPE", &r)
+                .unwrap_err()
+                .contains("unknown constant")
+        );
         assert!(eval("(1 + 2", &r).unwrap_err().contains("closing `)`"));
     }
 }
@@ -227,5 +234,7 @@ fn classify_token(tok: &str, resolve: &Resolve) -> Result<i64, String> {
 }
 
 fn starts_ident(tok: &str) -> bool {
-    tok.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '.')
+    tok.chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '.')
 }

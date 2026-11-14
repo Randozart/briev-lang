@@ -274,10 +274,6 @@ pub enum Token {
     #[token("trg")]
     Trg,
 
-
-
-
-
     #[token("within")]
     Within,
 
@@ -285,7 +281,6 @@ pub enum Token {
     Match,
 
     // 2026-07-15: template/macro removed — replaced by $(Stage) blocks
-
     #[token("quote")]
     Quote,
 
@@ -478,9 +473,9 @@ pub enum Token {
     #[token("<-")]
     ArrowLeft,
 
-/// !> — metadata assignment operator
-#[token("!>")]
-ExclaimArrow,
+    /// !> — metadata assignment operator
+    #[token("!>")]
+    ExclaimArrow,
 
     #[token("_")]
     Underscore,
@@ -715,7 +710,6 @@ impl std::fmt::Display for Token {
             Token::Within => write!(f, "within"),
             Token::Match => write!(f, "match"),
             // 2026-07-15: Template/Macro tokens removed
-
             Token::Quote => write!(f, "quote"),
             Token::Dollar => write!(f, "$"),
             Token::DollarBang => write!(f, "$!"),
@@ -830,15 +824,67 @@ mod tests {
         // the dedicated keyword tokens that Phase 3 will converge with the
         // vocab (removing Removed/Reserved tokens that are not canonical).
         let keyword_tokens: &[&str] = &[
-            "export", "defn", "let", "const", "txn", "node", "async", "seq", "approx", "exact",
-            "vol", "out", "spec", "attr", "pin", "pack", "trap", "halt", "atomic", "union", "coll", "await", "spawn", "term", "term!", "rollback", "import",
+            "export",
+            "defn",
+            "let",
+            "const",
+            "txn",
+            "node",
+            "async",
+            "seq",
+            "approx",
+            "exact",
+            "vol",
+            "out",
+            "spec",
+            "attr",
+            "pin",
+            "pack",
+            "trap",
+            "halt",
+            "atomic",
+            "union",
+            "coll",
+            "await",
+            "spawn",
+            "term",
+            "term!",
+            "rollback",
+            "import",
             "bootstrap",
-            "mem", "relaxed", "acquire", "release", "bartered",
-            "from", "as", "frgn", "meld", "reg", "op", "prop",
-            "type", "trait", "impl", "cell", "obj", "struct", "render", "enum", "trg",
-            "within", "match", "quote", "foreach", "pvt", "sed",
+            "mem",
+            "relaxed",
+            "acquire",
+            "release",
+            "bartered",
+            "from",
+            "as",
+            "frgn",
+            "meld",
+            "reg",
+            "op",
+            "prop",
+            "type",
+            "trait",
+            "impl",
+            "cell",
+            "obj",
+            "struct",
+            "render",
+            "enum",
+            "trg",
+            "within",
+            "match",
+            "quote",
+            "foreach",
+            "pvt",
+            "sed",
             "break",
-            "sync", "true", "false", "cyc", "ms",
+            "sync",
+            "true",
+            "false",
+            "cyc",
+            "ms",
         ];
         for name in keyword_tokens {
             assert!(
@@ -871,10 +917,9 @@ mod tests {
         ] {
             let mut lexer = Token::lexer(src);
             match lexer.next() {
-                Some(Ok(Token::Float(v))) => assert_eq!(
-                    v, want,
-                    "'{src}' must lex as Float({want}), got Float({v})"
-                ),
+                Some(Ok(Token::Float(v))) => {
+                    assert_eq!(v, want, "'{src}' must lex as Float({want}), got Float({v})")
+                }
                 other => panic!("'{src}' must lex as a single Float token, got {other:?}"),
             }
             assert_eq!(lexer.next(), None, "'{src}' must consume the whole input");
@@ -892,7 +937,12 @@ mod tests {
         let toks: Vec<Token> = Token::lexer("1e + 5").filter_map(|t| t.ok()).collect();
         assert_eq!(
             toks,
-            vec![Token::Integer(1), Token::Identifier("e".into()), Token::Plus, Token::Integer(5)],
+            vec![
+                Token::Integer(1),
+                Token::Identifier("e".into()),
+                Token::Plus,
+                Token::Integer(5)
+            ],
             "1e + 5 must stay 1e, +, 5"
         );
         // `1.0-8` is subtraction.
@@ -900,7 +950,11 @@ mod tests {
         assert_eq!(toks.len(), 3, "1.0-8 must stay 1.0, -, 8: {toks:?}");
         // Hex keeps the digits: 0x1e5 is one hex token.
         let toks: Vec<Token> = Token::lexer("0x1e5").filter_map(|t| t.ok()).collect();
-        assert_eq!(toks.len(), 1, "0x1e5 must stay a single hex token: {toks:?}");
+        assert_eq!(
+            toks.len(),
+            1,
+            "0x1e5 must stay a single hex token: {toks:?}"
+        );
         // Identifier adjacency: `1.0expr` → Float + Ident (regex needs
         // digits after e; longest match on the dot form).
         let toks: Vec<Token> = Token::lexer("1.0expr").filter_map(|t| t.ok()).collect();
@@ -970,7 +1024,10 @@ mod tests {
         assert_eq!(lexer.next(), Some(Ok(Token::Let)));
         assert_eq!(lexer.next(), Some(Ok(Token::Identifier("c".to_string()))));
         assert_eq!(lexer.next(), Some(Ok(Token::Colon)));
-        assert_eq!(lexer.next(), Some(Ok(Token::Identifier("Char".to_string()))));
+        assert_eq!(
+            lexer.next(),
+            Some(Ok(Token::Identifier("Char".to_string())))
+        );
         assert_eq!(lexer.next(), Some(Ok(Token::Eq)));
         assert_eq!(lexer.next(), Some(Ok(Token::Char('x'))));
         assert_eq!(lexer.next(), Some(Ok(Token::Semicolon)));
@@ -1026,10 +1083,7 @@ mod tests {
         // lexes as identifier "#", then the question token, then "inline",
         // because `?` is not an identifier character.
         let mut lexer = Token::lexer("#?inline");
-        assert_eq!(
-            lexer.next(),
-            Some(Ok(Token::Identifier("#".to_string())))
-        );
+        assert_eq!(lexer.next(), Some(Ok(Token::Identifier("#".to_string()))));
         assert_eq!(lexer.next(), Some(Ok(Token::Question)));
         assert_eq!(
             lexer.next(),
@@ -1188,10 +1242,7 @@ mod tests {
         // 2026-08-05 (Phase 3): legacy `#[...]` attribute tokens are removed;
         // `#[inline]` lexes as identifier "#", then "[inline]".
         let mut lexer = Token::lexer("#[inline]");
-        assert_eq!(
-            lexer.next(),
-            Some(Ok(Token::Identifier("#".to_string())))
-        );
+        assert_eq!(lexer.next(), Some(Ok(Token::Identifier("#".to_string()))));
         assert_eq!(lexer.next(), Some(Ok(Token::LBracket)));
         assert_eq!(
             lexer.next(),
@@ -1345,7 +1396,8 @@ fn decode_byte_escape(chars: &mut std::str::Chars) -> Vec<u8> {
     out
 }
 
-fn decode_hex2(chars: &mut std::str::Chars) -> char {    let hex_str: String = chars.by_ref().take(2).collect();
+fn decode_hex2(chars: &mut std::str::Chars) -> char {
+    let hex_str: String = chars.by_ref().take(2).collect();
     match u8::from_str_radix(&hex_str, 16) {
         Ok(h) => h as char,
         Err(_) => '?',

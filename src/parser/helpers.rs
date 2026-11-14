@@ -382,7 +382,7 @@ impl<'a> Parser<'a> {
                     return Err(SyntaxError::InvalidStatement {
                         reason: format!("`{keyword}<...>` expects integer shape parameters"),
                         span: Span::dummy(),
-                    })
+                    });
                 }
             }
             if !self.eat(&Token::Comma) {

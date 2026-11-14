@@ -67,7 +67,10 @@ pub(crate) fn coll_storage_mode(
 /// plain identifier; `inner.data` → `Field(Identifier("inner"), "data")`.
 fn seq_access(path: &str) -> Expr {
     if let Some((base, field)) = path.split_once('.') {
-        Expr::Field(Box::new(Expr::Identifier(base.to_string())), field.to_string())
+        Expr::Field(
+            Box::new(Expr::Identifier(base.to_string())),
+            field.to_string(),
+        )
     } else {
         Expr::Identifier(path.to_string())
     }
@@ -131,16 +134,30 @@ fn synth_op_set_at(seq_expr: &str, elem_ty: Type, length: Option<i64>) -> Defini
     member.outputs = vec![Type::void()];
     member.body = vec![
         Statement::Guarded(
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Or,
-                Box::new(Expr::BinaryOp(crate::ast::BinaryOpKind::Lt,
-                    Box::new(Expr::Identifier("i".into())), Box::new(Expr::Decimal(0)))),
-                Box::new(Expr::BinaryOp(crate::ast::BinaryOpKind::Ge,
+            Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Or,
+                Box::new(Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::Lt,
                     Box::new(Expr::Identifier("i".into())),
-                    Box::new(length.map(Expr::Decimal).unwrap_or_else(|| Expr::Identifier("len".into())))))),
+                    Box::new(Expr::Decimal(0)),
+                )),
+                Box::new(Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::Ge,
+                    Box::new(Expr::Identifier("i".into())),
+                    Box::new(
+                        length
+                            .map(Expr::Decimal)
+                            .unwrap_or_else(|| Expr::Identifier("len".into())),
+                    ),
+                )),
+            ),
             vec![Statement::Trap],
         ),
         Statement::Assign(
-            Expr::Index(Box::new(seq_access(seq_expr)), Box::new(Expr::Identifier("i".into()))),
+            Expr::Index(
+                Box::new(seq_access(seq_expr)),
+                Box::new(Expr::Identifier("i".into())),
+            ),
             Expr::Identifier("value".into()),
         ),
         Statement::Term(None),
@@ -162,15 +179,16 @@ fn synth_init_empty(
     // data = Malloc#(DEFAULT_CAP * elem_size) as Ptr<Elem>
     let default_cap: i64 = 16;
     let elem_size: i64 = 8; // this slice: word elements
-    let alloc = Expr::Call("Malloc#".to_string(), vec![Expr::Decimal(default_cap * elem_size)], None);
+    let alloc = Expr::Call(
+        "Malloc#".to_string(),
+        vec![Expr::Decimal(default_cap * elem_size)],
+        None,
+    );
     let data_assign = Statement::Assign(
         seq_access(seq_expr),
         Expr::Cast(Box::new(alloc), Type::Ptr(Box::new(elem_ty))),
     );
-    let len_zero = Statement::Assign(
-        Expr::Identifier("len".to_string()),
-        Expr::Decimal(0),
-    );
+    let len_zero = Statement::Assign(Expr::Identifier("len".to_string()), Expr::Decimal(0));
     let cap_set = Statement::Assign(
         Expr::Identifier("cap".to_string()),
         Expr::Decimal(default_cap),
@@ -322,7 +340,11 @@ fn synth_get(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
 fn synth_init(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
     let default_cap: i64 = 16;
     let elem_size: i64 = 8; // this slice: word elements
-    let alloc = Expr::Call("Malloc#".to_string(), vec![Expr::Decimal(default_cap * elem_size)], None);
+    let alloc = Expr::Call(
+        "Malloc#".to_string(),
+        vec![Expr::Decimal(default_cap * elem_size)],
+        None,
+    );
     let data_assign = Statement::Assign(
         seq_access(seq_expr),
         Expr::Cast(Box::new(alloc), Type::Ptr(Box::new(elem_ty.clone()))),
@@ -332,16 +354,10 @@ fn synth_init(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
         Expr::Decimal(default_cap),
     );
     let data_write = Statement::Assign(
-        Expr::Index(
-            Box::new(seq_access(seq_expr)),
-            Box::new(Expr::Decimal(0)),
-        ),
+        Expr::Index(Box::new(seq_access(seq_expr)), Box::new(Expr::Decimal(0))),
         Expr::Identifier("val".to_string()),
     );
-    let len_one = Statement::Assign(
-        Expr::Identifier("len".to_string()),
-        Expr::Decimal(1),
-    );
+    let len_one = Statement::Assign(Expr::Identifier("len".to_string()), Expr::Decimal(1));
     Definition {
         name: "init".to_string(),
         type_params: vec![],
@@ -425,26 +441,28 @@ pub(crate) fn derive_sequence_member(
             Type::Custom(n) => {
                 // Resolve the nested struct's slots (one level) for a Ptr.
                 struct_types.get(n).and_then(|fields| {
-                    fields.iter().find(|(_, t)| matches!(t, Type::Ptr(_))).map(
-                        |(field, ptr_ty)| {
+                    fields
+                        .iter()
+                        .find(|(_, t)| matches!(t, Type::Ptr(_)))
+                        .map(|(field, ptr_ty)| {
                             let elem = match ptr_ty {
                                 Type::Ptr(inner) => (**inner).clone(),
                                 _ => Type::int(),
                             };
                             (format!("{}.{}", slot.name, field), elem)
-                        },
-                    )
+                        })
                 })
             }
             Type::Applied(n, args) => {
                 struct_types.get(n).and_then(|fields| {
-                    fields.iter().find(|(_, t)| matches!(t, Type::Ptr(_))).map(
-                        |(field, _)| {
+                    fields
+                        .iter()
+                        .find(|(_, t)| matches!(t, Type::Ptr(_)))
+                        .map(|(field, _)| {
                             // elem from the applied type's arg (ListBuffer<T> → T)
                             let elem = args.first().cloned().unwrap_or_else(Type::int);
                             (format!("{}.{}", slot.name, field), elem)
-                        },
-                    )
+                        })
                 })
             }
             // 2026-08-16 (Phase 3a, coll struct literal): a fixed `T[N]`
@@ -498,11 +516,20 @@ pub(crate) fn synthesize_members(
         Some(n) => TopLevel::TypeDefOperator(synth_op_count_fixed(n)),
         None => TopLevel::TypeDefOperator(synth_op_count()),
     });
-    members.push(TopLevel::TypeDefOperator(synth_op_at(seq_expr, elem_ty.clone())));
-    members.push(TopLevel::TypeDefOperator(synth_op_set_at(seq_expr, elem_ty.clone(), fixed_n)));
+    members.push(TopLevel::TypeDefOperator(synth_op_at(
+        seq_expr,
+        elem_ty.clone(),
+    )));
+    members.push(TopLevel::TypeDefOperator(synth_op_set_at(
+        seq_expr,
+        elem_ty.clone(),
+        fixed_n,
+    )));
     if growable {
         members.push(TopLevel::Definition(synth_init_empty(
-            seq_expr, elem_ty.clone(), elem_ty.clone(),
+            seq_expr,
+            elem_ty.clone(),
+            elem_ty.clone(),
         )));
         members.push(TopLevel::Definition(synth_push(
             seq_expr,
@@ -566,8 +593,8 @@ pub(crate) fn coll_body_with_members(
     struct_types: &std::collections::HashMap<String, Vec<(String, crate::ast::Type)>>,
 ) -> TypeDefBody {
     let seq = derive_sequence_member(&original.slots, struct_types);
-    let storage = coll_storage_mode(&original.slots, struct_types)
-        .unwrap_or(CollStorage::InlineFixed);
+    let storage =
+        coll_storage_mode(&original.slots, struct_types).unwrap_or(CollStorage::InlineFixed);
     let mut body = original;
     if let Some((seq_expr, elem_ty)) = seq {
         let members = synthesize_members(td, &seq_expr, elem_ty, storage);
@@ -592,14 +619,12 @@ pub fn synthesize_members_for_check(
     // OR a nested buffer (`inner: ListBuffer<T>` whose slots contain a Ptr).
     let seq_ty = td.body.slots.iter().find_map(|s| match &s.ty {
         Type::Ptr(inner) => Some((s.name.clone(), (**inner).clone())),
-        Type::Custom(n) | Type::Applied(n, _) => {
-            struct_slots.get(n).and_then(|fields| {
-                fields.iter().find_map(|(f, t)| match t {
-                    Type::Ptr(inner) => Some((format!("{}.{}", s.name, f), (**inner).clone())),
-                    _ => None,
-                })
+        Type::Custom(n) | Type::Applied(n, _) => struct_slots.get(n).and_then(|fields| {
+            fields.iter().find_map(|(f, t)| match t {
+                Type::Ptr(inner) => Some((format!("{}.{}", s.name, f), (**inner).clone())),
+                _ => None,
             })
-        }
+        }),
         // 2026-08-16 (Phase 3a): a fixed `T[N]` sequence member gives the
         // typechecker the element type too — previously a coll struct got
         // Count only, so literal construction of a `coll struct` never saw
@@ -615,12 +640,25 @@ pub fn synthesize_members_for_check(
         // T[N] member's At would be a constant-index read (future work).
         return members;
     };
-    members.push(TopLevel::TypeDefOperator(synth_op_at(&seq_expr, elem_ty.clone())));
-    members.push(TopLevel::TypeDefOperator(synth_op_set_at(&seq_expr, elem_ty.clone(), None)));
+    members.push(TopLevel::TypeDefOperator(synth_op_at(
+        &seq_expr,
+        elem_ty.clone(),
+    )));
+    members.push(TopLevel::TypeDefOperator(synth_op_set_at(
+        &seq_expr,
+        elem_ty.clone(),
+        None,
+    )));
     // op InsertAt(v: T) — the push element type the `<-` dispatch reads.
-    members.push(TopLevel::TypeDefOperator(synth_insert_at_op(elem_ty.clone())));
-    members.push(TopLevel::TypeDefOperator(synth_extract_from_op(elem_ty.clone())));
-    members.push(TopLevel::TypeDefOperator(synth_copy_from_op(elem_ty.clone())));
+    members.push(TopLevel::TypeDefOperator(synth_insert_at_op(
+        elem_ty.clone(),
+    )));
+    members.push(TopLevel::TypeDefOperator(synth_extract_from_op(
+        elem_ty.clone(),
+    )));
+    members.push(TopLevel::TypeDefOperator(synth_copy_from_op(
+        elem_ty.clone(),
+    )));
     // op Init(v: T) — literal construction (first element).
     members.push(TopLevel::TypeDefOperator(synth_init_op(elem_ty)));
     members.push(TopLevel::TypeDefOperator(synth_init_empty_op()));

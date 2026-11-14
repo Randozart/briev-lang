@@ -2,8 +2,8 @@
 // Source$ contains original source text; Comment$ contains doc comments.
 // Both must be removed for IP protection in distributed .beastpack files.
 
-use crate::ast::*;
 use crate::ast::top::*;
+use crate::ast::*;
 use std::collections::HashMap;
 
 fn strip_from_map(map: &HashMap<String, PropertyValue>) -> HashMap<String, PropertyValue> {
@@ -38,10 +38,13 @@ fn strip_typedef(td: &TypeDef) -> TypeDef {
 }
 
 pub fn strip_items(items: &[TopLevel]) -> Vec<TopLevel> {
-    items.iter().map(|item| match item {
-        TopLevel::Definition(d) => TopLevel::Definition(strip_definition(d)),
-        TopLevel::Transaction(t) => TopLevel::Transaction(strip_transaction(t)),
-        TopLevel::TypeDef(td) => TopLevel::TypeDef(Box::new(strip_typedef(td))),
-        other => other.clone(),
-    }).collect()
+    items
+        .iter()
+        .map(|item| match item {
+            TopLevel::Definition(d) => TopLevel::Definition(strip_definition(d)),
+            TopLevel::Transaction(t) => TopLevel::Transaction(strip_transaction(t)),
+            TopLevel::TypeDef(td) => TopLevel::TypeDef(Box::new(strip_typedef(td))),
+            other => other.clone(),
+        })
+        .collect()
 }

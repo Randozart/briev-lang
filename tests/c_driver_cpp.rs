@@ -27,18 +27,36 @@ fn cpp_roundtrip() {
 
     let bv = format!("{}/examples/glue-host/boundary.bv", PROJECT_ROOT);
     let build = Command::new(brievc)
-        .args(["build", &bv, "--library", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc build --library");
-    assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
+        .args([
+            "build",
+            &bv,
+            "--library",
+            "--out",
+            &out_dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("failed brievc build --library");
+    assert!(
+        build.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let bindings = Command::new(brievc)
         .args(["bindings", &bv, "c", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc bindings");
-    assert!(bindings.status.success(), "bindings failed: {}", String::from_utf8_lossy(&bindings.stderr));
+        .output()
+        .expect("failed brievc bindings");
+    assert!(
+        bindings.status.success(),
+        "bindings failed: {}",
+        String::from_utf8_lossy(&bindings.stderr)
+    );
 
     let inc = out_dir.join("boundary-bindings");
     let driver_cpp = out_dir.join("driver.cpp");
-    std::fs::write(&driver_cpp, r#"
+    std::fs::write(
+        &driver_cpp,
+        r#"
 #include "boundary-bindings/briev_types.h"
 #include <cstdio>
 #include <cstring>
@@ -57,18 +75,34 @@ int main() {
     __glue_release(st);
     return 0;
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let exe = out_dir.join("driver");
     let compile = Command::new("g++")
-        .arg("-std=c++17").arg("-o").arg(&exe).arg(&driver_cpp)
+        .arg("-std=c++17")
+        .arg("-o")
+        .arg(&exe)
+        .arg(&driver_cpp)
         .arg(out_dir.join("libboundary.a"))
         .current_dir(&out_dir)
-        .output().expect("failed g++");
-    assert!(compile.status.success(), "g++ failed: {}", String::from_utf8_lossy(&compile.stderr));
+        .output()
+        .expect("failed g++");
+    assert!(
+        compile.status.success(),
+        "g++ failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
 
-    let run = Command::new(&exe).current_dir(&out_dir)
-        .output().expect("failed driver");
-    assert!(run.status.success(), "driver failed: {}", String::from_utf8_lossy(&run.stderr));
+    let run = Command::new(&exe)
+        .current_dir(&out_dir)
+        .output()
+        .expect("failed driver");
+    assert!(
+        run.status.success(),
+        "driver failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert!(String::from_utf8_lossy(&run.stdout).contains("CPP OK"));
 }

@@ -15,7 +15,8 @@ impl<'a> Parser<'a> {
     /// Stops when it encounters a non-metadata token.
     pub fn parse_body_metadata(&mut self) -> Result<HashMap<String, PropertyValue>, SyntaxError> {
         let mut metadata = HashMap::new();
-        while self.check(&Token::Attr) || self.check(&Token::ExclaimArrow)
+        while self.check(&Token::Attr)
+            || self.check(&Token::ExclaimArrow)
             || self.check_identifier_prefix("#")
         {
             if self.check(&Token::ExclaimArrow) {

@@ -24,7 +24,7 @@
 use crate::ast::{Expr, Statement, TopLevel};
 use std::collections::HashMap;
 
-use super::soa_reorder::{find_txn_body, try_extract_float_field, FloatField};
+use super::soa_reorder::{FloatField, find_txn_body, try_extract_float_field};
 
 /// Collect every identifier name referenced by an expression (recursing all
 /// wrapping forms) — the projection's sibling-reference source.

@@ -16,8 +16,8 @@
 // To undo: delete this file, the `warn_unused` plumbing in
 // src/backend/bad/{mod,lower,symbolic}.rs, and the CLI flag.
 
-use crate::ast::bld::{BldStmt, BldTopLevel};
 use crate::ast::Expr;
+use crate::ast::bld::{BldStmt, BldTopLevel};
 use std::collections::HashSet;
 
 /// One defined-but-never-read symbolic value.
@@ -59,7 +59,9 @@ fn collect_unit(body: &[BldStmt], out: &mut Vec<UnusedValue>) {
 fn walk_body(body: &[BldStmt], defs: &mut Vec<(String, usize)>, uses: &mut HashSet<String>) {
     for stmt in body {
         match stmt {
-            BldStmt::Let { name, value, span, .. } => {
+            BldStmt::Let {
+                name, value, span, ..
+            } => {
                 defs.push((name.clone(), span.line));
                 collect_uses(value, uses);
             }
@@ -77,7 +79,12 @@ fn walk_body(body: &[BldStmt], defs: &mut Vec<(String, usize)>, uses: &mut HashS
                 }
             }
             BldStmt::Block { body, .. } => walk_body(body, defs, uses),
-            BldStmt::When { cond, then, otherwise, .. } => {
+            BldStmt::When {
+                cond,
+                then,
+                otherwise,
+                ..
+            } => {
                 collect_uses(cond, uses);
                 walk_body(then, defs, uses);
                 if let Some(o) = otherwise {

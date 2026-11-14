@@ -16,7 +16,9 @@ fn parse(src: &str) -> Vec<TopLevel> {
 }
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -37,7 +39,10 @@ fn compare(src: &str) -> Vec<String> {
         bad.push(format!("defns ast={:?} hir={:?}", ast.defns, hir.defns));
     }
     if ast.variants != hir.variants {
-        bad.push(format!("variants ast={:?} hir={:?}", ast.variants, hir.variants));
+        bad.push(format!(
+            "variants ast={:?} hir={:?}",
+            ast.variants, hir.variants
+        ));
     }
     if ast.escaping_return_lets != hir.escaping_return_lets {
         bad.push(format!(
@@ -74,15 +79,23 @@ fn corpus_enum_repr_parity() {
     let mut skipped = 0usize;
     let mut mismatches = Vec::new();
     for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else { continue };
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else {
+            continue;
+        };
         let program = lower_program(&items);
         if briev_compiler::hir::unsupported_counts(&program).total() != 0 {
             skipped += 1;
             continue;
         }
         compared += 1;
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for b in compare(&source) {
             mismatches.push(format!("{rel}: {b}"));
         }
@@ -91,5 +104,9 @@ fn corpus_enum_repr_parity() {
         "HIR_ENUM_REPR_PARITY compared={compared} skipped_unsupported={skipped} mismatches={}",
         mismatches.len()
     );
-    assert!(mismatches.is_empty(), "HIR enum-repr mismatches:\n{}", mismatches.join("\n"));
+    assert!(
+        mismatches.is_empty(),
+        "HIR enum-repr mismatches:\n{}",
+        mismatches.join("\n")
+    );
 }

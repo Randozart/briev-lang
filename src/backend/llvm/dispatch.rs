@@ -1,9 +1,8 @@
-
 use crate::analysis::transition_graph;
 use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Type};
 use crate::backend::llvm::emit_stmt::emit_statement;
 use crate::backend::llvm::{
-    find_perfect_hash, sparsity_ratio, FoldParam, FunctionGuard, LlvmBackend,
+    FoldParam, FunctionGuard, LlvmBackend, find_perfect_hash, sparsity_ratio,
 };
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -91,12 +90,16 @@ multi-node SSA loop can honor the gate.",
         // 2026-07-31: Phase 2 (§7.4) — the per-txn unguarded-FFI set is computed
         // once in the transition graph (has_unguarded_ffi) instead of re-walking
         // bodies here.
-        let has_unguarded = self.ctx.transition_graph.as_ref()
+        let has_unguarded = self
+            .ctx
+            .transition_graph
+            .as_ref()
             .map_or(false, |g| !g.has_unguarded_ffi.is_empty());
         let rct_attr = if has_unguarded { "#2" } else { "#12" };
         writeln!(
             out,
-            "define void @reactor_tick(ptr noalias nocapture %state) local_unnamed_addr {} {{", rct_attr
+            "define void @reactor_tick(ptr noalias nocapture %state) local_unnamed_addr {} {{",
+            rct_attr
         )
         .ok();
         writeln!(out, "  entry:").ok();
@@ -252,7 +255,10 @@ multi-node SSA loop can honor the gate.",
     }
     /// 2026-07-27: Resolve an Expr to a decimal value, either directly (Decimal)
     /// or via constant lookup (Identifier). Returns None if not resolvable.
-    fn resolve_to_i64(expr: &Expr, constants: Option<&HashMap<String, (Type, Expr)>>) -> Option<i64> {
+    fn resolve_to_i64(
+        expr: &Expr,
+        constants: Option<&HashMap<String, (Type, Expr)>>,
+    ) -> Option<i64> {
         match expr {
             Expr::Decimal(v) => Some(*v),
             Expr::Identifier(name) => {
@@ -281,7 +287,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v < e.1 { e.1 = v; }
+                        if v < e.1 {
+                            e.1 = v;
+                        }
                     }
                 }
             }
@@ -289,7 +297,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v + 1 < e.1 { e.1 = v + 1; }
+                        if v + 1 < e.1 {
+                            e.1 = v + 1;
+                        }
                     }
                 }
             }
@@ -297,7 +307,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v > e.0 { e.0 = v; }
+                        if v > e.0 {
+                            e.0 = v;
+                        }
                     }
                 }
             }
@@ -305,7 +317,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v + 1 > e.0 { e.0 = v + 1; }
+                        if v + 1 > e.0 {
+                            e.0 = v + 1;
+                        }
                     }
                 }
             }
@@ -418,7 +432,10 @@ multi-node SSA loop can honor the gate.",
         // 2026-07-27: Same FFI-aware attribute selection as emit_reactor.
         // 2026-07-31: Phase 2 (§7.4) — consumes the transition graph's
         // has_unguarded_ffi set instead of re-walking bodies.
-        let has_unguarded = self.ctx.transition_graph.as_ref()
+        let has_unguarded = self
+            .ctx
+            .transition_graph
+            .as_ref()
             .map_or(false, |g| !g.has_unguarded_ffi.is_empty());
         let rct_attr = if has_unguarded { "#2" } else { "#12" };
         writeln!(

@@ -13,7 +13,9 @@
 //! specific composite. Hygiene fails closed: a caller identifier that a
 //! body binder would capture is an error, not a silent capture.
 
-use crate::ast::top::{Annotation, Contract, Definition, Statement, StmtMatchArm, TopLevel, Transaction};
+use crate::ast::top::{
+    Annotation, Contract, Definition, Statement, StmtMatchArm, TopLevel, Transaction,
+};
 use crate::ast::{BinaryOpKind, Expr, MatchArm, Pattern, UnaryOpKind};
 use crate::ast::{Dimension, ReflectKind, Type};
 use crate::plugin::{FnDef, PluginManager};
@@ -54,9 +56,7 @@ fn is_expr_param(t: &crate::ast::Type) -> bool {
 /// The composite's signature: (substitution parameters in declaration
 /// order, exposed binder names). `None` when the composite mixes in value
 /// parameters (v1 restriction — fail closed).
-fn composite_signature(
-    def: &Definition,
-) -> Option<(Vec<String>, HashSet<String>, Option<String>)> {
+fn composite_signature(def: &Definition) -> Option<(Vec<String>, HashSet<String>, Option<String>)> {
     let mut subst = Vec::new();
     let mut exposed: HashSet<String> = HashSet::new();
     for (n, t) in &def.parameters {
@@ -75,7 +75,11 @@ fn composite_signature(
             _ => return None,
         }
     }
-    Some((subst, exposed, def.variadic_param.as_ref().map(|vp| vp.name.clone())))
+    Some((
+        subst,
+        exposed,
+        def.variadic_param.as_ref().map(|vp| vp.name.clone()),
+    ))
 }
 
 /// Validate call-site arity against the fixed params and the optional
@@ -223,7 +227,10 @@ fn expand_composite_body(
     if let Some(rest_name) = rest_name {
         body_stmts = splice_rest_foreach(body_stmts, rest_name, &args[params.len()..]);
     }
-    let ctx = FoldCtx { state_types, composite: name };
+    let ctx = FoldCtx {
+        state_types,
+        composite: name,
+    };
     let folded = fold_stmt_list(body_stmts, &mut env, &ctx)?;
     out.extend(folded);
     if def.contract.post_condition != trivial {
@@ -239,7 +246,9 @@ fn expand_composite_body(
 /// only. Expression-position expansion requires a value and errors if absent.
 fn composite_value_expr(body: &[Statement]) -> Option<Expr> {
     match body.last() {
-        Some(Statement::Term(Some(e))) | Some(Statement::Tail(e)) | Some(Statement::Expression(e)) => Some(e.clone()),
+        Some(Statement::Term(Some(e)))
+        | Some(Statement::Tail(e))
+        | Some(Statement::Expression(e)) => Some(e.clone()),
         _ => None,
     }
 }
@@ -295,10 +304,12 @@ fn eval_const(
         // 2026-09-22 (C3): a string literal folds to ComptimeVal::Str — the
         // one-value-domain closure. Tagged literals fold only for the plain
         // string tag; any other tagged literal declines.
-        Expr::Quoted(bytes) => Some(ComptimeVal::Str(String::from_utf8_lossy(bytes).into_owned())),
-        Expr::TaggedQuotedLiteral(bytes, tag) if tag == "str" || tag == "String" => {
-            Some(ComptimeVal::Str(String::from_utf8_lossy(bytes).into_owned()))
-        }
+        Expr::Quoted(bytes) => Some(ComptimeVal::Str(
+            String::from_utf8_lossy(bytes).into_owned(),
+        )),
+        Expr::TaggedQuotedLiteral(bytes, tag) if tag == "str" || tag == "String" => Some(
+            ComptimeVal::Str(String::from_utf8_lossy(bytes).into_owned()),
+        ),
         Expr::Identifier(n) => env.get(n).cloned(),
         Expr::UnaryOp(kind, a) => {
             let v = eval_const(a, env, state_types)?;
@@ -382,11 +393,7 @@ fn reflect_type_value(
 /// `reflect_type_code` (rule #4 parity).
 fn type_category_code(ty: &Type) -> i64 {
     match ty {
-        Type::Custom(n)
-            if n == "Float" || n == "Float64" || n == "Double" || n == "Float32" =>
-        {
-            1
-        }
+        Type::Custom(n) if n == "Float" || n == "Float64" || n == "Double" || n == "Float32" => 1,
         Type::Custom(n) if n == "Bool" || n == "UInt8" || n == "Int8" => 2,
         Type::Custom(n) if n == "Char" || n == "Byte" => 3,
         Type::Custom(n) if n == "String" || matches!(ty, Type::Bits(_)) => 4,
@@ -405,9 +412,7 @@ fn collect_state_types(items: &[TopLevel]) -> HashMap<String, Type> {
         match item {
             TopLevel::Statement(stmt) => {
                 if let Statement::Let {
-                    name,
-                    ty: Some(ty),
-                    ..
+                    name, ty: Some(ty), ..
                 } = stmt.as_ref()
                 {
                     out.insert(name.clone(), ty.clone());
@@ -647,8 +652,7 @@ fn fold_expr_form_match(
     let scrut = eval_const(&scrut_e, env, ctx.state_types);
     let decidable = scrut.is_some()
         && m_arms.iter().all(|a| {
-            a.guard.is_none()
-                && pattern_const_match(&a.pattern, scrut.as_ref().unwrap()).is_some()
+            a.guard.is_none() && pattern_const_match(&a.pattern, scrut.as_ref().unwrap()).is_some()
         });
     if let (Some(v), true) = (scrut, decidable) {
         let taken_idx = m_arms
@@ -672,7 +676,6 @@ fn fold_expr_form_match(
     out.push(Statement::Expression(Expr::Match(scrut_e, m_arms)));
     Ok(())
 }
-
 
 /// - a comptime-known `let` stays (its binder may be referenced by runtime
 ///   statements) — its init is rewritten to the folded literal and the
@@ -717,11 +720,7 @@ fn comptime_iters(
                 ComptimeVal::Int(i) => i,
                 _ => return None,
             };
-            let stop = if *inclusive {
-                b.checked_add(1)?
-            } else {
-                b
-            };
+            let stop = if *inclusive { b.checked_add(1)? } else { b };
             if a >= stop {
                 return Some(Vec::new());
             }
@@ -768,7 +767,9 @@ fn unroll_static(
     let mut out = Vec::with_capacity(body.len());
     for s in body {
         match s {
-            Statement::Foreach { item, list, body , ..} => {
+            Statement::Foreach {
+                item, list, body, ..
+            } => {
                 match comptime_iters(list, consts, state_types) {
                     Some(iters) => {
                         // Splice the body once per iteration value,
@@ -872,10 +873,7 @@ fn fold_expr_in_place(
         }
         _ => {}
     }
-    if matches!(
-        e,
-        Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_)
-    ) {
+    if matches!(e, Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_)) {
         return;
     }
     if let Some(v) = eval_const(e, env, state_types) {
@@ -942,7 +940,12 @@ fn fold_stmt_list(
                     out.push(Statement::Guarded(cond, folded));
                 }
             },
-            Statement::Foreach { item, mut list, body , ..} => {
+            Statement::Foreach {
+                item,
+                mut list,
+                body,
+                ..
+            } => {
                 // Generation happened in unroll_static (PRE-substitution):
                 // by the time a composite body reaches the fold, every
                 // loop range is caller-derived — a RUNTIME quantity by
@@ -956,7 +959,7 @@ fn fold_stmt_list(
                     item,
                     list,
                     body: folded,
-                modifiers: vec![],
+                    modifiers: vec![],
                 });
             }
             Statement::Block(body) => {
@@ -1044,10 +1047,7 @@ fn check_hygiene(
 /// number of expansions performed. Unknown names are left for the
 /// typechecker to diagnose. The program's `$let`/`$const` values seed the
 /// fold env, so a span argument may be a named comptime constant.
-pub fn expand_composites(
-    items: &mut Vec<TopLevel>,
-    pm: &PluginManager,
-) -> Result<usize, String> {
+pub fn expand_composites(items: &mut Vec<TopLevel>, pm: &PluginManager) -> Result<usize, String> {
     let registry: HashMap<&String, &Definition> = pm
         .fn_registry
         .iter()
@@ -1101,9 +1101,7 @@ pub fn expand_composites(
                 .find(|m| m.name == "sync")
                 .and_then(|m| m.value.clone())
                 .and_then(|v| match v {
-                    Expr::Quoted(b) => {
-                        Some(String::from_utf8_lossy(&b).into_owned())
-                    }
+                    Expr::Quoted(b) => Some(String::from_utf8_lossy(&b).into_owned()),
                     _ => None,
                 });
             let mut txn = txn;
@@ -1261,9 +1259,7 @@ fn build_emit_node(args: &[Expr]) -> Result<Transaction, String> {
         _ => Vec::new(),
     };
     let sync_group = match args.get(4) {
-        Some(Expr::Quoted(b)) => {
-            Some(String::from_utf8_lossy(b).into_owned())
-        }
+        Some(Expr::Quoted(b)) => Some(String::from_utf8_lossy(b).into_owned()),
         _ => None,
     };
     let mut modifiers = Vec::new();
@@ -1313,9 +1309,8 @@ fn mark_declared(body: &mut [Statement], name: &str) {
     // 2026-11-09: find the first LET, not necessarily the first statement —
     // a composite may open with a `declared_kind` metadata line (which the
     // expansion also consumes, see the caller).
-    if let Some(Statement::Let { modifiers, .. }) = body
-        .iter_mut()
-        .find(|s| matches!(s, Statement::Let { .. }))
+    if let Some(Statement::Let { modifiers, .. }) =
+        body.iter_mut().find(|s| matches!(s, Statement::Let { .. }))
     {
         modifiers.push(Annotation {
             name: "declared_composite".into(),
@@ -1349,23 +1344,23 @@ fn expand_stmt_list(
         if let Some((name, args)) = call {
             // TEMP: 2026-10-03 — the dot_row expansion-skip hunt.
             if registry.get(&name).is_none() {
-                eprintln!("[EXPANSION-MISS] composite '{}' not in the registry ({} registered)", name, registry.len());
+                eprintln!(
+                    "[EXPANSION-MISS] composite '{}' not in the registry ({} registered)",
+                    name,
+                    registry.len()
+                );
             }
             if let Some(def) = registry.get(&name) {
-                let mut expanded =
-                    expand_composite_invocation(def, &args, comptime, state_types)?;
+                let mut expanded = expand_composite_invocation(def, &args, comptime, state_types)?;
                 // 2026-11-09 (float-formats plan): a composite may declare its
                 // SPECIALIZATION KIND (e.g. matmul_f16 -> matmul) so analyses
                 // gate on the declaration's semantics, not the macro's name.
                 // `attr declared_kind: matmul;` in the $defn body.
-                let mut kind = def
-                    .metadata
-                    .get("declared_kind")
-                    .and_then(|v| match v {
-                        crate::ast::PropertyValue::Identifier(n) => Some(n.clone()),
-                        crate::ast::PropertyValue::String(n) => Some(n.clone()),
-                        _ => None,
-                    });
+                let mut kind = def.metadata.get("declared_kind").and_then(|v| match v {
+                    crate::ast::PropertyValue::Identifier(n) => Some(n.clone()),
+                    crate::ast::PropertyValue::String(n) => Some(n.clone()),
+                    _ => None,
+                });
                 // A body-level `attr declared_kind: matmul;` arrives as the
                 // expansion's first MetadataAssignment — consume it.
                 if kind.is_none() {
@@ -1493,8 +1488,9 @@ fn expand_expr_values(
             expand_expr_values(o, registry, comptime, state_types)?;
             expand_expr_values(i, registry, comptime, state_types)?;
         }
-        Expr::Cast(x, _) | Expr::Deref(x) | Expr::AddrOf(x) | Expr::Consume(x)
-        | Expr::Await(x) => expand_expr_values(x, registry, comptime, state_types)?,
+        Expr::Cast(x, _) | Expr::Deref(x) | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) => {
+            expand_expr_values(x, registry, comptime, state_types)?
+        }
         Expr::Range { start, end, .. } => {
             expand_expr_values(start, registry, comptime, state_types)?;
             expand_expr_values(end, registry, comptime, state_types)?;
@@ -1567,32 +1563,18 @@ fn splice_rest_foreach(
                 ));
             }
             Statement::Block(body) => {
-                out.push(Statement::Block(splice_nested(
-                    body,
-                    rest_name,
-                    rest_args,
-                )));
+                out.push(Statement::Block(splice_nested(body, rest_name, rest_args)));
             }
             Statement::SyncBlock(body) => {
                 out.push(Statement::SyncBlock(splice_nested(
-                    body,
-                    rest_name,
-                    rest_args,
+                    body, rest_name, rest_args,
                 )));
             }
             Statement::Mutex(body) => {
-                out.push(Statement::Mutex(splice_nested(
-                    body,
-                    rest_name,
-                    rest_args,
-                )));
+                out.push(Statement::Mutex(splice_nested(body, rest_name, rest_args)));
             }
             Statement::Defer(body) => {
-                out.push(Statement::Defer(splice_nested(
-                    body,
-                    rest_name,
-                    rest_args,
-                )));
+                out.push(Statement::Defer(splice_nested(body, rest_name, rest_args)));
             }
             other => out.push(other),
         }
@@ -1602,11 +1584,7 @@ fn splice_rest_foreach(
 
 /// One body copy per rest argument, each `item` substituted with the arg
 /// expression. Empty rest is defensive (caller errors first).
-fn splice_rest_iteration(
-    item: &str,
-    body: &[Statement],
-    rest_args: &[Expr],
-) -> Vec<Statement> {
+fn splice_rest_iteration(item: &str, body: &[Statement], rest_args: &[Expr]) -> Vec<Statement> {
     let mut out = Vec::new();
     for arg in rest_args {
         let mut copy = body.to_vec();
@@ -1628,7 +1606,9 @@ fn splice_nested(body: Vec<Statement>, rest_name: &str, rest_args: &[Expr]) -> V
 /// inserted argument expressions are never re-walked).
 fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
     match s {
-        Statement::Let { ty, expr: Some(e), .. } => {
+        Statement::Let {
+            ty, expr: Some(e), ..
+        } => {
             // 2026-10-03 (declared matmul): a type position may take a
             // composite parameter — `let acc: acc_ty;` with `acc_ty`
             // bound to a bare type-name argument (`Float`, `Float16`).
@@ -1742,8 +1722,9 @@ fn subst_expr(e: &mut Expr, param: &str, arg: &Expr) {
                 subst_expr(a, param, arg);
             }
         }
-        Expr::Cast(a, _) | Expr::Deref(a) | Expr::AddrOf(a) | Expr::Consume(a)
-        | Expr::Await(a) => subst_expr(a, param, arg),
+        Expr::Cast(a, _) | Expr::Deref(a) | Expr::AddrOf(a) | Expr::Consume(a) | Expr::Await(a) => {
+            subst_expr(a, param, arg)
+        }
         Expr::Range { start, end, .. } => {
             subst_expr(start, param, arg);
             subst_expr(end, param, arg);
@@ -1822,12 +1803,7 @@ fn subst_intercept_args(
 /// Substitute inside a statement-form `match` expression (F1 unified
 /// dispatch): scrutinee, arm patterns, guards, and block bodies all carry
 /// parameter references.
-fn subst_match_arms(
-    scrut: &mut Expr,
-    arms: &mut [MatchArm],
-    param: &str,
-    arg: &Expr,
-) {
+fn subst_match_arms(scrut: &mut Expr, arms: &mut [MatchArm], param: &str, arg: &Expr) {
     subst_expr(scrut, param, arg);
     for a in arms.iter_mut() {
         subst_pattern(&mut a.pattern, param, arg);
@@ -1922,8 +1898,9 @@ fn collect_idents(e: &Expr, out: &mut HashSet<String>) {
                 collect_idents(a, out);
             }
         }
-        Expr::Cast(a, _) | Expr::Deref(a) | Expr::AddrOf(a) | Expr::Consume(a)
-        | Expr::Await(a) => collect_idents(a, out),
+        Expr::Cast(a, _) | Expr::Deref(a) | Expr::AddrOf(a) | Expr::Consume(a) | Expr::Await(a) => {
+            collect_idents(a, out)
+        }
         Expr::Range { start, end, .. } => {
             collect_idents(start, out);
             collect_idents(end, out);
@@ -1983,18 +1960,14 @@ mod tests {
 
     #[test]
     fn expr_typed_params_are_composites() {
-        let items = parse_program(
-            "$defn f(x: Expr, y: Expr) { \n z = x + y; \n}; \nlet q: Int = 0;",
-        );
+        let items =
+            parse_program("$defn f(x: Expr, y: Expr) { \n z = x + y; \n}; \nlet q: Int = 0;");
         let d = defn_of(&items, "f");
         assert!(is_composite(&d), "`expr` params mark a composite");
         let (subst, exposed, _rest) = composite_signature(&d).unwrap();
         assert_eq!(subst, vec!["x".to_string(), "y".to_string()]);
         assert!(exposed.is_empty());
-        let plain = defn_of(
-            &parse_program("$defn g(v: Int) -> Int { v; };"),
-            "g",
-        );
+        let plain = defn_of(&parse_program("$defn g(v: Int) -> Int { v; };"), "g");
         assert!(!is_composite(&plain), "value params are not a composite");
     }
 
@@ -2064,9 +2037,7 @@ mod tests {
 
     #[test]
     fn hygiene_capture_is_rejected() {
-        let items = parse_program(
-            "$defn f(p: Expr) { let t = p * 2; res = t; };",
-        );
+        let items = parse_program("$defn f(p: Expr) { let t = p * 2; res = t; };");
         let d = defn_of(&items, "f");
         // The arg mentions `t` — the body binds `t`. Capture => error.
         let arg = Expr::BinaryOp(
@@ -2089,16 +2060,15 @@ mod tests {
             Box::new(Expr::Identifier("p".into())),
             Box::new(Expr::Decimal(2)),
         );
-        let err = expand_composite_invocation(&d, &[arg_p, arg_q], &HashMap::new(), &HashMap::new())
-            .unwrap_err();
+        let err =
+            expand_composite_invocation(&d, &[arg_p, arg_q], &HashMap::new(), &HashMap::new())
+                .unwrap_err();
         assert!(err.contains("parameter 'p'"), "{err}");
     }
 
     #[test]
     fn contract_gates_are_spliced() {
-        let items = parse_program(
-            "$defn f(p: Expr) [i < 8] [i >= 0] { res = p; };",
-        );
+        let items = parse_program("$defn f(p: Expr) [i < 8] [i >= 0] { res = p; };");
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(
             &d,
@@ -2144,9 +2114,7 @@ async node k [i < 16][i == 16] {
 
     #[test]
     fn mixed_params_fail_closed() {
-        let items = parse_program(
-            "$defn f(p: Expr, n: Int) { res = p + n; };",
-        );
+        let items = parse_program("$defn f(p: Expr, n: Int) { res = p + n; };");
         let d = defn_of(&items, "f");
         let err = expand_composite_invocation(
             &d,
@@ -2162,13 +2130,9 @@ async node k [i < 16][i == 16] {
     fn arg_count_mismatch_diagnoses_params() {
         let items = parse_program("$defn f(p: Expr, q: Expr) { res = p + q; };");
         let d = defn_of(&items, "f");
-        let err = expand_composite_invocation(
-            &d,
-            &[Expr::Decimal(1)],
-            &HashMap::new(),
-            &HashMap::new(),
-        )
-        .unwrap_err();
+        let err =
+            expand_composite_invocation(&d, &[Expr::Decimal(1)], &HashMap::new(), &HashMap::new())
+                .unwrap_err();
         assert!(err.contains("expects 2") && err.contains("p, q"), "{err}");
     }
 
@@ -2238,7 +2202,10 @@ mod comptime_fold {
     fn comptime_match_takes_other_arm() {
         let out = expand_adaptive(Expr::Decimal(128));
         let dump = format!("{out:?}");
-        assert!(dump.contains("\"large\"") && !dump.contains("\"small\""), "{dump}");
+        assert!(
+            dump.contains("\"large\"") && !dump.contains("\"small\""),
+            "{dump}"
+        );
     }
 
     #[test]
@@ -2264,8 +2231,9 @@ mod comptime_fold {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("\"wide\""), "64/4=16 > 8: {dump}");
         assert!(!dump.contains("\"narrow\""), "{dump}");
@@ -2334,13 +2302,21 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(500)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Decimal(500)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("\"big\""), "{dump}");
         assert!(!dump.contains("\"huge\""), "false when dropped: {dump}");
         assert!(dump.contains("\"pos\""), "{dump}");
-        assert!(!dump.contains("Guarded"), "no runtime guard remains: {dump}");
+        assert!(
+            !dump.contains("Guarded"),
+            "no runtime guard remains: {dump}"
+        );
     }
 
     #[test]
@@ -2375,8 +2351,9 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         let dump = format!("{out:?}");
         let los = dump.matches("\"lo\"").count();
         let his = dump.matches("\"hi\"").count();
@@ -2398,10 +2375,14 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         let dump = format!("{out:?}");
-        assert!(dump.contains("Foreach"), "param range stays runtime: {dump}");
+        assert!(
+            dump.contains("Foreach"),
+            "param range stays runtime: {dump}"
+        );
     }
 
     #[test]
@@ -2436,11 +2417,16 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         let dump = format!("{out:?}");
-        assert!(dump.contains("Decimal(1)") && dump.contains("Decimal(2)")
-            && dump.contains("Decimal(4)"), "each element spliced: {dump}");
+        assert!(
+            dump.contains("Decimal(1)")
+                && dump.contains("Decimal(2)")
+                && dump.contains("Decimal(4)"),
+            "each element spliced: {dump}"
+        );
         assert!(!dump.contains("Foreach"), "unrolled: {dump}");
         assert!(!dump.contains("\"w\""), "item substituted: {dump}");
     }
@@ -2465,8 +2451,7 @@ async node k [i < 1][i == 1] {
                 ComptimeVal::Int(8),
             ]),
         );
-        let out =
-            expand_composite_invocation(&d, &[], &seed, &HashMap::new()).expect("expands");
+        let out = expand_composite_invocation(&d, &[], &seed, &HashMap::new()).expect("expands");
         let dump = format!("{out:?}");
         assert_eq!(dump.matches("Decimal(8)").count(), 1, "w=8 spliced: {dump}");
         assert!(!dump.contains("Foreach"), "unrolled: {dump}");
@@ -2481,14 +2466,19 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let ok = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
-            .expect("16 <= 32 proven");
+        let ok =
+            expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
+                .expect("16 <= 32 proven");
         let dump = format!("{ok:?}");
         assert!(!dump.contains("Check"), "proven check spliced out: {dump}");
         assert!(dump.contains("\"mark\""), "body present: {dump}");
-        let err = expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new(), &HashMap::new())
-            .unwrap_err();
-        assert!(err.contains("comptime check") && err.contains("FALSE"), "{err}");
+        let err =
+            expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new(), &HashMap::new())
+                .unwrap_err();
+        assert!(
+            err.contains("comptime check") && err.contains("FALSE"),
+            "{err}"
+        );
         // Non-foldable check degrades to the runtime path.
         let rt = expand_composite_invocation(
             &d,
@@ -2510,10 +2500,15 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[], &HashMap::new(), &HashMap::new()).expect("expands");
+        let out = expand_composite_invocation(&d, &[], &HashMap::new(), &HashMap::new())
+            .expect("expands");
         let dump = format!("{out:?}");
-        assert!(dump.contains("Decimal(1)") && dump.contains("Decimal(2)")
-            && dump.contains("Decimal(4)"), "1<<k folded per iteration: {dump}");
+        assert!(
+            dump.contains("Decimal(1)")
+                && dump.contains("Decimal(2)")
+                && dump.contains("Decimal(4)"),
+            "1<<k folded per iteration: {dump}"
+        );
         assert!(!dump.contains("Shl"), "shift folded away: {dump}");
     }
 
@@ -2528,8 +2523,9 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(4)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(4)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("\"tiny\""), "{dump}");
         assert!(
@@ -2541,12 +2537,11 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn binding_pattern_scrutinee_degrades() {
-        let items = parse_program(
-            "$defn f(n: Expr) { match n { x => { any = x; }, }; };",
-        );
+        let items = parse_program("$defn f(n: Expr) { match n { x => { any = x; }, }; };");
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(7)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(7)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         let dump = format!("{out:?}");
         assert!(
             dump.contains("Match"),
@@ -2571,14 +2566,15 @@ async node k [i < 1][i == 1] {
         assert!(dump.contains("Match"), "overflow declines: {dump}");
     }
 
-#[test]
+    #[test]
     fn contracts_survive_folding() {
         let items = parse_program(
             "$defn f(n: Expr) [n < 64] [n > 0] { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
-            .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         assert_eq!(out.len(), 3, "pre gate + spliced arm + post gate");
         assert!(matches!(&out[0], Statement::Gate(_)));
         assert!(matches!(&out[2], Statement::Gate(_)));
@@ -2601,10 +2597,13 @@ async node k [i < 1][i == 1] {
         );
         let d = defn_of(&items, "pick");
         let state_types = state_types_of(&items);
-        assert_eq!(state_types.get("buf"), Some(&Type::Vector(
-            Box::new(Type::Custom("Float".to_string())),
-            vec![crate::ast::Dimension::Anonymous(4)]
-        )));
+        assert_eq!(
+            state_types.get("buf"),
+            Some(&Type::Vector(
+                Box::new(Type::Custom("Float".to_string())),
+                vec![crate::ast::Dimension::Anonymous(4)]
+            ))
+        );
         let out = expand_composite_invocation(
             &d,
             &[Expr::Identifier("buf".into())],
@@ -2656,7 +2655,10 @@ async node k [i < 1][i == 1] {
         )
         .expect("expands");
         let dump = format!("{out:?}");
-        assert!(dump.contains("Decimal(1)"), "Float category arm spliced: {dump}");
+        assert!(
+            dump.contains("Decimal(1)"),
+            "Float category arm spliced: {dump}"
+        );
         assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
     }
 
@@ -2696,7 +2698,10 @@ async node k [i < 1][i == 1] {
         )
         .expect("expands");
         let dump = format!("{out:?}");
-        assert!(dump.contains("Decimal(1)"), "Char category arm spliced: {dump}");
+        assert!(
+            dump.contains("Decimal(1)"),
+            "Char category arm spliced: {dump}"
+        );
         assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
     }
 
@@ -2707,9 +2712,8 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn rest_param_foreach_splices_one_call_per_arg() {
-        let items = parse_program(
-            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
-        );
+        let items =
+            parse_program("$defn execute_many(...calls: Expr) { foreach c in calls { c; } };");
         let d = defn_of(&items, "execute_many");
         let out = expand_composite_invocation(
             &d,
@@ -2758,17 +2762,11 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn zero_rest_args_is_an_error() {
-        let items = parse_program(
-            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
-        );
+        let items =
+            parse_program("$defn execute_many(...calls: Expr) { foreach c in calls { c; } };");
         let d = defn_of(&items, "execute_many");
-        let err = expand_composite_invocation(
-            &d,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        )
-        .unwrap_err();
+        let err =
+            expand_composite_invocation(&d, &[], &HashMap::new(), &HashMap::new()).unwrap_err();
         assert!(
             err.contains("zero rest arguments"),
             "expected zero-rest diagnostic, got: {err}"
@@ -2779,9 +2777,8 @@ async node k [i < 1][i == 1] {
     fn rest_param_stays_unsubstituted_before_splice() {
         // The rest name is NOT positionally substituted (it is a list, not a
         // single expr) — the splice consumes the foreach over it.
-        let items = parse_program(
-            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
-        );
+        let items =
+            parse_program("$defn execute_many(...calls: Expr) { foreach c in calls { c; } };");
         let d = defn_of(&items, "execute_many");
         let out = expand_composite_invocation(
             &d,
@@ -2800,17 +2797,11 @@ async node k [i < 1][i == 1] {
     #[test]
     fn runtime_foreach_inside_composite_is_not_spliced() {
         // A `foreach` over a NON-rest list stays a runtime loop.
-        let items = parse_program(
-            "$defn f(x: Expr) { foreach k in 0..x { emit(k); } };",
-        );
+        let items = parse_program("$defn f(x: Expr) { foreach k in 0..x { emit(k); } };");
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(
-            &d,
-            &[Expr::Decimal(4)],
-            &HashMap::new(),
-            &HashMap::new(),
-        )
-        .expect("expands");
+        let out =
+            expand_composite_invocation(&d, &[Expr::Decimal(4)], &HashMap::new(), &HashMap::new())
+                .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("Foreach"), "runtime loop kept: {dump}");
     }
@@ -2823,17 +2814,11 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn value_composite_expands_to_value_block() {
-        let items = parse_program(
-            "$defn aligned_size(n: Expr) -> Int { term (n + 15) & ~15; };",
-        );
+        let items = parse_program("$defn aligned_size(n: Expr) -> Int { term (n + 15) & ~15; };");
         let d = defn_of(&items, "aligned_size");
-        let block = expand_composite_value(
-            &d,
-            &[Expr::Decimal(4)],
-            &HashMap::new(),
-            &HashMap::new(),
-        )
-        .expect("expands to value");
+        let block =
+            expand_composite_value(&d, &[Expr::Decimal(4)], &HashMap::new(), &HashMap::new())
+                .expect("expands to value");
         let Expr::Block(stmts) = block else {
             panic!("expected Expr::Block, got {block:?}");
         };
@@ -2847,17 +2832,10 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn value_composite_without_term_is_an_error() {
-        let items = parse_program(
-            "$defn no_value(x: Expr) { let y: Int = x; };",
-        );
+        let items = parse_program("$defn no_value(x: Expr) { let y: Int = x; };");
         let d = defn_of(&items, "no_value");
-        let err = expand_composite_value(
-            &d,
-            &[Expr::Decimal(1)],
-            &HashMap::new(),
-            &HashMap::new(),
-        )
-        .unwrap_err();
+        let err = expand_composite_value(&d, &[Expr::Decimal(1)], &HashMap::new(), &HashMap::new())
+            .unwrap_err();
         assert!(
             err.contains("value position"),
             "expected value-position diagnostic, got: {err}"
@@ -2868,9 +2846,8 @@ async node k [i < 1][i == 1] {
     fn statement_composite_still_expands_to_statements() {
         // A statement composite (no -> Type) keeps statement expansion;
         // its body's trailing term is NOT converted to a value statement.
-        let items = parse_program(
-            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
-        );
+        let items =
+            parse_program("$defn execute_many(...calls: Expr) { foreach c in calls { c; } };");
         let d = defn_of(&items, "execute_many");
         let out = expand_composite_invocation(
             &d,
@@ -2902,9 +2879,10 @@ async node k [i < 1][i == 1] {
         let mut registry: HashMap<&String, &Definition> = HashMap::new();
         registry.insert(&comp.name, &comp);
         let mut items = items;
-        let n = if let Some(TopLevel::Definition(d)) = items.iter_mut().find(|it| {
-            matches!(it, TopLevel::Definition(def) if def.name == "compute")
-        }) {
+        let n = if let Some(TopLevel::Definition(d)) = items
+            .iter_mut()
+            .find(|it| matches!(it, TopLevel::Definition(def) if def.name == "compute"))
+        {
             expand_stmt_list(&mut d.body, &registry, &HashMap::new(), &HashMap::new())?
         } else {
             panic!("compute defn not found");
@@ -2969,9 +2947,8 @@ async node k [i < 1][i == 1] {
     fn emit_node_hoists_a_top_level_transaction() -> Result<(), String> {
         // A parameterless topology composite: is_composite is true via the
         // EmitNode$ marker; expansion hoists one node.
-        let items = parse_program(
-            "$defn emit_one() { EmitNode$(\"extra\", true, true, { term; }); };",
-        );
+        let items =
+            parse_program("$defn emit_one() { EmitNode$(\"extra\", true, true, { term; }); };");
         let comp = defn_of(&items, "emit_one");
         assert!(is_composite(&comp), "EmitNode marks a topology composite");
         let mut registry: HashMap<&String, &Definition> = HashMap::new();
@@ -2987,8 +2964,7 @@ async node k [i < 1][i == 1] {
         let mut hoisted: Vec<Transaction> = Vec::new();
         let mut count = 0;
         for it in expanded.iter_mut() {
-            let (ni, nodes) =
-                expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
+            let (ni, nodes) = expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
             count += ni;
             hoisted.extend(nodes);
         }
@@ -3021,8 +2997,7 @@ async node k [i < 1][i == 1] {
         expanded.extend(driver.drain(..));
         let mut hoisted: Vec<Transaction> = Vec::new();
         for it in expanded.iter_mut() {
-            let (_ni, nodes) =
-                expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
+            let (_ni, nodes) = expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
             hoisted.extend(nodes);
         }
         let txn = hoisted
@@ -3088,10 +3063,7 @@ async node k [i < 1][i == 1] {
         );
         let d = defn_of(&items, "pick");
         let mut comptime: HashMap<String, ComptimeVal> = HashMap::new();
-        comptime.insert(
-            "mode".to_string(),
-            ComptimeVal::Str("fast".to_string()),
-        );
+        comptime.insert("mode".to_string(), ComptimeVal::Str("fast".to_string()));
         let out = expand_composite_invocation(
             &d,
             &[Expr::Identifier("mode".into())],
@@ -3135,7 +3107,10 @@ async node s [h < 8][h == 8] {
         items.extend(parse_program(&lib));
         let mut pm = PluginManager::new();
         crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
-        println!("registry keys: {:?}", pm.fn_registry.keys().collect::<Vec<_>>());
+        println!(
+            "registry keys: {:?}",
+            pm.fn_registry.keys().collect::<Vec<_>>()
+        );
         let n = expand_composites(&mut items, &pm);
         match n {
             Ok(k) => println!("expanded {k}"),

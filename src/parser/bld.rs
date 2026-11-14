@@ -120,13 +120,12 @@ impl<'a> Parser<'a> {
                     let fix = "top level takes `import \"…\";`, `const NAME = …;`, \
                                `defn name() {{ … }}`, or `bootstrap Name() {{ … }}`; \
                                instructions live inside a body";
-                    let dialect = if crate::vocab::LanguageVocab::canonical()
-                        .is_canonical_keyword(&word)
-                    {
-                        format!("`{word}` is a .bv keyword, not a .bld item — {fix}")
-                    } else {
-                        format!("`{word}` cannot start a .bld item — {fix}")
-                    };
+                    let dialect =
+                        if crate::vocab::LanguageVocab::canonical().is_canonical_keyword(&word) {
+                            format!("`{word}` is a .bv keyword, not a .bld item — {fix}")
+                        } else {
+                            format!("`{word}` cannot start a .bld item — {fix}")
+                        };
                     return Err(SyntaxError::InvalidStatement {
                         reason: dialect,
                         span: self.current_span(),
@@ -172,7 +171,7 @@ impl<'a> Parser<'a> {
                         .to_string(),
                     found: describe_token(self.peek()),
                     span: self.current_span(),
-                })
+                });
             }
         };
         self.expect(Token::Semicolon)?;
@@ -197,7 +196,13 @@ impl<'a> Parser<'a> {
         let ret = self.parse_return_type()?;
         self.reject_contracts_here()?;
         let body = self.parse_bld_body()?;
-        Ok(BldDefn { name, params, ret, body, span })
+        Ok(BldDefn {
+            name,
+            params,
+            ret,
+            body,
+            span,
+        })
     }
 
     fn parse_bld_bootstrap(&mut self) -> Result<BldBootstrap, SyntaxError> {
@@ -335,7 +340,9 @@ impl<'a> Parser<'a> {
     /// shared lexer, reserved only where a statement starts (the .bld
     /// dialect boundary — no global lexer change).
     fn dispatch_bld_ident_stmt(
-        &mut self, name: &str, span: crate::errors::Span,
+        &mut self,
+        name: &str,
+        span: crate::errors::Span,
     ) -> Result<BldStmt, SyntaxError> {
         match name {
             "loop" => self.parse_bld_loop(),
@@ -395,7 +402,12 @@ impl<'a> Parser<'a> {
         }
         let value = self.parse_expression()?;
         self.expect(Token::Semicolon)?;
-        Ok(BldStmt::Let { name, ty, value, span })
+        Ok(BldStmt::Let {
+            name,
+            ty,
+            value,
+            span,
+        })
     }
 
     /// `when cond { … } else when cond { … } else { … }`
@@ -413,7 +425,12 @@ impl<'a> Parser<'a> {
                 otherwise = Some(self.parse_bld_body()?);
             }
         }
-        Ok(BldStmt::When { cond, then, otherwise, span })
+        Ok(BldStmt::When {
+            cond,
+            then,
+            otherwise,
+            span,
+        })
     }
 
     /// `loop { … }` — unbounded spin. The body block is mandatory so the
@@ -526,7 +543,11 @@ impl<'a> Parser<'a> {
         // expression parser (same convention as .bv's statement level).
         if let Expr::BinaryOp(BinaryOpKind::Eq, target, value) = lhs {
             ensure_assignable(&target, "=", span)?;
-            return Ok(BldStmt::Assign { target: *target, value: *value, span });
+            return Ok(BldStmt::Assign {
+                target: *target,
+                value: *value,
+                span,
+            });
         }
         match lhs {
             Expr::Call(callee, args, _) => Ok(BldStmt::Call { callee, args, span }),
@@ -569,7 +590,11 @@ impl<'a> Parser<'a> {
 /// Returns None when `tok` is an ordinary token.
 fn bv_keyword_rejection(tok: &Token) -> Option<(&'static str, &'static str)> {
     static REJECTED: &[(Token, &str, &str)] = &[
-        (Token::Halt, "halt", "`Halt();` (the PascalCase engine verb)"),
+        (
+            Token::Halt,
+            "halt",
+            "`Halt();` (the PascalCase engine verb)",
+        ),
         (Token::Term, "term", "`return …;`"),
         (
             Token::Foreach,
@@ -577,25 +602,72 @@ fn bv_keyword_rejection(tok: &Token) -> Option<(&'static str, &'static str)> {
             "`loop { … }` / `while cond { … }` (unbounded — this tier does not \
              prove termination)",
         ),
-        (Token::Match, "match", "`when`/`else` chains (no reactor dispatch in .bld)"),
+        (
+            Token::Match,
+            "match",
+            "`when`/`else` chains (no reactor dispatch in .bld)",
+        ),
         (Token::Trap, "trap", "`Halt();`"),
-        (Token::Txn, "txn", "a `defn` (reactor constructs do not exist in .bld)"),
-        (Token::Node, "node", "a `defn` (reactor constructs do not exist in .bld)"),
-        (Token::BeginProgram, "beginprogram", "plain top-to-bottom recipe flow"),
-        (Token::EndProgram, "endprogram", "plain top-to-bottom recipe flow"),
-        (Token::Rollback, "rollback", "plain top-to-bottom recipe flow"),
-        (Token::Spawn, "spawn", "a `defn` call or a `bad { … }` block"),
-        (Token::Await, "await", "a `defn` call or a `bad { … }` block"),
-        (Token::Mutex, "mutex", "a `defn` call or a `bad { … }` block"),
-        (Token::Defer, "defer", "a `defn` call or a `bad { … }` block"),
+        (
+            Token::Txn,
+            "txn",
+            "a `defn` (reactor constructs do not exist in .bld)",
+        ),
+        (
+            Token::Node,
+            "node",
+            "a `defn` (reactor constructs do not exist in .bld)",
+        ),
+        (
+            Token::BeginProgram,
+            "beginprogram",
+            "plain top-to-bottom recipe flow",
+        ),
+        (
+            Token::EndProgram,
+            "endprogram",
+            "plain top-to-bottom recipe flow",
+        ),
+        (
+            Token::Rollback,
+            "rollback",
+            "plain top-to-bottom recipe flow",
+        ),
+        (
+            Token::Spawn,
+            "spawn",
+            "a `defn` call or a `bad { … }` block",
+        ),
+        (
+            Token::Await,
+            "await",
+            "a `defn` call or a `bad { … }` block",
+        ),
+        (
+            Token::Mutex,
+            "mutex",
+            "a `defn` call or a `bad { … }` block",
+        ),
+        (
+            Token::Defer,
+            "defer",
+            "a `defn` call or a `bad { … }` block",
+        ),
         (Token::Trg, "trg", "a `defn` call or a `bad { … }` block"),
         (Token::Sync, "sync", "a `defn` call or a `bad { … }` block"),
     ];
-    REJECTED.iter().find(|(t, ..)| t == tok).map(|(_, w, f)| (*w, *f))
+    REJECTED
+        .iter()
+        .find(|(t, ..)| t == tok)
+        .map(|(_, w, f)| (*w, *f))
 }
 
 /// Assignability check for `=` / compound targets.
-fn ensure_assignable(target: &Expr, op: &str, span: crate::errors::Span) -> Result<(), SyntaxError> {
+fn ensure_assignable(
+    target: &Expr,
+    op: &str,
+    span: crate::errors::Span,
+) -> Result<(), SyntaxError> {
     let ok = matches!(
         target,
         Expr::Identifier(_) | Expr::Field(_, _) | Expr::Index(_, _)
@@ -642,7 +714,9 @@ mod tests {
     }
 
     fn parse_err(src: &str) -> String {
-        parse_bld(src).expect_err("expected a parse error").to_string()
+        parse_bld(src)
+            .expect_err("expected a parse error")
+            .to_string()
     }
 
     /// The flagship shape: a protected-mode boot recipe with engine
@@ -725,7 +799,10 @@ mod tests {
             panic!("expected when")
         };
         let inner = otherwise.as_ref().expect("else branch");
-        assert!(matches!(inner[0], BldStmt::When { .. }), "else-when nests as When");
+        assert!(
+            matches!(inner[0], BldStmt::When { .. }),
+            "else-when nests as When"
+        );
     }
 
     /// Briev has no `if` — a statement-head `if` gets the one honest

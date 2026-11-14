@@ -66,11 +66,7 @@ struct Scan {
 
 /// Run the W-tier analysis over a label body. `label` is the enclosing
 /// label name (for W6 local-scope messages); `push_width` per target.
-pub fn check_label(
-    label: &BadLabel,
-    regs: &BadRegisters,
-    family: &str,
-) -> Vec<Notice> {
+pub fn check_label(label: &BadLabel, regs: &BadRegisters, family: &str) -> Vec<Notice> {
     if label.symbolic {
         return Vec::new();
     }
@@ -82,7 +78,9 @@ pub fn check_label(
         terminated: false,
     };
     for item in &label.body {
-        let BadBodyItem::Instr(instr) = item else { continue };
+        let BadBodyItem::Instr(instr) = item else {
+            continue;
+        };
         if scan.terminated {
             continue;
         }
@@ -120,7 +118,9 @@ fn check_call_clobbers(
 /// W4: the FP literal pool borrows a scratch register per target
 /// (aarch64 x9 → r9, riscv64 t0 → r8); a live value there collides.
 fn check_pool_scratch(instr: &BadInstr, family: &str, scan: &Scan, out: &mut Vec<Notice>) {
-    let Some(s) = pool_scratch(family) else { return };
+    let Some(s) = pool_scratch(family) else {
+        return;
+    };
     if scan.touched_since_pool.contains(s) {
         emit(
             out,
@@ -155,9 +155,9 @@ fn check_local_refs(label: &BadLabel, out: &mut Vec<Notice>) {
             | BadBodyItem::While(_)
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => None,
+            | BadBodyItem::CallStmt { .. }
+            | BadBodyItem::Return { .. }
+            | BadBodyItem::RawRegion { .. } => None,
         })
         .collect();
     // Single iterator chain (items → instrs → Name operands) — no nested
@@ -179,14 +179,16 @@ fn check_local_refs(label: &BadLabel, out: &mut Vec<Notice>) {
             | BadBodyItem::While(_)
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => None,
+            | BadBodyItem::CallStmt { .. }
+            | BadBodyItem::Return { .. }
+            | BadBodyItem::RawRegion { .. } => None,
         })
         .flat_map(|instr| instr.operands.iter().map(move |op| (instr, op)));
     for (instr, op) in name_ops {
         let BadOperand::Name(n) = op else { continue };
-        let Some(local) = n.strip_prefix('.') else { continue };
+        let Some(local) = n.strip_prefix('.') else {
+            continue;
+        };
         if local.starts_with('L') {
             continue; // already-gensym'd refs from expansions.
         }
@@ -293,8 +295,12 @@ fn is_sp_delta_instr(instr: &BadInstr, sign: i64) -> bool {
     if instr.operands.len() < 3 {
         return false;
     }
-    let BadOperand::Name(dst) = &instr.operands[0] else { return false };
-    let BadOperand::Name(a) = &instr.operands[1] else { return false };
+    let BadOperand::Name(dst) = &instr.operands[0] else {
+        return false;
+    };
+    let BadOperand::Name(a) = &instr.operands[1] else {
+        return false;
+    };
     if dst != "sp" || a != "sp" {
         return false;
     }
@@ -337,15 +343,16 @@ pub fn check_defn(d: &BadDefn) -> Vec<Notice> {
     match &d.shape {
         BadDefnShape::Sequence(body) => {
             for item in body {
-                let BadBodyItem::Instr(instr) = item else { continue };
+                let BadBodyItem::Instr(instr) = item else {
+                    continue;
+                };
                 if instr.mnemonic == "ret" {
                     out.push(Notice {
                         code: "W5",
                         message: format!(
                             "defn `{}` inlines a `ret` at line {} - the return exits the ENCLOSING \
                              function, not the defn; keep returns at top level or ack with `^`",
-                            d.name,
-                            instr.span.line
+                            d.name, instr.span.line
                         ),
                         line: instr.span.line,
                         acknowledged: ack_covers(instr, "W5", AckScope::Instr),
@@ -368,7 +375,11 @@ pub fn check_defn(d: &BadDefn) -> Vec<Notice> {
                     })
                     .sum();
                 if delta != 0 {
-                    let row_label = if row.is_default { "default" } else { &row.target };
+                    let row_label = if row.is_default {
+                        "default"
+                    } else {
+                        &row.target
+                    };
                     out.push(Notice {
                         code: "W2",
                         message: format!(
@@ -411,10 +422,7 @@ pub fn stale_acks<'a>(program: &'a BadProgram, notices: &[Notice]) -> Vec<String
     stale
 }
 
-fn collect_acks<'a>(
-    item: &'a BadTopLevel,
-    out: &mut Vec<(AckScope, &'a String, Span)>,
-) {
+fn collect_acks<'a>(item: &'a BadTopLevel, out: &mut Vec<(AckScope, &'a String, Span)>) {
     let instrs: Vec<&BadInstr> = match item {
         BadTopLevel::Label(l) => l
             .body
@@ -425,16 +433,16 @@ fn collect_acks<'a>(
                 // Sites: W-tier analysis scans core-pipeline rows; raw
                 // rows are target-owned (as in branch defns).
                 BadBodyItem::Site(_) => None,
-            BadBodyItem::Let(_)
-            | BadBodyItem::Assign(_)
-            | BadBodyItem::When(_)
-            | BadBodyItem::Loop(_)
-            | BadBodyItem::While(_)
-            | BadBodyItem::Break(_)
-            | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => None,
+                BadBodyItem::Let(_)
+                | BadBodyItem::Assign(_)
+                | BadBodyItem::When(_)
+                | BadBodyItem::Loop(_)
+                | BadBodyItem::While(_)
+                | BadBodyItem::Break(_)
+                | BadBodyItem::Continue(_)
+                | BadBodyItem::CallStmt { .. }
+                | BadBodyItem::Return { .. }
+                | BadBodyItem::RawRegion { .. } => None,
             })
             .collect(),
         BadTopLevel::Defn(d) => {
@@ -444,16 +452,16 @@ fn collect_acks<'a>(
                         BadBodyItem::Instr(x) => Some(x),
                         BadBodyItem::Local(_) => None,
                         BadBodyItem::Site(_) => None,
-            BadBodyItem::Let(_)
-            | BadBodyItem::Assign(_)
-            | BadBodyItem::When(_)
-            | BadBodyItem::Loop(_)
-            | BadBodyItem::While(_)
-            | BadBodyItem::Break(_)
-            | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => None,
+                        BadBodyItem::Let(_)
+                        | BadBodyItem::Assign(_)
+                        | BadBodyItem::When(_)
+                        | BadBodyItem::Loop(_)
+                        | BadBodyItem::While(_)
+                        | BadBodyItem::Break(_)
+                        | BadBodyItem::Continue(_)
+                        | BadBodyItem::CallStmt { .. }
+                        | BadBodyItem::Return { .. }
+                        | BadBodyItem::RawRegion { .. } => None,
                     })
                     .collect()
             } else {
@@ -471,7 +479,10 @@ fn collect_acks<'a>(
 
 /// Format a notice for display: `W1 at line N: message`.
 pub fn format(notice: &Notice) -> String {
-    format!("W-tier {} at line {}: {}", notice.code, notice.line, notice.message)
+    format!(
+        "W-tier {} at line {}: {}",
+        notice.code, notice.line, notice.message
+    )
 }
 
 /// Format an acknowledged notice as an info line (never silent).

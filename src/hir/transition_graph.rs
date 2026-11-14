@@ -42,7 +42,8 @@ impl HirReactorTransitionGraph {
         exit_condition: Option<&HirExpr>,
         out_pragmas: &[String],
     ) -> Self {
-        let state_fields: HashSet<String> = program.globals.iter().map(|g| g.name.clone()).collect();
+        let state_fields: HashSet<String> =
+            program.globals.iter().map(|g| g.name.clone()).collect();
         let mut nodes: Vec<HirReactorNode> = program
             .callables
             .iter()
@@ -81,17 +82,16 @@ fn build_node(txn: &HirCallable, state_fields: &HashSet<String>) -> HirReactorNo
         .filter(|s| {
             !matches!(
                 s.kind,
-                HirStmtKind::Term(None)
-                    | HirStmtKind::EndProgram(None)
-                    | HirStmtKind::Tail(_)
+                HirStmtKind::Term(None) | HirStmtKind::EndProgram(None) | HirStmtKind::Tail(_)
             )
         })
         .cloned()
         .collect();
     let simplified_body = simplify_body(&body_no_term);
-    let increments = detect_increments(&simplified_body)
-        .or_else(|| detect_popcount_decay(&simplified_body));
-    let (bounded_pre, increments) = resolve_bounded_pre(&precondition, &simplified_body, increments);
+    let increments =
+        detect_increments(&simplified_body).or_else(|| detect_popcount_decay(&simplified_body));
+    let (bounded_pre, increments) =
+        resolve_bounded_pre(&precondition, &simplified_body, increments);
     let is_pure = is_pure_body(&simplified_body, state_fields, &increments);
     let write_set = extract_write_set(&simplified_body, state_fields);
     let lexicographic_vars = detect_lexicographic_ranking(&precondition, &simplified_body);
@@ -120,8 +120,7 @@ fn resolve_bounded_pre(
         return (Some(bp), increments);
     }
     let matched = detect_all_increments(body).into_iter().find_map(|inc| {
-        extract_valid_bounded_pre(precondition, &Some(inc.clone()))
-            .map(|b| (b, inc))
+        extract_valid_bounded_pre(precondition, &Some(inc.clone())).map(|b| (b, inc))
     });
     match matched {
         Some((bp, inc)) => (Some(bp), Some(inc)),
@@ -149,8 +148,7 @@ fn collect_unguarded_ffi(program: &HirProgram) -> HashSet<String> {
     }) {
         if txn.is_reactive
             && txn.body.statements.iter().any(|stmt| {
-                !matches!(stmt.kind, HirStmtKind::Guarded(_, _))
-                    && statement_contains_ffi(stmt)
+                !matches!(stmt.kind, HirStmtKind::Guarded(_, _)) && statement_contains_ffi(stmt)
             })
         {
             out.insert(txn.name.clone());
@@ -169,7 +167,12 @@ fn truth() -> HirExpr {
 }
 
 fn rebuild(expr: &HirExpr, kind: HirExprKind) -> HirExpr {
-    HirExpr { id: expr.id, span: expr.span, ty: expr.ty.clone(), kind }
+    HirExpr {
+        id: expr.id,
+        span: expr.span,
+        ty: expr.ty.clone(),
+        kind,
+    }
 }
 
 fn lit_int(e: &HirExpr) -> Option<i64> {
@@ -196,14 +199,26 @@ fn is_self_identity(a: &HirExpr, b: &HirExpr) -> bool {
 
 fn extract_bounded_pre(pre: &HirExpr) -> Option<BoundedPre> {
     match &pre.kind {
-        HirExprKind::Binary { op: BinaryOpKind::Lt | BinaryOpKind::Le, left, right } => {
-            bounded_increasing(left, right)
-        }
-        HirExprKind::Binary { op: BinaryOpKind::Gt | BinaryOpKind::Ge, left, right } => {
-            bounded_decreasing(left, right)
-        }
-        HirExprKind::Binary { op: BinaryOpKind::Neq, left, right } => bounded_neq(left, right),
-        HirExprKind::Binary { op: BinaryOpKind::And, left, right } => bounded_and(left, right),
+        HirExprKind::Binary {
+            op: BinaryOpKind::Lt | BinaryOpKind::Le,
+            left,
+            right,
+        } => bounded_increasing(left, right),
+        HirExprKind::Binary {
+            op: BinaryOpKind::Gt | BinaryOpKind::Ge,
+            left,
+            right,
+        } => bounded_decreasing(left, right),
+        HirExprKind::Binary {
+            op: BinaryOpKind::Neq,
+            left,
+            right,
+        } => bounded_neq(left, right),
+        HirExprKind::Binary {
+            op: BinaryOpKind::And,
+            left,
+            right,
+        } => bounded_and(left, right),
         _ => None,
     }
 }
@@ -229,9 +244,13 @@ fn bounded_increasing(left: &HirExpr, right: &HirExpr) -> Option<BoundedPre> {
         (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) => {
             Some(lit_bound(var, *n, ConvergeDirection::Increasing))
         }
-        (HirExprKind::Identifier(var), HirExprKind::Unary { op: UnaryOpKind::Neg, inner })
-            if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) =>
-        {
+        (
+            HirExprKind::Identifier(var),
+            HirExprKind::Unary {
+                op: UnaryOpKind::Neg,
+                inner,
+            },
+        ) if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) => {
             let n = lit_int(inner).map(|n| -n).unwrap_or(0);
             Some(lit_bound(var, n, ConvergeDirection::Increasing))
         }
@@ -259,9 +278,13 @@ fn bounded_decreasing(left: &HirExpr, right: &HirExpr) -> Option<BoundedPre> {
         (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) => {
             Some(lit_bound(var, *n, ConvergeDirection::Decreasing))
         }
-        (HirExprKind::Identifier(var), HirExprKind::Unary { op: UnaryOpKind::Neg, inner })
-            if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) =>
-        {
+        (
+            HirExprKind::Identifier(var),
+            HirExprKind::Unary {
+                op: UnaryOpKind::Neg,
+                inner,
+            },
+        ) if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) => {
             let n = lit_int(inner).map(|n| -n).unwrap_or(0);
             Some(lit_bound(var, n, ConvergeDirection::Decreasing))
         }
@@ -331,7 +354,10 @@ fn simplify_children(expr: &HirExpr) -> HirExpr {
         ),
         HirExprKind::Unary { op, inner } => rebuild(
             expr,
-            HirExprKind::Unary { op: *op, inner: Box::new(simplify_expr(inner)) },
+            HirExprKind::Unary {
+                op: *op,
+                inner: Box::new(simplify_expr(inner)),
+            },
         ),
         HirExprKind::Cast { inner, to, via } => rebuild(
             expr,
@@ -352,15 +378,18 @@ fn simplify_children(expr: &HirExpr) -> HirExpr {
                 name: name.clone(),
             },
         ),
-        HirExprKind::List(items) => {
-            rebuild(expr, HirExprKind::List(items.iter().map(simplify_expr).collect()))
-        }
-        HirExprKind::Tuple(items) => {
-            rebuild(expr, HirExprKind::Tuple(items.iter().map(simplify_expr).collect()))
-        }
-        HirExprKind::Block(stmts) => {
-            rebuild(expr, HirExprKind::Block(stmts.iter().map(simplify_stmt).collect()))
-        }
+        HirExprKind::List(items) => rebuild(
+            expr,
+            HirExprKind::List(items.iter().map(simplify_expr).collect()),
+        ),
+        HirExprKind::Tuple(items) => rebuild(
+            expr,
+            HirExprKind::Tuple(items.iter().map(simplify_expr).collect()),
+        ),
+        HirExprKind::Block(stmts) => rebuild(
+            expr,
+            HirExprKind::Block(stmts.iter().map(simplify_stmt).collect()),
+        ),
         _ => expr.clone(),
     }
 }
@@ -369,18 +398,26 @@ fn simplify_children(expr: &HirExpr) -> HirExpr {
 /// mirror's).
 fn apply_algebraic(expr: &HirExpr, simplified: HirExpr) -> HirExpr {
     match &simplified.kind {
-        HirExprKind::Binary { op: BinaryOpKind::Sub, left, right } => {
-            simplify_sub(expr, left, right, &simplified)
-        }
-        HirExprKind::Binary { op: BinaryOpKind::Add, left, right } => {
-            simplify_add(expr, left, right, &simplified)
-        }
-        HirExprKind::Binary { op: BinaryOpKind::Mul, left, right } => {
-            simplify_mul(expr, left, right, &simplified)
-        }
-        HirExprKind::Binary { op: BinaryOpKind::Div, left, right } => {
-            simplify_div(expr, left, right, &simplified)
-        }
+        HirExprKind::Binary {
+            op: BinaryOpKind::Sub,
+            left,
+            right,
+        } => simplify_sub(expr, left, right, &simplified),
+        HirExprKind::Binary {
+            op: BinaryOpKind::Add,
+            left,
+            right,
+        } => simplify_add(expr, left, right, &simplified),
+        HirExprKind::Binary {
+            op: BinaryOpKind::Mul,
+            left,
+            right,
+        } => simplify_mul(expr, left, right, &simplified),
+        HirExprKind::Binary {
+            op: BinaryOpKind::Div,
+            left,
+            right,
+        } => simplify_div(expr, left, right, &simplified),
         _ => simplified,
     }
 }
@@ -390,7 +427,12 @@ fn int_lit_is(e: &HirExpr, v: i64) -> bool {
 }
 
 fn simplify_sub(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr, fallback: &HirExpr) -> HirExpr {
-    if let HirExprKind::Binary { op: BinaryOpKind::Add, left: a, right: b } = &lhs.kind {
+    if let HirExprKind::Binary {
+        op: BinaryOpKind::Add,
+        left: a,
+        right: b,
+    } = &lhs.kind
+    {
         if vars_match(a, rhs) {
             return (**b).clone();
         }
@@ -398,7 +440,12 @@ fn simplify_sub(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr, fallback: &HirExpr
             return (**a).clone();
         }
     }
-    if let HirExprKind::Binary { op: BinaryOpKind::Sub, left: a, right: b } = &rhs.kind {
+    if let HirExprKind::Binary {
+        op: BinaryOpKind::Sub,
+        left: a,
+        right: b,
+    } = &rhs.kind
+    {
         if vars_match(lhs, a) {
             return (**b).clone();
         }
@@ -415,16 +462,19 @@ fn simplify_sub(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr, fallback: &HirExpr
     fallback.clone()
 }
 
-
 /// `(a + b1) - (a + b2) -> b1 - b2` (shared prefix cancels).
-fn simplify_sub_add_pair(
-    expr: &HirExpr,
-    lhs: &HirExpr,
-    rhs: &HirExpr,
-) -> Option<HirExpr> {
+fn simplify_sub_add_pair(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr) -> Option<HirExpr> {
     if let (
-        HirExprKind::Binary { op: BinaryOpKind::Add, left: a1, right: b1 },
-        HirExprKind::Binary { op: BinaryOpKind::Add, left: a2, right: b2 },
+        HirExprKind::Binary {
+            op: BinaryOpKind::Add,
+            left: a1,
+            right: b1,
+        },
+        HirExprKind::Binary {
+            op: BinaryOpKind::Add,
+            left: a2,
+            right: b2,
+        },
     ) = (&lhs.kind, &rhs.kind)
     {
         if vars_match(a1, a2) && !vars_match(b1, b2) {
@@ -442,14 +492,18 @@ fn simplify_sub_add_pair(
 }
 
 /// `(sa - sb) - (sc - sb) -> sa - sc` (shared subtrahend cancels).
-fn simplify_sub_sub_pair(
-    expr: &HirExpr,
-    lhs: &HirExpr,
-    rhs: &HirExpr,
-) -> Option<HirExpr> {
+fn simplify_sub_sub_pair(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr) -> Option<HirExpr> {
     if let (
-        HirExprKind::Binary { op: BinaryOpKind::Sub, left: sa, right: sb1 },
-        HirExprKind::Binary { op: BinaryOpKind::Sub, left: sc, right: sb2 },
+        HirExprKind::Binary {
+            op: BinaryOpKind::Sub,
+            left: sa,
+            right: sb1,
+        },
+        HirExprKind::Binary {
+            op: BinaryOpKind::Sub,
+            left: sc,
+            right: sb2,
+        },
     ) = (&lhs.kind, &rhs.kind)
     {
         if vars_match(sb1, sb2) {
@@ -467,7 +521,12 @@ fn simplify_sub_sub_pair(
 }
 
 fn simplify_add(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr, fallback: &HirExpr) -> HirExpr {
-    if let HirExprKind::Binary { op: BinaryOpKind::Sub, left: a, right: b } = &lhs.kind {
+    if let HirExprKind::Binary {
+        op: BinaryOpKind::Sub,
+        left: a,
+        right: b,
+    } = &lhs.kind
+    {
         if vars_match(b, rhs) {
             return (**a).clone();
         }
@@ -503,10 +562,14 @@ fn simplify_div(_expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr, fallback: &HirExp
 
 fn simplify_stmt(stmt: &HirStmt) -> HirStmt {
     let kind = match &stmt.kind {
-        HirStmtKind::Assign(lhs, rhs) => {
-            HirStmtKind::Assign(lhs.clone(), simplify_expr(rhs))
-        }
-        HirStmtKind::Let { name, names, ty, expr, modifiers } => HirStmtKind::Let {
+        HirStmtKind::Assign(lhs, rhs) => HirStmtKind::Assign(lhs.clone(), simplify_expr(rhs)),
+        HirStmtKind::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => HirStmtKind::Let {
             name: name.clone(),
             names: names.clone(),
             ty: ty.clone(),
@@ -520,7 +583,11 @@ fn simplify_stmt(stmt: &HirStmt) -> HirStmt {
         ),
         other => other.clone(),
     };
-    HirStmt { id: stmt.id, span: stmt.span, kind }
+    HirStmt {
+        id: stmt.id,
+        span: stmt.span,
+        kind,
+    }
 }
 
 pub fn simplify_body(body: &[HirStmt]) -> Vec<HirStmt> {
@@ -555,7 +622,12 @@ fn detect_increments(body: &[HirStmt]) -> Option<IncrementInfo> {
 
 /// `x = x + K` / `x = K + x` / `x = x - K` with K > 0.
 fn self_increment_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
-    let HirExprKind::Binary { op, left: a, right: b } = &expr.kind else {
+    let HirExprKind::Binary {
+        op,
+        left: a,
+        right: b,
+    } = &expr.kind
+    else {
         return None;
     };
     let (var, delta) = match op {
@@ -577,16 +649,29 @@ fn self_increment_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
         }
         _ => return None,
     };
-    (var == name && delta > 0).then(|| IncrementInfo { var: name.to_string(), delta })
+    (var == name && delta > 0).then(|| IncrementInfo {
+        var: name.to_string(),
+        delta,
+    })
 }
 
 /// `x = (x + K1) - K2` (net positive) or `x = (x + K1) - K2` with K2 absent
 /// (single-step). Mirrors the AST detector's nested-shape arm.
 fn net_increment_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
-    let HirExprKind::Binary { op: BinaryOpKind::Sub, left: inner, right: rhs } = &expr.kind else {
+    let HirExprKind::Binary {
+        op: BinaryOpKind::Sub,
+        left: inner,
+        right: rhs,
+    } = &expr.kind
+    else {
         return None;
     };
-    let HirExprKind::Binary { op: BinaryOpKind::Add, left: lhs2, right: rhs2 } = &inner.kind else {
+    let HirExprKind::Binary {
+        op: BinaryOpKind::Add,
+        left: lhs2,
+        right: rhs2,
+    } = &inner.kind
+    else {
         return None;
     };
     if !matches!(&lhs2.kind, HirExprKind::Identifier(v) if *v == name) {
@@ -597,11 +682,17 @@ fn net_increment_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
     if let (Some(r1_val), Some(r2_val)) = (r1, r2) {
         let net = r1_val - r2_val;
         if net > 0 {
-            return Some(IncrementInfo { var: name.to_string(), delta: net });
+            return Some(IncrementInfo {
+                var: name.to_string(),
+                delta: net,
+            });
         }
     }
     if r1.map_or(false, |v| v >= 1) && r2.is_none() {
-        return Some(IncrementInfo { var: name.to_string(), delta: 1 });
+        return Some(IncrementInfo {
+            var: name.to_string(),
+            delta: 1,
+        });
     }
     None
 }
@@ -623,7 +714,12 @@ fn detect_popcount_decay(body: &[HirStmt]) -> Option<IncrementInfo> {
 
 /// `x = x & (x - 1)` in either operand order.
 fn popcount_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
-    let HirExprKind::Binary { op: BinaryOpKind::BitAnd, left: a, right: b } = &expr.kind else {
+    let HirExprKind::Binary {
+        op: BinaryOpKind::BitAnd,
+        left: a,
+        right: b,
+    } = &expr.kind
+    else {
         return None;
     };
     let self_minus_one = |e: &HirExpr| {
@@ -640,7 +736,10 @@ fn popcount_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
     let a_is_self = matches!(&a.kind, HirExprKind::Identifier(v) if *v == name);
     let b_is_self = matches!(&b.kind, HirExprKind::Identifier(v) if *v == name);
     if (a_is_self && self_minus_one(b)) || (b_is_self && self_minus_one(a)) {
-        return Some(IncrementInfo { var: name.to_string(), delta: 1 });
+        return Some(IncrementInfo {
+            var: name.to_string(),
+            delta: 1,
+        });
     }
     None
 }
@@ -669,16 +768,17 @@ fn detect_lexicographic_ranking(pre: &HirExpr, body: &[HirStmt]) -> Vec<String> 
     }
     let decremented: HashSet<String> = body.iter().filter_map(decrement_name).collect();
     vars.retain(|v| decremented.contains(v));
-    if vars.len() < 2 {
-        Vec::new()
-    } else {
-        vars
-    }
+    if vars.len() < 2 { Vec::new() } else { vars }
 }
 
 /// Collect `var > N` / `var >= N` threshold variables across an Or chain.
 fn collect_or_vars(expr: &HirExpr, out: &mut Vec<String>) {
-    if let HirExprKind::Binary { op: BinaryOpKind::Or, left, right } = &expr.kind {
+    if let HirExprKind::Binary {
+        op: BinaryOpKind::Or,
+        left,
+        right,
+    } = &expr.kind
+    {
         collect_or_vars(left, out);
         collect_or_vars(right, out);
         return;
@@ -688,12 +788,7 @@ fn collect_or_vars(expr: &HirExpr, out: &mut Vec<String>) {
 }
 
 /// Push the variable of `var <op> N` when `N` meets the threshold minimum.
-fn collect_threshold_var(
-    expr: &HirExpr,
-    want: BinaryOpKind,
-    min: i64,
-    out: &mut Vec<String>,
-) {
+fn collect_threshold_var(expr: &HirExpr, want: BinaryOpKind, min: i64, out: &mut Vec<String>) {
     let HirExprKind::Binary { op, left, right } = &expr.kind else {
         return;
     };
@@ -727,9 +822,9 @@ fn decrement_name(stmt: &HirStmt) -> Option<String> {
 fn statement_contains_ffi_with_decls(stmt: &HirStmt) -> bool {
     match &stmt.kind {
         HirStmtKind::Assign(_, expr) => references_triggers_or_ffi_with_decls(expr),
-        HirStmtKind::Let { expr, .. } => {
-            expr.as_ref().map_or(false, references_triggers_or_ffi_with_decls)
-        }
+        HirStmtKind::Let { expr, .. } => expr
+            .as_ref()
+            .map_or(false, references_triggers_or_ffi_with_decls),
         HirStmtKind::Expression(e) => references_triggers_or_ffi_with_decls(e),
         HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e) => {
             references_triggers_or_ffi_with_decls(e)
@@ -898,7 +993,11 @@ fn propagate_node(node: &HirReactorNode, live: &mut HashSet<String>) -> bool {
 fn propagate_stmt(stmt: &HirStmt, live: &mut HashSet<String>) -> bool {
     let (target, expr) = match &stmt.kind {
         HirStmtKind::Assign(lhs, expr) => (expr_name(lhs), expr),
-        HirStmtKind::Let { name, expr: Some(e), .. } => (Some(name.clone()), e),
+        HirStmtKind::Let {
+            name,
+            expr: Some(e),
+            ..
+        } => (Some(name.clone()), e),
         _ => return false,
     };
     let Some(t) = target else {
@@ -933,7 +1032,10 @@ fn reachable_stmts(node: &HirReactorNode) -> Vec<&HirStmt> {
 
 fn scan_for_ffi_args(stmt: &HirStmt, out: &mut HashSet<String>) {
     match &stmt.kind {
-        HirStmtKind::Expression(expr) | HirStmtKind::Let { expr: Some(expr), .. } => {
+        HirStmtKind::Expression(expr)
+        | HirStmtKind::Let {
+            expr: Some(expr), ..
+        } => {
             collect_ffi_identifiers(expr, out);
         }
         HirStmtKind::Guarded(_, statements) => {
@@ -980,8 +1082,11 @@ fn collect_identifiers(expr: &HirExpr, out: &mut HashSet<String>) {
         HirExprKind::Identifier(name) => {
             out.insert(name.clone());
         }
-        HirExprKind::Binary { op: BinaryOpKind::Eq | BinaryOpKind::Ge | BinaryOpKind::Le, left, right }
-            if is_self_identity(left, right) => {}
+        HirExprKind::Binary {
+            op: BinaryOpKind::Eq | BinaryOpKind::Ge | BinaryOpKind::Le,
+            left,
+            right,
+        } if is_self_identity(left, right) => {}
         HirExprKind::Binary { left, right, .. } => {
             collect_identifiers(left, out);
             collect_identifiers(right, out);
@@ -1024,7 +1129,11 @@ fn collect_identifiers(expr: &HirExpr, out: &mut HashSet<String>) {
                 collect_identifiers(&arm.body, out);
             }
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_identifiers(condition, out);
             collect_identifiers(then_branch, out);
             if let Some(e) = else_branch {

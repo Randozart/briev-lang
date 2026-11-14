@@ -19,7 +19,7 @@
 //! which is correct (M2.0) and merely slow. Tiling is a strategy the
 //! compiler picks — never a keyword the user writes.
 
-use super::kernel::{begin_structured_loop, end_structured_loop, CoopLoopSig};
+use super::kernel::{CoopLoopSig, begin_structured_loop, end_structured_loop};
 use crate::ast::{Expr, Statement, TopLevel, Type};
 use rspirv::dr::{Instruction, Operand};
 use rspirv::spirv::{self, StorageClass, Word};
@@ -3053,7 +3053,7 @@ fn emit_coopmat_smem(
     let a_stage_elems_c = u32_const(builder, a_stage_elems);
     let subgroups = GemmPlan::coopmat_subgroups();
     let b_stage_elems = pps * 4 * 256; // one subgroup's B per stage
-                                       // D4: total fill elements = A + S × B (each subgroup fills its own B slice)
+    // D4: total fill elements = A + S × B (each subgroup fills its own B slice)
     let total_elems = a_stage_elems + subgroups * b_stage_elems;
     let pairs = GemmPlan::coopmat_fill_pairs();
     // Pairs mode: the SSBO members AND the smem arrays are retyped
@@ -3176,7 +3176,7 @@ fn emit_coopmat_smem(
     let b_stage_elems = pps * 4 * 256;
     let stages = GemmPlan::coopmat_stages();
     let sub_b_base_elems = stages * b_stage_elems; // all stages per subgroup
-                                                   // sub_b_offset = sub_id × sub_b_base_elems (runtime — different per subgroup)
+    // sub_b_offset = sub_id × sub_b_base_elems (runtime — different per subgroup)
     let sub_b_offset = if subgroups > 1 {
         let sub_b_elems_c = u32_const(builder, sub_b_base_elems);
         u32_binop(builder, spirv::Op::IMul, io.sub_id, sub_b_elems_c)

@@ -1,8 +1,8 @@
 // 2026-07-25: Beastpack round-trip tests.
 // Tests serialize → deserialize cycle for structural equivalence.
 
-use crate::ast::*;
 use crate::ast::top::*;
+use crate::ast::*;
 use crate::beastpack::{deserialize, serialize};
 use crate::type_universe::TypeUniverse;
 use std::collections::HashMap;
@@ -45,7 +45,10 @@ fn test_roundtrip_simple_defn() {
     let universe = test_universe();
 
     let bytes = serialize(&items, &universe, 0);
-    assert!(bytes.len() > 10 + 32, "beastpack should have header + checksum");
+    assert!(
+        bytes.len() > 10 + 32,
+        "beastpack should have header + checksum"
+    );
 
     let (restored, _) = deserialize(&bytes).unwrap();
     assert_eq!(items.len(), restored.len(), "same number of items");
@@ -129,7 +132,7 @@ fn test_version_mismatch() {
     // Corrupt the version field (byte 10-13) and recompute checksum
     // Need to preserve the correct checksum after modification
     let checksum_start = bytes.len() - 32;
-    bytes[10] = 99;  // Set version to 99
+    bytes[10] = 99; // Set version to 99
     bytes[11] = 0;
     bytes[12] = 0;
     bytes[13] = 0;
@@ -168,7 +171,10 @@ fn test_roundtrip_preserves_type_universe() {
 
     // Universe should have primordial types
     let type_count_before = universe.types.len();
-    assert!(type_count_before > 0, "universe should have primordial types");
+    assert!(
+        type_count_before > 0,
+        "universe should have primordial types"
+    );
 
     let bytes = serialize(&items, &universe, 0);
     let (_, restored_universe) = deserialize(&bytes).unwrap();

@@ -44,18 +44,20 @@
 //! `sret_safe_defns` mirror in `src/hir/enum_repr.rs`; no other code depends
 //! on it (the backend still consumes the AST-built `generalized` field).
 
-use super::program::{HirCallable, HirCallableKind, HirEnumVariant, HirProgram, HirTypeDef, HirTypeDefKind};
+use super::destination_ownership::HirDestinationOwnershipPlan;
+use super::program::{
+    HirCallable, HirCallableKind, HirEnumVariant, HirProgram, HirTypeDef, HirTypeDefKind,
+};
 use crate::analysis::destination_model::{
     ArgumentPlan, BoundaryConversion, BoundaryDirection, BoundaryKind, BoundaryPlan, BoundaryRole,
-    BoundaryValuePlan, CallableId, CallableNamespace, CallablePlan, CallPlan, ConstructorAgreement,
-    DestinationId, DestinationSinkKind, DestinationSinkPlan, EnumCallablePlan,
-    EnumDefinitionPlan, EnumResultRepresentation, EnumVariantPlan, FallbackReason,
-    GeneralDestinationClass, GeneralResultDestination, GeneralValueFact,
-    GeneralizedDestinationOwnershipPlan, HiddenAbiPlan, LoopPlan, LoopValuePlan,
-    ObjectDefinitionPlan, ObjectFieldPlan, ObjectValuePlan, OwnershipClass, ParameterPlan,
-    ProgramPoint, ProofReason, ProofStatus, RecursiveCarrierArgClass, RecursiveCarrierPlan,
-    ResultPlan, ResultUsePlan, SemanticValueId, SemanticValueKind, TupleDestinationPlan,
-    ValueShape, ValueShapeKind,
+    BoundaryValuePlan, CallPlan, CallableId, CallableNamespace, CallablePlan, ConstructorAgreement,
+    DestinationId, DestinationSinkKind, DestinationSinkPlan, EnumCallablePlan, EnumDefinitionPlan,
+    EnumResultRepresentation, EnumVariantPlan, FallbackReason, GeneralDestinationClass,
+    GeneralResultDestination, GeneralValueFact, GeneralizedDestinationOwnershipPlan, HiddenAbiPlan,
+    LoopPlan, LoopValuePlan, ObjectDefinitionPlan, ObjectFieldPlan, ObjectValuePlan,
+    OwnershipClass, ParameterPlan, ProgramPoint, ProofReason, ProofStatus,
+    RecursiveCarrierArgClass, RecursiveCarrierPlan, ResultPlan, ResultUsePlan, SemanticValueId,
+    SemanticValueKind, TupleDestinationPlan, ValueShape, ValueShapeKind,
 };
 use crate::analysis::destination_ownership::{
     CallableKind, CallableSummary, DestinationClass as LegacyDestinationClass, EscapeKind,
@@ -63,7 +65,6 @@ use crate::analysis::destination_ownership::{
 };
 use crate::analysis::enum_repr::EnumRepresentation;
 use crate::ast::Type;
-use super::destination_ownership::HirDestinationOwnershipPlan;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
@@ -181,7 +182,9 @@ fn general_legacy_class(class: LegacyDestinationClass) -> GeneralDestinationClas
     }
 }
 
-fn legacy_semantic_value(fact: &crate::analysis::destination_ownership::ValueFact) -> SemanticValueId {
+fn legacy_semantic_value(
+    fact: &crate::analysis::destination_ownership::ValueFact,
+) -> SemanticValueId {
     semantic_value(
         &CallableId {
             namespace: CallableNamespace::Unknown,
@@ -475,10 +478,9 @@ fn build_enum_callables(
     enums: &BTreeMap<String, EnumDefinitionPlan>,
 ) -> BTreeMap<CallableId, EnumCallablePlan> {
     let representation = super::enum_repr::build_enum_representation_plan(program);
-    let sret_safe: BTreeSet<String> =
-        super::enum_repr::sret_safe_defns(program, &representation)
-            .into_iter()
-            .collect();
+    let sret_safe: BTreeSet<String> = super::enum_repr::sret_safe_defns(program, &representation)
+        .into_iter()
+        .collect();
     let shapes = callable_shapes(program, legacy);
     legacy
         .callables

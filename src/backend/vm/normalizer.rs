@@ -5,21 +5,25 @@
 // partial path would rot the normalizer invariant — VM gets the shared
 // register_typedefs call and nothing more.
 
+use crate::ast::TopLevel;
 use crate::backend::register_types::register_typedefs;
 use crate::type_universe::TypeUniverse;
-use crate::ast::TopLevel;
 
 /// 2026-08-10: Minimal VM normalization — register user TypeDefs so the
 /// universe is uniformly populated, then hand off to bytecode emission.
-pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bits: u64) -> Result<(), String> {
+pub fn normalize(
+    items: &mut Vec<TopLevel>,
+    universe: &mut TypeUniverse,
+    int_bits: u64,
+) -> Result<(), String> {
     register_typedefs(items, universe, int_bits)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::top::{TypeDef, TypeDefBody, TypeDefSlot};
     use crate::ast::Type;
+    use crate::ast::top::{TypeDef, TypeDefBody, TypeDefSlot};
     use std::collections::HashMap;
 
     #[test]
@@ -40,8 +44,16 @@ mod tests {
                 pins: Vec::new(),
                 reference: None,
                 slots: vec![
-                    TypeDefSlot { name: "x".to_string(), ty: Type::int(), bit_range: None },
-                    TypeDefSlot { name: "y".to_string(), ty: Type::int(), bit_range: None },
+                    TypeDefSlot {
+                        name: "x".to_string(),
+                        ty: Type::int(),
+                        bit_range: None,
+                    },
+                    TypeDefSlot {
+                        name: "y".to_string(),
+                        ty: Type::int(),
+                        bit_range: None,
+                    },
                 ],
                 metadata: HashMap::new(),
                 projections: vec![],

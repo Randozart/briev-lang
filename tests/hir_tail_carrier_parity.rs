@@ -16,7 +16,9 @@ fn parse(src: &str) -> Vec<TopLevel> {
 }
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -65,7 +67,11 @@ fn curated_tail_carrier_parity() {
                  term match r { Ok(next) => loop(n - 1, next, sum + 1), Err(_) => loop(n - 1, state, sum) };\n\
                };";
     let bad = compare(src);
-    assert!(bad.is_empty(), "HIR tail-carrier parity:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "HIR tail-carrier parity:\n{}",
+        bad.join("\n")
+    );
 }
 
 #[test]
@@ -80,15 +86,23 @@ fn corpus_tail_carrier_parity() {
     let mut skipped = 0usize;
     let mut mismatches = Vec::new();
     for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else { continue };
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else {
+            continue;
+        };
         let program = lower_program(&items);
         if briev_compiler::hir::unsupported_counts(&program).total() != 0 {
             skipped += 1;
             continue;
         }
         compared += 1;
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for b in compare(&source) {
             mismatches.push(format!("{rel}: {b}"));
         }
@@ -97,5 +111,9 @@ fn corpus_tail_carrier_parity() {
         "HIR_TAIL_CARRIER_PARITY compared={compared} skipped_unsupported={skipped} mismatches={}",
         mismatches.len()
     );
-    assert!(mismatches.is_empty(), "HIR tail-carrier mismatches:\n{}", mismatches.join("\n"));
+    assert!(
+        mismatches.is_empty(),
+        "HIR tail-carrier mismatches:\n{}",
+        mismatches.join("\n")
+    );
 }

@@ -127,7 +127,11 @@ impl LanguageVocab {
                 kw("type", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("trait", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("proto", VocabStatus::Canonical, KeywordContext::Declaration),
-                kw("struct", VocabStatus::Canonical, KeywordContext::Declaration),
+                kw(
+                    "struct",
+                    VocabStatus::Canonical,
+                    KeywordContext::Declaration,
+                ),
                 // 2026-11-08 (P1, general-workstream plan): the numeric
                 // ambiguity-keyword pair. `approx` declares a node's numeric
                 // result may deviate within FP rounding (float reassociation
@@ -191,21 +195,45 @@ impl LanguageVocab {
                 kw("render", VocabStatus::Canonical, KeywordContext::Render),
                 // 2026-08-27 (cbv-HW plan Slice A): foreign HARDWARE imports — the
                 // cell-shaped sibling of frgn (software FFI).
-                kw("extern", VocabStatus::Canonical, KeywordContext::Declaration),
+                kw(
+                    "extern",
+                    VocabStatus::Canonical,
+                    KeywordContext::Declaration,
+                ),
                 kw("frgn", VocabStatus::Canonical, KeywordContext::Foreign),
                 kw("optional", VocabStatus::Canonical, KeywordContext::Foreign),
-                kw("export", VocabStatus::Canonical, KeywordContext::Declaration),
-                kw("import", VocabStatus::Canonical, KeywordContext::Declaration),
+                kw(
+                    "export",
+                    VocabStatus::Canonical,
+                    KeywordContext::Declaration,
+                ),
+                kw(
+                    "import",
+                    VocabStatus::Canonical,
+                    KeywordContext::Declaration,
+                ),
                 kw("from", VocabStatus::Canonical, KeywordContext::Foreign),
                 kw("as", VocabStatus::Canonical, KeywordContext::Operator),
                 kw("op", VocabStatus::Canonical, KeywordContext::Declaration),
                 // Statements and control flow
                 kw("term", VocabStatus::Canonical, KeywordContext::Statement),
-                kw("endprogram", VocabStatus::Canonical, KeywordContext::Statement),
-                kw("beginprogram", VocabStatus::Canonical, KeywordContext::Statement),
+                kw(
+                    "endprogram",
+                    VocabStatus::Canonical,
+                    KeywordContext::Statement,
+                ),
+                kw(
+                    "beginprogram",
+                    VocabStatus::Canonical,
+                    KeywordContext::Statement,
+                ),
                 kw("program", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("defer", VocabStatus::Canonical, KeywordContext::Statement),
-                kw("rollback", VocabStatus::Canonical, KeywordContext::Statement),
+                kw(
+                    "rollback",
+                    VocabStatus::Canonical,
+                    KeywordContext::Statement,
+                ),
                 kw("mutex", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("match", VocabStatus::Canonical, KeywordContext::Statement),
                 // 2026-11-09: `hold` is the static obligation law head
@@ -228,7 +256,11 @@ impl LanguageVocab {
                 kw("sync", VocabStatus::Canonical, KeywordContext::Modifier),
                 // 2026-09-14 (machine-entry plan): `bootstrap node` — the
                 // authored program entry (pre-reactor; SPEC §11.5, §13.2).
-                kw("bootstrap", VocabStatus::Canonical, KeywordContext::Modifier),
+                kw(
+                    "bootstrap",
+                    VocabStatus::Canonical,
+                    KeywordContext::Modifier,
+                ),
                 // Modifiers
                 kw("vol", VocabStatus::Canonical, KeywordContext::Modifier),
                 // 2026-08-25 (seq-firmem plan): `mem let` / `reg let` —
@@ -250,7 +282,11 @@ impl LanguageVocab {
                 kw("consume", VocabStatus::Canonical, KeywordContext::Ownership),
                 kw("owned", VocabStatus::Canonical, KeywordContext::Ownership),
                 kw("shared", VocabStatus::Canonical, KeywordContext::Ownership),
-                kw("borrowed", VocabStatus::Canonical, KeywordContext::Ownership),
+                kw(
+                    "borrowed",
+                    VocabStatus::Canonical,
+                    KeywordContext::Ownership,
+                ),
                 // Literals
                 kw("true", VocabStatus::Canonical, KeywordContext::Literal),
                 kw("false", VocabStatus::Canonical, KeywordContext::Literal),
@@ -300,43 +336,104 @@ impl LanguageVocab {
                 kw("nanoseconds", VocabStatus::Removed, KeywordContext::Literal),
             ],
             operators: ss(&[
-                "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||",
-                "!", "&", "|", "^", "~", "<<", ">>", "->", "<-", "~<-", "=>", "..",
-                "..=", "+=", "-=", "*=", "/=", "=", "@", "$",
+                "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "!", "&",
+                "|", "^", "~", "<<", ">>", "->", "<-", "~<-", "=>", "..", "..=", "+=", "-=", "*=",
+                "/=", "=", "@", "$",
             ]),
             sigils: ss(&[
-                "#Category", "Intrinsic#", "$name", "name!(...)", "$(Stage)",
-                ".^Field", ".^^Field", "!value", "?",
+                "#Category",
+                "Intrinsic#",
+                "$name",
+                "name!(...)",
+                "$(Stage)",
+                ".^Field",
+                ".^^Field",
+                "!value",
+                "?",
             ]),
             // `.bld` retired 2026-10-19: `.bad` is the sole low-level dialect.
             extensions: ss(&["bv", "ebv", "abv", "sbv", "rbv", "dbv", "dbvl"]),
             profiles: ss(&["s", "f"]),
             hashwords: ss(&[
-                "Int", "Float", "Bool", "String", "Char", "Bits", "Ptr", "Void",
-                "Bit", "Link", "System", "L", "R", "T", "Self", "r", "b",
+                "Int", "Float", "Bool", "String", "Char", "Bits", "Ptr", "Void", "Bit", "Link",
+                "System", "L", "R", "T", "Self", "r", "b",
             ]),
             intrinsics: ss(&[
-                "Abs#", "BitReverse#", "Popcount#", "LeadingZeros#", "TrailingZeros#",
-                "SysCall#", "Malloc#", "Free#", "Print#", "Sqrt#",
+                "Abs#",
+                "BitReverse#",
+                "Popcount#",
+                "LeadingZeros#",
+                "TrailingZeros#",
+                "SysCall#",
+                "Malloc#",
+                "Free#",
+                "Print#",
+                "Sqrt#",
             ]),
             operation_identities: ss(&[
-                "Add", "Sub", "Mul", "Div", "Rem", "Eq", "Neq", "Lt", "Le", "Gt", "Ge",
-                "And", "Or", "Not", "BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr",
-                "At", "Slice", "InsertAt", "ExtractFrom", "CopyFrom", "Append", "Prepend",
+                "Add",
+                "Sub",
+                "Mul",
+                "Div",
+                "Rem",
+                "Eq",
+                "Neq",
+                "Lt",
+                "Le",
+                "Gt",
+                "Ge",
+                "And",
+                "Or",
+                "Not",
+                "BitAnd",
+                "BitOr",
+                "BitXor",
+                "BitNot",
+                "Shl",
+                "Shr",
+                "At",
+                "Slice",
+                "InsertAt",
+                "ExtractFrom",
+                "CopyFrom",
+                "Append",
+                "Prepend",
                 // 2026-08-14 (UOL §6b): the iterable cursor ops were missing —
                 // a vocab gap the generative OpName# dispatch needs filled.
-                "Count", "Iter", "Step", "IsEnd", "Current",
+                "Count",
+                "Iter",
+                "Step",
+                "IsEnd",
+                "Current",
                 // 2026-08-15 (coll plan §3.6): the capacity intrinsics.
-                "Capacity", "Resize", "EnsureCap", "TrimCap",
+                "Capacity",
+                "Resize",
+                "EnsureCap",
+                "TrimCap",
             ]),
             stages: ss(&[
-                "PreLex", "Parsed", "Resolved", "Typed", "Normalized", "Verified",
-                "Allocated", "Provenanced", "Generated", "Optimized", "Linked",
+                "PreLex",
+                "Parsed",
+                "Resolved",
+                "Typed",
+                "Normalized",
+                "Verified",
+                "Allocated",
+                "Provenanced",
+                "Generated",
+                "Optimized",
+                "Linked",
             ]),
             staged_features: ss(&[
-                "dyn Trait", "const generics", "spawn/await handles",
-                "rollback", "endprogram", "defer", "mutex",
-                ".f strict indentation", "generic semantic Value",
+                "dyn Trait",
+                "const generics",
+                "spawn/await handles",
+                "rollback",
+                "endprogram",
+                "defer",
+                "mutex",
+                ".f strict indentation",
+                "generic semantic Value",
             ]),
             casing: vec![
                 ("types".to_string(), Casing::PascalCase),
@@ -376,15 +473,22 @@ impl LanguageVocab {
     }
 
     pub fn keyword_status(&self, name: &str) -> Option<VocabStatus> {
-        self.keywords.iter().find(|k| k.name == name).map(|k| k.status)
+        self.keywords
+            .iter()
+            .find(|k| k.name == name)
+            .map(|k| k.status)
     }
 
     pub fn canonical_keywords(&self) -> impl Iterator<Item = &Keyword> {
-        self.keywords.iter().filter(|k| k.status == VocabStatus::Canonical)
+        self.keywords
+            .iter()
+            .filter(|k| k.status == VocabStatus::Canonical)
     }
 
     pub fn removed_keywords(&self) -> impl Iterator<Item = &Keyword> {
-        self.keywords.iter().filter(|k| k.status == VocabStatus::Removed)
+        self.keywords
+            .iter()
+            .filter(|k| k.status == VocabStatus::Removed)
     }
 }
 
@@ -402,8 +506,8 @@ pub fn serialize_vocab(vocab: &LanguageVocab) -> Result<String, toml::ser::Error
 pub fn regenerate_highlighter_grammar(grammar_path: &std::path::Path) -> Result<(), String> {
     let text = std::fs::read_to_string(grammar_path)
         .map_err(|e| format!("failed to read grammar '{}': {}", grammar_path.display(), e))?;
-    let mut grammar: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("failed to parse grammar JSON: {}", e))?;
+    let mut grammar: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("failed to parse grammar JSON: {}", e))?;
 
     let vocab = LanguageVocab::canonical();
     let mut keywords: Vec<serde_json::Value> = Vec::new();
@@ -420,14 +524,24 @@ pub fn regenerate_highlighter_grammar(grammar_path: &std::path::Path) -> Result<
     let control: Vec<&str> = vocab
         .canonical_keywords()
         .map(|k| k.name.as_str())
-        .filter(|n| *n != "true" && *n != "false" && *n != "cyc" && *n != "ms"
-            && *n != "s" && *n != "min" && *n != "ns")
+        .filter(|n| {
+            *n != "true"
+                && *n != "false"
+                && *n != "cyc"
+                && *n != "ms"
+                && *n != "s"
+                && *n != "min"
+                && *n != "ns"
+        })
         .collect();
     keywords.push(kw_pattern(&control, "keyword.control.briev"));
 
     // Boolean and duration literals.
     keywords.push(kw_pattern(&["true", "false"], "constant.language.briev"));
-    keywords.push(kw_pattern(&["cyc", "ns", "ms", "s", "min"], "keyword.other.time-unit.briev"));
+    keywords.push(kw_pattern(
+        &["cyc", "ns", "ms", "s", "min"],
+        "keyword.other.time-unit.briev",
+    ));
 
     // Intrinsics: `Name#`.
     let intrinsics: Vec<&str> = vocab.intrinsics.iter().map(|s| s.as_str()).collect();
@@ -469,8 +583,7 @@ pub fn regenerate_highlighter_grammar(grammar_path: &std::path::Path) -> Result<
 
     let out = serde_json::to_string_pretty(&grammar)
         .map_err(|e| format!("failed to serialize grammar: {}", e))?;
-    std::fs::write(grammar_path, out + "\n")
-        .map_err(|e| format!("failed to write grammar: {}", e))
+    std::fs::write(grammar_path, out + "\n").map_err(|e| format!("failed to write grammar: {}", e))
 }
 
 #[cfg(test)]
@@ -495,7 +608,11 @@ mod tests {
         let vocab = LanguageVocab::canonical();
         let mut seen = std::collections::HashSet::new();
         for kw in &vocab.keywords {
-            assert!(seen.insert(&kw.name), "duplicate vocab keyword '{}'", kw.name);
+            assert!(
+                seen.insert(&kw.name),
+                "duplicate vocab keyword '{}'",
+                kw.name
+            );
         }
     }
 
@@ -515,7 +632,9 @@ mod tests {
     #[test]
     fn removed_surface_is_recorded() {
         let vocab = LanguageVocab::canonical();
-        for name in ["sig", "rstruct", "uni", "meld", "escape", "term!", "frgn!", "Ptr!"] {
+        for name in [
+            "sig", "rstruct", "uni", "meld", "escape", "term!", "frgn!", "Ptr!",
+        ] {
             assert_eq!(
                 vocab.keyword_status(name),
                 Some(VocabStatus::Removed),
@@ -540,8 +659,12 @@ mod tests {
         let mut removed = std::collections::HashSet::new();
         for kw in &vocab.keywords {
             match kw.status {
-                VocabStatus::Canonical => { canonical.insert(&kw.name); }
-                VocabStatus::Removed => { removed.insert(&kw.name); }
+                VocabStatus::Canonical => {
+                    canonical.insert(&kw.name);
+                }
+                VocabStatus::Removed => {
+                    removed.insert(&kw.name);
+                }
                 VocabStatus::Reserved => {}
             }
         }
@@ -650,7 +773,10 @@ pub fn keyword_hint(vocab: &LanguageVocab, input: &str) -> Option<String> {
     if vocab.is_removed_keyword(input) || vocab.is_reserved(input) {
         return None;
     }
-    let names: Vec<&str> = vocab.canonical_keywords().map(|k| k.name.as_str()).collect();
+    let names: Vec<&str> = vocab
+        .canonical_keywords()
+        .map(|k| k.name.as_str())
+        .collect();
     // Distance 1 catches transposition-free typos (`nod`, `defn`); 2 catches
     // doubled/missing letters on longer words (`whn`, `matchh`) without
     // dragging unrelated short words into range.
@@ -691,7 +817,10 @@ mod suggest_tests {
         // candidates (`meld` is distance-2 from `cell`) nor for removed
         // inputs themselves (they get their own removal diagnostic).
         assert_eq!(keyword_hint(&vocab, "meld"), None);
-        assert_eq!(keyword_hint(&vocab, "celf"), Some("did you mean `cell`?".to_string()));
+        assert_eq!(
+            keyword_hint(&vocab, "celf"),
+            Some("did you mean `cell`?".to_string())
+        );
         assert_eq!(keyword_hint(&vocab, "counter"), None);
     }
 }

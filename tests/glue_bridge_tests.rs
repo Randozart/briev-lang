@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use briev_compiler::analysis::frgn_dispatch::{
-    compute_protocol_path, resolve_single_frgn, ResolvedFrgn, TransformKind,
+    ResolvedFrgn, TransformKind, compute_protocol_path, resolve_single_frgn,
 };
-use briev_compiler::ast::top::{ForeignBinding, ForeignTarget, FromSpec};
 use briev_compiler::ast::Type;
-use briev_compiler::glue::config::{find_language_by_extension, load_glue_config, GlueTarget};
+use briev_compiler::ast::top::{ForeignBinding, ForeignTarget, FromSpec};
+use briev_compiler::glue::config::{GlueTarget, find_language_by_extension, load_glue_config};
 
 fn sample_glue_targets() -> HashMap<String, GlueTarget> {
     HashMap::from([
@@ -23,23 +23,23 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
                 extension: "py".to_string(),
                 bridge_kind: "native_module".to_string(),
                 calling_convention: "c_abi".to_string(),
-            module_init: false,
-            // 2026-10-06 (aac37915, web host functions): field added to
-            // GlueTarget; these test fixtures predate it and blocked the
-            // entire `cargo test` build (2026-10-17 fix).
-            host_fns: HashMap::new(),
-            protocols: HashMap::new(),
+                module_init: false,
+                // 2026-10-06 (aac37915, web host functions): field added to
+                // GlueTarget; these test fixtures predate it and blocked the
+                // entire `cargo test` build (2026-10-17 fix).
+                host_fns: HashMap::new(),
+                protocols: HashMap::new(),
                 templates: HashMap::new(),
-            conversions: briev_compiler::glue::config::Conversions::default(),
-            state: briev_compiler::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            native_include_cmd: None,
-            native_suffix: None,
-            native_suffix_cmd: None,
-            native_link_cmd: None,
-            native_cc: None,
-            native_prefix: None,
+                conversions: briev_compiler::glue::config::Conversions::default(),
+                state: briev_compiler::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                native_include_cmd: None,
+                native_suffix: None,
+                native_suffix_cmd: None,
+                native_link_cmd: None,
+                native_cc: None,
+                native_prefix: None,
             },
         ),
         (
@@ -50,23 +50,23 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
                 extension: "rs".to_string(),
                 bridge_kind: "extern_c_crate".to_string(),
                 calling_convention: "lto".to_string(),
-            module_init: false,
-            // 2026-10-06 (aac37915, web host functions): field added to
-            // GlueTarget; these test fixtures predate it and blocked the
-            // entire `cargo test` build (2026-10-17 fix).
-            host_fns: HashMap::new(),
-            protocols: HashMap::new(),
+                module_init: false,
+                // 2026-10-06 (aac37915, web host functions): field added to
+                // GlueTarget; these test fixtures predate it and blocked the
+                // entire `cargo test` build (2026-10-17 fix).
+                host_fns: HashMap::new(),
+                protocols: HashMap::new(),
                 templates: HashMap::new(),
-            conversions: briev_compiler::glue::config::Conversions::default(),
-            state: briev_compiler::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            native_include_cmd: None,
-            native_suffix: None,
-            native_suffix_cmd: None,
-            native_link_cmd: None,
-            native_cc: None,
-            native_prefix: None,
+                conversions: briev_compiler::glue::config::Conversions::default(),
+                state: briev_compiler::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                native_include_cmd: None,
+                native_suffix: None,
+                native_suffix_cmd: None,
+                native_link_cmd: None,
+                native_cc: None,
+                native_prefix: None,
             },
         ),
     ])
@@ -131,11 +131,20 @@ fn test_find_language_by_extension_unknown() {
 fn test_resolve_single_frgn_inline_c() {
     let fb = make_frgn("my_func", "c", None);
     let targets = sample_glue_targets();
-    let result =
-        resolve_single_frgn(&fb, "c", &targets, briev_compiler::target::BackendKind::Llvm, None)
-            .unwrap();
+    let result = resolve_single_frgn(
+        &fb,
+        "c",
+        &targets,
+        briev_compiler::target::BackendKind::Llvm,
+        None,
+    )
+    .unwrap();
     match result {
-        ResolvedFrgn::Inline { symbol, compile_source, .. } => {
+        ResolvedFrgn::Inline {
+            symbol,
+            compile_source,
+            ..
+        } => {
             assert_eq!(symbol, "my_func");
             assert!(compile_source);
         }
@@ -147,9 +156,14 @@ fn test_resolve_single_frgn_inline_c() {
 fn test_resolve_single_frgn_bridge_python() {
     let fb = make_frgn("py_func", "py", None);
     let targets = sample_glue_targets();
-    let result =
-        resolve_single_frgn(&fb, "py", &targets, briev_compiler::target::BackendKind::Llvm, None)
-            .unwrap();
+    let result = resolve_single_frgn(
+        &fb,
+        "py",
+        &targets,
+        briev_compiler::target::BackendKind::Llvm,
+        None,
+    )
+    .unwrap();
     match result {
         ResolvedFrgn::Bridge { language, .. } => {
             assert_eq!(language, "python");
@@ -162,9 +176,14 @@ fn test_resolve_single_frgn_bridge_python() {
 fn test_resolve_single_frgn_unsupported() {
     let fb = make_frgn("kotlin_func", "kt", None);
     let targets = sample_glue_targets();
-    let result =
-        resolve_single_frgn(&fb, "kt", &targets, briev_compiler::target::BackendKind::Llvm, None)
-            .unwrap();
+    let result = resolve_single_frgn(
+        &fb,
+        "kt",
+        &targets,
+        briev_compiler::target::BackendKind::Llvm,
+        None,
+    )
+    .unwrap();
     match result {
         ResolvedFrgn::Unsupported(msg) => {
             assert!(msg.contains("kt"), "msg should mention extension: {}", msg);
@@ -177,8 +196,14 @@ fn test_resolve_single_frgn_unsupported() {
 fn test_resolve_single_frgn_empty_extension() {
     let fb = make_frgn("no_ext", "", None);
     let targets = sample_glue_targets();
-    let result =
-        resolve_single_frgn(&fb, "", &targets, briev_compiler::target::BackendKind::Llvm, None).unwrap();
+    let result = resolve_single_frgn(
+        &fb,
+        "",
+        &targets,
+        briev_compiler::target::BackendKind::Llvm,
+        None,
+    )
+    .unwrap();
     match result {
         ResolvedFrgn::Unsupported(msg) => {
             assert!(msg.contains("no file extension"), "msg: {}", msg);
@@ -193,9 +218,14 @@ fn test_resolve_single_frgn_with_as() {
     // symbol; the `as` clause renames the Briv-side callsite.
     let fb = make_frgn("foreign_sym", "c", Some("briev_name"));
     let targets = sample_glue_targets();
-    let result =
-        resolve_single_frgn(&fb, "c", &targets, briev_compiler::target::BackendKind::Llvm, None)
-            .unwrap();
+    let result = resolve_single_frgn(
+        &fb,
+        "c",
+        &targets,
+        briev_compiler::target::BackendKind::Llvm,
+        None,
+    )
+    .unwrap();
     match result {
         ResolvedFrgn::Inline { symbol, .. } => {
             assert_eq!(symbol, "foreign_sym");
@@ -208,11 +238,20 @@ fn test_resolve_single_frgn_with_as() {
 fn test_resolve_single_frgn_native_so() {
     let fb = make_frgn("native_fn", "so", None);
     let targets = sample_glue_targets();
-    let result =
-        resolve_single_frgn(&fb, "so", &targets, briev_compiler::target::BackendKind::Llvm, None)
-            .unwrap();
+    let result = resolve_single_frgn(
+        &fb,
+        "so",
+        &targets,
+        briev_compiler::target::BackendKind::Llvm,
+        None,
+    )
+    .unwrap();
     match result {
-        ResolvedFrgn::Inline { symbol, compile_source, .. } => {
+        ResolvedFrgn::Inline {
+            symbol,
+            compile_source,
+            ..
+        } => {
             assert_eq!(symbol, "native_fn");
             assert!(!compile_source);
         }

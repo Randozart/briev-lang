@@ -28,14 +28,43 @@ fn csharp_bindings_render() {
 
     let bv = format!("{}/examples/glue-host/boundary.bv", PROJECT_ROOT);
     let bindings = Command::new(brievc)
-        .args(["bindings", &bv, "csharp", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc bindings csharp");
-    assert!(bindings.status.success(), "csharp bindings failed: {}", String::from_utf8_lossy(&bindings.stderr));
+        .args([
+            "bindings",
+            &bv,
+            "csharp",
+            "--out",
+            &out_dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("failed brievc bindings csharp");
+    assert!(
+        bindings.status.success(),
+        "csharp bindings failed: {}",
+        String::from_utf8_lossy(&bindings.stderr)
+    );
 
     let cs = std::fs::read_to_string(out_dir.join("boundary-bindings/bridge.cs")).unwrap();
-    assert!(cs.contains(r#"[DllImport("boundary")]"#), "DllImport on the bridge lib");
-    assert!(cs.contains("private static extern IntPtr echo(IntPtr name);"), "CStr → IntPtr: {}", cs);
-    assert!(cs.contains("private static extern double identity(double x);"), "CDouble → double: {}", cs);
-    assert!(cs.contains("private static extern IntPtr join(IntPtr a, IntPtr b);"), "two CStr params: {}", cs);
-    assert!(cs.contains("public static IntPtr Init()"), "state init accessor");
+    assert!(
+        cs.contains(r#"[DllImport("boundary")]"#),
+        "DllImport on the bridge lib"
+    );
+    assert!(
+        cs.contains("private static extern IntPtr echo(IntPtr name);"),
+        "CStr → IntPtr: {}",
+        cs
+    );
+    assert!(
+        cs.contains("private static extern double identity(double x);"),
+        "CDouble → double: {}",
+        cs
+    );
+    assert!(
+        cs.contains("private static extern IntPtr join(IntPtr a, IntPtr b);"),
+        "two CStr params: {}",
+        cs
+    );
+    assert!(
+        cs.contains("public static IntPtr Init()"),
+        "state init accessor"
+    );
 }

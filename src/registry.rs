@@ -22,12 +22,11 @@ use std::path::{Path, PathBuf};
 ///
 /// 2026-07-26: Falls back to ~/.briev/registry/ if data_dir() fails.
 pub fn user_registry_path() -> PathBuf {
-    let base = dirs::data_dir()
-        .unwrap_or_else(|| {
-            // Fallback: ~/.briev/
-            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-            home.join(".briev")
-        });
+    let base = dirs::data_dir().unwrap_or_else(|| {
+        // Fallback: ~/.briev/
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join(".briev")
+    });
     base.join("briev").join("registry")
 }
 
@@ -99,8 +98,13 @@ pub fn add(source: &Path, name: &str) -> Result<PathBuf, String> {
     }
     // Create parent directory
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create registry directory '{}': {}", parent.display(), e))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "cannot create registry directory '{}': {}",
+                parent.display(),
+                e
+            )
+        })?;
     }
     if source.is_dir() {
         // Recursive copy directory tree
@@ -109,7 +113,11 @@ pub fn add(source: &Path, name: &str) -> Result<PathBuf, String> {
         std::fs::copy(source, &dest)
             .map_err(|e| format!("failed to copy '{}' to registry: {}", source.display(), e))?;
     }
-    println!("added '{}' → registry/{} (version-locked)", source.display(), name);
+    println!(
+        "added '{}' → registry/{} (version-locked)",
+        source.display(),
+        name
+    );
     Ok(dest)
 }
 
@@ -129,12 +137,15 @@ pub fn list() -> Result<Vec<(String, String, u64)>, String> {
             .map_err(|e| format!("cannot read registry '{}': {}", dir.display(), e))?;
         for entry in read_dir {
             let entry = entry.map_err(|e| format!("registry read error: {}", e))?;
-            let file_type = entry.file_type()
+            let file_type = entry
+                .file_type()
                 .map_err(|e| format!("registry entry type error: {}", e))?;
             let name = entry.file_name().to_string_lossy().to_string();
             let kind = if file_type.is_dir() { "dir" } else { "file" };
             let size = if file_type.is_file() {
-                std::fs::metadata(entry.path()).map(|m| m.len()).unwrap_or(0)
+                std::fs::metadata(entry.path())
+                    .map(|m| m.len())
+                    .unwrap_or(0)
             } else {
                 0
             };
@@ -169,8 +180,9 @@ pub fn remove(name: &str) -> Result<usize, String> {
         let exact = dir.join(name);
         if exact.exists() {
             if exact.is_dir() {
-                std::fs::remove_dir_all(&exact)
-                    .map_err(|e| format!("failed to remove directory '{}': {}", exact.display(), e))?;
+                std::fs::remove_dir_all(&exact).map_err(|e| {
+                    format!("failed to remove directory '{}': {}", exact.display(), e)
+                })?;
             } else {
                 std::fs::remove_file(&exact)
                     .map_err(|e| format!("failed to remove '{}': {}", exact.display(), e))?;
@@ -196,7 +208,8 @@ fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot read source directory '{}': {}", source.display(), e))?;
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("readdir error: {}", e))?;
-        let file_type = entry.file_type()
+        let file_type = entry
+            .file_type()
             .map_err(|e| format!("file type error: {}", e))?;
         let src_path = entry.path();
         let dest_path = dest.join(entry.file_name());

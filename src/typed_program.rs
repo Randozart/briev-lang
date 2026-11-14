@@ -56,8 +56,16 @@ struct Scope {
 }
 
 impl Scope {
-    const PARAMS_ONLY: Scope = Scope { local: false, list: false, enum_: false };
-    const FULL: Scope = Scope { local: true, list: true, enum_: true };
+    const PARAMS_ONLY: Scope = Scope {
+        local: false,
+        list: false,
+        enum_: false,
+    };
+    const FULL: Scope = Scope {
+        local: true,
+        list: true,
+        enum_: true,
+    };
 }
 
 /// An Int-valued expression. Emitted to Briev and evaluated by the model.
@@ -242,9 +250,18 @@ impl Builder<'_> {
             return FExpr::Param(self.byte() & 1);
         }
         match self.byte() % 5 {
-            0 => FExpr::Add(Box::new(self.fexpr(depth - 1)), Box::new(self.fexpr(depth - 1))),
-            1 => FExpr::Sub(Box::new(self.fexpr(depth - 1)), Box::new(self.fexpr(depth - 1))),
-            2 => FExpr::Mul(Box::new(self.fexpr(depth - 1)), Box::new(self.fexpr(depth - 1))),
+            0 => FExpr::Add(
+                Box::new(self.fexpr(depth - 1)),
+                Box::new(self.fexpr(depth - 1)),
+            ),
+            1 => FExpr::Sub(
+                Box::new(self.fexpr(depth - 1)),
+                Box::new(self.fexpr(depth - 1)),
+            ),
+            2 => FExpr::Mul(
+                Box::new(self.fexpr(depth - 1)),
+                Box::new(self.fexpr(depth - 1)),
+            ),
             3 => FExpr::Div(Box::new(self.fexpr(depth - 1)), self.float_divisor()),
             _ => FExpr::Neg(Box::new(self.fexpr(depth - 1))),
         }
@@ -265,7 +282,12 @@ fn emit_i(e: &IExpr) -> String {
         IExpr::Neg(a) => format!("(-{})", emit_i(a)),
         IExpr::If(c, a, b) => format!("pick({}, {}, {})", emit_b(c), emit_i(a), emit_i(b)),
         IExpr::MatchZero(v, a, b) => {
-            format!("match {} {{ 0 => {}, _ => {}, }}", emit_i(v), emit_i(a), emit_i(b))
+            format!(
+                "match {} {{ 0 => {}, _ => {}, }}",
+                emit_i(v),
+                emit_i(a),
+                emit_i(b)
+            )
         }
         IExpr::ListIndex(k) => format!("v[{k}]"),
         IExpr::EnumMatch(a, b, c) => format!(
@@ -392,9 +414,30 @@ pub fn program(data: &[u8]) -> Option<Generated> {
     // elements see x, and guards/arms see everything.
     let init = b.iexpr(MAX_DEPTH, Scope::PARAMS_ONLY);
     let list_elems = [
-        b.iexpr(MAX_DEPTH, Scope { local: true, list: false, enum_: false }),
-        b.iexpr(MAX_DEPTH, Scope { local: true, list: false, enum_: false }),
-        b.iexpr(MAX_DEPTH, Scope { local: true, list: false, enum_: false }),
+        b.iexpr(
+            MAX_DEPTH,
+            Scope {
+                local: true,
+                list: false,
+                enum_: false,
+            },
+        ),
+        b.iexpr(
+            MAX_DEPTH,
+            Scope {
+                local: true,
+                list: false,
+                enum_: false,
+            },
+        ),
+        b.iexpr(
+            MAX_DEPTH,
+            Scope {
+                local: true,
+                list: false,
+                enum_: false,
+            },
+        ),
     ];
     let variant = match b.byte() % 3 {
         0 => Variant::A,
@@ -421,7 +464,11 @@ pub fn program(data: &[u8]) -> Option<Generated> {
         emit_i(&list_elems[2])
     ));
     source.push_str(&format!("    let k: E = E.{};\n", variant.name()));
-    source.push_str(&format!("    when {} {{ x = {}; }};\n", emit_b(&cond), emit_i(&then_)));
+    source.push_str(&format!(
+        "    when {} {{ x = {}; }};\n",
+        emit_b(&cond),
+        emit_i(&then_)
+    ));
     source.push_str(&format!("    term {};\n}};\n", emit_i(&final_)));
     source.push_str(&format!(
         "defn g(a: Float, b: Float) -> Float {{\n    term {};\n}};\n",
@@ -435,7 +482,13 @@ pub fn program(data: &[u8]) -> Option<Generated> {
         let name = format!("r{i}");
         source.push_str(&format!("let {name}: Int = f({s}, {e});\n"));
         // Model: x, then v, then guard, then final.
-        let base = Env { s, arg_e: e, x: 0, v: [0; LIST_LEN], variant };
+        let base = Env {
+            s,
+            arg_e: e,
+            x: 0,
+            v: [0; LIST_LEN],
+            variant,
+        };
         let x = eval_i(&init, &base);
         let with_x = Env { x, ..base };
         let v = [
@@ -444,7 +497,11 @@ pub fn program(data: &[u8]) -> Option<Generated> {
             eval_i(&list_elems[2], &with_x),
         ];
         let env = Env { v, ..with_x };
-        let x = if eval_b(&cond, &env) { eval_i(&then_, &env) } else { x };
+        let x = if eval_b(&cond, &env) {
+            eval_i(&then_, &env)
+        } else {
+            x
+        };
         let env = Env { x, ..env };
         ints.push((name, eval_i(&final_, &env)));
     }
@@ -458,7 +515,11 @@ pub fn program(data: &[u8]) -> Option<Generated> {
         floats.push((name, eval_f(&fexpr, a, c)));
     }
 
-    Some(Generated { source, ints, floats })
+    Some(Generated {
+        source,
+        ints,
+        floats,
+    })
 }
 
 /// Run the generated program through the reference interpreter.
@@ -513,7 +574,10 @@ pub fn check(data: &[u8]) {
     let want_ints: Vec<i64> = generated.ints.iter().map(|(_, v)| *v).collect();
     assert_eq!(got_ints, want_ints, "int model disagreement\n{source}");
     let want_floats: Vec<f64> = generated.floats.iter().map(|(_, v)| *v).collect();
-    assert_eq!(got_floats, want_floats, "float model disagreement\n{source}");
+    assert_eq!(
+        got_floats, want_floats,
+        "float model disagreement\n{source}"
+    );
 }
 
 #[cfg(test)]
@@ -553,7 +617,13 @@ mod tests {
         // A byte string chosen so the emitted source uses every construct.
         let bytes: Vec<u8> = (0u8..128).cycle().take(128).collect();
         let g = program(&bytes).unwrap();
-        for needle in ["enum E", "defn pick", "let v: List<Int>", "let k: E = E.", "defn g"] {
+        for needle in [
+            "enum E",
+            "defn pick",
+            "let v: List<Int>",
+            "let k: E = E.",
+            "defn g",
+        ] {
             assert!(g.source.contains(needle), "missing {needle}\n{}", g.source);
         }
         check(&bytes);

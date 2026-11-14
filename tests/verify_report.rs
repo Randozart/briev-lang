@@ -21,7 +21,11 @@ fn run(src: &str) -> (i32, String) {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("spawn brievc");
-    assert!(report.exists(), "report must be written: {}", Path::new(&report).display());
+    assert!(
+        report.exists(),
+        "report must be written: {}",
+        Path::new(&report).display()
+    );
     let json = std::fs::read_to_string(&report).unwrap();
     (status.status.code().unwrap_or(-1), json)
 }

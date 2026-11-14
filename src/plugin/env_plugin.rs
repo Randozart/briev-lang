@@ -45,14 +45,18 @@ impl Plugin for EnvPlugin {
 /// Evaluate get_env!/get_env_int! inside const declarations at compile time.
 fn resolve_const_env_vars(program: &mut [TopLevel]) {
     for item in program.iter_mut() {
-        let TopLevel::Constant(c) = item else { continue };
-        let Expr::PluginIntercept { name, args, .. } = &c.expr else { continue };
+        let TopLevel::Constant(c) = item else {
+            continue;
+        };
+        let Expr::PluginIntercept { name, args, .. } = &c.expr else {
+            continue;
+        };
         let key = extract_string_arg(args).unwrap_or_default();
         let val = std::env::var(&key).unwrap_or_default();
         c.expr = match name.as_str() {
             "get_env_int" => Expr::Decimal(val.parse::<i64>().unwrap_or(0)),
-            "get_env"     => Expr::Quoted(val.as_bytes().to_vec()),
-            _             => continue,
+            "get_env" => Expr::Quoted(val.as_bytes().to_vec()),
+            _ => continue,
         };
     }
 }
@@ -77,7 +81,15 @@ fn walk_item(item: &mut TopLevel) {
 }
 
 fn resolve_expr(expr: &mut Expr) {
-    let Expr::PluginIntercept { name, args, receiver, .. } = expr else { return };
+    let Expr::PluginIntercept {
+        name,
+        args,
+        receiver,
+        ..
+    } = expr
+    else {
+        return;
+    };
     let mut full_args = Vec::with_capacity(args.len() + usize::from(receiver.is_some()));
     if let Some(recv) = receiver {
         full_args.push((**recv).clone());
@@ -95,7 +107,11 @@ fn resolve_intercept(name: &str, args: &[Expr]) -> Option<Expr> {
     match name {
         "get_env" => Some(Expr::Call("get_env".to_string(), call_args, None)),
         "get_env_int" => Some(Expr::Call("get_env_int".to_string(), call_args, None)),
-        "get_env_or_default" => Some(Expr::Call("get_env_or_default".to_string(), call_args, None)),
+        "get_env_or_default" => Some(Expr::Call(
+            "get_env_or_default".to_string(),
+            call_args,
+            None,
+        )),
         _ => None,
     }
 }
@@ -107,7 +123,8 @@ mod tests {
     fn expand(source: &str) -> Vec<TopLevel> {
         let tokens = crate::lexer::tokenize(source).expect("tokens");
         let mut program = crate::parser::Parser::new(tokens, source)
-            .parse_program().expect("syntax");
+            .parse_program()
+            .expect("syntax");
         resolve_const_env_vars(&mut program);
         program.iter_mut().for_each(walk_item);
         program
@@ -115,7 +132,8 @@ mod tests {
 
     #[test]
     fn expands_environment_calls_in_nested_control_flow_and_operands() {
-        let program = expand(r#"
+        let program = expand(
+            r#"
             defn check(values: List<Int>) -> Int {
                 foreach index in 0..get_env_int!("READS") {
                     when get_env_int!("MODE") > 0 {
@@ -124,7 +142,8 @@ mod tests {
                 };
                 term get_env_int!(get_env_or_default!("KEY", "READS"));
             };
-        "#);
+        "#,
+        );
         let mut calls = Vec::new();
         for item in &program {
             crate::ast::visit::walk_toplevel(item, &mut |expr| match expr {
@@ -133,20 +152,36 @@ mod tests {
                 _ => {}
             });
         }
-        assert_eq!(calls.iter().filter(|name| *name == "get_env_int").count(), 4);
-        assert_eq!(calls.iter().filter(|name| *name == "get_env_or_default").count(), 1);
+        assert_eq!(
+            calls.iter().filter(|name| *name == "get_env_int").count(),
+            4
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|name| *name == "get_env_or_default")
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn expands_children_of_unknown_plugins_without_rewriting_the_parent() {
-        let program = expand(r#"
+        let program = expand(
+            r#"
             defn check() -> Int {
                 term another_plugin!(get_env_int!("READS"));
             };
-        "#);
-        let TopLevel::Definition(definition) = &program[0] else { panic!("definition") };
+        "#,
+        );
+        let TopLevel::Definition(definition) = &program[0] else {
+            panic!("definition")
+        };
         let crate::ast::Statement::Term(Some(Expr::PluginIntercept { name, args, .. })) =
-            &definition.body[0] else { panic!("unknown plugin must remain") };
+            &definition.body[0]
+        else {
+            panic!("unknown plugin must remain")
+        };
         assert_eq!(name, "another_plugin");
         assert!(matches!(&args[0], Expr::Call(name, _, _) if name == "get_env_int"));
     }
@@ -158,13 +193,16 @@ mod tests {
             args: vec![Expr::PluginIntercept {
                 name: "get_env".into(),
                 args: vec![Expr::Quoted(b"DEFAULT".to_vec())],
-                type_args: vec![], receiver: None,
+                type_args: vec![],
+                receiver: None,
             }],
             type_args: vec![],
             receiver: Some(Box::new(Expr::Quoted(b"KEY".to_vec()))),
         };
         crate::ast::visit_mut::walk_expr(&mut expression, &mut resolve_expr);
-        let Expr::Call(name, args, _) = expression else { panic!("expanded call") };
+        let Expr::Call(name, args, _) = expression else {
+            panic!("expanded call")
+        };
         assert_eq!(name, "get_env_or_default");
         assert_eq!(args[0], Expr::Quoted(b"KEY".to_vec()));
         assert!(matches!(&args[1], Expr::Call(name, _, _) if name == "get_env"));

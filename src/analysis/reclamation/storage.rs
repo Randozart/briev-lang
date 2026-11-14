@@ -86,7 +86,7 @@ pub(super) fn store<S: Facts>(points: &S, memory: &mut [S], refs: &S) -> bool {
 
 #[cfg(all(feature = "kani", feature = "kani_full"))]
 mod proofs {
-    use super::super::node_set::{merge_word, WordNodes};
+    use super::super::node_set::{WordNodes, merge_word};
     use super::*;
 
     // Explicit bounded set model, not a substitute implementation of the
@@ -133,8 +133,10 @@ mod proofs {
         let mut payload = WordFacts::empty();
         payload.insert(1);
         store(&address, &mut memory, &payload);
-        assert!(root_contents(&memory, &named, 0)
-            .iter()
-            .any(|root| root == 1));
+        assert!(
+            root_contents(&memory, &named, 0)
+                .iter()
+                .any(|root| root == 1)
+        );
     }
 }

@@ -209,7 +209,10 @@ pub enum PropertyValue {
     /// `spec Decouple: 100n;` — stored in SI with its dimension. Bare
     /// quantities, never quoted strings (the doctrine: quotes imply
     /// arbitrary; quantities are physics).
-    Quantity { si: f64, dimension: QuantityDim },
+    Quantity {
+        si: f64,
+        dimension: QuantityDim,
+    },
     // 2026-07-18: Compiler-internal hash words for strategy op bindings.
     // #L = left operand, #R = right operand, #T = type parameter.
     HashL,

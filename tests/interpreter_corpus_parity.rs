@@ -154,10 +154,14 @@ fn run_interpreter(path: &Path, src: &str) -> Result<i64, String> {
             .map_err(|e| format!("pipeline: {e}"))?;
     let mut interp = Interpreter::new();
     interp.load_program(&resolved);
-    interp.seed_inits(&resolved).map_err(|e| format!("seed: {e:?}"))?;
+    interp
+        .seed_inits(&resolved)
+        .map_err(|e| format!("seed: {e:?}"))?;
     for item in &resolved {
         if let briev_compiler::ast::TopLevel::Statement(s) = item {
-            interp.exec_stmt(s).map_err(|e| format!("seed stmt: {e:?}"))?;
+            interp
+                .exec_stmt(s)
+                .map_err(|e| format!("seed stmt: {e:?}"))?;
         }
     }
     let mut reactor = Reactor::new();
@@ -167,7 +171,7 @@ fn run_interpreter(path: &Path, src: &str) -> Result<i64, String> {
             Ok(true) => {}
             Ok(false) => return Err("equilibrium without endprogram".into()),
             Err(RuntimeError::ProgramExit(v)) => {
-                return v.as_i64().ok_or_else(|| "non-integer exit".to_string())
+                return v.as_i64().ok_or_else(|| "non-integer exit".to_string());
             }
             Err(e) => return Err(format!("runtime: {e:?}")),
         }
@@ -208,10 +212,7 @@ fn run_native(dir: &Path, src_path: &Path, name: &str) -> Result<i32, String> {
         .output()
         .map_err(|e| format!("spawn clang: {e}"))?;
     if !link.status.success() {
-        return Err(format!(
-            "link: {}",
-            String::from_utf8_lossy(&link.stderr)
-        ));
+        return Err(format!("link: {}", String::from_utf8_lossy(&link.stderr)));
     }
     let run = Command::new(&bin)
         .output()
@@ -227,10 +228,10 @@ fn interpreter_and_native_agree_on_corpus_results() {
     for case in CASES {
         let src_path = dir.join(format!("{}.bv", case.name));
         std::fs::write(&src_path, case.src).unwrap();
-        let native = run_native(&dir, &src_path, case.name)
-            .unwrap_or_else(|e| panic!("{}: {e}", case.name));
-        let interp = run_interpreter(&src_path, case.src)
-            .unwrap_or_else(|e| panic!("{}: {e}", case.name));
+        let native =
+            run_native(&dir, &src_path, case.name).unwrap_or_else(|e| panic!("{}: {e}", case.name));
+        let interp =
+            run_interpreter(&src_path, case.src).unwrap_or_else(|e| panic!("{}: {e}", case.name));
         assert_eq!(
             i64::from(native),
             interp,

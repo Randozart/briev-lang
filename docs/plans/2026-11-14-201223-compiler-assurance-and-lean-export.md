@@ -287,3 +287,17 @@ should follow the same isolated-commit/backport/reconcile pattern.
   external evidence directory's `reconciliation/` subdirectory. Future verified
   bug fixes should remain separate commits so main can receive them without
   importing pending Lean research. Continuous checkpoint commits are authorized.
+
+## 2026-11-14T21:06:37+01:00 — Reconcile concurrent formatting commit
+
+Main advanced to `0712ce724` while the first integrated-main checks were running.
+That commit also added the initial short copy of this plan from the original
+checkout, causing an add/add conflict. Compared both versions: after normalizing
+the lifecycle status, main's entire short plan is an exact prefix of this expanded
+plan. Retain the full decision history and active status here; no distinct main
+rationale is discarded. The source formatting changes are retained from main.
+
+Stop the older `6144c8635` broad check before claiming it covers the new main tip.
+Update the clean detached validation worktree to the new tip and run fresh gates.
+The isolated solver fix remains in main's ancestry; pending formal proofs remain
+pending. Keep local reconciliation separate from remote publication.

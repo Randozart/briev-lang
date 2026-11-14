@@ -1,9 +1,9 @@
 // 2026-07-25: VM backend — top-level item bytecode emission.
 // Converts TopLevel items (Defn, Txn, TypeDef, etc.) into .lair functions.
 
-use crate::ast::*;
-use crate::ast::top::*;
 use super::VmBackend;
+use crate::ast::top::*;
+use crate::ast::*;
 
 impl VmBackend {
     pub(crate) fn emit_toplevel(&mut self, item: &TopLevel) {
@@ -45,8 +45,8 @@ impl VmBackend {
 
         self.asm.define_function(
             &d.name,
-            total_locals,  // local_count (params + let bindings)
-            d.parameters.len() as u16,  // arg_count
+            total_locals,              // local_count (params + let bindings)
+            d.parameters.len() as u16, // arg_count
         );
 
         // Emit body statements
@@ -76,11 +76,8 @@ impl VmBackend {
         // 2026-07-25: Count total needed locals (params + let bindings in body)
         let total_locals = count_let_bindings(&t.body) as u16 + t.parameters.len() as u16;
 
-        self.asm.define_function(
-            &t.name,
-            total_locals,
-            t.parameters.len() as u16,
-        );
+        self.asm
+            .define_function(&t.name, total_locals, t.parameters.len() as u16);
 
         for stmt in &t.body {
             self.emit_stmt(stmt);
@@ -105,5 +102,7 @@ impl VmBackend {
 /// 2026-07-25: Count the number of let bindings in a statement body.
 /// Used to pre-allocate sufficient local slots for functions.
 fn count_let_bindings(body: &[crate::ast::top::Statement]) -> usize {
-    body.iter().filter(|s| matches!(s, crate::ast::top::Statement::Let { .. })).count()
+    body.iter()
+        .filter(|s| matches!(s, crate::ast::top::Statement::Let { .. }))
+        .count()
 }

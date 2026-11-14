@@ -22,9 +22,9 @@ use crate::analysis::accel::AccelDecision;
 use crate::analysis::accel::AccelEntry;
 use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Transaction, Type, UnaryOpKind};
 use crate::backend::gpu_lowering::GpuLowering;
+use crate::backend::spirv::SpirvBuilder;
 use crate::backend::spirv::gemm;
 use crate::backend::spirv::lower::collect_state_fields;
-use crate::backend::spirv::SpirvBuilder;
 use crate::type_universe::TypeUniverse;
 use std::collections::HashMap;
 

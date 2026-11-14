@@ -107,7 +107,12 @@ fn detect_for_body(txn_name: &str, body: &[HirStmt]) -> Option<Option<BatchShape
                     pre.extend(stmts.clone());
                 }
             }
-            Segment::Guard { condition, body, classification, .. } => {
+            Segment::Guard {
+                condition,
+                body,
+                classification,
+                ..
+            } => {
                 if seen_guard || *classification != PredicateClass::Runtime {
                     return None;
                 }
@@ -149,14 +154,24 @@ fn detect_for_body(txn_name: &str, body: &[HirStmt]) -> Option<Option<BatchShape
 }
 
 fn extract_batch_condition(cond: &HirExpr) -> Option<(String, usize)> {
-    let HirExprKind::Binary { op: BinaryOpKind::Eq, left, right } = &cond.kind else {
+    let HirExprKind::Binary {
+        op: BinaryOpKind::Eq,
+        left,
+        right,
+    } = &cond.kind
+    else {
         return None;
     };
     extract_mod_zero(left, right).or_else(|| extract_mod_zero(right, left))
 }
 
 fn extract_mod_zero(a: &HirExpr, b: &HirExpr) -> Option<(String, usize)> {
-    let HirExprKind::Binary { op: BinaryOpKind::Mod, left, right } = &a.kind else {
+    let HirExprKind::Binary {
+        op: BinaryOpKind::Mod,
+        left,
+        right,
+    } = &a.kind
+    else {
         return None;
     };
     let HirExprKind::Identifier(counter) = &left.kind else {
@@ -178,20 +193,35 @@ fn is_counter_increment(stmt: &HirStmt, counter: &str) -> bool {
     if !matches!(&lhs.kind, HirExprKind::Identifier(n) if n == counter) {
         return false;
     }
-    let HirExprKind::Binary { op: BinaryOpKind::Add, left, right } = &rhs.kind else {
+    let HirExprKind::Binary {
+        op: BinaryOpKind::Add,
+        left,
+        right,
+    } = &rhs.kind
+    else {
         return false;
     };
     (matches!(&left.kind, HirExprKind::Identifier(n) if n == counter)
-        && matches!(&right.kind, HirExprKind::Literal(super::expr::HirLiteral::Int(1))))
-        || (matches!(&left.kind, HirExprKind::Literal(super::expr::HirLiteral::Int(1)))
-            && matches!(&right.kind, HirExprKind::Identifier(n) if n == counter))
+        && matches!(
+            &right.kind,
+            HirExprKind::Literal(super::expr::HirLiteral::Int(1))
+        ))
+        || (matches!(
+            &left.kind,
+            HirExprKind::Literal(super::expr::HirLiteral::Int(1))
+        ) && matches!(&right.kind, HirExprKind::Identifier(n) if n == counter))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn songs(src: &str) -> (HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>, HashMap<String, (Vec<HirStmt>, Vec<Vec<HirStmt>>)>) {
+    fn songs(
+        src: &str,
+    ) -> (
+        HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>,
+        HashMap<String, (Vec<HirStmt>, Vec<Vec<HirStmt>>)>,
+    ) {
         let tokens = crate::lexer::tokenize(src).expect("tokenize");
         let mut parser = crate::parser::Parser::new(tokens, src);
         let items = parser.parse_program().expect("parse");

@@ -100,7 +100,9 @@ fn collect_intercepts(
                 collect_from_stmts(&mut init.body, synthesized, seen, rewrites)?;
             }
             // 2026-09-28 (usage-readiness): walk `sync<g>`-wrapped nodes.
-            TopLevel::SyncGroup { item, .. } => collect_intercept_item(item, synthesized, seen, rewrites)?,
+            TopLevel::SyncGroup { item, .. } => {
+                collect_intercept_item(item, synthesized, seen, rewrites)?
+            }
             _ => {}
         }
     }
@@ -120,7 +122,9 @@ fn collect_intercept_item(
         TopLevel::Transaction(t) => {
             collect_from_stmts(&mut t.body, synthesized, seen, rewrites)?;
         }
-        TopLevel::SyncGroup { item, .. } => collect_intercept_item(item, synthesized, seen, rewrites)?,
+        TopLevel::SyncGroup { item, .. } => {
+            collect_intercept_item(item, synthesized, seen, rewrites)?
+        }
         _ => {}
     }
     Ok(())
@@ -165,7 +169,12 @@ fn rewrite_expr(
     rewrites: &mut Vec<(Expr, Expr)>,
 ) -> Result<(), String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _, receiver } if name == "inline_frgn" => {
+        Expr::PluginIntercept {
+            name,
+            args,
+            type_args: _,
+            receiver,
+        } if name == "inline_frgn" => {
             // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
             // prepend it as the first argument (UFCS-style chaining) so it is
             // not silently dropped. A chained inline_frgn fails the first-three-
@@ -180,28 +189,22 @@ fn rewrite_expr(
                 Expr::Quoted(b) => Some(String::from_utf8_lossy(b).to_string()),
                 _ => None,
             });
-            let (Some(sym), Some(path), Some(sig)) =
-                (strs.next(), strs.next(), strs.next())
-            else {
+            let (Some(sym), Some(path), Some(sig)) = (strs.next(), strs.next(), strs.next()) else {
                 return Err(
                     "inline_frgn! needs (symbol: String, path: String, signature: \\
                      String, call args...) - the first three must be string literals"
-                        .to_string()
+                        .to_string(),
                 );
             };
-            let (inputs, ret) = parse_sig(&sig).map_err(|e| {
-                format!("inline_frgn!('{sym}'): bad signature '{sig}': {e}")
-            })?;
+            let (inputs, ret) = parse_sig(&sig)
+                .map_err(|e| format!("inline_frgn!('{sym}'): bad signature '{sig}': {e}"))?;
             let key = (sym.clone(), path.clone());
             if seen.insert(key.clone()) {
                 synthesized.push(make_binding(&sym, &path, inputs, ret));
             }
             // Rewrite: drop the first three args, call the symbol directly.
             let call_args: Vec<Expr> = args.iter().skip(3).cloned().collect();
-            rewrites.push((
-                expr.clone(),
-                Expr::Call(sym.clone(), call_args, None),
-            ));
+            rewrites.push((expr.clone(), Expr::Call(sym.clone(), call_args, None)));
         }
         Expr::BinaryOp(_, l, r) => {
             rewrite_expr(l, synthesized, seen, rewrites)?;
@@ -255,17 +258,29 @@ fn rewrite_stmts(stmts: &mut [crate::ast::Statement], intercept: &Expr, call: &E
     for stmt in stmts {
         match stmt {
             crate::ast::Statement::Assign(l, r) => {
-                if l == intercept { *l = call.clone(); }
-                if r == intercept { *r = call.clone(); }
+                if l == intercept {
+                    *l = call.clone();
+                }
+                if r == intercept {
+                    *r = call.clone();
+                }
             }
             crate::ast::Statement::Let { expr: Some(e), .. } => {
-                if e == intercept { *e = call.clone(); }
+                if e == intercept {
+                    *e = call.clone();
+                }
             }
             crate::ast::Statement::Expression(e) => {
-                if e == intercept { *e = call.clone(); }
+                if e == intercept {
+                    *e = call.clone();
+                }
             }
-            crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::EndProgram(Some(e)) | crate::ast::Statement::Tail(e) => {
-                if e == intercept { *e = call.clone(); }
+            crate::ast::Statement::Term(Some(e))
+            | crate::ast::Statement::EndProgram(Some(e))
+            | crate::ast::Statement::Tail(e) => {
+                if e == intercept {
+                    *e = call.clone();
+                }
             }
             // Descend into nested bodies (when-guards etc.) - the probe's
             // intercept sits inside a `when` guard.
@@ -349,8 +364,14 @@ fn split_top(s: &str) -> Vec<String> {
     let mut cur = String::new();
     for c in s.chars() {
         match c {
-            '<' => { depth += 1; cur.push(c); }
-            '>' => { depth = depth.saturating_sub(1); cur.push(c); }
+            '<' => {
+                depth += 1;
+                cur.push(c);
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                cur.push(c);
+            }
             ',' if depth == 0 => {
                 parts.push(cur.clone());
                 cur.clear();

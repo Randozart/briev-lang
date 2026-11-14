@@ -15,7 +15,10 @@ pub fn verify_roundtrips(items: &[TopLevel], _universe: &TypeUniverse) -> Result
 
     for item in items {
         let td = type_def(item);
-        let td = match td { Some(t) => t, None => continue };
+        let td = match td {
+            Some(t) => t,
+            None => continue,
+        };
         let (form, fn_name) = match collect_parse_info(td) {
             Some(info) => info,
             None => continue,
@@ -26,18 +29,31 @@ pub fn verify_roundtrips(items: &[TopLevel], _universe: &TypeUniverse) -> Result
         }
     }
 
-    if warnings.is_empty() { Ok(()) }
-    else { Err(format!("protocol round-trip verification:\n{}", warnings.join("\n"))) }
+    if warnings.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "protocol round-trip verification:\n{}",
+            warnings.join("\n")
+        ))
+    }
 }
 
 fn type_def(item: &TopLevel) -> Option<&TypeDef> {
-    match item { TopLevel::TypeDef(td) => Some(td.as_ref()), _ => None }
+    match item {
+        TopLevel::TypeDef(td) => Some(td.as_ref()),
+        _ => None,
+    }
 }
 
 fn collect_parse_info(td: &TypeDef) -> Option<(String, String)> {
     for op in &td.body.operators {
-        if op.op != "Parse" { continue; }
-        if op.params.is_empty() { continue; }
+        if op.op != "Parse" {
+            continue;
+        }
+        if op.params.is_empty() {
+            continue;
+        }
         let form = parse_form_name(&op.params[0])?;
         let fn_name = extract_fn_name(&op.impl_args)?;
         return Some((form, fn_name));
@@ -66,28 +82,40 @@ fn extract_fn_name(impl_args: &Option<PropertyValue>) -> Option<String> {
 }
 
 fn verify_single_roundtrip(
-    td: &TypeDef, form: &str, fn_name: &str, interp: &mut Interpreter,
+    td: &TypeDef,
+    form: &str,
+    fn_name: &str,
+    interp: &mut Interpreter,
 ) -> Result<(), String> {
     let test_literal = generate_test_literal(form)?;
     let test_call = Expr::Call(fn_name.to_string(), vec![test_literal.clone()], None);
     // 2026-08-26 (bug sweep B1): an eval failure here was a SILENT Ok — a
     // Parse implementation that crashed on the probe escaped verification
     // unnoticed. Now it reports which call failed and why.
-    let parse_val = interp.eval_expr(&test_call).map_err(|e| format!(
-        "round-trip: '{}.{}' probe call Parse('{}') failed to evaluate: {}",
-        td.name, fn_name, literal_description(form), e
-    ))?;
-    let produce_fn = find_produce_fn(td).ok_or_else(|| format!(
-        "round-trip: '{}' declares CastFrom but no Produce/producer op — \
+    let parse_val = interp.eval_expr(&test_call).map_err(|e| {
+        format!(
+            "round-trip: '{}.{}' probe call Parse('{}') failed to evaluate: {}",
+            td.name,
+            fn_name,
+            literal_description(form),
+            e
+        )
+    })?;
+    let produce_fn = find_produce_fn(td).ok_or_else(|| {
+        format!(
+            "round-trip: '{}' declares CastFrom but no Produce/producer op — \
          the inverse direction cannot run; add one",
-        td.name
-    ))?;
+            td.name
+        )
+    })?;
     let produce_call = Expr::Call(produce_fn.clone(), vec![], None);
     // Same silent-Ok hole for the producer side.
-    let produce_val = interp.eval_expr(&produce_call).map_err(|e| format!(
-        "round-trip: '{}.{}' producer '{}()' failed to evaluate: {}",
-        td.name, fn_name, produce_fn, e
-    ))?;
+    let produce_val = interp.eval_expr(&produce_call).map_err(|e| {
+        format!(
+            "round-trip: '{}.{}' producer '{}()' failed to evaluate: {}",
+            td.name, fn_name, produce_fn, e
+        )
+    })?;
     let test_desc = literal_description(form);
     let produced_desc = format!("{:?}", produce_val);
     if produced_desc != test_desc {
@@ -119,9 +147,13 @@ fn literal_description(form: &str) -> String {
 
 fn find_produce_fn(td: &TypeDef) -> Option<String> {
     for op in &td.body.operators {
-        if op.op != "Cast" && op.op != "CastTo" { continue; }
+        if op.op != "Cast" && op.op != "CastTo" {
+            continue;
+        }
         let result = extract_fn_name(&op.impl_args);
-        if result.is_some() { return result; }
+        if result.is_some() {
+            return result;
+        }
     }
     None
 }

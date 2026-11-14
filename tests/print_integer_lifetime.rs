@@ -12,15 +12,34 @@ fn integer_output_retains_no_per_call_allocations() {
     let dir = temp.path();
     let build = Command::new(env!("CARGO_BIN_EXE_brievc"))
         .env("BRIEV_HOME", root)
-        .arg("build").arg(root.join("tests/fixtures/load/print_integer_gate.bv"))
-        .arg("--llvm").arg("--stdlib-path").arg(root.join("lib"))
-        .arg("--config-dir").arg(root.join("config")).arg("--out").arg(dir)
-        .output().unwrap();
-    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        .arg("build")
+        .arg(root.join("tests/fixtures/load/print_integer_gate.bv"))
+        .arg("--llvm")
+        .arg("--stdlib-path")
+        .arg(root.join("lib"))
+        .arg("--config-dir")
+        .arg(root.join("config"))
+        .arg("--out")
+        .arg(dir)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     let ir = dir.join("print_integer_gate.ll");
-    fs::write(&ir, fs::read_to_string(&ir).unwrap().replace("@main(", "@fixture_main(")).unwrap();
+    fs::write(
+        &ir,
+        fs::read_to_string(&ir)
+            .unwrap()
+            .replace("@main(", "@fixture_main("),
+    )
+    .unwrap();
     let harness = dir.join("probe.c");
-    fs::write(&harness, r#"
+    fs::write(
+        &harness,
+        r#"
         #include <stdint.h>
         #include <stddef.h>
         void *__real_malloc(size_t);
@@ -43,15 +62,41 @@ fn integer_output_retains_no_per_call_allocations() {
             stdout_flush();
             return live != baseline;
         }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     let binary = dir.join("probe");
-    let linked = Command::new("clang").args(["-O3", "-ffunction-sections", "-fdata-sections"])
-        .arg(ir).arg(harness).arg(root.join("lib/runtime/briev_rt.c"))
-        .args(["-Wl,--gc-sections", "-Wl,--wrap=malloc", "-Wl,--wrap=free", "-ldl", "-lm", "-o"])
-        .arg(&binary).output().unwrap();
-    assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
-    let result = Command::new("timeout").arg("20").arg(binary).output().unwrap();
+    let linked = Command::new("clang")
+        .args(["-O3", "-ffunction-sections", "-fdata-sections"])
+        .arg(ir)
+        .arg(harness)
+        .arg(root.join("lib/runtime/briev_rt.c"))
+        .args([
+            "-Wl,--gc-sections",
+            "-Wl,--wrap=malloc",
+            "-Wl,--wrap=free",
+            "-ldl",
+            "-lm",
+            "-o",
+        ])
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        linked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+    let result = Command::new("timeout")
+        .arg("20")
+        .arg(binary)
+        .output()
+        .unwrap();
     let expected = format!("0{}", format!("{}{}", i64::MIN, i64::MAX).repeat(2048));
     assert_eq!(result.stdout, expected.as_bytes());
-    assert!(result.status.success(), "integer writes left live allocations: {:?}", result.status);
+    assert!(
+        result.status.success(),
+        "integer writes left live allocations: {:?}",
+        result.status
+    );
 }

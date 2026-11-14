@@ -68,13 +68,12 @@ fn arb_fault_scenario(var_names: Vec<String>) -> impl Strategy<Value = FaultScen
             Just(FaultType::TruncatedData),
         ],
         any::<u64>(),
-    ).prop_map(|(target_var, fault_type, corruption_value)| {
-        FaultScenario {
+    )
+        .prop_map(|(target_var, fault_type, corruption_value)| FaultScenario {
             target_var,
             fault_type,
             corruption_value,
-        }
-    })
+        })
 }
 
 /// Apply a fault to an interpreter's state
@@ -85,21 +84,29 @@ fn apply_fault(interp: &mut Interpreter, fault: &FaultScenario) {
             interp.state.insert(fault.target_var.clone(), garbage);
         }
         FaultType::Timeout => {
-            interp.state.insert(fault.target_var.clone(), Value::Atom(Atom::Int(-1)));
+            interp
+                .state
+                .insert(fault.target_var.clone(), Value::Atom(Atom::Int(-1)));
         }
         FaultType::MemoryCorruption => {
             if let Some(Value::Atom(Atom::Int(val))) = interp.state.get(&fault.target_var) {
                 let corrupted = val ^ (fault.corruption_value as i64);
-                interp.state.insert(fault.target_var.clone(), Value::Atom(Atom::Int(corrupted)));
+                interp
+                    .state
+                    .insert(fault.target_var.clone(), Value::Atom(Atom::Int(corrupted)));
             }
         }
         FaultType::ReturnError => {
-            interp.state.insert(fault.target_var.clone(), Value::Atom(Atom::Int(i64::MIN)));
+            interp
+                .state
+                .insert(fault.target_var.clone(), Value::Atom(Atom::Int(i64::MIN)));
         }
         FaultType::TruncatedData => {
             if let Some(Value::Atom(Atom::Int(val))) = interp.state.get(&fault.target_var) {
                 let truncated = val & 0xFF;
-                interp.state.insert(fault.target_var.clone(), Value::Atom(Atom::Int(truncated)));
+                interp
+                    .state
+                    .insert(fault.target_var.clone(), Value::Atom(Atom::Int(truncated)));
             }
         }
     }
@@ -126,9 +133,8 @@ fn run_fault_injection_test(source: &str, fault: FaultScenario) -> bool {
     let mut reactor = Reactor::new();
     reactor.build_from_program(&program);
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        reactor.run(&mut interp)
-    }));
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reactor.run(&mut interp)));
 
     match result {
         Ok(Ok(_)) | Ok(Err(_)) => true,
@@ -161,13 +167,32 @@ fn extract_trigger_variables(program: &[TopLevel]) -> Vec<String> {
 
 fn is_trigger_like_name(name: &str) -> bool {
     let trigger_prefixes = [
-        "sig", "signal", "trg", "trigger", "event", "irq", "interrupt",
-        "input", "sensor", "button", "key", "click", "tick", "clock",
-        "stdin", "stdout", "network", "socket", "file_", "fs_",
+        "sig",
+        "signal",
+        "trg",
+        "trigger",
+        "event",
+        "irq",
+        "interrupt",
+        "input",
+        "sensor",
+        "button",
+        "key",
+        "click",
+        "tick",
+        "clock",
+        "stdin",
+        "stdout",
+        "network",
+        "socket",
+        "file_",
+        "fs_",
     ];
 
     let name_lower = name.to_lowercase();
-    trigger_prefixes.iter().any(|prefix| name_lower.starts_with(prefix))
+    trigger_prefixes
+        .iter()
+        .any(|prefix| name_lower.starts_with(prefix))
         || name_lower.ends_with("_trg")
         || name_lower.ends_with("_trigger")
         || name_lower.ends_with("_signal")
@@ -217,7 +242,9 @@ mod unit_tests {
     #[test]
     fn test_apply_fault_garbage_data() {
         let mut interp = Interpreter::new();
-        interp.state.insert("sensor".to_string(), Value::Atom(Atom::Int(42)));
+        interp
+            .state
+            .insert("sensor".to_string(), Value::Atom(Atom::Int(42)));
 
         let fault = FaultScenario {
             target_var: "sensor".to_string(),
@@ -236,7 +263,9 @@ mod unit_tests {
     #[test]
     fn test_apply_fault_timeout() {
         let mut interp = Interpreter::new();
-        interp.state.insert("network_data".to_string(), Value::Atom(Atom::Int(100)));
+        interp
+            .state
+            .insert("network_data".to_string(), Value::Atom(Atom::Int(100)));
 
         let fault = FaultScenario {
             target_var: "network_data".to_string(),
@@ -255,7 +284,9 @@ mod unit_tests {
     #[test]
     fn test_apply_fault_memory_corruption() {
         let mut interp = Interpreter::new();
-        interp.state.insert("button".to_string(), Value::Atom(Atom::Int(0b10101010)));
+        interp
+            .state
+            .insert("button".to_string(), Value::Atom(Atom::Int(0b10101010)));
 
         let fault = FaultScenario {
             target_var: "button".to_string(),
@@ -274,7 +305,9 @@ mod unit_tests {
     #[test]
     fn test_apply_fault_truncated_data() {
         let mut interp = Interpreter::new();
-        interp.state.insert("stdin_line".to_string(), Value::Atom(Atom::Int(0x12345678)));
+        interp
+            .state
+            .insert("stdin_line".to_string(), Value::Atom(Atom::Int(0x12345678)));
 
         let fault = FaultScenario {
             target_var: "stdin_line".to_string(),

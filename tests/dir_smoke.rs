@@ -135,8 +135,5 @@ node main [n == 0][n == 1] {
     // Count: "." + ".." + alpha.txt + beta.txt = 4, in any readdir order.
     // "found" pins the traversal + string-eq path; the -2 pins the Err
     // branch (-ENOENT for the missing dir) through the monomorphized gate.
-    assert_eq!(
-        out, "4\nfound\n-2\n",
-        "dir listing golden drifted: {out:?}"
-    );
+    assert_eq!(out, "4\nfound\n-2\n", "dir listing golden drifted: {out:?}");
 }

@@ -11,11 +11,11 @@
 //
 // DRY: All Vec-splicing share helpers. Max 2 levels.
 
-use std::collections::HashMap;
-use crate::ast::{Expr, Statement, TopLevel, PropertyValue};
-use crate::ast::top::*;
+use super::selection::{NodeRef, Selection, top_level_name, top_level_tag};
 use crate::ast::StageKind;
-use super::selection::{NodeRef, Selection, top_level_tag, top_level_name};
+use crate::ast::top::*;
+use crate::ast::{Expr, PropertyValue, Statement, TopLevel};
+use std::collections::HashMap;
 
 /// A position cursor in the AST, created by navigating a Selection.
 #[derive(Debug, Clone)]
@@ -57,7 +57,9 @@ pub fn insert_before_each(
     stage: StageKind,
 ) -> Result<u32, String> {
     let indices = collect_toplevel_indices(sel);
-    if indices.is_empty() { return Ok(0); }
+    if indices.is_empty() {
+        return Ok(0);
+    }
     validate_nodes_for_stage(&new_items, stage)?;
     for item in &new_items {
         validate_structural_toplevel(items, item)?;
@@ -78,7 +80,9 @@ pub fn insert_after_each(
     stage: StageKind,
 ) -> Result<u32, String> {
     let indices = collect_toplevel_indices(sel);
-    if indices.is_empty() { return Ok(0); }
+    if indices.is_empty() {
+        return Ok(0);
+    }
     validate_nodes_for_stage(&new_items, stage)?;
     for item in &new_items {
         validate_structural_toplevel(items, item)?;
@@ -161,9 +165,15 @@ fn insert_into_body(
     node: &NodeRef,
     new_items: Vec<TopLevel>,
 ) -> Result<(), String> {
-    let NodeRef::TopLevel(idx) = node else { return Ok(()) };
-    let Some(target) = items.get_mut(*idx) else { return Ok(()) };
-    let Some(body) = get_body_mut(target) else { return Ok(()) };
+    let NodeRef::TopLevel(idx) = node else {
+        return Ok(());
+    };
+    let Some(target) = items.get_mut(*idx) else {
+        return Ok(());
+    };
+    let Some(body) = get_body_mut(target) else {
+        return Ok(());
+    };
     let stmts = ast_nodes_to_stmts(&new_items);
     match pos {
         Position::Inside(_) => {
@@ -268,8 +278,13 @@ pub fn wrap_selection(
 ) -> Result<u32, String> {
     // For simplicity, wrap top-level nodes in a Statement container
     let mut count = 0u32;
-    let indices: Vec<usize> = sel.nodes.iter()
-        .filter_map(|n| match n { NodeRef::TopLevel(i) => Some(*i), _ => None })
+    let indices: Vec<usize> = sel
+        .nodes
+        .iter()
+        .filter_map(|n| match n {
+            NodeRef::TopLevel(i) => Some(*i),
+            _ => None,
+        })
         .collect();
     for i in indices.iter().rev() {
         if *i < items.len() {
@@ -304,7 +319,12 @@ fn validate_nodes_for_stage(nodes: &[TopLevel], stage: StageKind) -> Result<(), 
     // or an Expr::Call with no known type in the type universe.
     for node in nodes {
         if let TopLevel::Statement(stmt) = node {
-            if let Statement::Let { ty: None, expr: Some(_), .. } = stmt.as_ref() {
+            if let Statement::Let {
+                ty: None,
+                expr: Some(_),
+                ..
+            } = stmt.as_ref()
+            {
                 return Err(format!(
                     "stage {:?}: cannot insert untyped let binding — \
                      all let bindings must have explicit type annotations at this stage",
@@ -330,16 +350,16 @@ fn toplevel_parent_tag(item: &TopLevel) -> &str {
 }
 
 /// Check that a node can be placed in the current top-level context.
-fn validate_structural_toplevel(
-    items: &[TopLevel],
-    new_item: &TopLevel,
-) -> Result<(), String> {
+fn validate_structural_toplevel(items: &[TopLevel], new_item: &TopLevel) -> Result<(), String> {
     // Import and Export are only valid at the top level (always true here).
     // Term is only valid inside a body — reject if inserted as top-level.
     match new_item {
         TopLevel::Statement(stmt) => {
             let stmt = stmt.as_ref();
-            if matches!(stmt, Statement::Term(_) | Statement::Tail(_) | Statement::EndProgram(_)) {
+            if matches!(
+                stmt,
+                Statement::Term(_) | Statement::Tail(_) | Statement::EndProgram(_)
+            ) {
                 return Err(format!(
                     "cannot insert {:?} at top level — only valid inside a function body",
                     stmt
@@ -353,11 +373,14 @@ fn validate_structural_toplevel(
 
 // ── Internal Helpers ───────────────────────────────────────────────────
 
-fn resolve_toplevel_mut<'a>(items: &'a mut Vec<TopLevel>, node: &NodeRef) -> Result<&'a mut TopLevel, String> {
+fn resolve_toplevel_mut<'a>(
+    items: &'a mut Vec<TopLevel>,
+    node: &NodeRef,
+) -> Result<&'a mut TopLevel, String> {
     match node {
-        NodeRef::TopLevel(i) => {
-            items.get_mut(*i).ok_or_else(|| format!("node index {} out of range", i))
-        }
+        NodeRef::TopLevel(i) => items
+            .get_mut(*i)
+            .ok_or_else(|| format!("node index {} out of range", i)),
         _ => Err("only TopLevel nodes supported for this operation".into()),
     }
 }
@@ -390,10 +413,13 @@ fn set_name(item: &mut TopLevel, name: &str) {
 
 /// Convert constructed TopLevel nodes to Statements for body insertion.
 fn ast_nodes_to_stmts(nodes: &[TopLevel]) -> Vec<Statement> {
-    nodes.iter().filter_map(|n| match n {
-        TopLevel::Statement(s) => Some(s.as_ref().clone()),
-        _ => None,
-    }).collect()
+    nodes
+        .iter()
+        .filter_map(|n| match n {
+            TopLevel::Statement(s) => Some(s.as_ref().clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -401,9 +427,9 @@ fn ast_nodes_to_stmts(nodes: &[TopLevel]) -> Vec<Statement> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Expr, ImportKind, Type};
-    use crate::ast::top::*;
     use crate::ast::StageKind;
+    use crate::ast::top::*;
+    use crate::ast::{Expr, ImportKind, Type};
 
     fn sample_items() -> Vec<TopLevel> {
         vec![
@@ -512,14 +538,13 @@ mod tests {
 
     #[test]
     fn test_validate_nodes_for_stage_rejects_untyped_after_typed() {
-        let nodes = vec![
-            TopLevel::Statement(Box::new(Statement::Let { names: vec![], 
-                name: "x".into(),
-                ty: None,
-                expr: Some(Expr::Decimal(42)),
-                modifiers: vec![],
-            })),
-        ];
+        let nodes = vec![TopLevel::Statement(Box::new(Statement::Let {
+            names: vec![],
+            name: "x".into(),
+            ty: None,
+            expr: Some(Expr::Decimal(42)),
+            modifiers: vec![],
+        }))];
         let result = validate_nodes_for_stage(&nodes, StageKind::Normalized);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("untyped let binding"));

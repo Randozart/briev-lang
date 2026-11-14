@@ -70,8 +70,7 @@ mod tests {
     use crate::errors::Span;
 
     fn lower_ok(src: &str) -> BadProgram {
-        lower_to_bad(src, "x86_64", None, None)
-            .unwrap_or_else(|e| panic!("lower failed: {e}"))
+        lower_to_bad(src, "x86_64", None, None).unwrap_or_else(|e| panic!("lower failed: {e}"))
     }
 
     fn lower_err(src: &str) -> String {
@@ -332,7 +331,10 @@ mod tests {
         let src = "defn f(a: Int) -> Int { let b = a == 7; return b; }";
         let prog = lower_ok(src);
         let items = instrs(&prog, "f");
-        assert_eq!(mnems(&items), vec!["mov", "jnz", "jmp", "mov", "mov", "ret"]);
+        assert_eq!(
+            mnems(&items),
+            vec!["mov", "jnz", "jmp", "mov", "mov", "ret"]
+        );
         assert_eq!(ops_of(items[1]), vec!["r5", "7", ".bf_0"]);
         assert_eq!(labels(&items), vec!["bf_0", "be_1"]);
     }
@@ -365,8 +367,13 @@ mod tests {
     #[test]
     fn illegal_immediates_materialize_before_the_op() {
         // mul on aarch64 has no immediate form
-        let p = lower_to_bad("defn f(a: Int) -> Int { return a * 3; }", "aarch64", None, None)
-            .unwrap();
+        let p = lower_to_bad(
+            "defn f(a: Int) -> Int { return a * 3; }",
+            "aarch64",
+            None,
+            None,
+        )
+        .unwrap();
         let items = instrs(&p, "f");
         assert_eq!(mnems(&items), vec!["mov", "mul", "ret"]);
         assert_eq!(ops_of(items[0]), vec!["v1", "3"]);
@@ -465,7 +472,8 @@ mod tests {
 
     #[test]
     fn call_stages_args_into_abi_registers() {
-        let src = "defn g(a: Int, b: Int) -> Int { return a; }\ndefn f() -> Int { return g(1, 2); }";
+        let src =
+            "defn g(a: Int, b: Int) -> Int { return a; }\ndefn f() -> Int { return g(1, 2); }";
         let p = lower_ok(src);
         let items = instrs(&p, "f");
         assert_eq!(mnems(&items), vec!["mov", "mov", "call", "ret"]);
@@ -476,9 +484,8 @@ mod tests {
 
     #[test]
     fn call_arity_is_checked() {
-        let e = lower_err(
-            "defn g(a: Int) -> Int { return a; }\ndefn f() -> Int { return g(1, 2); }",
-        );
+        let e =
+            lower_err("defn g(a: Int) -> Int { return a; }\ndefn f() -> Int { return g(1, 2); }");
         assert!(e.contains("takes 1 argument"), "{e}");
     }
 
@@ -569,10 +576,11 @@ mod tests {
         std::fs::write(dir.join("ext.bad"), "start_here:\nret\n").unwrap();
         let src = "import \"ext.bad\";\ndefn f() { start_here(); }";
         let p = lower_to_bad(src, "x86_64", Some(&dir), None).unwrap();
-        assert!(p
-            .items
-            .iter()
-            .any(|i| matches!(i, BadTopLevel::Directive(d) if d.name == "import")));
+        assert!(
+            p.items
+                .iter()
+                .any(|i| matches!(i, BadTopLevel::Directive(d) if d.name == "import"))
+        );
         let items = instrs(&p, "f");
         assert_eq!(mnems(&items).first().map(String::as_str), Some("call"));
         std::fs::remove_dir_all(&dir).ok();
@@ -633,9 +641,14 @@ mod tests {
     fn import_of_unknown_extension_is_loud() {
         let dir = temp_dir("junk");
         std::fs::write(dir.join("junk.txt"), "nothing").unwrap();
-        let e = lower_to_bad("import \"junk.txt\";\ndefn f() { return; }", "x86_64", Some(&dir), None)
-            .err()
-            .unwrap();
+        let e = lower_to_bad(
+            "import \"junk.txt\";\ndefn f() { return; }",
+            "x86_64",
+            Some(&dir),
+            None,
+        )
+        .err()
+        .unwrap();
         assert!(e.contains("neither a `.bld`"), "{e}");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -673,11 +686,10 @@ mod tests {
 
     fn alloc_ok(src: &str) -> BadProgram {
         let family = "x86_64";
-        let prog = lower_to_bad(src, family, None, None)
-            .unwrap_or_else(|e| panic!("lower failed: {e}"));
+        let prog =
+            lower_to_bad(src, family, None, None).unwrap_or_else(|e| panic!("lower failed: {e}"));
         let (isa, regs) = crate::backend::bad::registries();
-        alloc::allocate(prog, &isa, &regs, family)
-            .unwrap_or_else(|e| panic!("alloc failed: {e}"))
+        alloc::allocate(prog, &isa, &regs, family).unwrap_or_else(|e| panic!("alloc failed: {e}"))
     }
 
     #[test]
@@ -694,9 +706,7 @@ mod tests {
     fn direct_ast_instr_lowers() {
         // `BldStmt::Instr` is the assembly+ bridge for symbolic core ops.
         let (isa, regs) = crate::backend::bad::registries();
-        let mut lw = crate::backend::bld::lower::BldLowerer::new(
-            &isa, &regs, "x86_64", None, None,
-        );
+        let mut lw = crate::backend::bld::lower::BldLowerer::new(&isa, &regs, "x86_64", None, None);
         let prog = BldProgram {
             items: vec![BldTopLevel::Defn(BldDefn {
                 name: "f".to_string(),
@@ -936,6 +946,9 @@ mod tests {
             })
             .flatten()
             .collect();
-        assert!(n_ops.iter().filter(|o| o.as_str() == "r1").count() >= 3, "{n_ops:?}");
+        assert!(
+            n_ops.iter().filter(|o| o.as_str() == "r1").count() >= 3,
+            "{n_ops:?}"
+        );
     }
 }

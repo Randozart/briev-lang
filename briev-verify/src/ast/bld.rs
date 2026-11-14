@@ -137,10 +137,7 @@ pub enum BldStmt {
         span: Span,
     },
     /// `{ … }` — a bare block (scope grouping).
-    Block {
-        body: Vec<BldStmt>,
-        span: Span,
-    },
+    Block { body: Vec<BldStmt>, span: Span },
     /// `when cond { … } else when cond { … } else { … }` — `otherwise`
     /// holds the else branch (an else-when is a nested `When` inside it).
     /// 2026-10-08: `when`, never `if` — Briev's conditional is `when`
@@ -154,10 +151,7 @@ pub enum BldStmt {
     },
     /// `loop { … }` — unbounded spin; exits via `break`. Never enters
     /// the .bv termination gates (this lane bypasses them by design).
-    Loop {
-        body: Vec<BldStmt>,
-        span: Span,
-    },
+    Loop { body: Vec<BldStmt>, span: Span },
     /// `while cond { … }` — unbounded conditional spin.
     While {
         cond: Expr,
@@ -165,34 +159,36 @@ pub enum BldStmt {
         span: Span,
     },
     /// `break;`
-    Break {
-        span: Span,
-    },
+    Break { span: Span },
     /// `continue;`
-    Continue {
-        span: Span,
-    },
+    Continue { span: Span },
     /// `return;` / `return expr;` — the naked exit (no hidden frame).
-    Return {
-        value: Option<Expr>,
-        span: Span,
-    },
+    Return { value: Option<Expr>, span: Span },
     /// `bad { … }` — verbatim .bad passthrough: sections, data labels,
     /// contracts, raw blocks, physical registers. The escape hatch, in
     /// the dialect itself (raw-block doctrine).
-    Bad {
-        text: String,
-        span: Span,
-    },
+    Bad { text: String, span: Span },
     /// A core instruction with symbolic operands — built by the .bad
     /// assembly+ pass, never parsed from `.bld` source. The allocator
     /// resolves `vN`/`fvN` operands through the ISA role table.
     Instr(BadInstr),
     /// `let x = pin r5` — bind a symbolic name to a physical register.
-    Bind { name: String, register: String, span: Span },
+    Bind {
+        name: String,
+        register: String,
+        span: Span,
+    },
     /// `r5 = x` — copy a symbolic value back to a physical register.
-    WriteReg { register: String, value: Expr, span: Span },
+    WriteReg {
+        register: String,
+        value: Expr,
+        span: Span,
+    },
     /// `raw clobbers rN { … }` — verbatim physical region. The clobbers
     /// are reserved for the whole recipe.
-    RawClobber { text: String, clobbers: Vec<String>, span: Span },
+    RawClobber {
+        text: String,
+        clobbers: Vec<String>,
+        span: Span,
+    },
 }

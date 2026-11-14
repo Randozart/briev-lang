@@ -40,7 +40,12 @@ fn js_literal(s: &str) -> String {
 ///
 /// `stem` is the output basename (a full path is reduced to its file name).
 /// The CSS link is emitted only when a `<style>` block was compiled.
-pub fn render_index_html(view_html: &str, stem: &str, has_css: bool, page_key: Option<&str>) -> String {
+pub fn render_index_html(
+    view_html: &str,
+    stem: &str,
+    has_css: bool,
+    page_key: Option<&str>,
+) -> String {
     let stem = basename(stem);
     let css_link = if has_css {
         format!("<link rel=\"stylesheet\" href=\"{stem}.css\">\n")
@@ -93,11 +98,16 @@ pub struct BundleRender {
 /// the default `.rbv` output; `--split` keeps the separate assets.
 pub fn render_bundle_html(r: &BundleRender) -> String {
     let title = basename(&r.stem);
-    let style = r.css.as_deref().map(|c| format!("<style>\n{c}</style>\n")).unwrap_or_default();
+    let style = r
+        .css
+        .as_deref()
+        .map(|c| format!("<style>\n{c}</style>\n"))
+        .unwrap_or_default();
     let b64 = base64_encode(&r.wasm_bytes);
     // 2026-10-08 (file-based routing, Part 1b): stamp the declared page key on
     // <body> as data-briev-page="<key>" (provenance only).
-    let body_attr = r.page_key
+    let body_attr = r
+        .page_key
         .as_deref()
         .map(|k| format!(" data-briev-page=\"{k}\""))
         .unwrap_or_default();
@@ -164,8 +174,16 @@ fn base64_encode(bytes: &[u8]) -> String {
             | (*chunk.get(2).unwrap_or(&0) as u32);
         out.push(T[((n >> 18) & 63) as usize] as char);
         out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -407,10 +425,7 @@ impl GlueWebGenerator {
     }
 
     /// 2026-08-11 (Phase 2a2): set the resolved `b-bind:value` routes.
-    pub fn with_bind_routes(
-        mut self,
-        routes: HashMap<String, BindRoute>,
-    ) -> Self {
+    pub fn with_bind_routes(mut self, routes: HashMap<String, BindRoute>) -> Self {
         self.bind_routes = routes;
         self
     }
@@ -806,7 +821,9 @@ export async function createApp(wasmBytes) {{
             .iter()
             .map(|ib| {
                 let (kind, expr) = match &ib.directive {
-                    crate::view_compiler::ItemDirective::Text { signal } => ("text", signal.as_str()),
+                    crate::view_compiler::ItemDirective::Text { signal } => {
+                        ("text", signal.as_str())
+                    }
                     crate::view_compiler::ItemDirective::Class { .. } => ("class", ""),
                     crate::view_compiler::ItemDirective::Show { expr } => ("show", expr.as_str()),
                     crate::view_compiler::ItemDirective::When { expr } => ("when", expr.as_str()),
@@ -869,7 +886,8 @@ export async function createApp(wasmBytes) {{
              const __sp = Number(BigInt.asUintN(32, BigInt(__word)));\
              const __len = Number(dv.getBigInt64(__sp, true));\
              const __bytes = new Uint8Array(this._memory.buffer, __sp + 8, __len);\
-             const item = new TextDecoder().decode(__bytes);".to_string()
+             const item = new TextDecoder().decode(__bytes);"
+                .to_string()
         } else {
             "const item = Number(dv.getBigInt64(snapPtr + 8 + i * 8, true));".to_string()
         };
@@ -993,7 +1011,10 @@ export async function createApp(wasmBytes) {{
         let mut out = String::new();
         for binding in &self.bindings {
             let js = self.binding_to_js(binding);
-            out.push_str(&format!("    // binding: {} {:?}\n", binding.element_id, binding.directive));
+            out.push_str(&format!(
+                "    // binding: {} {:?}\n",
+                binding.element_id, binding.directive
+            ));
             if !js.is_empty() {
                 out.push_str(&format!("    {}\n", js));
             }
@@ -1013,7 +1034,9 @@ export async function createApp(wasmBytes) {{
     /// lives in view_compiler.rs (also used by verify_srbv — DRY).
     fn field_handle_for_signal(&self, signal: &str) -> Option<u32> {
         let (root, _) = crate::view_compiler::root_signal(signal);
-        self.state_layout.fields.iter()
+        self.state_layout
+            .fields
+            .iter()
             .find(|f| f.name == root)
             .map(|f| f.field_handle)
     }
@@ -1126,7 +1149,7 @@ export async function createApp(wasmBytes) {{
                       \x20         }});\n\
                       \x20       }})();",
                     cond = cond
-                 )
+                )
             }
             Directive::Bind { target } => {
                 // 2026-08-11 (Phase 2a2, SPEC 21.4): `b-bind:value="field"` wires
@@ -1177,7 +1200,12 @@ export async function createApp(wasmBytes) {{
                     }
                 }
             }
-            Directive::Trigger { event, txn, params, scope } => {
+            Directive::Trigger {
+                event,
+                txn,
+                params,
+                scope,
+            } => {
                 // 2026-08-10: wire a DOM event listener that calls the WASM
                 // transaction export (b._instance.exports[<txn>]) with the
                 // binding's static params. The listener is attached once, at
@@ -1233,8 +1261,14 @@ export async function createApp(wasmBytes) {{
                 let Some(handle) = self.field_handle_for_signal(iterable) else {
                     return String::new();
                 };
-                let field = self.state_layout.fields.iter().find(|f| f.field_handle == handle);
-                let Some(field) = field else { return String::new(); };
+                let field = self
+                    .state_layout
+                    .fields
+                    .iter()
+                    .find(|f| f.field_handle == handle);
+                let Some(field) = field else {
+                    return String::new();
+                };
                 // 2026-08-12 (Iterable protocol, slice 4): a COLLECTION
                 // iterable renders from the `__view_items_<field>()` snapshot —
                 // the wasm materializer drives the collection's own op Count/
@@ -1242,8 +1276,13 @@ export async function createApp(wasmBytes) {{
                 // heap List's flush bytes are just the handle and cannot be).
                 if self.collection_iterables.contains(iterable.as_str()) {
                     return self.emit_collection_each(
-                        iterable.as_str(), item_name.as_str(), template_html.as_str(),
-                        container_id.as_str(), item_bindings, key_expr.as_str(), el.as_str(),
+                        iterable.as_str(),
+                        item_name.as_str(),
+                        template_html.as_str(),
+                        container_id.as_str(),
+                        item_bindings,
+                        key_expr.as_str(),
+                        el.as_str(),
                     );
                 }
                 // 2026-08-11 (housekeeping 1b): only a VECTOR field is
@@ -1269,10 +1308,16 @@ export async function createApp(wasmBytes) {{
                     .iter()
                     .map(|ib| {
                         let (kind, expr) = match &ib.directive {
-                            crate::view_compiler::ItemDirective::Text { signal } => ("text", signal.as_str()),
+                            crate::view_compiler::ItemDirective::Text { signal } => {
+                                ("text", signal.as_str())
+                            }
                             crate::view_compiler::ItemDirective::Class { .. } => ("class", ""),
-                            crate::view_compiler::ItemDirective::Show { expr } => ("show", expr.as_str()),
-                            crate::view_compiler::ItemDirective::When { expr } => ("when", expr.as_str()),
+                            crate::view_compiler::ItemDirective::Show { expr } => {
+                                ("show", expr.as_str())
+                            }
+                            crate::view_compiler::ItemDirective::When { expr } => {
+                                ("when", expr.as_str())
+                            }
                             crate::view_compiler::ItemDirective::Trigger { .. } => ("trigger", ""),
                         };
                         let extra = match &ib.directive {
@@ -1282,7 +1327,9 @@ export async function createApp(wasmBytes) {{
                             crate::view_compiler::ItemDirective::Class { pairs } => {
                                 let cls: Vec<String> = pairs
                                     .iter()
-                                    .map(|(cls_name, cls_expr)| format!("[{cls_name:?}, {cls_expr:?}]"))
+                                    .map(|(cls_name, cls_expr)| {
+                                        format!("[{cls_name:?}, {cls_expr:?}]")
+                                    })
                                     .collect();
                                 format!(", cls: [{}]", cls.join(", "))
                             }
@@ -1372,7 +1419,7 @@ export async function createApp(wasmBytes) {{
                      \x20           }}\n\
                      \x20         }});\n\
                      \x20       }})();",
-                     count = count,
+                    count = count,
                     elem_size = elem_size,
                     slot_reader = slot_reader,
                     template_html = template_html,
@@ -1383,85 +1430,86 @@ export async function createApp(wasmBytes) {{
                 // Each expr is a bounded single-field form (validated at view
                 // compile): dynamic pairs register on the root field's handle
                 // (evaluated on flush); literal-only pairs apply once at init.
-                 let mut js = format!("(() => {{\n        const el = {el};\n        if (!el) return;\n");
-                 for (cls_name, expr) in pairs {
-                     match self.bounded_root(expr) {
-                         Some((root, None)) if !root.is_empty() => {
-                             if let Some(handle) = self.field_handle_for_signal(&root) {
-                                 let cond = Self::simple_expr_js(expr, "value");
-                                 js.push_str(&format!(
-                                     "        this._registerViewEffect({handle}, (value) => {{\n\
+                let mut js =
+                    format!("(() => {{\n        const el = {el};\n        if (!el) return;\n");
+                for (cls_name, expr) in pairs {
+                    match self.bounded_root(expr) {
+                        Some((root, None)) if !root.is_empty() => {
+                            if let Some(handle) = self.field_handle_for_signal(&root) {
+                                let cond = Self::simple_expr_js(expr, "value");
+                                js.push_str(&format!(
+                                    "        this._registerViewEffect({handle}, (value) => {{\n\
                                       \x20         el.classList.toggle({cls_name:?}, {cond});\n\
                                       \x20       }});\n"
-                                 ));
-                             }
-                         }
-                         Some((_, Some(_))) => {
-                             // Literal-only pair — apply once at init.
-                             let cond = Self::simple_expr_js(expr, "");
-                             js.push_str(&format!(
-                                 "        el.classList.toggle({cls_name:?}, {cond});\n"
-                             ));
-                         }
-                         _ => {}
-                     }
-                 }
-                 js.push_str("      })();");
-                 js
-             }
-             Directive::Style { name, value } => {
-                 // 2026-08-11 (housekeeping, Part 2): `b-style="name: value"`.
-                 let mut js = format!(
-                     "(() => {{\n\
+                                ));
+                            }
+                        }
+                        Some((_, Some(_))) => {
+                            // Literal-only pair — apply once at init.
+                            let cond = Self::simple_expr_js(expr, "");
+                            js.push_str(&format!(
+                                "        el.classList.toggle({cls_name:?}, {cond});\n"
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                js.push_str("      })();");
+                js
+            }
+            Directive::Style { name, value } => {
+                // 2026-08-11 (housekeeping, Part 2): `b-style="name: value"`.
+                let mut js = format!(
+                    "(() => {{\n\
                       \x20         const el = {el};\n\
                       \x20         if (!el) return;\n"
-                 );
-                 match self.bounded_root(value) {
-                     Some((root, None)) if !root.is_empty() => {
-                         if let Some(handle) = self.field_handle_for_signal(&root) {
-                             js.push_str(&format!(
-                                 "        this._registerViewEffect({handle}, (value) => {{\n\
+                );
+                match self.bounded_root(value) {
+                    Some((root, None)) if !root.is_empty() => {
+                        if let Some(handle) = self.field_handle_for_signal(&root) {
+                            js.push_str(&format!(
+                                "        this._registerViewEffect({handle}, (value) => {{\n\
                                   \x20         el.style[{name:?}] = value;\n\
                                   \x20       }});\n"
-                             ));
-                         }
-                     }
-                     Some((_, Some(_))) => {
-                         let lit = js_literal(value);
-                         js.push_str(&format!("        el.style[{name:?}] = {lit};\n"));
-                     }
-                     _ => {}
-                 }
-                 js.push_str("      })();");
-                 js
-             }
-             Directive::Attr { name, value } => {
-                 // 2026-08-11 (housekeeping, Part 2): `b-attr="name: value"`.
-                 let mut js = format!(
-                     "(() => {{\n\
+                            ));
+                        }
+                    }
+                    Some((_, Some(_))) => {
+                        let lit = js_literal(value);
+                        js.push_str(&format!("        el.style[{name:?}] = {lit};\n"));
+                    }
+                    _ => {}
+                }
+                js.push_str("      })();");
+                js
+            }
+            Directive::Attr { name, value } => {
+                // 2026-08-11 (housekeeping, Part 2): `b-attr="name: value"`.
+                let mut js = format!(
+                    "(() => {{\n\
                       \x20         const el = {el};\n\
                       \x20         if (!el) return;\n"
-                 );
-                 match self.bounded_root(value) {
-                     Some((root, None)) if !root.is_empty() => {
-                         if let Some(handle) = self.field_handle_for_signal(&root) {
-                             js.push_str(&format!(
-                                 "        this._registerViewEffect({handle}, (value) => {{\n\
+                );
+                match self.bounded_root(value) {
+                    Some((root, None)) if !root.is_empty() => {
+                        if let Some(handle) = self.field_handle_for_signal(&root) {
+                            js.push_str(&format!(
+                                "        this._registerViewEffect({handle}, (value) => {{\n\
                                   \x20         el.setAttribute({name:?}, value);\n\
                                   \x20       }});\n"
-                             ));
-                         }
-                     }
-                     Some((_, Some(_))) => {
-                         let lit = js_literal(value);
-                         js.push_str(&format!("        el.setAttribute({name:?}, {lit});\n"));
-                     }
-                     _ => {}
-                 }
-                 js.push_str("      })();");
-                 js
-             }
-             _ => String::new(),
+                            ));
+                        }
+                    }
+                    Some((_, Some(_))) => {
+                        let lit = js_literal(value);
+                        js.push_str(&format!("        el.setAttribute({name:?}, {lit});\n"));
+                    }
+                    _ => {}
+                }
+                js.push_str("      })();");
+                js
+            }
+            _ => String::new(),
         }
     }
 
@@ -1472,17 +1520,22 @@ export async function createApp(wasmBytes) {{
         let e = expr.trim();
         let is_identifier = |s: &str| {
             !s.is_empty()
-                && s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
-                && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                && s.chars()
+                    .next()
+                    .map_or(false, |c| c.is_alphabetic() || c == '_')
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
         };
         let is_literal = |s: &str| {
             let s = s.trim();
             s.parse::<f64>().is_ok()
                 || s == "true"
                 || s == "false"
-                || (s.starts_with('\'') && s.len() >= 2
+                || (s.starts_with('\'')
+                    && s.len() >= 2
                     && s[1..].find('\'').map_or(false, |i| i == s.len() - 2))
-                || (s.starts_with('"') && s.len() >= 2
+                || (s.starts_with('"')
+                    && s.len() >= 2
                     && s[1..].find('"').map_or(false, |i| i == s.len() - 2))
         };
         if is_identifier(e) && !e.contains('.') {
@@ -1523,17 +1576,22 @@ export async function createApp(wasmBytes) {{
         let e = expr.trim();
         let is_identifier = |s: &str| {
             !s.is_empty()
-                && s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
-                && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                && s.chars()
+                    .next()
+                    .map_or(false, |c| c.is_alphabetic() || c == '_')
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
         };
         let is_literal = |s: &str| {
             let s = s.trim();
             s.parse::<f64>().is_ok()
                 || s == "true"
                 || s == "false"
-                || (s.starts_with('\'') && s.len() >= 2
+                || (s.starts_with('\'')
+                    && s.len() >= 2
                     && s[1..].find('\'').map_or(false, |i| i == s.len() - 2))
-                || (s.starts_with('"') && s.len() >= 2
+                || (s.starts_with('"')
+                    && s.len() >= 2
                     && s[1..].find('"').map_or(false, |i| i == s.len() - 2))
         };
         // 2026-08-12 (2b3): a bare identifier INCLUDING dotted instance slots
@@ -1608,8 +1666,13 @@ export async function createApp(wasmBytes) {{
             }
             // If the function has a non-void return, capture the result
             if fb.success_output.is_empty()
-                || matches!(fb.success_output[0].1, crate::ast::Type::Void) {
-                body.push_str(&format!("        {}({});\n", fn_name, call_names.join(", ")));
+                || matches!(fb.success_output[0].1, crate::ast::Type::Void)
+            {
+                body.push_str(&format!(
+                    "        {}({});\n",
+                    fn_name,
+                    call_names.join(", ")
+                ));
             } else {
                 body.push_str(&format!(
                     "        const _result = {}({});\n",
@@ -1637,13 +1700,17 @@ export async function createApp(wasmBytes) {{
     /// Derive JS parameter names from Briev parameter types.
     /// 2026-07-26: Phase 6 — Type-driven naming so the generated JS is readable.
     fn frgn_param_names(&self, inputs: &[(String, crate::ast::Type)]) -> Vec<String> {
-        inputs.iter().enumerate().map(|(i, (name, ty))| {
-            if !name.is_empty() {
-                name.clone()
-            } else {
-                self.param_name_from_type(ty, i)
-            }
-        }).collect()
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(i, (name, ty))| {
+                if !name.is_empty() {
+                    name.clone()
+                } else {
+                    self.param_name_from_type(ty, i)
+                }
+            })
+            .collect()
     }
 
     /// Generate a JS parameter name based on its Briev type.
@@ -1654,7 +1721,9 @@ export async function createApp(wasmBytes) {{
             crate::ast::Type::Custom(s) if s == "Int" => format!("val{}", idx),
             crate::ast::Type::Custom(s) if s == "Float" => format!("f{}", idx),
             crate::ast::Type::Custom(s) if s == "Bool" => format!("b{}", idx),
-            crate::ast::Type::Custom(s) if s == "Element" || s == "CanvasContext" => format!("handle{}", idx),
+            crate::ast::Type::Custom(s) if s == "Element" || s == "CanvasContext" => {
+                format!("handle{}", idx)
+            }
             _ => format!("arg{}", idx),
         }
     }
@@ -1664,9 +1733,11 @@ export async function createApp(wasmBytes) {{
     /// needs decoding (String → _readString, etc.) becomes a `_name` local so
     /// it never shadows the raw ABI parameter; pass-through types keep `name`.
     /// 2026-10-06: returns `(statements, call_argument_names)`.
-    fn frgn_marshal_in(&self, inputs: &[(String, crate::ast::Type)], param_names: &[String])
-        -> (Vec<String>, Vec<String>)
-    {
+    fn frgn_marshal_in(
+        &self,
+        inputs: &[(String, crate::ast::Type)],
+        param_names: &[String],
+    ) -> (Vec<String>, Vec<String>) {
         let mut stmts = Vec::new();
         let mut call_names = Vec::new();
         for (i, (_, ty)) in inputs.iter().enumerate() {
@@ -1786,7 +1857,10 @@ mod tests {
     #[test]
     fn index_html_omits_css_link_without_a_style_block() {
         let html = render_index_html("<div>x</div>", "app", false, None);
-        assert!(!html.contains(".css"), "no css link when no <style>: {html}");
+        assert!(
+            !html.contains(".css"),
+            "no css link when no <style>: {html}"
+        );
         assert!(html.contains("from './app.mjs'"), "{html}");
     }
 
@@ -1834,10 +1908,16 @@ mod tests {
             wasm_bytes: vec![0],
             page_key: Some("counter".to_string()),
         });
-        assert!(html.contains("<body data-briev-page=\"counter\">"), "bundle stamps key: {html}");
+        assert!(
+            html.contains("<body data-briev-page=\"counter\">"),
+            "bundle stamps key: {html}"
+        );
 
         let idx = render_index_html("<div>x</div>", "about", false, Some("about"));
-        assert!(idx.contains("<body data-briev-page=\"about\">"), "index stamps key: {idx}");
+        assert!(
+            idx.contains("<body data-briev-page=\"about\">"),
+            "index stamps key: {idx}"
+        );
 
         let html_none = render_bundle_html(&BundleRender {
             view_html: "<div>x</div>".to_string(),
@@ -1847,9 +1927,15 @@ mod tests {
             wasm_bytes: vec![0],
             page_key: None,
         });
-        assert!(!html_none.contains("data-briev-page"), "no attr when undeclared: {html_none}");
+        assert!(
+            !html_none.contains("data-briev-page"),
+            "no attr when undeclared: {html_none}"
+        );
         let idx_none = render_index_html("<div>x</div>", "counter", false, None);
-        assert!(!idx_none.contains("data-briev-page"), "no attr when undeclared: {idx_none}");
+        assert!(
+            !idx_none.contains("data-briev-page"),
+            "no attr when undeclared: {idx_none}"
+        );
     }
 
     #[test]
@@ -1922,20 +2008,28 @@ mod tests {
     fn test_generate_produces_output() {
         let g = make_empty_generator();
         let output = g.generate().expect("generate should succeed");
-        assert!(output.dom_shim.contains("WasmDomRuntime"),
-            "dom-shim should contain WasmDomRuntime class");
-        assert!(output.dts.contains("createApp"),
-            "dts should contain createApp function");
+        assert!(
+            output.dom_shim.contains("WasmDomRuntime"),
+            "dom-shim should contain WasmDomRuntime class"
+        );
+        assert!(
+            output.dts.contains("createApp"),
+            "dts should contain createApp function"
+        );
     }
 
     #[test]
     fn test_generate_includes_generation_offset() {
         let g = make_empty_generator();
         let output = g.generate().unwrap();
-        assert!(output.dom_shim.contains("_generationOffset"),
-            "should include generation offset");
-        assert!(output.dom_shim.contains("generation"),
-            "should include generation accessor");
+        assert!(
+            output.dom_shim.contains("_generationOffset"),
+            "should include generation offset"
+        );
+        assert!(
+            output.dom_shim.contains("generation"),
+            "should include generation accessor"
+        );
     }
 
     #[test]
@@ -1965,41 +2059,59 @@ mod tests {
                 generation_offset: 0,
                 flush_buffer_offset: 64,
                 max_flush_entries: 8,
-                fields: vec![
-                    FieldLayout {
-                        field_handle: 1,
-                        name: "count".to_string(),
-                        offset: 4,
-                        size: 4,
-                        element_size: 4,
-                        type_tag: TypeTag::Int,
-                    },
-                ],
+                fields: vec![FieldLayout {
+                    field_handle: 1,
+                    name: "count".to_string(),
+                    offset: 4,
+                    size: 4,
+                    element_size: 4,
+                    type_tag: TypeTag::Int,
+                }],
             },
             HashMap::new(),
             Vec::new(),
         );
         let output = g.generate().expect("generate should succeed");
-        assert!(output.dom_shim.contains("counter_app"),
-            "dom-shim should include app name");
-        assert!(output.dts.contains("increment"),
-            "dts should include transaction method declarations");
-        assert!(output.dom_shim.contains("_applyFlush"),
-            "dom-shim should include flush handler");
+        assert!(
+            output.dom_shim.contains("counter_app"),
+            "dom-shim should include app name"
+        );
+        assert!(
+            output.dts.contains("increment"),
+            "dts should include transaction method declarations"
+        );
+        assert!(
+            output.dom_shim.contains("_applyFlush"),
+            "dom-shim should include flush handler"
+        );
         // 2026-08-10: bindings must wire real DOM ops, not placeholders.
         // 2026-08-11 (Phase 2a): bindings register per-field view effects
         // (fanned out by the handle's default applyFn) instead of replacing
         // `_bindingTable[1].applyFn` — the old replacement clobbered earlier
         // bindings when two elements bound the same field.
-        assert!(output.dom_shim.contains("_registerViewEffect(1,"),
-            "text binding must register a view effect on the count field; got:\n{}", output.dom_shim);
-        assert!(output.dom_shim.contains("document.getElementById(\"counter\")"),
-            "text binding must target its element; got:\n{}", output.dom_shim);
-        assert!(output.dom_shim.contains("this._setText(el, value)"),
-            "text binding must set text through the unchanged-text guard; got:\n{}", output.dom_shim);
-        assert!(output.dom_shim.contains("addEventListener(\"click\"")
-            && output.dom_shim.contains("this._txn(\"increment\")"),
-            "trigger binding must wire the event listener; got:\n{}", output.dom_shim);
+        assert!(
+            output.dom_shim.contains("_registerViewEffect(1,"),
+            "text binding must register a view effect on the count field; got:\n{}",
+            output.dom_shim
+        );
+        assert!(
+            output
+                .dom_shim
+                .contains("document.getElementById(\"counter\")"),
+            "text binding must target its element; got:\n{}",
+            output.dom_shim
+        );
+        assert!(
+            output.dom_shim.contains("this._setText(el, value)"),
+            "text binding must set text through the unchanged-text guard; got:\n{}",
+            output.dom_shim
+        );
+        assert!(
+            output.dom_shim.contains("addEventListener(\"click\"")
+                && output.dom_shim.contains("this._txn(\"increment\")"),
+            "trigger binding must wire the event listener; got:\n{}",
+            output.dom_shim
+        );
     }
 
     // 2026-10-07 (popstate): a Window-scope trigger binds `window`, not the
@@ -2007,17 +2119,15 @@ mod tests {
     // Element-scope triggers that use `el.addEventListener`.
     #[test]
     fn test_generate_window_scope_trigger() {
-        let bindings = vec![
-            crate::view_compiler::Binding {
-                element_id: "root".to_string(),
-                directive: crate::view_compiler::Directive::Trigger {
-                    event: "popstate".to_string(),
-                    txn: "sync_route".to_string(),
-                    params: vec![],
-                    scope: crate::view_compiler::TriggerScope::Window,
-                },
+        let bindings = vec![crate::view_compiler::Binding {
+            element_id: "root".to_string(),
+            directive: crate::view_compiler::Directive::Trigger {
+                event: "popstate".to_string(),
+                txn: "sync_route".to_string(),
+                params: vec![],
+                scope: crate::view_compiler::TriggerScope::Window,
             },
-        ];
+        }];
         let g = GlueWebGenerator::new(
             Vec::new(),
             bindings,
@@ -2033,7 +2143,9 @@ mod tests {
         );
         let output = g.generate().expect("generate should succeed");
         assert!(
-            output.dom_shim.contains("window.addEventListener(\"popstate\"")
+            output
+                .dom_shim
+                .contains("window.addEventListener(\"popstate\"")
                 && output.dom_shim.contains("this._txn(\"sync_route\")"),
             "window-scope trigger must bind window + fire the txn; got:\n{}",
             output.dom_shim
@@ -2089,14 +2201,20 @@ mod tests {
         let output = g.generate().expect("generate should succeed");
         let shim = &output.dom_shim;
         let a_regs = shim.matches("_registerViewEffect(1,").count();
-        assert_eq!(a_regs, 2, "both elements must register on handle 1:\n{shim}");
-        assert!(shim.contains("document.getElementById(\"a\")")
-            && shim.contains("document.getElementById(\"b\")"),
-            "both elements targeted:\n{shim}");
+        assert_eq!(
+            a_regs, 2,
+            "both elements must register on handle 1:\n{shim}"
+        );
+        assert!(
+            shim.contains("document.getElementById(\"a\")")
+                && shim.contains("document.getElementById(\"b\")"),
+            "both elements targeted:\n{shim}"
+        );
     }
 
     #[test]
-    fn test_when_binding_emits_mount_unmount_effect() {        // 2026-08-11 (Phase 2a, SPEC 21.4): `b-when` structurally mounts/
+    fn test_when_binding_emits_mount_unmount_effect() {
+        // 2026-08-11 (Phase 2a, SPEC 21.4): `b-when` structurally mounts/
         // unmounts a subtree. The emitted effect must snapshot a template,
         // anchor the position with a comment, and insert/remove on truthiness.
         let bindings = vec![crate::view_compiler::Binding {
@@ -2127,16 +2245,26 @@ mod tests {
         );
         let output = g.generate().expect("generate should succeed");
         let shim = &output.dom_shim;
-        assert!(shim.contains("_registerViewEffect(1,"),
-            "when binding must register on the count field:\n{shim}");
-        assert!(shim.contains("document.getElementById(\"panel\")"),
-            "when binding must target its element:\n{shim}");
-        assert!(shim.contains("template.cloneNode(true)"),
-            "remount must clone the template:\n{shim}");
-        assert!(shim.contains("createComment('b-when')"),
-            "unmount must anchor the position:\n{shim}");
-        assert!(shim.contains("el.remove()"),
-            "unmount must detach the element:\n{shim}");
+        assert!(
+            shim.contains("_registerViewEffect(1,"),
+            "when binding must register on the count field:\n{shim}"
+        );
+        assert!(
+            shim.contains("document.getElementById(\"panel\")"),
+            "when binding must target its element:\n{shim}"
+        );
+        assert!(
+            shim.contains("template.cloneNode(true)"),
+            "remount must clone the template:\n{shim}"
+        );
+        assert!(
+            shim.contains("createComment('b-when')"),
+            "unmount must anchor the position:\n{shim}"
+        );
+        assert!(
+            shim.contains("el.remove()"),
+            "unmount must detach the element:\n{shim}"
+        );
     }
 
     #[test]
@@ -2197,8 +2325,10 @@ mod tests {
     fn test_empty_bindings() {
         let g = make_empty_generator();
         let output = g.generate().unwrap();
-        assert!(output.dom_shim.contains("createApp"),
-            "should still produce createApp with empty bindings");
+        assert!(
+            output.dom_shim.contains("createApp"),
+            "should still produce createApp with empty bindings"
+        );
     }
 
     #[test]
@@ -2252,12 +2382,18 @@ mod tests {
         );
         let output = g.generate().expect("generate should succeed");
         let shim = &output.dom_shim;
-        assert!(shim.contains("el.classList.toggle(\"active\", value == true)"),
-            "class comparison registers on the field:\n{shim}");
-        assert!(shim.contains("el.style[\"background\"] = value"),
-            "style field ref registers on the field:\n{shim}");
-        assert!(shim.contains("el.setAttribute(\"data-mode\", \"dark\")"),
-            "literal attr applies once at init:\n{shim}");
+        assert!(
+            shim.contains("el.classList.toggle(\"active\", value == true)"),
+            "class comparison registers on the field:\n{shim}"
+        );
+        assert!(
+            shim.contains("el.style[\"background\"] = value"),
+            "style field ref registers on the field:\n{shim}"
+        );
+        assert!(
+            shim.contains("el.setAttribute(\"data-mode\", \"dark\")"),
+            "literal attr applies once at init:\n{shim}"
+        );
     }
 
     #[test]
@@ -2315,23 +2451,37 @@ mod tests {
         );
         let output = g.generate().expect("generate should succeed");
         let shim = &output.dom_shim;
-        assert!(shim.contains("_registerViewEffect(1,"),
-            "each must register on the items field:\n{shim}");
-        assert!(shim.contains("document.createElement(tagName)")
-            && shim.contains("el.innerHTML = templateInner"),
-            "each must build a fresh clone per item:\n{shim}");
-        assert!(shim.contains("getBigInt64(valPtr + i * 8"),
-            "each must read i64 slots from WASM:\n{shim}");
-        assert!(shim.contains("txn: \"select_item\"")
-            && shim.contains("params: [\"item\"]")
-            && shim.contains("ib.params.length ? ib.params.map"),
-            "item trigger must call the txn with its declared params:\n{shim}");
-        assert!(shim.contains("data-itm=\\\""),
-            "marker-1 inner elements resolved in the clone:\n{shim}");
-        assert!(shim.contains("applyItem(el, item, isNew);"),
-            "existing keyed rows must refresh fields:\n{shim}");
-        assert!(shim.contains("ib.kind === \"trigger\" && bindTriggers"),
-            "item triggers must bind only on creation:\n{shim}");
+        assert!(
+            shim.contains("_registerViewEffect(1,"),
+            "each must register on the items field:\n{shim}"
+        );
+        assert!(
+            shim.contains("document.createElement(tagName)")
+                && shim.contains("el.innerHTML = templateInner"),
+            "each must build a fresh clone per item:\n{shim}"
+        );
+        assert!(
+            shim.contains("getBigInt64(valPtr + i * 8"),
+            "each must read i64 slots from WASM:\n{shim}"
+        );
+        assert!(
+            shim.contains("txn: \"select_item\"")
+                && shim.contains("params: [\"item\"]")
+                && shim.contains("ib.params.length ? ib.params.map"),
+            "item trigger must call the txn with its declared params:\n{shim}"
+        );
+        assert!(
+            shim.contains("data-itm=\\\""),
+            "marker-1 inner elements resolved in the clone:\n{shim}"
+        );
+        assert!(
+            shim.contains("applyItem(el, item, isNew);"),
+            "existing keyed rows must refresh fields:\n{shim}"
+        );
+        assert!(
+            shim.contains("ib.kind === \"trigger\" && bindTriggers"),
+            "item triggers must bind only on creation:\n{shim}"
+        );
     }
 
     #[test]
@@ -2344,19 +2494,30 @@ mod tests {
             },
         }];
         let g = GlueWebGenerator::new(
-            Vec::new(), bindings,
+            Vec::new(),
+            bindings,
             StateLayout {
-                app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 64,
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 64,
                 max_flush_entries: 8,
                 fields: vec![FieldLayout {
-                    field_handle: 1, name: "count".into(), offset: 4, size: 4,
-                    element_size: 4, type_tag: TypeTag::Int,
+                    field_handle: 1,
+                    name: "count".into(),
+                    offset: 4,
+                    size: 4,
+                    element_size: 4,
+                    type_tag: TypeTag::Int,
                 }],
             },
-            HashMap::new(), Vec::new(),
+            HashMap::new(),
+            Vec::new(),
         );
         let shim = g.generate().expect("generate should succeed").dom_shim;
-        assert!(shim.contains("document.getElementById(\"status\")"), "{shim}");
+        assert!(
+            shim.contains("document.getElementById(\"status\")"),
+            "{shim}"
+        );
         assert!(!shim.contains("const el = {el};"), "{shim}");
     }
 
@@ -2373,9 +2534,17 @@ mod tests {
             },
         }];
         let g = GlueWebGenerator::new(
-            Vec::new(), bindings,
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
-            HashMap::new(), Vec::new(),
+            Vec::new(),
+            bindings,
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
+            HashMap::new(),
+            Vec::new(),
         );
         let shim = g.generate().expect("generate should succeed").dom_shim;
         assert!(shim.contains("this._txn(\"select_stars\")(1)"), "{shim}");
@@ -2388,7 +2557,9 @@ mod tests {
         use crate::view_compiler::{Binding, Directive};
         let bindings = vec![Binding {
             element_id: "status".to_string(),
-            directive: Directive::Show { expr: "count > 0".to_string() },
+            directive: Directive::Show {
+                expr: "count > 0".to_string(),
+            },
         }];
         let g = GlueWebGenerator::new(
             Vec::new(),
@@ -2433,7 +2604,9 @@ mod tests {
                 container_id: "lst".to_string(),
                 item_bindings: vec![ItemBinding {
                     marker: 1,
-                    directive: ItemDirective::Text { signal: "item".to_string() },
+                    directive: ItemDirective::Text {
+                        signal: "item".to_string(),
+                    },
                 }],
                 key_expr: "item".to_string(),
             },
@@ -2462,8 +2635,14 @@ mod tests {
         .with_collection_string_iterables(HashSet::from(["items".to_string()]));
         let shim = g.generate().expect("generate should succeed").dom_shim;
         assert!(shim.contains("new TextDecoder().decode(__bytes)"), "{shim}");
-        assert!(shim.contains("if (token === \"item\") return item;"), "{shim}");
-        assert!(shim.contains("container.insertBefore(el2, cursor);"), "{shim}");
+        assert!(
+            shim.contains("if (token === \"item\") return item;"),
+            "{shim}"
+        );
+        assert!(
+            shim.contains("container.insertBefore(el2, cursor);"),
+            "{shim}"
+        );
         assert!(shim.contains("const isNew = !el2;"), "{shim}");
         assert!(!shim.contains("String.fromCharCode(...__bytes)"), "{shim}");
     }
@@ -2476,20 +2655,34 @@ mod tests {
         let g = make_empty_generator();
         let output = g.generate().unwrap();
         let shim = &output.dom_shim;
-        assert!(shim.contains("typeTag === 1") && shim.contains("getFloat64(Number(valPtr), true)"),
-            "Float decode must be emitted; got:\n{shim}");
-        assert!(shim.contains("typeTag === 2") && shim.contains("getUint8(Number(valPtr), true)"),
-            "Bool decode must be emitted; got:\n{shim}");
-        assert!(shim.contains("typeTag === 3") && shim.contains("_readString(strPtr)"),
-            "String decode must dereference the slot pointer; got:\n{shim}");
-        assert!(shim.contains("getInt32(Number(valPtr), true)"),
-            "Int decode must be emitted; got:\n{shim}");
-        assert!(shim.contains("const records = new Array(count);")
-            && shim.contains("for (const record of records)")
-            && shim.contains("binding.decode ? binding.decode(record.valPtr, record.valLen) : null"),
-            "_applyFlush must snapshot records, then decode type-aware; got:\n{shim}");
-        assert!(!shim.contains("valLen > 0\n          ? new TextDecoder()"),
-            "blind TextDecoder path must be gone; got:\n{shim}");
+        assert!(
+            shim.contains("typeTag === 1") && shim.contains("getFloat64(Number(valPtr), true)"),
+            "Float decode must be emitted; got:\n{shim}"
+        );
+        assert!(
+            shim.contains("typeTag === 2") && shim.contains("getUint8(Number(valPtr), true)"),
+            "Bool decode must be emitted; got:\n{shim}"
+        );
+        assert!(
+            shim.contains("typeTag === 3") && shim.contains("_readString(strPtr)"),
+            "String decode must dereference the slot pointer; got:\n{shim}"
+        );
+        assert!(
+            shim.contains("getInt32(Number(valPtr), true)"),
+            "Int decode must be emitted; got:\n{shim}"
+        );
+        assert!(
+            shim.contains("const records = new Array(count);")
+                && shim.contains("for (const record of records)")
+                && shim.contains(
+                    "binding.decode ? binding.decode(record.valPtr, record.valLen) : null"
+                ),
+            "_applyFlush must snapshot records, then decode type-aware; got:\n{shim}"
+        );
+        assert!(
+            !shim.contains("valLen > 0\n          ? new TextDecoder()"),
+            "blind TextDecoder path must be gone; got:\n{shim}"
+        );
     }
 
     #[test]
@@ -2497,10 +2690,14 @@ mod tests {
         let g = make_empty_generator();
         let output = g.generate().unwrap();
         // Verify the flush buffer config appears in the output
-        assert!(output.dom_shim.contains("_maxFlushEntries"),
-            "should include max flush entries");
-        assert!(output.dom_shim.contains("_flushBufferOffset"),
-            "should include flush buffer offset");
+        assert!(
+            output.dom_shim.contains("_maxFlushEntries"),
+            "should include max flush entries"
+        );
+        assert!(
+            output.dom_shim.contains("_flushBufferOffset"),
+            "should include flush buffer offset"
+        );
     }
 
     // ── Phase 6: frgn from #Web import stubs (type-driven) ─────
@@ -2543,20 +2740,39 @@ mod tests {
             },
         }];
         let g = GlueWebGenerator::new(
-            Vec::new(), bindings,
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            bindings,
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let out = g.generate().unwrap();
-        assert!(out.dom_shim.contains("class WebHeap"),
-            "browser heap runtime missing:\n{}", out.dom_shim);
-        assert!(out.dom_shim.contains("...this._heap"),
-            "wasm32 heap imports missing:\n{}", out.dom_shim);
-        assert!(out.dom_shim.contains("return this._heap.malloc(size)"),
-            "host static allocation is not heap-owned:\n{}", out.dom_shim);
-        assert!(out.dom_shim.contains("document.readyState"),
-            "missed readiness-event recovery missing:\n{}", out.dom_shim);
+        assert!(
+            out.dom_shim.contains("class WebHeap"),
+            "browser heap runtime missing:\n{}",
+            out.dom_shim
+        );
+        assert!(
+            out.dom_shim.contains("...this._heap"),
+            "wasm32 heap imports missing:\n{}",
+            out.dom_shim
+        );
+        assert!(
+            out.dom_shim.contains("return this._heap.malloc(size)"),
+            "host static allocation is not heap-owned:\n{}",
+            out.dom_shim
+        );
+        assert!(
+            out.dom_shim.contains("document.readyState"),
+            "missed readiness-event recovery missing:\n{}",
+            out.dom_shim
+        );
     }
 
     #[test]
@@ -2568,16 +2784,27 @@ mod tests {
             vec![],
         );
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let out = g.generate().unwrap();
-        assert!(out.dom_shim.contains("_readString"),
-            "String param should generate _readString call");
-        assert!(!out.dom_shim.contains("document.createElement"),
-            "no DOM-specific names should appear in the compiler");
+        assert!(
+            out.dom_shim.contains("_readString"),
+            "String param should generate _readString call"
+        );
+        assert!(
+            !out.dom_shim.contains("document.createElement"),
+            "no DOM-specific names should appear in the compiler"
+        );
     }
 
     /// 2026-10-06: the generated `#Web` frgn stub must be VALID JS — an object
@@ -2592,16 +2819,35 @@ mod tests {
             vec![],
         );
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let shim = g.generate().unwrap().dom_shim;
-        assert!(shim.contains("foo: (msg) =>"), "object property syntax required: {shim}");
-        assert!(!shim.contains("foo(msg) =>"), "old invalid syntax must be gone: {shim}");
-        assert!(shim.contains("const _msg = this._readString(msg);"), "no shadowing: {shim}");
-        assert!(shim.contains("foo(_msg);"), "call the host with the decoded local: {shim}");
+        assert!(
+            shim.contains("foo: (msg) =>"),
+            "object property syntax required: {shim}"
+        );
+        assert!(
+            !shim.contains("foo(msg) =>"),
+            "old invalid syntax must be gone: {shim}"
+        );
+        assert!(
+            shim.contains("const _msg = this._readString(msg);"),
+            "no shadowing: {shim}"
+        );
+        assert!(
+            shim.contains("foo(_msg);"),
+            "call the host with the decoded local: {shim}"
+        );
     }
 
     #[test]
@@ -2612,16 +2858,28 @@ mod tests {
         let mut hf = HashMap::new();
         hf.insert("log".to_string(), "(msg) => console.log(msg)".to_string());
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             Vec::new(),
-        ).with_host_fns(hf);
+        )
+        .with_host_fns(hf);
         let shim = g.generate().unwrap().dom_shim;
-        let fn_pos = shim.find("const log = (msg) => console.log(msg);")
+        let fn_pos = shim
+            .find("const log = (msg) => console.log(msg);")
             .unwrap_or_else(|| panic!("host fn missing: {shim}"));
         let class_pos = shim.find("export class").expect("class present");
-        assert!(fn_pos < class_pos, "host fns must be module-scope (before the class)");
+        assert!(
+            fn_pos < class_pos,
+            "host fns must be module-scope (before the class)"
+        );
     }
 
     #[test]
@@ -2630,17 +2888,29 @@ mod tests {
         let frgn = make_web_frgn(
             "make_widget",
             vec![],
-            vec![("result".to_string(), crate::ast::Type::Custom("Element".to_string()))],
+            vec![(
+                "result".to_string(),
+                crate::ast::Type::Custom("Element".to_string()),
+            )],
         );
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let out = g.generate().unwrap();
-        assert!(out.dom_shim.contains("_handles.push"),
-            "Element return should register in handle table");
+        assert!(
+            out.dom_shim.contains("_handles.push"),
+            "Element return should register in handle table"
+        );
     }
 
     #[test]
@@ -2652,14 +2922,23 @@ mod tests {
             vec![("result".to_string(), crate::ast::Type::bool_())],
         );
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let out = g.generate().unwrap();
-        assert!(out.dom_shim.contains("? 1 : 0"),
-            "Bool return should marshal to 1/0");
+        assert!(
+            out.dom_shim.contains("? 1 : 0"),
+            "Bool return should marshal to 1/0"
+        );
     }
 
     #[test]
@@ -2674,38 +2953,61 @@ mod tests {
             vec![],
         );
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let out = g.generate().unwrap();
         // Find the compute() stub — it starts with "compute: (" (inside _buildImports return)
         let stub_start = out.dom_shim.find("compute(").unwrap_or(0);
-        let stub_end = out.dom_shim[stub_start..].find("},")
+        let stub_end = out.dom_shim[stub_start..]
+            .find("},")
             .map(|e| stub_start + e + 2)
             .unwrap_or(out.dom_shim.len());
         let stub_body = &out.dom_shim[stub_start..stub_end];
-        assert!(!stub_body.contains("_readString"),
-            "Int/Float params should NOT generate _readString in the frgn stub body");
-        assert!(out.dom_shim.contains("compute"),
-            "should include the frgn name");
+        assert!(
+            !stub_body.contains("_readString"),
+            "Int/Float params should NOT generate _readString in the frgn stub body"
+        );
+        assert!(
+            out.dom_shim.contains("compute"),
+            "should include the frgn name"
+        );
     }
 
     #[test]
     fn test_frgn_without_frgn_skips_imports() {
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![],
         );
         let out = g.generate().unwrap();
         // No frgns — import section should still be valid (empty)
-        assert!(out.dom_shim.contains("_buildImports"),
-            "should still create _buildImports method");
-        assert!(out.dom_shim.contains("__web_flush_state"),
-            "should still include __web_flush_state");
+        assert!(
+            out.dom_shim.contains("_buildImports"),
+            "should still create _buildImports method"
+        );
+        assert!(
+            out.dom_shim.contains("__web_flush_state"),
+            "should still include __web_flush_state"
+        );
     }
 
     #[test]
@@ -2717,14 +3019,23 @@ mod tests {
             vec![("result".to_string(), crate::ast::Type::string())],
         );
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let out = g.generate().unwrap();
-        assert!(out.dom_shim.contains("_writeString"),
-            "String return should generate _writeString call");
+        assert!(
+            out.dom_shim.contains("_writeString"),
+            "String return should generate _writeString call"
+        );
     }
 
     #[test]
@@ -2733,31 +3044,49 @@ mod tests {
         let frgn = make_web_frgn(
             "update",
             vec![
-                ("elem".to_string(), crate::ast::Type::Custom("Element".to_string())),
+                (
+                    "elem".to_string(),
+                    crate::ast::Type::Custom("Element".to_string()),
+                ),
                 ("msg".to_string(), crate::ast::Type::string()),
                 ("count".to_string(), crate::ast::Type::int()),
             ],
             vec![],
         );
         let g = GlueWebGenerator::new(
-            Vec::new(), Vec::new(),
-            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            Vec::new(),
+            Vec::new(),
+            StateLayout {
+                app_name: "t".into(),
+                generation_offset: 0,
+                flush_buffer_offset: 0,
+                max_flush_entries: 0,
+                fields: vec![],
+            },
             HashMap::new(),
             vec![frgn],
         );
         let out = g.generate().unwrap();
-        assert!(out.dom_shim.contains("_handles["),
-            "Element param should use handle lookup");
-        assert!(out.dom_shim.contains("_readString"),
-            "String param should use _readString");
+        assert!(
+            out.dom_shim.contains("_handles["),
+            "Element param should use handle lookup"
+        );
+        assert!(
+            out.dom_shim.contains("_readString"),
+            "String param should use _readString"
+        );
         // count: Int passes through as raw value — no _readString in the stub body
         let stub_start = out.dom_shim.find("update: (").unwrap_or(0);
-        let stub_end = out.dom_shim[stub_start..].find("},")
+        let stub_end = out.dom_shim[stub_start..]
+            .find("},")
             .map(|e| stub_start + e + 2)
             .unwrap_or(out.dom_shim.len());
         let stub_body = &out.dom_shim[stub_start..stub_end];
         let readstring_count = stub_body.matches("_readString").count();
-        assert_eq!(readstring_count, 1,
-            "only one _readString in the update() stub (for String param, not Int); got {}", readstring_count);
+        assert_eq!(
+            readstring_count, 1,
+            "only one _readString in the update() stub (for String param, not Int); got {}",
+            readstring_count
+        );
     }
 }

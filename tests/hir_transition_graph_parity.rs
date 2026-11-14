@@ -2,7 +2,7 @@
 //! H3.4b parity: HIR reactor transition graph must equal the AST graph
 //! (still authoritative) on every node fact.
 
-use briev_compiler::analysis::transition_graph::{ReactorTransitionGraph, ReactorNode};
+use briev_compiler::analysis::transition_graph::{ReactorNode, ReactorTransitionGraph};
 use briev_compiler::ast::TopLevel;
 use briev_compiler::hir::lower_program;
 use briev_compiler::hir::transition_graph::{HirReactorNode, HirReactorTransitionGraph};
@@ -59,8 +59,14 @@ fn compare_ast_hir(ast: &ReactorNode, hir: &HirReactorNode, label: &str) -> Vec<
     };
     check(ast.name == hir.name, "name");
     check(ast.is_reactive == hir.is_reactive, "is_reactive");
-    check(bp_dbg(&ast.bounded_pre) == bp_dbg(&hir.bounded_pre), "bounded_pre");
-    check(inc_dbg(&ast.increments) == inc_dbg(&hir.increments), "increments");
+    check(
+        bp_dbg(&ast.bounded_pre) == bp_dbg(&hir.bounded_pre),
+        "bounded_pre",
+    );
+    check(
+        inc_dbg(&ast.increments) == inc_dbg(&hir.increments),
+        "increments",
+    );
     check(ast.is_pure_body == hir.is_pure_body, "is_pure_body");
     check(ast.write_set == hir.write_set, "write_set");
     check(
@@ -107,7 +113,11 @@ fn assert_graph_parity(src: &str, label: &str) {
             ast.has_unguarded_ffi, hir.has_unguarded_ffi
         ));
     }
-    assert!(bad.is_empty(), "HIR transition-graph parity:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "HIR transition-graph parity:\n{}",
+        bad.join("\n")
+    );
 }
 
 #[test]
@@ -164,7 +174,11 @@ fn corpus_transition_graph_parity() {
             continue;
         }
         compared += 1;
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         let ast = ReactorTransitionGraph::build(&items, &None, &[]);
         let hir = HirReactorTransitionGraph::build(&program, None, &[]);
         if ast.nodes.len() != hir.nodes.len() {

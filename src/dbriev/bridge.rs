@@ -12,7 +12,11 @@ pub fn document_to_program(doc: &DbrievDocument, name: &str) -> Vec<ast::TopLeve
 }
 
 /// Like `document_to_program` but with option for lazy DBVL loading.
-pub fn document_to_program_flags(doc: &DbrievDocument, name: &str, use_lazy: bool) -> Vec<ast::TopLevel> {
+pub fn document_to_program_flags(
+    doc: &DbrievDocument,
+    name: &str,
+    use_lazy: bool,
+) -> Vec<ast::TopLevel> {
     let mut items: Vec<ast::TopLevel> = Vec::new();
 
     // 0. Convert imports to Briev import statements
@@ -42,45 +46,47 @@ pub fn document_to_program_flags(doc: &DbrievDocument, name: &str, use_lazy: boo
             };
 
             // Check if we can use lazy DbvlTable
-            let can_use_lazy = use_lazy
-                && group.schema_name.is_some()
-                && !doc.key_offsets.is_empty();
+            let can_use_lazy =
+                use_lazy && group.schema_name.is_some() && !doc.key_offsets.is_empty();
 
             if can_use_lazy {
                 // Create lazy DbvlTable — builds key-offset index
-                let field_names: Vec<String> = group.entries.iter()
-                    .filter_map(|e| e.key.clone())
-                    .collect();
+                let field_names: Vec<String> =
+                    group.entries.iter().filter_map(|e| e.key.clone()).collect();
                 // Use schema field names for proper ordering
-                let schema_field_names = doc.schemas.iter()
+                let schema_field_names = doc
+                    .schemas
+                    .iter()
                     .find(|s| Some(s.name.as_str()) == group.schema_name.as_deref())
                     .map(|s| s.fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>())
                     .unwrap_or_else(|| field_names.clone());
 
-            data_map.push((
-                ast::Expr::Quoted(group_name.into()),
-                ast::Expr::Tuple(vec![]), // lazy DbvlTable — placeholder
-            ));
+                data_map.push((
+                    ast::Expr::Quoted(group_name.into()),
+                    ast::Expr::Tuple(vec![]), // lazy DbvlTable — placeholder
+                ));
             // 2026-07-14: Non-lazy path — convert data entries directly
             } else {
                 for entry in &group.entries {
-                    let key_str = entry.key.clone().unwrap_or_else(|| {
-                        format!("_{}", data_map.len())
-                    });
-                    let entry_expr = data_entry_to_expr(entry, group.schema_name.as_deref(), &doc.schemas);
+                    let key_str = entry
+                        .key
+                        .clone()
+                        .unwrap_or_else(|| format!("_{}", data_map.len()));
+                    let entry_expr =
+                        data_entry_to_expr(entry, group.schema_name.as_deref(), &doc.schemas);
                     data_map.push((
                         ast::Expr::Quoted(key_str.clone().into()),
-                        ast::Expr::List(vec![
-                            ast::Expr::Quoted(key_str.into()),
-                            entry_expr,
-                        ]),
+                        ast::Expr::List(vec![ast::Expr::Quoted(key_str.into()), entry_expr]),
                     ));
                 }
             }
         }
 
         // If only one group and it has no schema name, use value directly
-        let value = if data_map.len() == 1 && doc.data_groups[0].schema_name.is_none() && doc.data_groups[0].entries.len() == 1 {
+        let value = if data_map.len() == 1
+            && doc.data_groups[0].schema_name.is_none()
+            && doc.data_groups[0].entries.len() == 1
+        {
             let group = &doc.data_groups[0];
             if group.entries.len() == 1 && group.entries[0].fields.len() == 1 {
                 data_field_to_expr(&group.entries[0].fields[0])
@@ -96,7 +102,7 @@ pub fn document_to_program_flags(doc: &DbrievDocument, name: &str, use_lazy: boo
             name: name.to_string(),
             ty,
             expr: value,
-                section: None,
+            section: None,
         }));
     }
 
@@ -144,9 +150,11 @@ fn flatten_peripheral_constants(doc: &DbrievDocument) -> Vec<ast::TopLevel> {
             };
 
             // Extract base_addr value
-            let base_addr = base_idx.and_then(|idx| entry.fields.get(idx)).and_then(|f| match f {
-                DataField::Named(_, v) | DataField::Positional(v) => data_value_as_u64(v),
-            });
+            let base_addr = base_idx
+                .and_then(|idx| entry.fields.get(idx))
+                .and_then(|f| match f {
+                    DataField::Named(_, v) | DataField::Positional(v) => data_value_as_u64(v),
+                });
             let base = match base_addr {
                 Some(b) => b,
                 None => continue,
@@ -161,9 +169,12 @@ fn flatten_peripheral_constants(doc: &DbrievDocument) -> Vec<ast::TopLevel> {
             }));
 
             // Emit end constant (base + size) if size is known
-            if let Some(sz) = size_idx.and_then(|idx| entry.fields.get(idx)).and_then(|f| match f {
-                DataField::Named(_, v) | DataField::Positional(v) => data_value_as_u64(v),
-            }) {
+            if let Some(sz) = size_idx
+                .and_then(|idx| entry.fields.get(idx))
+                .and_then(|f| match f {
+                    DataField::Named(_, v) | DataField::Positional(v) => data_value_as_u64(v),
+                })
+            {
                 result.push(ast::TopLevel::Constant(ast::Constant {
                     name: format!("{}_end", key),
                     ty: ast::Type::int(),
@@ -179,7 +190,10 @@ fn flatten_peripheral_constants(doc: &DbrievDocument) -> Vec<ast::TopLevel> {
                     continue;
                 }
                 // Skip register metadata fields (_size, _access, _reset)
-                if fname.ends_with("_size") || fname.ends_with("_access") || fname.ends_with("_reset") {
+                if fname.ends_with("_size")
+                    || fname.ends_with("_access")
+                    || fname.ends_with("_reset")
+                {
                     continue;
                 }
                 // Only flatten integer fields (offsets, control values)
@@ -276,15 +290,17 @@ fn field_type_to_briev(ft: &FieldType) -> ast::Type {
 
 /// Convert a single data entry to an Expr.
 /// `group_schema_name` is the schema name from the enclosing `as Schema { }` group.
-fn data_entry_to_expr(entry: &DataEntry, group_schema_name: Option<&str>, schemas: &[SchemaDef]) -> ast::Expr {
+fn data_entry_to_expr(
+    entry: &DataEntry,
+    group_schema_name: Option<&str>,
+    schemas: &[SchemaDef],
+) -> ast::Expr {
     let fields: Vec<(String, ast::Expr)> = entry
         .fields
         .iter()
         .map(|f| match f {
             DataField::Named(n, v) => (n.clone(), data_value_to_expr(v)),
-            DataField::Positional(v) => {
-                ("".to_string(), data_value_to_expr(v))
-            }
+            DataField::Positional(v) => ("".to_string(), data_value_to_expr(v)),
         })
         .collect();
 
@@ -324,12 +340,29 @@ fn data_entry_to_expr(entry: &DataEntry, group_schema_name: Option<&str>, schema
             }
             resolved
         };
-        let named_fields_expr = ast::Expr::Tuple(named_fields.into_iter().map(|(n, v)| ast::Expr::Tuple(vec![ast::Expr::Quoted(n.into()), v])).collect());
-        return ast::Expr::Call("StructInstance".to_string(), vec![ast::Expr::Identifier(schema_name.to_string()), named_fields_expr], None);
+        let named_fields_expr = ast::Expr::Tuple(
+            named_fields
+                .into_iter()
+                .map(|(n, v)| ast::Expr::Tuple(vec![ast::Expr::Quoted(n.into()), v]))
+                .collect(),
+        );
+        return ast::Expr::Call(
+            "StructInstance".to_string(),
+            vec![
+                ast::Expr::Identifier(schema_name.to_string()),
+                named_fields_expr,
+            ],
+            None,
+        );
     }
 
     // No schema — use ObjectLiteral
-    ast::Expr::List(fields.into_iter().flat_map(|(n, v)| vec![ast::Expr::Quoted(n.into()), v]).collect())
+    ast::Expr::List(
+        fields
+            .into_iter()
+            .flat_map(|(n, v)| vec![ast::Expr::Quoted(n.into()), v])
+            .collect(),
+    )
 }
 
 /// Convert a DataField to an Expr
@@ -354,7 +387,8 @@ fn data_value_as_u64(dv: &DataValue) -> Option<u64> {
 }
 
 /// Convert a DataValue to an Expr
-fn data_value_to_expr(dv: &DataValue) -> ast::Expr {    match dv {
+fn data_value_to_expr(dv: &DataValue) -> ast::Expr {
+    match dv {
         DataValue::String(s) => ast::Expr::Quoted(s.clone().into()),
         DataValue::Int(n) => ast::Expr::Decimal(*n),
         DataValue::Float(f) => ast::Expr::Float(*f),
@@ -385,9 +419,7 @@ mod tests {
 
     #[test]
     fn test_schema_conversion() {
-        let doc = parse(
-            "schema Item { name: String; desc: String; hp: Int; takeable: Bool }",
-        );
+        let doc = parse("schema Item { name: String; desc: String; hp: Int; takeable: Bool }");
         let items = document_to_program(&doc, "data");
         // Schema-only document produces struct definition, no constant
         assert_eq!(items.len(), 1);
@@ -421,12 +453,18 @@ mod tests {
                         let key = &pairs[0];
                         let val = &pairs[1];
                         match key {
-                            ast::Expr::Quoted(s) => assert_eq!(s.as_slice(), b"rusty_key", "Expected first entry key"),
+                            ast::Expr::Quoted(s) => {
+                                assert_eq!(s.as_slice(), b"rusty_key", "Expected first entry key")
+                            }
                             _ => panic!("Expected string key"),
                         }
                         match val {
                             ast::Expr::List(entries) => {
-                                assert_eq!(entries.len(), 2, "Expected [entry_key, entry_val] flat pairs");
+                                assert_eq!(
+                                    entries.len(),
+                                    2,
+                                    "Expected [entry_key, entry_val] flat pairs"
+                                );
                                 let ek = &entries[0];
                                 let ev = &entries[1];
                                 match ek {
@@ -434,9 +472,13 @@ mod tests {
                                     _ => panic!("Expected string entry key"),
                                 }
                                 match ev {
-                                    ast::Expr::Call(name_str, args, _) if name_str == "StructInstance" && args.len() == 2 => {
+                                    ast::Expr::Call(name_str, args, _)
+                                        if name_str == "StructInstance" && args.len() == 2 =>
+                                    {
                                         let name = &args[0];
-                                        assert!(matches!(name, ast::Expr::Identifier(n) if n == "Item"));
+                                        assert!(
+                                            matches!(name, ast::Expr::Identifier(n) if n == "Item")
+                                        );
                                     }
                                     _ => panic!("Expected StructInstance"),
                                 }
@@ -518,14 +560,8 @@ as Item {
         let has_constant = items
             .iter()
             .any(|item| matches!(item, ast::TopLevel::Constant(c) if c.name == "data"));
-        assert!(
-            has_struct,
-            "Expected Struct definition for Item schema"
-        );
-        assert!(
-            has_constant,
-            "Expected Constant for data"
-        );
+        assert!(has_struct, "Expected Struct definition for Item schema");
+        assert!(has_constant, "Expected Constant for data");
     }
 
     #[test]
@@ -536,7 +572,10 @@ as Item {
             (FieldType::Float, "Float"),
             (FieldType::Bool, "Bool"),
             (FieldType::UInt(32), "Int"),
-            (FieldType::Vec(Box::new(FieldType::String)), "Applied(\"List\", [String])"),
+            (
+                FieldType::Vec(Box::new(FieldType::String)),
+                "Applied(\"List\", [String])",
+            ),
             (FieldType::Named("IoResult".into()), "Custom(\"IoResult\")"),
         ];
         for (ft, _desc) in cases {

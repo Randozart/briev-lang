@@ -5,16 +5,20 @@
 // 2026-08-10: user TypeDefs registered via the shared
 // backend::register_types::register_typedefs before bit_width derivation.
 
-use std::collections::HashSet;
 use crate::ast::*;
 use crate::backend::normalizer;
 use crate::backend::register_types::register_typedefs;
 use crate::type_universe::TypeUniverse;
+use std::collections::HashSet;
 
 /// 2026-07-14: Normalize the AST for CIRCT hardware backend emission.
 /// CIRCT doesn't use primitive — it uses bytes to determine bit width.
 /// Rejects intrinsics that require runtime OS support (Print#, Malloc#, etc.).
-pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bits: u64) -> Result<(), String> {
+pub fn normalize(
+    items: &mut Vec<TopLevel>,
+    universe: &mut TypeUniverse,
+    int_bits: u64,
+) -> Result<(), String> {
     // 2026-08-10: shared type registration — CIRCT needs the same universe
     // population every backend gets (semantic goal, not just LLVM's).
     register_typedefs(items, universe, int_bits)?;
@@ -22,7 +26,8 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
     // Attach bit_width to every type
     for rt in universe.types.values_mut() {
         let bits = rt.bytes * 8;
-        rt.properties.insert("bit_width".into(), PropertyValue::Int(bits as i64));
+        rt.properties
+            .insert("bit_width".into(), PropertyValue::Int(bits as i64));
     }
 
     // Reject runtime-dependent intrinsics
@@ -39,9 +44,12 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
     // every pipeline-built module rendered plain i64 regardless of the
     // declared type. To undo: restore the three-key keep list.
     let keep_exact: HashSet<String> = ["bit_width", "hardware", "alignment"]
-        .iter().map(|s| s.to_string()).collect();
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     for rt in universe.types.values_mut() {
-        rt.properties.retain(|k, _| keep_exact.contains(k) || k.starts_with("Cast."));
+        rt.properties
+            .retain(|k, _| keep_exact.contains(k) || k.starts_with("Cast."));
     }
 
     Ok(())
@@ -51,10 +59,22 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
 fn build_supported_ops() -> HashSet<String> {
     let mut set = HashSet::new();
     for op in &[
-        "Add#", "Sub#", "Mul#", "Div#", "Rem#",
-        "Eq#", "Neq#", "Lt#", "Gt#", "Le#", "Ge#",
-        "Neg#", "Abs#",
-        "GetGlobalId#", "GetGlobalSize#", "GetLocalId#",
+        "Add#",
+        "Sub#",
+        "Mul#",
+        "Div#",
+        "Rem#",
+        "Eq#",
+        "Neq#",
+        "Lt#",
+        "Gt#",
+        "Le#",
+        "Ge#",
+        "Neg#",
+        "Abs#",
+        "GetGlobalId#",
+        "GetGlobalSize#",
+        "GetLocalId#",
     ] {
         set.insert(op.to_string());
     }
@@ -82,9 +102,14 @@ mod tests {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                slots: slots.into_iter().map(|(n, ty)| TypeDefSlot {
-                    name: n.to_string(), ty, bit_range: None,
-                }).collect(),
+                slots: slots
+                    .into_iter()
+                    .map(|(n, ty)| TypeDefSlot {
+                        name: n.to_string(),
+                        ty,
+                        bit_range: None,
+                    })
+                    .collect(),
                 metadata: HashMap::new(),
                 projections: vec![],
                 bindings: vec![],
@@ -103,10 +128,16 @@ mod tests {
     #[test]
     fn test_circt_register_typedefs() {
         let mut u = TypeUniverse::new();
-        let items = vec![make_type_def("Point", vec![("x", Type::int()), ("y", Type::int())])];
+        let items = vec![make_type_def(
+            "Point",
+            vec![("x", Type::int()), ("y", Type::int())],
+        )];
         normalize(&mut items.clone(), &mut u, 32).unwrap();
         let rt = u.get("Point").expect("typedef registered");
         assert_eq!(rt.bytes, 16);
-        assert_eq!(u.get("Point").unwrap().properties.get("bit_width"), Some(&PropertyValue::Int(128)));
+        assert_eq!(
+            u.get("Point").unwrap().properties.get("bit_width"),
+            Some(&PropertyValue::Int(128))
+        );
     }
 }

@@ -132,30 +132,40 @@ fn default_introspection() -> String {
 impl TargetProfile {
     /// Build a HashMap of SysQuery$ overrides with string values.
     pub fn sysquery_overrides(&self) -> HashMap<String, String> {
-        self.overrides.iter().map(|(k, v)| (k.clone(), v.as_string())).collect()
+        self.overrides
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_string()))
+            .collect()
     }
 }
 
 impl<'de> Deserialize<'de> for TargetProfile {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
+    where
+        D: serde::Deserializer<'de>,
+    {
         let raw: HashMap<String, OverrideValue> = HashMap::deserialize(deserializer)?;
-        let introspection = raw.get("introspection")
+        let introspection = raw
+            .get("introspection")
             .map(|v| match v {
                 OverrideValue::String(s) => s.clone(),
                 _ => "host".to_string(),
             })
             .unwrap_or_else(default_introspection);
-        let overrides: HashMap<String, OverrideValue> = raw.into_iter()
+        let overrides: HashMap<String, OverrideValue> = raw
+            .into_iter()
             .filter(|(k, _)| k != "introspection")
             .collect();
-        let isr_mechanism = overrides.get("isr_mechanism")
-            .map(|v| v.as_string());
+        let isr_mechanism = overrides.get("isr_mechanism").map(|v| v.as_string());
         let overrides: HashMap<String, OverrideValue> = overrides
             .into_iter()
             .filter(|(k, _)| k != "isr_mechanism")
             .collect();
-        Ok(TargetProfile { introspection, overrides, isr_mechanism })
+        Ok(TargetProfile {
+            introspection,
+            overrides,
+            isr_mechanism,
+        })
     }
 }
 
@@ -199,7 +209,9 @@ impl OverrideValue {
 // Custom serde for OverrideValue — handles TOML scalar types
 impl<'de> Deserialize<'de> for OverrideValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
+    where
+        D: serde::Deserializer<'de>,
+    {
         use serde::de;
         struct OverrideVisitor;
         impl<'de> de::Visitor<'de> for OverrideVisitor {
@@ -357,9 +369,7 @@ impl fmt::Display for Manifest {
                     Dependency::Registry(r) => {
                         write!(f, "{} v{}", r.registry, r.version.as_deref().unwrap_or("*"))?
                     }
-                    Dependency::Git(g) => {
-                        write!(f, "{}@{}", g.git, g.pin().unwrap_or("HEAD"))?
-                    }
+                    Dependency::Git(g) => write!(f, "{}@{}", g.git, g.pin().unwrap_or("HEAD"))?,
                 }
             }
         }

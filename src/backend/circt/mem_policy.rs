@@ -63,7 +63,10 @@ pub struct MemPolicy {
 
 impl Default for MemPolicy {
     fn default() -> Self {
-        MemPolicy { min_depth: 64, max_ports: 4 }
+        MemPolicy {
+            min_depth: 64,
+            max_ports: 4,
+        }
     }
 }
 
@@ -87,8 +90,14 @@ pub fn decide_array_lowering(
         check_mem_pin(facts)?;
     }
     match hint {
-        MemHint::Reg => Ok(Decision { lowering: ArrayLowering::RegFile, why: None }),
-        MemHint::Mem => Ok(Decision { lowering: ArrayLowering::FirmMem, why: None }),
+        MemHint::Reg => Ok(Decision {
+            lowering: ArrayLowering::RegFile,
+            why: None,
+        }),
+        MemHint::Mem => Ok(Decision {
+            lowering: ArrayLowering::FirmMem,
+            why: None,
+        }),
         MemHint::None => Ok(default_decision(facts, policy)),
     }
 }
@@ -127,7 +136,10 @@ fn check_mem_pin(facts: &ArrayFacts) -> Result<(), String> {
 /// Default policy: macro past the threshold when semantics-compatible;
 /// otherwise register file WITH the reason (drives THE note).
 fn default_decision(facts: &ArrayFacts, policy: &MemPolicy) -> Decision {
-    let reg = |why| Decision { lowering: ArrayLowering::RegFile, why: Some(why) };
+    let reg = |why| Decision {
+        lowering: ArrayLowering::RegFile,
+        why: Some(why),
+    };
     if facts.depth < policy.min_depth {
         return reg("depth < threshold");
     }
@@ -143,7 +155,10 @@ fn default_decision(facts: &ArrayFacts, policy: &MemPolicy) -> Decision {
     if facts.nonzero_init {
         return reg("nonzero initializer");
     }
-    Decision { lowering: ArrayLowering::FirmMem, why: Some("depth >= threshold") }
+    Decision {
+        lowering: ArrayLowering::FirmMem,
+        why: Some("depth >= threshold"),
+    }
 }
 
 /// Walk every `Index(Identifier(name), _)` occurrence in an expression,
@@ -195,11 +210,22 @@ type ArrayMap = std::collections::HashMap<String, (MemHint, ArrayFacts)>;
 fn collect_array_decls(items: &[TopLevel]) -> ArrayMap {
     let mut arrays: ArrayMap = std::collections::HashMap::new();
     for item in items {
-        let TopLevel::Statement(stmt) = item else { continue };
-        let Statement::Let { name, ty: Some(ty), expr, modifiers, .. } = &**stmt else {
+        let TopLevel::Statement(stmt) = item else {
             continue;
         };
-        let crate::ast::Type::Vector(_, dims) = ty else { continue };
+        let Statement::Let {
+            name,
+            ty: Some(ty),
+            expr,
+            modifiers,
+            ..
+        } = &**stmt
+        else {
+            continue;
+        };
+        let crate::ast::Type::Vector(_, dims) = ty else {
+            continue;
+        };
         let depth = dims
             .first()
             .map(|d| match d {
@@ -219,7 +245,11 @@ fn collect_array_decls(items: &[TopLevel]) -> ArrayMap {
             name.clone(),
             (
                 hint,
-                ArrayFacts { depth, nonzero_init, ..ArrayFacts::default() },
+                ArrayFacts {
+                    depth,
+                    nonzero_init,
+                    ..ArrayFacts::default()
+                },
             ),
         );
     }
@@ -236,7 +266,9 @@ fn fold_writers(txn: &crate::ast::Transaction, arrays: &mut ArrayMap) {
     // Distinct array names element-written by this txn.
     let mut written: std::collections::HashSet<String> = std::collections::HashSet::new();
     for stmt in &txn.body {
-        let Some(name) = element_write_target(stmt) else { continue };
+        let Some(name) = element_write_target(stmt) else {
+            continue;
+        };
         if !arrays.contains_key(name) || !written.insert(name.clone()) {
             continue;
         }
@@ -264,8 +296,12 @@ fn fold_read_sites(txn: &crate::ast::Transaction, arrays: &mut ArrayMap) {
 }
 
 fn element_write_target(stmt: &Statement) -> Option<&String> {
-    let Statement::Assign(lhs, _) = stmt else { return None };
-    let Expr::Index(obj, _) = lhs else { return None };
+    let Statement::Assign(lhs, _) = stmt else {
+        return None;
+    };
+    let Expr::Index(obj, _) = lhs else {
+        return None;
+    };
     match obj.as_ref() {
         Expr::Identifier(name) => Some(name),
         _ => None,
@@ -305,7 +341,10 @@ mod tests {
     use super::*;
 
     fn facts(depth: usize) -> ArrayFacts {
-        ArrayFacts { depth, ..ArrayFacts::default() }
+        ArrayFacts {
+            depth,
+            ..ArrayFacts::default()
+        }
     }
 
     #[test]
@@ -322,13 +361,15 @@ mod tests {
     #[test]
     fn explicit_pins_silence_and_override() {
         let p = MemPolicy::default();
-        let d =
-            decide_array_lowering(MemHint::Reg, &facts(256), &p).unwrap();
+        let d = decide_array_lowering(MemHint::Reg, &facts(256), &p).unwrap();
         assert_eq!(d.lowering, ArrayLowering::RegFile);
         assert!(d.why.is_none());
         let d = decide_array_lowering(
             MemHint::Mem,
-            &ArrayFacts { depth: 8, ..facts(8) },
+            &ArrayFacts {
+                depth: 8,
+                ..facts(8)
+            },
             &p,
         )
         .unwrap();
@@ -339,7 +380,10 @@ mod tests {
     #[test]
     fn mem_pin_with_post_refs_is_capability_error() {
         let p = MemPolicy::default();
-        let f = ArrayFacts { post_refs: true, ..facts(128) };
+        let f = ArrayFacts {
+            post_refs: true,
+            ..facts(128)
+        };
         let err = decide_array_lowering(MemHint::Mem, &f, &p).unwrap_err();
         assert!(err.contains("reg let"), "err: {err}");
     }
@@ -347,26 +391,47 @@ mod tests {
     #[test]
     fn mem_pin_multi_writer_is_capability_error() {
         let p = MemPolicy::default();
-        let f = ArrayFacts { writers: 2, ..facts(128) };
+        let f = ArrayFacts {
+            writers: 2,
+            ..facts(128)
+        };
         assert!(decide_array_lowering(MemHint::Mem, &f, &p).is_err());
     }
 
     #[test]
     fn default_gates_fall_back_to_regfile_with_reasons() {
         let p = MemPolicy::default();
-        let post = ArrayFacts { post_refs: true, ..facts(128) };
+        let post = ArrayFacts {
+            post_refs: true,
+            ..facts(128)
+        };
         let d = decide_array_lowering(MemHint::None, &post, &p).unwrap();
-        assert_eq!((d.lowering, d.why), (ArrayLowering::RegFile, Some("a postcondition reads elements")));
+        assert_eq!(
+            (d.lowering, d.why),
+            (
+                ArrayLowering::RegFile,
+                Some("a postcondition reads elements")
+            )
+        );
 
-        let writers = ArrayFacts { writers: 2, ..facts(128) };
+        let writers = ArrayFacts {
+            writers: 2,
+            ..facts(128)
+        };
         let d = decide_array_lowering(MemHint::None, &writers, &p).unwrap();
         assert_eq!(d.why, Some("multiple writing transactions"));
 
-        let ports = ArrayFacts { port_sites: 5, ..facts(128) };
+        let ports = ArrayFacts {
+            port_sites: 5,
+            ..facts(128)
+        };
         let d = decide_array_lowering(MemHint::None, &ports, &p).unwrap();
         assert_eq!(d.why, Some("port sites above budget"));
 
-        let init = ArrayFacts { nonzero_init: true, ..facts(128) };
+        let init = ArrayFacts {
+            nonzero_init: true,
+            ..facts(128)
+        };
         let d = decide_array_lowering(MemHint::None, &init, &p).unwrap();
         assert_eq!(d.why, Some("nonzero initializer"));
     }

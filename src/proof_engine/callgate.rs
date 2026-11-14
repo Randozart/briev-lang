@@ -69,10 +69,16 @@ impl Bounds {
         Bounds { lo: None, hi: None }
     }
     fn exact(v: i128) -> Self {
-        Bounds { lo: Some(v), hi: Some(v) }
+        Bounds {
+            lo: Some(v),
+            hi: Some(v),
+        }
     }
     fn nonneg() -> Self {
-        Bounds { lo: Some(0), hi: None }
+        Bounds {
+            lo: Some(0),
+            hi: None,
+        }
     }
     fn intersect(self, other: Bounds) -> Bounds {
         let lo = match (self.lo, other.lo) {
@@ -140,9 +146,7 @@ fn linify(e: &Expr) -> Option<(Vec<(String, i128)>, i128)> {
         Expr::Char(c) => Some((vec![], *c as i128)),
         Expr::TaggedLiteral(n, _) => Some((vec![], *n as i128)),
         Expr::Float(_) | Expr::Bool(_) | Expr::BeginProgram => None,
-        Expr::Identifier(_) | Expr::Field(_, _) => {
-            Some((vec![(atom_key(e), 1)], 0))
-        }
+        Expr::Identifier(_) | Expr::Field(_, _) => Some((vec![(atom_key(e), 1)], 0)),
         Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
             let (mut t, c) = linify(inner)?;
             for (_, k) in t.iter_mut() {
@@ -224,7 +228,11 @@ fn normalize(lhs: &Expr, op: BinaryOpKind, rhs: &Expr) -> Option<LinC> {
         }
         const_ = const_.checked_neg()?;
     }
-    Some(LinC { terms: merged, const_, op })
+    Some(LinC {
+        terms: merged,
+        const_,
+        op,
+    })
 }
 
 /// Split an expression into AND-conjuncts.
@@ -245,15 +253,9 @@ fn literal_int(e: &Expr) -> Option<i64> {
         Expr::Char(c) => Some(*c as i64),
         Expr::TaggedLiteral(n, _) => Some(*n),
         Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => literal_int(inner)?.checked_neg(),
-        Expr::BinaryOp(BinaryOpKind::Add, l, r) => {
-            literal_int(l)?.checked_add(literal_int(r)?)
-        }
-        Expr::BinaryOp(BinaryOpKind::Sub, l, r) => {
-            literal_int(l)?.checked_sub(literal_int(r)?)
-        }
-        Expr::BinaryOp(BinaryOpKind::Mul, l, r) => {
-            literal_int(l)?.checked_mul(literal_int(r)?)
-        }
+        Expr::BinaryOp(BinaryOpKind::Add, l, r) => literal_int(l)?.checked_add(literal_int(r)?),
+        Expr::BinaryOp(BinaryOpKind::Sub, l, r) => literal_int(l)?.checked_sub(literal_int(r)?),
+        Expr::BinaryOp(BinaryOpKind::Mul, l, r) => literal_int(l)?.checked_mul(literal_int(r)?),
         Expr::BinaryOp(BinaryOpKind::Div, l, r) => {
             let d = literal_int(r)?;
             if d == 0 {
@@ -286,15 +288,9 @@ fn literal_int(e: &Expr) -> Option<i64> {
                 None
             }
         }
-        Expr::BinaryOp(BinaryOpKind::BitAnd, l, r) => {
-            Some(literal_int(l)? & literal_int(r)?)
-        }
-        Expr::BinaryOp(BinaryOpKind::BitOr, l, r) => {
-            Some(literal_int(l)? | literal_int(r)?)
-        }
-        Expr::BinaryOp(BinaryOpKind::BitXor, l, r) => {
-            Some(literal_int(l)? ^ literal_int(r)?)
-        }
+        Expr::BinaryOp(BinaryOpKind::BitAnd, l, r) => Some(literal_int(l)? & literal_int(r)?),
+        Expr::BinaryOp(BinaryOpKind::BitOr, l, r) => Some(literal_int(l)? | literal_int(r)?),
+        Expr::BinaryOp(BinaryOpKind::BitXor, l, r) => Some(literal_int(l)? ^ literal_int(r)?),
         _ => None,
     }
 }
@@ -349,11 +345,8 @@ fn fact_entails(fact: &LinC, goal: &LinC) -> bool {
         return entail_same_terms(fact, goal);
     }
     if fact.op == BinaryOpKind::Eq {
-        let neg_terms: Vec<(String, i128)> = fact
-            .terms
-            .iter()
-            .map(|(a, k)| (a.clone(), -k))
-            .collect();
+        let neg_terms: Vec<(String, i128)> =
+            fact.terms.iter().map(|(a, k)| (a.clone(), -k)).collect();
         if neg_terms == goal.terms {
             let twin = LinC {
                 terms: neg_terms,
@@ -408,20 +401,39 @@ fn lin_to_diff(lc: &LinC) -> Option<(String, String, i128, BinaryOpKind)> {
                 BinaryOpKind::Gt => BinaryOpKind::Lt,
                 other => other,
             };
-            Some((x.clone(), DIFF_CONST.to_string(), lc.const_.checked_neg()?, flipped))
+            Some((
+                x.clone(),
+                DIFF_CONST.to_string(),
+                lc.const_.checked_neg()?,
+                flipped,
+            ))
         }
         _ => None,
     }
 }
 
 fn diff_edges(lc: &LinC) -> Vec<(String, String, i128)> {
-    let Some((x, y, c, op)) = lin_to_diff(lc) else { return Vec::new(); };
+    let Some((x, y, c, op)) = lin_to_diff(lc) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     match op {
         BinaryOpKind::Le => out.push((y, x, c)),
-        BinaryOpKind::Lt => if let Some(v) = c.checked_sub(1) { out.push((y, x, v)); },
-        BinaryOpKind::Ge => if let Some(v) = c.checked_neg() { out.push((x, y, v)); },
-        BinaryOpKind::Gt => if let Some(v) = c.checked_neg().and_then(|v| v.checked_sub(1)) { out.push((x, y, v)); },
+        BinaryOpKind::Lt => {
+            if let Some(v) = c.checked_sub(1) {
+                out.push((y, x, v));
+            }
+        }
+        BinaryOpKind::Ge => {
+            if let Some(v) = c.checked_neg() {
+                out.push((x, y, v));
+            }
+        }
+        BinaryOpKind::Gt => {
+            if let Some(v) = c.checked_neg().and_then(|v| v.checked_sub(1)) {
+                out.push((x, y, v));
+            }
+        }
         BinaryOpKind::Eq => {
             if let Some(v) = c.checked_neg() {
                 out.push((y.clone(), x.clone(), c));
@@ -434,49 +446,97 @@ fn diff_edges(lc: &LinC) -> Vec<(String, String, i128)> {
 }
 
 fn difference_proves(goal: &LinC, facts: &[Expr]) -> bool {
-    let Some((x, y, c, op)) = lin_to_diff(goal) else { return false; };
+    let Some((x, y, c, op)) = lin_to_diff(goal) else {
+        return false;
+    };
     let requirements = match op {
         BinaryOpKind::Le => vec![(y.clone(), x.clone(), c)],
-        BinaryOpKind::Lt => c.checked_sub(1).map(|v| vec![(y.clone(), x.clone(), v)]).unwrap_or_default(),
-        BinaryOpKind::Ge => c.checked_neg().map(|v| vec![(x.clone(), y.clone(), v)]).unwrap_or_default(),
-        BinaryOpKind::Gt => c.checked_neg().and_then(|v| v.checked_sub(1)).map(|v| vec![(x.clone(), y.clone(), v)]).unwrap_or_default(),
-        BinaryOpKind::Eq => {
-            match (c.checked_neg()) {
-                Some(v) => vec![(y.clone(), x.clone(), c), (x.clone(), y.clone(), v)],
-                None => Vec::new(),
-            }
-        }
+        BinaryOpKind::Lt => c
+            .checked_sub(1)
+            .map(|v| vec![(y.clone(), x.clone(), v)])
+            .unwrap_or_default(),
+        BinaryOpKind::Ge => c
+            .checked_neg()
+            .map(|v| vec![(x.clone(), y.clone(), v)])
+            .unwrap_or_default(),
+        BinaryOpKind::Gt => c
+            .checked_neg()
+            .and_then(|v| v.checked_sub(1))
+            .map(|v| vec![(x.clone(), y.clone(), v)])
+            .unwrap_or_default(),
+        BinaryOpKind::Eq => match (c.checked_neg()) {
+            Some(v) => vec![(y.clone(), x.clone(), c), (x.clone(), y.clone(), v)],
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     };
-    if requirements.is_empty() { return false; }
+    if requirements.is_empty() {
+        return false;
+    }
     let mut edges: Vec<(String, String, i128)> = Vec::new();
     for f in facts {
-        let Expr::BinaryOp(op, l, r) = f else { continue };
+        let Expr::BinaryOp(op, l, r) = f else {
+            continue;
+        };
         if let Some(lc) = normalize(l, *op, r) {
             edges.extend(diff_edges(&lc));
         }
     }
-    if edges.is_empty() { return false; }
+    if edges.is_empty() {
+        return false;
+    }
     let mut nodes: Vec<String> = Vec::new();
     for (a, b, _) in &edges {
-        if !nodes.contains(a) { nodes.push(a.clone()); }
-        if !nodes.contains(b) { nodes.push(b.clone()); }
+        if !nodes.contains(a) {
+            nodes.push(a.clone());
+        }
+        if !nodes.contains(b) {
+            nodes.push(b.clone());
+        }
     }
     for (a, b, _) in &requirements {
-        if !nodes.contains(a) { nodes.push(a.clone()); }
-        if !nodes.contains(b) { nodes.push(b.clone()); }
+        if !nodes.contains(a) {
+            nodes.push(a.clone());
+        }
+        if !nodes.contains(b) {
+            nodes.push(b.clone());
+        }
     }
-    let n=nodes.len(); let idx: HashMap<&str,usize> = nodes.iter().enumerate().map(|(i,s)|(s.as_str(),i)).collect();
-    let inf=i128::MAX/4;
-    let mut dist=vec![vec![inf;n];n];
-    for i in 0..n { dist[i][i]=0; }
-    for (a,b,w) in edges {
-        let (i,j)=(idx[a.as_str()],idx[b.as_str()]);
-        if w<dist[i][j] { dist[i][j]=w; }
+    let n = nodes.len();
+    let idx: HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
+    let inf = i128::MAX / 4;
+    let mut dist = vec![vec![inf; n]; n];
+    for i in 0..n {
+        dist[i][i] = 0;
     }
-    for k in 0..n { for i in 0..n { if dist[i][k]>=inf { continue; } for j in 0..n { if dist[k][j]>=inf {continue;} let v=dist[i][k].saturating_add(dist[k][j]); if v<dist[i][j] {dist[i][j]=v;} } } }
-    requirements.iter().all(|(a,b,w)| {
-        let (i,j)=(idx[a.as_str()],idx[b.as_str()]);
+    for (a, b, w) in edges {
+        let (i, j) = (idx[a.as_str()], idx[b.as_str()]);
+        if w < dist[i][j] {
+            dist[i][j] = w;
+        }
+    }
+    for k in 0..n {
+        for i in 0..n {
+            if dist[i][k] >= inf {
+                continue;
+            }
+            for j in 0..n {
+                if dist[k][j] >= inf {
+                    continue;
+                }
+                let v = dist[i][k].saturating_add(dist[k][j]);
+                if v < dist[i][j] {
+                    dist[i][j] = v;
+                }
+            }
+        }
+    }
+    requirements.iter().all(|(a, b, w)| {
+        let (i, j) = (idx[a.as_str()], idx[b.as_str()]);
         dist[i][j] <= *w
     })
 }
@@ -493,16 +553,29 @@ fn lin_le_constraints(lc: &LinC) -> Vec<(Vec<(String, i128)>, i128)> {
     let terms = lc.terms.clone();
     let c = lc.const_;
     let neg = |t: &Vec<(String, i128)>, k: i128| -> Option<Vec<(String, i128)>> {
-        t.iter().map(|(a, v)| Some((a.clone(), v.checked_mul(k)?))).collect()
+        t.iter()
+            .map(|(a, v)| Some((a.clone(), v.checked_mul(k)?)))
+            .collect()
     };
     match lc.op {
         BinaryOpKind::Le => vec![(terms, c)],
-        BinaryOpKind::Lt => c.checked_sub(1).map(|v| vec![(terms, v)]).unwrap_or_default(),
-        BinaryOpKind::Ge => c.checked_neg().map(|v| vec![(neg(&terms, -1).unwrap_or_default(), v)]).unwrap_or_default(),
-        BinaryOpKind::Gt => c.checked_neg().and_then(|v| v.checked_sub(1)).map(|v| vec![(neg(&terms, -1).unwrap_or_default(), v)]).unwrap_or_default(),
-        BinaryOpKind::Eq => {
-            c.checked_neg().map(|v| vec![(terms.clone(), c), (neg(&terms, -1).unwrap_or_default(), v)]).unwrap_or_default()
-        }
+        BinaryOpKind::Lt => c
+            .checked_sub(1)
+            .map(|v| vec![(terms, v)])
+            .unwrap_or_default(),
+        BinaryOpKind::Ge => c
+            .checked_neg()
+            .map(|v| vec![(neg(&terms, -1).unwrap_or_default(), v)])
+            .unwrap_or_default(),
+        BinaryOpKind::Gt => c
+            .checked_neg()
+            .and_then(|v| v.checked_sub(1))
+            .map(|v| vec![(neg(&terms, -1).unwrap_or_default(), v)])
+            .unwrap_or_default(),
+        BinaryOpKind::Eq => c
+            .checked_neg()
+            .map(|v| vec![(terms.clone(), c), (neg(&terms, -1).unwrap_or_default(), v)])
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -511,7 +584,10 @@ fn goal_negation_constraints(g: &LinC) -> Option<Vec<(Vec<(String, i128)>, i128)
     let terms = g.terms.clone();
     let c = g.const_;
     let neg = |k: i128| -> Option<Vec<(String, i128)>> {
-        terms.iter().map(|(a, v)| Some((a.clone(), v.checked_mul(k)?))).collect()
+        terms
+            .iter()
+            .map(|(a, v)| Some((a.clone(), v.checked_mul(k)?)))
+            .collect()
     };
     let out = match g.op {
         BinaryOpKind::Le => vec![(neg(-1)?, c.checked_neg()?.checked_sub(1)?)],
@@ -551,11 +627,17 @@ fn fourier_motzkin_infeasible(mut cons: Vec<(Vec<i128>, i128)>, nvars: usize) ->
                 let mut coeff = pc.clone();
                 for i in 0..nvars {
                     coeff[i] = coeff[i].checked_mul(a).unwrap_or(i128::MAX / 4);
-                    coeff[i] = coeff[i].checked_add(nc[i].checked_mul(b).unwrap_or(0)).unwrap_or(i128::MAX / 4);
+                    coeff[i] = coeff[i]
+                        .checked_add(nc[i].checked_mul(b).unwrap_or(0))
+                        .unwrap_or(i128::MAX / 4);
                 }
                 coeff[v] = 0;
-                let rhs = pr.checked_mul(a).and_then(|x| nr.checked_mul(b).and_then(|y| x.checked_add(y)));
-                let Some(rhs) = rhs else { return false; };
+                let rhs = pr
+                    .checked_mul(a)
+                    .and_then(|x| nr.checked_mul(b).and_then(|y| x.checked_add(y)));
+                let Some(rhs) = rhs else {
+                    return false;
+                };
                 next.push((coeff, rhs));
                 if next.len() > FM_MAX_CONS {
                     return false;
@@ -571,7 +653,9 @@ fn linear_goal_proven(goal: &LinC, facts: &[Expr]) -> bool {
     if goal.terms.len() > FM_MAX_VARS {
         return false;
     }
-    let Some(negated) = goal_negation_constraints(goal) else { return false; };
+    let Some(negated) = goal_negation_constraints(goal) else {
+        return false;
+    };
     let mut all_terms: Vec<String> = goal.terms.iter().map(|(a, _)| a.clone()).collect();
     let mut fact_lin: Vec<LinC> = Vec::new();
     // Keep only facts transitively connected to the goal's atoms. The app's
@@ -582,35 +666,68 @@ fn linear_goal_proven(goal: &LinC, facts: &[Expr]) -> bool {
     loop {
         let mut changed = false;
         for (i, f) in facts.iter().enumerate() {
-            if picked[i] { continue; }
-            let Expr::BinaryOp(op, l, r) = f else { continue };
-            let Some(lc) = normalize(l, *op, r) else { continue };
-            if lc.terms.iter().any(|(a, _)| a.contains("Call(")) { continue; }
-            if !lc.terms.iter().any(|(a, _)| relevant.contains(a)) { continue; }
-            picked[i] = true; changed = true;
+            if picked[i] {
+                continue;
+            }
+            let Expr::BinaryOp(op, l, r) = f else {
+                continue;
+            };
+            let Some(lc) = normalize(l, *op, r) else {
+                continue;
+            };
+            if lc.terms.iter().any(|(a, _)| a.contains("Call(")) {
+                continue;
+            }
+            if !lc.terms.iter().any(|(a, _)| relevant.contains(a)) {
+                continue;
+            }
+            picked[i] = true;
+            changed = true;
             for (a, _) in &lc.terms {
                 if relevant.insert(a.clone()) && !all_terms.contains(a) {
                     all_terms.push(a.clone());
                 }
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
     for (i, f) in facts.iter().enumerate() {
-        if !picked[i] { continue; }
-        let Expr::BinaryOp(op, l, r) = f else { continue };
-        let Some(lc) = normalize(l, *op, r) else { continue };
-        if lc.op == BinaryOpKind::Neq { continue; }
+        if !picked[i] {
+            continue;
+        }
+        let Expr::BinaryOp(op, l, r) = f else {
+            continue;
+        };
+        let Some(lc) = normalize(l, *op, r) else {
+            continue;
+        };
+        if lc.op == BinaryOpKind::Neq {
+            continue;
+        }
         fact_lin.push(lc);
     }
     for (a, _) in &goal.terms {
-        if !all_terms.contains(a) { all_terms.push(a.clone()); }
+        if !all_terms.contains(a) {
+            all_terms.push(a.clone());
+        }
     }
-    if all_terms.len() > FM_MAX_VARS { return false; }
-    let idx: HashMap<&str, usize> = all_terms.iter().enumerate().map(|(i, s)| (s.as_str(), i)).collect();
+    if all_terms.len() > FM_MAX_VARS {
+        return false;
+    }
+    let idx: HashMap<&str, usize> = all_terms
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
     let align = |terms: &[(String, i128)]| -> Vec<i128> {
         let mut v = vec![0i128; all_terms.len()];
-        for (a, k) in terms { if let Some(i) = idx.get(a.as_str()) { v[*i] = *k; } }
+        for (a, k) in terms {
+            if let Some(i) = idx.get(a.as_str()) {
+                v[*i] = *k;
+            }
+        }
         v
     };
     let mut base: Vec<(Vec<i128>, i128)> = Vec::new();
@@ -638,8 +755,12 @@ fn bounds_map(facts: &[Expr]) -> HashMap<String, Bounds> {
     let mut map: HashMap<String, Bounds> = HashMap::new();
     let mut neqs: Vec<(String, i128)> = Vec::new();
     for f in facts {
-        let Expr::BinaryOp(op, l, r) = f else { continue };
-        let Some(lc) = normalize(l, *op, r) else { continue };
+        let Expr::BinaryOp(op, l, r) = f else {
+            continue;
+        };
+        let Some(lc) = normalize(l, *op, r) else {
+            continue;
+        };
         if lc.terms.len() != 1 {
             continue;
         }
@@ -706,9 +827,14 @@ fn contains_float(e: &Expr) -> bool {
         Expr::Float(_) => true,
         Expr::UnaryOp(_, inner) => contains_float(inner),
         Expr::BinaryOp(_, l, r) => contains_float(l) || contains_float(r),
-        Expr::Field(base, _) | Expr::Reflect(base, _, _) | Expr::Cast(base, _)
-        | Expr::IsType(base, _) | Expr::Consume(base) | Expr::Deref(base)
-        | Expr::AddrOf(base) | Expr::Await(base) => contains_float(base),
+        Expr::Field(base, _)
+        | Expr::Reflect(base, _, _)
+        | Expr::Cast(base, _)
+        | Expr::IsType(base, _)
+        | Expr::Consume(base)
+        | Expr::Deref(base)
+        | Expr::AddrOf(base)
+        | Expr::Await(base) => contains_float(base),
         Expr::Call(_, args, _) | Expr::Tuple(args) | Expr::List(args) => {
             args.iter().any(contains_float)
         }
@@ -721,8 +847,11 @@ fn eval_bounds(e: &Expr, map: &HashMap<String, Bounds>) -> Bounds {
         Expr::Decimal(n) => Bounds::exact(*n as i128),
         Expr::Char(c) => Bounds::exact(*c as i128),
         Expr::TaggedLiteral(n, _) => Bounds::exact(*n as i128),
-        Expr::Identifier(_) | Expr::Field(_, _) | Expr::Call(_, _, _)
-        | Expr::MethodCall(_, _, _, _) | Expr::Reflect(_, _, _) => Bounds::unknown(),
+        Expr::Identifier(_)
+        | Expr::Field(_, _)
+        | Expr::Call(_, _, _)
+        | Expr::MethodCall(_, _, _, _)
+        | Expr::Reflect(_, _, _) => Bounds::unknown(),
         Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
             let b = eval_bounds(inner, map);
             Bounds {
@@ -844,14 +973,25 @@ fn mod_bounds(a: Bounds, b: Bounds) -> Bounds {
     }
     let max = d - 1;
     match (a.lo, a.hi) {
-        (Some(lo), _) if lo >= 0 => Bounds { lo: Some(0), hi: Some(max) },
-        (_, Some(hi)) if hi <= 0 => Bounds { lo: Some(-max), hi: Some(0) },
-        _ => Bounds { lo: Some(-max), hi: Some(max) },
+        (Some(lo), _) if lo >= 0 => Bounds {
+            lo: Some(0),
+            hi: Some(max),
+        },
+        (_, Some(hi)) if hi <= 0 => Bounds {
+            lo: Some(-max),
+            hi: Some(0),
+        },
+        _ => Bounds {
+            lo: Some(-max),
+            hi: Some(max),
+        },
     }
 }
 
 fn shl_bounds(a: Bounds, b: Bounds) -> Bounds {
-    let Some(k) = single(b) else { return Bounds::unknown() };
+    let Some(k) = single(b) else {
+        return Bounds::unknown();
+    };
     if !(0..63).contains(&k) {
         return Bounds::unknown();
     }
@@ -885,12 +1025,18 @@ fn shr_bounds(a: Bounds, b: Bounds) -> Bounds {
 fn bitand_bounds(a: Bounds, b: Bounds) -> Bounds {
     if let Some(mask) = single(b) {
         if mask >= 0 {
-            return Bounds { lo: Some(0), hi: Some(mask) };
+            return Bounds {
+                lo: Some(0),
+                hi: Some(mask),
+            };
         }
     }
     if let Some(mask) = single(a) {
         if mask >= 0 {
-            return Bounds { lo: Some(0), hi: Some(mask) };
+            return Bounds {
+                lo: Some(0),
+                hi: Some(mask),
+            };
         }
     }
     Bounds::unknown()
@@ -917,7 +1063,10 @@ fn bitxor_bounds(a: Bounds, b: Bounds) -> Bounds {
         return Bounds::exact(x ^ y);
     }
     if a.lo.is_some_and(|v| v >= 0) && b.lo.is_some_and(|v| v >= 0) {
-        return Bounds { lo: Some(0), hi: None };
+        return Bounds {
+            lo: Some(0),
+            hi: None,
+        };
     }
     Bounds::unknown()
 }
@@ -984,7 +1133,11 @@ fn interval_verdict(l: &Expr, op: BinaryOpKind, r: &Expr, facts: &[Expr]) -> Opt
         }
         BinaryOpKind::Eq => {
             if let (Some(x), Some(y)) = (single(a), single(b)) {
-                if x == y { Verdict::Proven } else { Verdict::Refuted }
+                if x == y {
+                    Verdict::Proven
+                } else {
+                    Verdict::Refuted
+                }
             } else if a.hi.zip(b.lo).is_some_and(|(x, y)| x < y)
                 || b.hi.zip(a.lo).is_some_and(|(x, y)| x < y)
             {
@@ -995,7 +1148,11 @@ fn interval_verdict(l: &Expr, op: BinaryOpKind, r: &Expr, facts: &[Expr]) -> Opt
         }
         BinaryOpKind::Neq => {
             if let (Some(x), Some(y)) = (single(a), single(b)) {
-                if x != y { Verdict::Proven } else { Verdict::Refuted }
+                if x != y {
+                    Verdict::Proven
+                } else {
+                    Verdict::Refuted
+                }
             } else if a.hi.zip(b.lo).is_some_and(|(x, y)| x < y)
                 || b.hi.zip(a.lo).is_some_and(|(x, y)| x < y)
             {
@@ -1042,7 +1199,10 @@ fn prove_disjunction(goal: &Expr, facts: &[Expr]) -> Verdict {
         }
     }
     split(goal, &mut parts);
-    if parts.iter().any(|p| facts.iter().any(|f| is_complement(p, f))) {
+    if parts
+        .iter()
+        .any(|p| facts.iter().any(|f| is_complement(p, f)))
+    {
         return Verdict::Proven;
     }
     for i in 0..parts.len() {
@@ -1060,7 +1220,11 @@ fn prove_disjunction(goal: &Expr, facts: &[Expr]) -> Verdict {
             Verdict::Unproven => any_refuted = false,
         }
     }
-    if any_refuted && parts.iter().all(|p| prove_conjunct(p, facts) == Verdict::Refuted) {
+    if any_refuted
+        && parts
+            .iter()
+            .all(|p| prove_conjunct(p, facts) == Verdict::Refuted)
+    {
         Verdict::Refuted
     } else {
         Verdict::Unproven
@@ -1085,7 +1249,10 @@ fn defs_from_facts(facts: &[Expr]) -> Vec<(String, Expr)> {
         if matches!(value, Expr::Identifier(n) if n == name) {
             continue;
         }
-        if !defs.iter().any(|(existing, _): &(String, Expr)| existing == name) {
+        if !defs
+            .iter()
+            .any(|(existing, _): &(String, Expr)| existing == name)
+        {
             defs.push((name.clone(), value.clone()));
         }
     }
@@ -1099,7 +1266,11 @@ fn expand_defs(e: &Expr, defs: &[(String, Expr)]) -> Expr {
     for _ in 0..8 {
         let before = out.clone();
         for (name, value) in defs {
-            out = substitute_params(&out, std::slice::from_ref(name), std::slice::from_ref(value));
+            out = substitute_params(
+                &out,
+                std::slice::from_ref(name),
+                std::slice::from_ref(value),
+            );
         }
         if out == before {
             break;
@@ -1279,16 +1450,32 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
     if g.terms.is_empty() {
         return match g.op {
             BinaryOpKind::Eq => {
-                if g.const_ == 0 { Verdict::Proven } else { Verdict::Refuted }
+                if g.const_ == 0 {
+                    Verdict::Proven
+                } else {
+                    Verdict::Refuted
+                }
             }
             BinaryOpKind::Le => {
-                if g.const_ >= 0 { Verdict::Proven } else { Verdict::Refuted }
+                if g.const_ >= 0 {
+                    Verdict::Proven
+                } else {
+                    Verdict::Refuted
+                }
             }
             BinaryOpKind::Lt => {
-                if g.const_ > 0 { Verdict::Proven } else { Verdict::Refuted }
+                if g.const_ > 0 {
+                    Verdict::Proven
+                } else {
+                    Verdict::Refuted
+                }
             }
             BinaryOpKind::Neq => {
-                if g.const_ != 0 { Verdict::Proven } else { Verdict::Refuted }
+                if g.const_ != 0 {
+                    Verdict::Proven
+                } else {
+                    Verdict::Refuted
+                }
             }
             _ => Verdict::Unproven,
         };
@@ -1302,7 +1489,9 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
         }) else {
             continue;
         };
-        let Some(fc) = normalize(l, op, r) else { continue };
+        let Some(fc) = normalize(l, op, r) else {
+            continue;
+        };
         if fact_entails(&fc, &g) {
             proven = true;
             break;
@@ -1328,7 +1517,9 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
             }) else {
                 continue;
             };
-            let Some(fc) = normalize(l, op, r) else { continue };
+            let Some(fc) = normalize(l, op, r) else {
+                continue;
+            };
             if fact_entails(&fc, &negated) {
                 return Verdict::Refuted;
             }
@@ -1409,7 +1600,12 @@ pub fn substitute_params(goal: &Expr, params: &[String], args: &[Expr]) -> Expr 
                 Box::new(go(base, params, args)),
                 Box::new(go(idx, params, args)),
             ),
-            Expr::Slice { array, start, end, stride } => Expr::Slice {
+            Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => Expr::Slice {
                 array: Box::new(go(array, params, args)),
                 start: start.as_ref().map(|x| Box::new(go(x, params, args))),
                 end: end.as_ref().map(|x| Box::new(go(x, params, args))),
@@ -1419,12 +1615,8 @@ pub fn substitute_params(goal: &Expr, params: &[String], args: &[Expr]) -> Expr 
             Expr::Deref(inner) => Expr::Deref(Box::new(go(inner, params, args))),
             Expr::AddrOf(inner) => Expr::AddrOf(Box::new(go(inner, params, args))),
             Expr::Consume(inner) => Expr::Consume(Box::new(go(inner, params, args))),
-            Expr::Tuple(items) => {
-                Expr::Tuple(items.iter().map(|x| go(x, params, args)).collect())
-            }
-            Expr::List(items) => {
-                Expr::List(items.iter().map(|x| go(x, params, args)).collect())
-            }
+            Expr::Tuple(items) => Expr::Tuple(items.iter().map(|x| go(x, params, args)).collect()),
+            Expr::List(items) => Expr::List(items.iter().map(|x| go(x, params, args)).collect()),
             other => other.clone(),
         }
     }
@@ -1440,21 +1632,21 @@ fn rename_identifier(e: &Expr, from: &str, to: &str) -> Expr {
             Box::new(rename_identifier(l, from, to)),
             Box::new(rename_identifier(r, from, to)),
         ),
-        Expr::UnaryOp(k, inner) => {
-            Expr::UnaryOp(*k, Box::new(rename_identifier(inner, from, to)))
-        }
-        Expr::Field(base, f) => {
-            Expr::Field(Box::new(rename_identifier(base, from, to)), f.clone())
-        }
+        Expr::UnaryOp(k, inner) => Expr::UnaryOp(*k, Box::new(rename_identifier(inner, from, to))),
+        Expr::Field(base, f) => Expr::Field(Box::new(rename_identifier(base, from, to)), f.clone()),
         Expr::Call(name, args, id) => Expr::Call(
             name.clone(),
-            args.iter().map(|a| rename_identifier(a, from, to)).collect(),
+            args.iter()
+                .map(|a| rename_identifier(a, from, to))
+                .collect(),
             *id,
         ),
         Expr::MethodCall(recv, name, args, id) => Expr::MethodCall(
             Box::new(rename_identifier(recv, from, to)),
             name.clone(),
-            args.iter().map(|a| rename_identifier(a, from, to)).collect(),
+            args.iter()
+                .map(|a| rename_identifier(a, from, to))
+                .collect(),
             *id,
         ),
         Expr::Reflect(base, target, kind) => Expr::Reflect(
@@ -1469,9 +1661,7 @@ fn rename_identifier(e: &Expr, from: &str, to: &str) -> Expr {
         Expr::Cast(inner, ty) => {
             Expr::Cast(Box::new(rename_identifier(inner, from, to)), ty.clone())
         }
-        Expr::Consume(inner) => {
-            Expr::Consume(Box::new(rename_identifier(inner, from, to)))
-        }
+        Expr::Consume(inner) => Expr::Consume(Box::new(rename_identifier(inner, from, to))),
         other => other.clone(),
     }
 }
@@ -1655,9 +1845,14 @@ pub fn rederives_nonneg(v: &str, rhs: &Expr, facts: &[Expr]) -> Option<Expr> {
 pub fn mentions(e: &Expr, var: &str) -> bool {
     match e {
         Expr::Identifier(n) => n == var,
-        Expr::Field(base, _) | Expr::Reflect(base, _, _) | Expr::Cast(base, _)
-        | Expr::IsType(base, _) | Expr::Consume(base) | Expr::Deref(base)
-        | Expr::AddrOf(base) | Expr::Await(base) => mentions(base, var),
+        Expr::Field(base, _)
+        | Expr::Reflect(base, _, _)
+        | Expr::Cast(base, _)
+        | Expr::IsType(base, _)
+        | Expr::Consume(base)
+        | Expr::Deref(base)
+        | Expr::AddrOf(base)
+        | Expr::Await(base) => mentions(base, var),
         Expr::UnaryOp(_, inner) => mentions(inner, var),
         Expr::BinaryOp(_, l, r) => mentions(l, var) || mentions(r, var),
         Expr::Call(_, args, _) | Expr::Tuple(args) | Expr::List(args) => {
@@ -1671,22 +1866,24 @@ pub fn mentions(e: &Expr, var: &str) -> bool {
                 || receiver.as_ref().is_some_and(|r| mentions(r, var))
         }
         Expr::Index(base, idx) => mentions(base, var) || mentions(idx, var),
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             mentions(array, var)
                 || start.as_ref().is_some_and(|x| mentions(x, var))
                 || end.as_ref().is_some_and(|x| mentions(x, var))
                 || stride.as_ref().is_some_and(|x| mentions(x, var))
         }
         Expr::If(c, t, e) => {
-            mentions(c, var)
-                || mentions(t, var)
-                || e.as_ref().is_some_and(|x| mentions(x, var))
+            mentions(c, var) || mentions(t, var) || e.as_ref().is_some_and(|x| mentions(x, var))
         }
         Expr::Match(scrut, arms) => {
             mentions(scrut, var)
                 || arms.iter().any(|a| {
-                    a.guard.as_ref().is_some_and(|g| mentions(g, var))
-                        || mentions(&a.body, var)
+                    a.guard.as_ref().is_some_and(|g| mentions(g, var)) || mentions(&a.body, var)
                 })
         }
         Expr::Block(stmts) => stmts.iter().any(|s| statement_mentions(s, var)),
@@ -1724,7 +1921,9 @@ fn statement_mentions(s: &crate::ast::Statement, var: &str) -> bool {
         }
         S::Match { expr, arms } => {
             mentions(expr, var)
-                || arms.iter().any(|a| a.body.iter().any(|s| statement_mentions(s, var)))
+                || arms
+                    .iter()
+                    .any(|a| a.body.iter().any(|s| statement_mentions(s, var)))
         }
         _ => false,
     }
@@ -1735,9 +1934,14 @@ fn free_identifiers(e: &Expr, out: &mut BTreeSet<String>) {
         Expr::Identifier(n) => {
             out.insert(n.clone());
         }
-        Expr::Field(base, _) | Expr::Reflect(base, _, _) | Expr::Cast(base, _)
-        | Expr::IsType(base, _) | Expr::Consume(base) | Expr::Deref(base)
-        | Expr::AddrOf(base) | Expr::Await(base) => free_identifiers(base, out),
+        Expr::Field(base, _)
+        | Expr::Reflect(base, _, _)
+        | Expr::Cast(base, _)
+        | Expr::IsType(base, _)
+        | Expr::Consume(base)
+        | Expr::Deref(base)
+        | Expr::AddrOf(base)
+        | Expr::Await(base) => free_identifiers(base, out),
         Expr::UnaryOp(_, inner) => free_identifiers(inner, out),
         Expr::BinaryOp(_, l, r) => {
             free_identifiers(l, out);
@@ -1835,10 +2039,7 @@ pub fn post_facts(contract: &FnContract, args: &[Expr], binding: &str) -> Vec<Ex
         let renamed = rename_identifier(&substituted, "term", binding);
         let mut ids = BTreeSet::new();
         free_identifiers(&renamed, &mut ids);
-        if ids
-            .iter()
-            .all(|id| id == binding || allowed.contains(id))
-        {
+        if ids.iter().all(|id| id == binding || allowed.contains(id)) {
             out.push(renamed);
         }
     }
@@ -1847,11 +2048,7 @@ pub fn post_facts(contract: &FnContract, args: &[Expr], binding: &str) -> Vec<Ex
 
 /// Postcondition facts for a multi-value binding. `term.0`, `term.1`, ...
 /// name the bound components; a bare `term` names the first component.
-pub fn post_facts_components(
-    contract: &FnContract,
-    args: &[Expr],
-    names: &[String],
-) -> Vec<Expr> {
+pub fn post_facts_components(contract: &FnContract, args: &[Expr], names: &[String]) -> Vec<Expr> {
     let Some(first) = names.first() else {
         return Vec::new();
     };
@@ -1870,7 +2067,10 @@ pub fn post_facts_components(
         let renamed = rename_term_components(&substituted, first, names);
         let mut ids = BTreeSet::new();
         free_identifiers(&renamed, &mut ids);
-        if ids.iter().all(|id| allowed.contains(id) || names.contains(id)) {
+        if ids
+            .iter()
+            .all(|id| allowed.contains(id) || names.contains(id))
+        {
             out.push(renamed);
         }
     }
@@ -2064,7 +2264,10 @@ mod tests {
     #[test]
     fn zero_exclusion_and_lower_bound_give_one() {
         let facts = vec![e("n >= 0"), e("n <= 60"), e("n != 0")];
-        assert_eq!(prove_precondition(&e("n - 1 >= 0"), &facts), Verdict::Proven);
+        assert_eq!(
+            prove_precondition(&e("n - 1 >= 0"), &facts),
+            Verdict::Proven
+        );
         assert_eq!(
             prove_precondition(&e("n - 1 <= 60"), &facts),
             Verdict::Proven
@@ -2074,13 +2277,22 @@ mod tests {
     #[test]
     fn quotient_and_remainder_bounds() {
         let facts = vec![e("a >= 0"), e("a < 1000000000000000000")];
-        assert_eq!(prove_precondition(&e("a / 10 >= 0"), &facts), Verdict::Proven);
+        assert_eq!(
+            prove_precondition(&e("a / 10 >= 0"), &facts),
+            Verdict::Proven
+        );
         assert_eq!(
             prove_precondition(&e("a / 10 < 1000000000000000000"), &facts),
             Verdict::Proven
         );
-        assert_eq!(prove_precondition(&e("a % 10 >= 0"), &facts), Verdict::Proven);
-        assert_eq!(prove_precondition(&e("a % 10 <= 9"), &facts), Verdict::Proven);
+        assert_eq!(
+            prove_precondition(&e("a % 10 >= 0"), &facts),
+            Verdict::Proven
+        );
+        assert_eq!(
+            prove_precondition(&e("a % 10 <= 9"), &facts),
+            Verdict::Proven
+        );
     }
 
     #[test]
@@ -2140,14 +2352,20 @@ mod tests {
             e("users.len == end - begin + 1"),
             e("count == 0"),
         ];
-        assert_eq!(prove_precondition(&e("count < users.len"), &facts), Verdict::Proven);
+        assert_eq!(
+            prove_precondition(&e("count < users.len"), &facts),
+            Verdict::Proven
+        );
     }
 
     #[test]
     fn difference_bounds_do_not_overprove() {
         let facts = vec![e("idx >= begin"), e("begin >= 0")];
         assert_eq!(prove_precondition(&e("idx > 0"), &facts), Verdict::Unproven);
-        assert_eq!(prove_precondition(&e("n < 0"), &[e("n == 5")]), Verdict::Refuted);
+        assert_eq!(
+            prove_precondition(&e("n < 0"), &[e("n == 5")]),
+            Verdict::Refuted
+        );
     }
 
     #[test]
@@ -2181,10 +2399,7 @@ mod tests {
         };
         let names = vec!["a".to_string(), "b".to_string()];
         let facts = post_facts_components(&contract, &[e("n")], &names);
-        assert_eq!(
-            facts,
-            vec![e("a >= 1"), e("b >= n"), e("b <= n + 1")]
-        );
+        assert_eq!(facts, vec![e("a >= 1"), e("b >= n"), e("b <= n + 1")]);
     }
 
     #[test]
@@ -2227,14 +2442,16 @@ mod tests {
     #[test]
     fn signed_division_without_bounds_stays_unproven() {
         let facts = vec![e("x >= -100"), e("x <= 100")];
-        assert_eq!(prove_precondition(&e("x / 2 >= -50"), &facts), Verdict::Proven);
+        assert_eq!(
+            prove_precondition(&e("x / 2 >= -50"), &facts),
+            Verdict::Proven
+        );
         assert_eq!(
             prove_precondition(&e("x % 2 >= 0"), &facts),
             Verdict::Unproven
         );
     }
 }
-
 
 #[cfg(test)]
 mod guard_flow_tests {
@@ -2270,11 +2487,7 @@ mod guard_flow_tests {
             Expr::BinaryOp(
                 BinaryOpKind::Eq,
                 Box::new(id("a")),
-                Box::new(bin(
-                    BinaryOpKind::Sub,
-                    Expr::Decimal(0),
-                    id("k"),
-                )),
+                Box::new(bin(BinaryOpKind::Sub, Expr::Decimal(0), id("k"))),
             ),
             bin(BinaryOpKind::Lt, id("k"), Expr::Decimal(0)),
         ];
@@ -2288,11 +2501,7 @@ mod guard_flow_tests {
             Expr::BinaryOp(
                 BinaryOpKind::Eq,
                 Box::new(id("a2")),
-                Box::new(bin(
-                    BinaryOpKind::Mul,
-                    id("acc"),
-                    Expr::Decimal(2),
-                )),
+                Box::new(bin(BinaryOpKind::Mul, id("acc"), Expr::Decimal(2))),
             ),
             bin(BinaryOpKind::Ge, id("acc"), Expr::Decimal(1)),
         ];
@@ -2321,11 +2530,7 @@ mod guard_flow_tests {
             Expr::BinaryOp(
                 BinaryOpKind::Eq,
                 Box::new(id("missing")),
-                Box::new(bin(
-                    BinaryOpKind::Sub,
-                    id("len"),
-                    field.clone(),
-                )),
+                Box::new(bin(BinaryOpKind::Sub, id("len"), field.clone())),
             ),
             bin(BinaryOpKind::Le, field.clone(), id("len")),
         ];
@@ -2336,6 +2541,9 @@ mod guard_flow_tests {
     #[test]
     fn fallthrough_neq_proves_base_successor() {
         let neg = fallthrough_facts(&bin(BinaryOpKind::Eq, id("n"), Expr::Decimal(0)));
-        assert!(matches!(neg.as_slice(), [Expr::BinaryOp(BinaryOpKind::Neq, _, _)]));
+        assert!(matches!(
+            neg.as_slice(),
+            [Expr::BinaryOp(BinaryOpKind::Neq, _, _)]
+        ));
     }
 }

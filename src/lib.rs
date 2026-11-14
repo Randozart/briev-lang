@@ -23,50 +23,40 @@
 // or embeds the Work.
 
 pub mod accel_rt;
-pub mod annotator;
 pub mod address_resolver;
-pub mod casting;
+pub mod annotator;
 pub mod assertion_verify;
+pub mod casting;
 pub use briev_verify::ast;
 pub mod analysis;
-pub mod hir;
 pub mod archive;
 pub mod backend;
 pub mod beast;
-pub mod bounty;
 pub mod beastpack;
+pub mod bounty;
+pub mod cache;
 pub mod config;
 pub mod config_resolver;
 pub mod config_tuning;
-pub mod target;
-    pub mod conformance;
-    pub mod diagnostics;
-pub mod vocab;
-pub mod meta_vocab;
-pub mod type_universe;
-pub mod cache;
+pub mod conformance;
 pub mod dbriev;
 pub mod derive;
 pub mod desugarer;
+pub mod diagnostics;
 pub mod encoding_registry;
 pub mod errors;
 pub mod ffi;
 pub mod fuzz_checker;
-pub mod glue;
-pub mod gpu_rt;
 #[cfg(test)]
 pub mod fuzzing;
-/// 2026-11-10: grammar-aware well-typed program generation + semantic oracle.
-/// Always compiled under `cfg(test)`; the external `fuzz/` workspace enables
-/// the `fuzzing` feature to reach it. Kept out of the default build because it
-/// is test/fuzz support only.
-#[cfg(any(test, feature = "fuzzing"))]
-pub mod typed_program;
+pub mod glue;
+pub mod gpu_rt;
 pub mod hardware;
 pub mod hardware_validator;
+pub mod hir;
 pub mod import_resolver;
-pub mod intrinsic_signatures;
 pub mod interpreter;
+pub mod intrinsic_signatures;
 pub mod layout;
 pub mod lexer;
 pub mod library;
@@ -74,26 +64,36 @@ pub mod lifetime;
 pub mod linkage;
 pub mod lsp;
 pub mod manifest;
-pub mod packages;
 pub mod memory_spec;
+pub mod meta_vocab;
+pub mod normalize_types;
+pub mod packages;
 pub mod parser;
 pub mod pipeline;
-pub mod normalize_types;
 pub mod plugin;
 pub mod proof_engine;
 pub mod protocol_verify;
 pub mod rbv;
 pub mod reactor;
-pub mod test_engine;
 pub mod resolver;
 pub mod scheduler;
 pub mod signal_graph;
 pub mod ssr;
+pub mod target;
+pub mod test_engine;
+pub mod type_universe;
+/// 2026-11-10: grammar-aware well-typed program generation + semantic oracle.
+/// Always compiled under `cfg(test)`; the external `fuzz/` workspace enables
+/// the `fuzzing` feature to reach it. Kept out of the default build because it
+/// is test/fuzz support only.
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod typed_program;
+pub mod vocab;
 pub use briev_verify::symbolic;
+pub mod macros;
 pub mod target_spec;
 pub mod typechecker;
 pub mod view_compiler;
-pub mod macros;
 pub mod watch;
 pub mod wrapper;
 
@@ -139,4 +139,3 @@ pub fn resource_root() -> std::path::PathBuf {
     }
     PathBuf::from(".")
 }
-

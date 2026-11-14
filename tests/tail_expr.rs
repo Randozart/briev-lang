@@ -129,8 +129,8 @@ node main [beginprogram][true] {
     endprogram;
 };
 "#;
-    let err = compile("void_value_tail", src)
-        .expect_err("value tail in a Void body must fail the build");
+    let err =
+        compile("void_value_tail", src).expect_err("value tail in a Void body must fail the build");
     assert!(
         err.contains("tail value vs declared return type")
             || err.contains("TypeMismatch")

@@ -16,9 +16,9 @@ use std::process::Command;
 
 use briev_compiler::ast::StageKind;
 use briev_compiler::backend::llvm::LlvmBackend;
-use briev_compiler::plugin::loader::extract_inline_stage_blocks;
 use briev_compiler::plugin::PluginManager;
-use briev_compiler::target::{get_extension, BackendKind};
+use briev_compiler::plugin::loader::extract_inline_stage_blocks;
+use briev_compiler::target::{BackendKind, get_extension};
 use briev_compiler::type_universe::TypeUniverse;
 
 /// Re-export the LLVM backend's TrgUnresolvedAction for CLI flag parsing.
@@ -26,15 +26,15 @@ use briev_compiler::type_universe::TypeUniverse;
 pub use briev_compiler::backend::llvm::TrgUnresolvedAction;
 // 2026-08-23 (Phase 10): frontend pipeline moved into the LIB so the sweep
 // and library consumers run the real path.
-use briev_compiler::pipeline::{
-    build_plugin_manager, check_types, compile_view, effective_view_html,
-    evaluate_pending_comptime, lex_for_path, load_target_config, parse_with_warnings,
-    preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs, view_external_roots,
-    view_root_signals, CompiledView, ViewMountSpecs,
-};
 pub use briev_compiler::pipeline::{
-    check_data_source, check_source, compile_to_typed, BeastFilter, BeastPosition, BeastStage,
-    BuildOptions,
+    BeastFilter, BeastPosition, BeastStage, BuildOptions, check_data_source, check_source,
+    compile_to_typed,
+};
+use briev_compiler::pipeline::{
+    CompiledView, ViewMountSpecs, build_plugin_manager, check_types, compile_view,
+    effective_view_html, evaluate_pending_comptime, lex_for_path, load_target_config,
+    parse_with_warnings, preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs,
+    view_external_roots, view_root_signals,
 };
 
 /// Pipeline stage at which to emit a BEAST snapshot or IR snapshot.
@@ -133,7 +133,7 @@ pub fn copy_extern_companions(
 /// silenceable (D29). To undo: delete this fn and its call in compile_source.
 fn enforce_module_config(items: &mut Vec<briev_compiler::ast::TopLevel>) -> Result<(), String> {
     use briev_compiler::ast::TopLevel;
-    use briev_compiler::config_tuning::{apply_module_config, IrrPolicy};
+    use briev_compiler::config_tuning::{IrrPolicy, apply_module_config};
     let Some(pos) = items
         .iter()
         .position(|i| matches!(i, TopLevel::ModuleConfig(_)))
@@ -2866,7 +2866,7 @@ fn emit_beast_snapshot(
         other => {
             return Err(format!(
                 "internal: AST snapshot requested for IR stage {other:?}"
-            ))
+            ));
         }
     };
     let data = briev_compiler::beast::to_beast(items, universe);
@@ -2898,7 +2898,7 @@ fn emit_ir_snapshot(
         other => {
             return Err(format!(
                 "internal: IR snapshot requested for AST stage {other:?}"
-            ))
+            ));
         }
     };
     let path = format!(
@@ -3171,7 +3171,7 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
                 "unknown source extension '{}' for '{}'",
                 ext,
                 source_path.display()
-            ))
+            ));
         }
     };
     let status = Command::new("clang")
@@ -3708,8 +3708,8 @@ mod tests {
     /// error naming both symbol and path.
     #[test]
     fn test_extern_missing_source_is_hard_error() {
-        use briev_compiler::ast::top::*;
         use briev_compiler::ast::TopLevel;
+        use briev_compiler::ast::top::*;
         let cell = TopLevel::Cell(CellDef {
             name: "Ghost".into(),
             type_params: vec![],

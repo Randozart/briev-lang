@@ -675,11 +675,7 @@ fn range_len(e: &Expr) -> Option<i64> {
                 _ => return None,
             };
             let count = if *inclusive { en - s + 1 } else { en - s };
-            if count >= 0 {
-                Some(count)
-            } else {
-                None
-            }
+            if count >= 0 { Some(count) } else { None }
         }
         _ => None,
     }

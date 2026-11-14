@@ -20,8 +20,8 @@ pub fn handle_accept_command(file_path: &str, use_opt: bool) -> Result<(), Strin
     }
 
     // Read and parse original source to find derivation blocks
-    let source = fs::read_to_string(path)
-        .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
+    let source =
+        fs::read_to_string(path).map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
     let token_spans = lex_source_with_spans(&source)?;
     let program = parse_tokens(&token_spans, &source)?;
 
@@ -123,8 +123,7 @@ pub fn handle_accept_command(file_path: &str, use_opt: bool) -> Result<(), Strin
         result = format!("{}{}{}", prefix, body, suffix);
     }
 
-    fs::write(path, &result)
-        .map_err(|e| format!("cannot write '{}': {}", file_path, e))?;
+    fs::write(path, &result).map_err(|e| format!("cannot write '{}': {}", file_path, e))?;
     eprintln!(
         "[accept] folded {} body(ies) into '{}' (backup at '{}')",
         replacements.len(),
@@ -136,7 +135,9 @@ pub fn handle_accept_command(file_path: &str, use_opt: bool) -> Result<(), Strin
 }
 
 /// Lex a Briev source file into (Token, byte_range) pairs.
-fn lex_source_with_spans(source: &str) -> Result<Vec<(crate::lexer::Token, std::ops::Range<usize>)>, String> {
+fn lex_source_with_spans(
+    source: &str,
+) -> Result<Vec<(crate::lexer::Token, std::ops::Range<usize>)>, String> {
     use logos::Logos;
     let mut lexer = crate::lexer::Token::lexer(source);
     let mut result = Vec::new();
@@ -158,7 +159,9 @@ fn parse_tokens(
     source: &str,
 ) -> Result<Vec<TopLevel>, String> {
     let mut parser = crate::parser::Parser::new(token_spans.to_vec(), source);
-    parser.parse_program().map_err(|e| format!("parse error: {}", e))
+    parser
+        .parse_program()
+        .map_err(|e| format!("parse error: {}", e))
 }
 
 #[cfg(test)]

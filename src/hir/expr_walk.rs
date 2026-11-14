@@ -87,14 +87,23 @@ pub(crate) fn walk_expr(expr: &HirExpr, f: &mut dyn FnMut(&HirExpr)) {
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
         | HirExprKind::Await(inner)
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        }
         | HirExprKind::Lambda { body: inner, .. } => walk_expr(inner, f),
         HirExprKind::Index(a, b) => {
             walk_expr(a, f);
             walk_expr(b, f);
         }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             walk_expr(array, f);
             if let Some(s) = start {
                 walk_expr(s, f);
@@ -116,7 +125,11 @@ pub(crate) fn walk_expr(expr: &HirExpr, f: &mut dyn FnMut(&HirExpr)) {
             }
         }
         HirExprKind::Block(stmts) => walk_stmts(stmts, f),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             walk_expr(condition, f);
             walk_expr(then_branch, f);
             if let Some(e) = else_branch {

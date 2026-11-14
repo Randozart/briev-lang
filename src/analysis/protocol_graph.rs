@@ -50,7 +50,7 @@ pub fn find_defn_body<'a>(name: &str, items: &'a [TopLevel]) -> Option<&'a Expr>
 /// identity — the caller then simply doesn't collapse the pair (the cast is
 /// emitted correctly, just not for free). Never a guess.
 fn prove_composition_inverse(param: &str, forward_body: &Expr, inverse_body: &Expr) -> bool {
-    use crate::symbolic::{eval_symbolic_expr, SymbolicValue};
+    use crate::symbolic::{SymbolicValue, eval_symbolic_expr};
     let sym_input = {
         let mut m = std::collections::HashMap::new();
         m.insert(param.to_string(), SymbolicValue::Identifier("__x".into()));
@@ -272,11 +272,13 @@ pub fn verify_crossop_equivalence(pd: &ProtocolDef, items: &[TopLevel]) -> Resul
         let formula = build_crossop_smt(forward_body, inverse_body, custom_body);
         let result = crate::proof_engine::smt::prove_smt_formula(&formula, 1000);
         match result {
-            crate::proof_engine::smt::SmtResult::Unsat => {},
-            _ => return Err(format!(
-                "cross-op equivalence proof failed for protocol '{}': op '{}' not equivalent to round-trip",
-                pd.name, op.op
-            )),
+            crate::proof_engine::smt::SmtResult::Unsat => {}
+            _ => {
+                return Err(format!(
+                    "cross-op equivalence proof failed for protocol '{}': op '{}' not equivalent to round-trip",
+                    pd.name, op.op
+                ));
+            }
         }
     }
 

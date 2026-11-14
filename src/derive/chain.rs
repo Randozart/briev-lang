@@ -5,8 +5,8 @@
 
 use crate::ast::{ChainSegment, Expr};
 use crate::backend::assembler::{AsmAssembler, StubAssembler};
-use crate::interpreter::{Atom, eval_expr, Value, VirtualHeap};
 use crate::interpreter::RuntimeError;
+use crate::interpreter::{Atom, Value, VirtualHeap, eval_expr};
 use std::collections::HashMap;
 
 /// 2026-07-29: A body in the verification chain — evaluable form.
@@ -20,10 +20,17 @@ pub enum Body {
 /// 2026-07-29: Evaluate a Briev expression against test inputs.
 /// `param_names` is the list of parameter names used in the expression.
 /// Inputs are bound to these names by position.
-fn evaluate_ref_expr(expr: &Expr, input: &[Value], param_names: &[String]) -> Result<Value, String> {
+fn evaluate_ref_expr(
+    expr: &Expr,
+    input: &[Value],
+    param_names: &[String],
+) -> Result<Value, String> {
     let mut bindings: HashMap<String, Value> = HashMap::new();
     for (i, val) in input.iter().enumerate() {
-        let name = param_names.get(i).cloned().unwrap_or_else(|| format!("x{}", i));
+        let name = param_names
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| format!("x{}", i));
         bindings.insert(name, val.clone());
     }
     let mut heap = VirtualHeap::new();
@@ -81,7 +88,9 @@ fn evaluate_body(
             let so_file = tmp.join("f.so");
 
             // Write GNU assembler file with proper directives
-            let preamble = format!(".intel_syntax noprefix\n.text\n.globl asm_func\n.type asm_func, @function\nasm_func:\n");
+            let preamble = format!(
+                ".intel_syntax noprefix\n.text\n.globl asm_func\n.type asm_func, @function\nasm_func:\n"
+            );
             std::fs::write(&asm_file, format!("{}{}\nret\n", preamble, asm_text))
                 .map_err(|e| format!("write asm: {}", e))?;
 
@@ -107,13 +116,16 @@ fn evaluate_body(
 
             // Load and call via FFI
             let result = unsafe {
-                let lib = libloading::Library::new(&so_file)
-                    .map_err(|e| format!("load: {}", e))?;
-                let f: libloading::Symbol<unsafe extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64>
-                    = lib.get(b"wrapper").map_err(|e| format!("sym: {}", e))?;
+                let lib = libloading::Library::new(&so_file).map_err(|e| format!("load: {}", e))?;
+                let f: libloading::Symbol<
+                    unsafe extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64,
+                > = lib.get(b"wrapper").map_err(|e| format!("sym: {}", e))?;
                 let mut args = [0i64; 6];
                 for (i, v) in input.iter().enumerate().take(6) {
-                    args[i] = match v { Value::Atom(Atom::Int(n)) => *n, _ => 0 };
+                    args[i] = match v {
+                        Value::Atom(Atom::Int(n)) => *n,
+                        _ => 0,
+                    };
                 }
                 let val = f(args[0], args[1], args[2], args[3], args[4], args[5]);
                 lib.close().ok();
@@ -130,14 +142,24 @@ fn evaluate_body(
 
 /// 2026-07-29: Generate deterministic test inputs for params.
 fn generate_sample_input(params: &[(String, crate::ast::Type)]) -> Vec<Value> {
-    params.iter().enumerate().map(|(i, (_, ty))| {
-        let seed = (i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        match ty {
-            crate::ast::Type::Custom(s) if s == "Int" => Value::Atom(Atom::Int((seed & 0x7FF) as i64 - 500)),
-            crate::ast::Type::Custom(s) if s == "Float" => Value::Atom(Atom::Float((seed & 0x7FF) as f64 * 0.5)),
-            _ => Value::Atom(Atom::Int(0)),
-        }
-    }).collect()
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, (_, ty))| {
+            let seed = (i as u64)
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            match ty {
+                crate::ast::Type::Custom(s) if s == "Int" => {
+                    Value::Atom(Atom::Int((seed & 0x7FF) as i64 - 500))
+                }
+                crate::ast::Type::Custom(s) if s == "Float" => {
+                    Value::Atom(Atom::Float((seed & 0x7FF) as f64 * 0.5))
+                }
+                _ => Value::Atom(Atom::Int(0)),
+            }
+        })
+        .collect()
 }
 
 /// 2026-07-29: Compare two values with tolerance for floats.
@@ -168,7 +190,9 @@ fn verify_candidate(
             return false;
         };
         for j in 0..candidates.len() {
-            if idx == j { continue; }
+            if idx == j {
+                continue;
+            }
             let Ok(other) = evaluate_body(&candidates[j], &input, asm, &param_names) else {
                 return false;
             };
@@ -279,14 +303,26 @@ mod tests {
 
     #[test]
     fn test_values_equal_int() {
-        assert!(values_equal(&Value::Atom(Atom::Int(42)), &Value::Atom(Atom::Int(42))));
-        assert!(!values_equal(&Value::Atom(Atom::Int(42)), &Value::Atom(Atom::Int(43))));
+        assert!(values_equal(
+            &Value::Atom(Atom::Int(42)),
+            &Value::Atom(Atom::Int(42))
+        ));
+        assert!(!values_equal(
+            &Value::Atom(Atom::Int(42)),
+            &Value::Atom(Atom::Int(43))
+        ));
     }
 
     #[test]
     fn test_values_equal_float() {
-        assert!(values_equal(&Value::Atom(Atom::Float(3.14)), &Value::Atom(Atom::Float(3.1401))));
-        assert!(!values_equal(&Value::Atom(Atom::Float(3.14)), &Value::Atom(Atom::Float(4.0))));
+        assert!(values_equal(
+            &Value::Atom(Atom::Float(3.14)),
+            &Value::Atom(Atom::Float(3.1401))
+        ));
+        assert!(!values_equal(
+            &Value::Atom(Atom::Float(3.14)),
+            &Value::Atom(Atom::Float(4.0))
+        ));
     }
 
     #[test]

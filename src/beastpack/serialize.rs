@@ -31,8 +31,8 @@ pub fn serialize(items: &[TopLevel], universe: &TypeUniverse, obfuscation_seed: 
     let text_bytes = text.as_bytes();
 
     // 3. Compress with gzip
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
     encoder.write_all(text_bytes).unwrap();
     let compressed = encoder.finish().unwrap();
@@ -42,17 +42,17 @@ pub fn serialize(items: &[TopLevel], universe: &TypeUniverse, obfuscation_seed: 
     let header_size = 10 + 4 + 8 + 4 + 4 + 8; // magic + version + seed + flags + reserved + data_size
     let mut buf = Vec::with_capacity(header_size as usize + data_size as usize + 32);
 
-    buf.extend_from_slice(BEASTPACK_MAGIC);         // 10 bytes: magic
+    buf.extend_from_slice(BEASTPACK_MAGIC); // 10 bytes: magic
     buf.extend_from_slice(&BEASTPACK_VERSION.to_le_bytes()); // 4 bytes: version
-    buf.extend_from_slice(&obfuscation_seed.to_le_bytes());  // 8 bytes: seed (0 = none)
-    buf.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes());   // 4 bytes: flags
-    buf.extend_from_slice(&[0u8; 4]);                // 4 bytes: reserved
+    buf.extend_from_slice(&obfuscation_seed.to_le_bytes()); // 8 bytes: seed (0 = none)
+    buf.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes()); // 4 bytes: flags
+    buf.extend_from_slice(&[0u8; 4]); // 4 bytes: reserved
     buf.extend_from_slice(&data_size.to_le_bytes()); // 8 bytes: data size
-    buf.extend_from_slice(&compressed);              // N bytes: compressed data
+    buf.extend_from_slice(&compressed); // N bytes: compressed data
 
     // 5. Checksum (blake3 of everything before the checksum)
     let checksum = blake3::hash(&buf);
-    buf.extend_from_slice(checksum.as_bytes());      // 32 bytes: checksum
+    buf.extend_from_slice(checksum.as_bytes()); // 32 bytes: checksum
 
     buf
 }

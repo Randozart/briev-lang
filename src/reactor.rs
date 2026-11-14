@@ -94,7 +94,7 @@ impl Reactor {
             Statement::Guarded(condition, statements) => {
                 // Check if this guard's condition is currently true
                 if let Ok(cond_val) = interp.eval_expr(condition) {
-                    if cond_val .is_true() {
+                    if cond_val.is_true() {
                         // Check if any statement in the guard body is an escape
                         for s in statements {
                             if self.contains_escape(s) {
@@ -123,7 +123,10 @@ impl Reactor {
     /// Check if an expression contains patterns that would lead to escape
     /// (e.g., error checks on FFI calls)
     /// Fire async transactions whose @Hz interval has elapsed since last fire.
-    pub fn fire_due_async_txns(&mut self, interp: &mut Interpreter) -> Result<bool, crate::interpreter::RuntimeError> {
+    pub fn fire_due_async_txns(
+        &mut self,
+        interp: &mut Interpreter,
+    ) -> Result<bool, crate::interpreter::RuntimeError> {
         let mut fired = false;
         for (idx, txn) in self.transactions.iter().enumerate() {
             if !txn.is_async || txn.reactor_speed.is_none() {
@@ -131,8 +134,12 @@ impl Reactor {
             }
             if let Some(hz) = txn.reactor_speed {
                 let interval_ms = 1000 / hz;
-                if interval_ms == 0 { continue; }
-                let elapsed = self.last_fired.get(idx)
+                if interval_ms == 0 {
+                    continue;
+                }
+                let elapsed = self
+                    .last_fired
+                    .get(idx)
                     .map(|t| t.elapsed().as_millis() as u64)
                     .unwrap_or(u64::MAX);
                 if elapsed >= interval_ms as u64 {
@@ -140,12 +147,14 @@ impl Reactor {
                     // Run this single transaction
                     if let Some(txn) = self.transactions.get(idx) {
                         let pre_val = interp.eval_expr(&txn.contract.pre_condition)?;
-                        if pre_val .is_true() {
+                        if pre_val.is_true() {
                             interp.prior_state = interp.state.clone();
                             for stmt in &txn.body {
                                 if let Err(e) = interp.exec_stmt(stmt) {
                                     match e {
-                                        crate::interpreter::RuntimeError::ContractViolation(ref msg) if msg == "escape" => {
+                                        crate::interpreter::RuntimeError::ContractViolation(
+                                            ref msg,
+                                        ) if msg == "escape" => {
                                             interp.state = interp.prior_state.clone();
                                         }
                                         _ => {
@@ -178,7 +187,7 @@ impl Reactor {
         for &txn_idx in self.get_dirty_transactions().iter() {
             if let Some(txn) = self.transactions.get(txn_idx) {
                 let pre_val = interp.eval_expr(&txn.contract.pre_condition)?;
-                if pre_val .is_true() {
+                if pre_val.is_true() {
                     // PRE-EVALUATION GUARD: Check if any escape conditions are provably true
                     // before running the transaction. If so, skip entirely to avoid FFI side effects.
                     if self.will_escape(txn, interp) {
@@ -203,7 +212,7 @@ impl Reactor {
                                 Ok(StmtResult::TermSuccess) => {
                                     let post_val =
                                         interp.eval_expr(&txn.contract.post_condition)?;
-                                    if post_val .is_true() {
+                                    if post_val.is_true() {
                                         term_executed = true;
                                         any_executed = true;
                                         break;
@@ -215,9 +224,9 @@ impl Reactor {
                                 // 2026-08-06 (endprogram plan): the reactor
                                 // stops — the process boundary is reached.
                                 Ok(StmtResult::ProgramExit(code)) => {
-                                    return Err(
-                                        crate::interpreter::RuntimeError::ProgramExit(code),
-                                    );
+                                    return Err(crate::interpreter::RuntimeError::ProgramExit(
+                                        code,
+                                    ));
                                 }
                                 Ok(StmtResult::Escaped) => {
                                     escape_triggered = true;
@@ -241,7 +250,10 @@ impl Reactor {
                                         eprintln!(
                                             "DEBUG reactor: txn '{}' stmt {:?} error: {err:?}",
                                             txn.name,
-                                            format!("{stmt:?}").chars().take(160).collect::<String>()
+                                            format!("{stmt:?}")
+                                                .chars()
+                                                .take(160)
+                                                .collect::<String>()
                                         );
                                     }
                                     local_failed = true;
@@ -411,10 +423,7 @@ enum StmtResult {
     Break,
 }
 
-pub fn run_reactor(
-    items: &[TopLevel],
-    interp: &mut Interpreter,
-) -> Result<(), RuntimeError> {
+pub fn run_reactor(items: &[TopLevel], interp: &mut Interpreter) -> Result<(), RuntimeError> {
     let mut reactor = Reactor::new();
     reactor.build_from_program(items);
 
@@ -456,7 +465,7 @@ pub fn run_reactor_continuous(
 
         // (2) Polled: fire due async txns and cascade
         reactor.fire_due_async_txns(interp)?;
-        reactor.run(interp)?;  // catch cascades
+        reactor.run(interp)?; // catch cascades
 
         // (3) Short yield to OS — NOT a tick boundary.
         //     Responsive txns fire immediately within step (1).
@@ -484,7 +493,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             span: None,
             metadata: HashMap::new(),
@@ -525,21 +535,32 @@ mod tests {
         let prog = simple_program(vec![
             TopLevel::Definition(Definition {
                 variadic_param: None,
-                name: "foo".into(), type_params: vec![], parameters: vec![], outputs: vec![],
+                name: "foo".into(),
+                type_params: vec![],
+                parameters: vec![],
+                outputs: vec![],
                 output_type: None,
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
                 annotations: vec![],
                 metadata: HashMap::new(),
-                body: vec![], modifiers: vec![],
+                body: vec![],
+                modifiers: vec![],
                 derivation: None,
                 span: None,
                 doc: None,
             }),
             TopLevel::Transaction(Transaction {
                 variadic_param: None,
-                name: "bar".into(), is_reactive: false, is_async: false, type_params: vec![], parameters: vec![],
-                contract: Contract::new(Expr::Bool(true), Expr::Bool(true)), body: vec![],
-                span: None, modifiers: vec![], outputs: vec![],
+                name: "bar".into(),
+                is_reactive: false,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
+                body: vec![],
+                span: None,
+                modifiers: vec![],
+                outputs: vec![],
                 metadata: HashMap::new(),
                 output_type: None,
                 derivation: None,
@@ -579,16 +600,27 @@ mod tests {
             Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(42)),
             Statement::Term(None),
         ];
-        let txn = make_rct_txn("set_x",
+        let txn = make_rct_txn(
+            "set_x",
             Expr::Bool(true),
-            Expr::BinaryOp(BinaryOpKind::Eq, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(42))),
-            body);
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(Expr::Identifier("x".into())),
+                Box::new(Expr::Decimal(42)),
+            ),
+            body,
+        );
         let mut interp = Interpreter::new();
-        interp.state.insert("x".into(), crate::interpreter::i64_to_bits(0));
+        interp
+            .state
+            .insert("x".into(), crate::interpreter::i64_to_bits(0));
         let reactor = build_reactor(&simple_program(vec![txn]));
         let result = reactor.run(&mut interp).unwrap();
         assert!(result);
-        assert_eq!(interp.state.get("x"), Some(&crate::interpreter::i64_to_bits(42)));
+        assert_eq!(
+            interp.state.get("x"),
+            Some(&crate::interpreter::i64_to_bits(42))
+        );
     }
 
     #[test]
@@ -599,7 +631,7 @@ mod tests {
             item: "v".into(),
             list: Box::new(Expr::List(vec![Expr::Decimal(10), Expr::Decimal(20)])),
             body: vec![],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         let txn = make_rct_txn(
             "iter",
@@ -626,7 +658,7 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         let txn = make_rct_txn(
             "iter_range",
@@ -643,24 +675,30 @@ mod tests {
 
     #[test]
     fn test_run_skips_txn_pre_false() {
-        let body = vec![Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(99))];
+        let body = vec![Statement::Assign(
+            Expr::Identifier("x".into()),
+            Expr::Decimal(99),
+        )];
         let txn = make_rct_txn("skip", Expr::Bool(false), Expr::Bool(true), body);
         let mut interp = Interpreter::new();
-        interp.state.insert("x".into(), crate::interpreter::i64_to_bits(0));
+        interp
+            .state
+            .insert("x".into(), crate::interpreter::i64_to_bits(0));
         let reactor = build_reactor(&simple_program(vec![txn]));
         let result = reactor.run(&mut interp).unwrap();
         assert!(!result);
-        assert_eq!(interp.state.get("x"), Some(&crate::interpreter::i64_to_bits(0)));
+        assert_eq!(
+            interp.state.get("x"),
+            Some(&crate::interpreter::i64_to_bits(0))
+        );
     }
 
     #[test]
     fn test_escape_guard_detection() {
-        let body = vec![
-            Statement::Guarded(
-                Expr::Bool(true),
-                vec![Statement::Rollback(None)],
-            ),
-        ];
+        let body = vec![Statement::Guarded(
+            Expr::Bool(true),
+            vec![Statement::Rollback(None)],
+        )];
         let txn = make_rct_txn("escape_test", Expr::Bool(true), Expr::Bool(true), body);
         let mut interp = Interpreter::new();
         let reactor = build_reactor(&simple_program(vec![txn]));
@@ -675,14 +713,19 @@ mod tests {
         ];
         let txn = make_rct_txn("rollback", Expr::Bool(true), Expr::Bool(true), body);
         let mut interp = Interpreter::new();
-        interp.state.insert("x".into(), crate::interpreter::i64_to_bits(5));
+        interp
+            .state
+            .insert("x".into(), crate::interpreter::i64_to_bits(5));
         interp.prior_state = interp.state.clone();
         let reactor = build_reactor(&simple_program(vec![txn]));
         let result = reactor.run(&mut interp).unwrap();
         // Pre-evaluation guard skips the transaction entirely (escape would fire)
         assert!(!result);
         // State unchanged since transaction wasn't executed
-        assert_eq!(interp.state.get("x"), Some(&crate::interpreter::i64_to_bits(5)));
+        assert_eq!(
+            interp.state.get("x"),
+            Some(&crate::interpreter::i64_to_bits(5))
+        );
     }
 
     #[test]
@@ -712,7 +755,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(None)],
             span: None,
             metadata: HashMap::new(),
@@ -748,7 +792,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             span: None,
             metadata: HashMap::new(),
@@ -759,7 +804,9 @@ mod tests {
             doc: None,
         };
         let mut interp = Interpreter::new();
-        interp.state.insert("x".into(), crate::interpreter::i64_to_bits(0));
+        interp
+            .state
+            .insert("x".into(), crate::interpreter::i64_to_bits(0));
         let mut reactor = build_reactor(&simple_program(vec![TopLevel::Transaction(txn)]));
         // Set reactor_speed on the ReactiveTransaction (no longer a field on Transaction)
         if let Some(rt) = reactor.transactions.first_mut() {
@@ -768,7 +815,11 @@ mod tests {
         // First call should fire immediately (last_fired was set at construction)
         // The last_fired is set to Instant::now() during build, so we need to
         // reset it to a very old time to guarantee the interval has elapsed
-        reactor.last_fired = vec![Instant::now().checked_sub(Duration::from_secs(3600)).unwrap()];
+        reactor.last_fired = vec![
+            Instant::now()
+                .checked_sub(Duration::from_secs(3600))
+                .unwrap(),
+        ];
         let fired = reactor.fire_due_async_txns(&mut interp).unwrap();
         assert!(fired, "async txn should fire when interval has elapsed");
     }
@@ -788,7 +839,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(None)],
             span: None,
             metadata: HashMap::new(),
@@ -812,8 +864,15 @@ mod tests {
         let txn = make_rct_txn("no_async", Expr::Bool(true), Expr::Bool(true), body);
         let mut interp = Interpreter::new();
         let mut reactor = build_reactor(&simple_program(vec![txn]));
-        reactor.last_fired = vec![Instant::now().checked_sub(Duration::from_secs(3600)).unwrap()];
+        reactor.last_fired = vec![
+            Instant::now()
+                .checked_sub(Duration::from_secs(3600))
+                .unwrap(),
+        ];
         let fired = reactor.fire_due_async_txns(&mut interp).unwrap();
-        assert!(!fired, "non-async txn should never fire via fire_due_async_txns");
+        assert!(
+            !fired,
+            "non-async txn should never fire via fire_due_async_txns"
+        );
     }
 }

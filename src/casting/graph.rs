@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::top::{CastDirection, ProtocolDef};
-use crate::ast::Type;
 use crate::ast::PropertyValue;
+use crate::ast::Type;
+use crate::ast::top::{CastDirection, ProtocolDef};
 use crate::type_universe::TypeUniverse;
 
 // ── Lane Kinds ──────────────────────────────────────────────────────────
@@ -227,11 +227,11 @@ impl CastingGraph {
         // overridable (the representation is compiler-guaranteed).
         self.set_lane("String", "Data", LaneKind::PtrToInt);
         // ── Data ⇄ Bool ────────────────────────────────────────────
-        self.set_lane("Data", "Bool", LaneKind::Trunc);    // i64 → i8
-        self.set_lane("Bool", "Data", LaneKind::ZExt);     // i8 → i64
+        self.set_lane("Data", "Bool", LaneKind::Trunc); // i64 → i8
+        self.set_lane("Bool", "Data", LaneKind::ZExt); // i8 → i64
         // ── Data ⇄ Char ────────────────────────────────────────────
-        self.set_lane("Data", "Char", LaneKind::Trunc);    // i64 → i32
-        self.set_lane("Char", "Data", LaneKind::ZExt);     // i32 → i64
+        self.set_lane("Data", "Char", LaneKind::Trunc); // i64 → i32
+        self.set_lane("Char", "Data", LaneKind::ZExt); // i32 → i64
         // ── Data ⇄ Blob ────────────────────────────────────────────
         self.set_lane("Data", "Blob", LaneKind::IntToPtr); // i64 → ptr
         self.set_lane("Blob", "Data", LaneKind::PtrToInt); // ptr → i64
@@ -258,11 +258,11 @@ impl CastingGraph {
         self.set_lane("Int", "String", LaneKind::ExtCall("int_to_str"));
         self.set_lane("String", "Int", LaneKind::ExtCall("str_to_int"));
         // ── Int ⇄ Bool ────────────────────────────────────────────
-        self.set_lane("Int", "Bool", LaneKind::Trunc);   // i64 → i8
-        self.set_lane("Bool", "Int", LaneKind::ZExt);    // i8 → i64
+        self.set_lane("Int", "Bool", LaneKind::Trunc); // i64 → i8
+        self.set_lane("Bool", "Int", LaneKind::ZExt); // i8 → i64
         // ── Int ⇄ Char ────────────────────────────────────────────
-        self.set_lane("Int", "Char", LaneKind::Trunc);   // i64 → i32
-        self.set_lane("Char", "Int", LaneKind::ZExt);    // i32 → i64
+        self.set_lane("Int", "Char", LaneKind::Trunc); // i64 → i32
+        self.set_lane("Char", "Int", LaneKind::ZExt); // i32 → i64
         // ── Int ⇄ Data ────────────────────────────────────────────
         self.set_lane("Int", "Blob", LaneKind::IntToPtr); // i64 → ptr
         self.set_lane("Blob", "Int", LaneKind::PtrToInt); // ptr → i64
@@ -288,26 +288,30 @@ impl CastingGraph {
         self.set_lane("String", "Float", LaneKind::ExtCall("str_to_float"));
         // ── Float ⇄ Bool ──────────────────────────────────────────
         // Float→Bool: fptosi i64 + trunc to i8 (chain)
-        self.set_lane("Float", "Bool", LaneKind::Chain(
-            Box::new(LaneKind::FloatToInt),
-            Box::new(LaneKind::Trunc),
-        ));
-        self.set_lane("Bool", "Float", LaneKind::Chain(
-            Box::new(LaneKind::ZExt),
-            Box::new(LaneKind::IntToFloat),
-        ));
+        self.set_lane(
+            "Float",
+            "Bool",
+            LaneKind::Chain(Box::new(LaneKind::FloatToInt), Box::new(LaneKind::Trunc)),
+        );
+        self.set_lane(
+            "Bool",
+            "Float",
+            LaneKind::Chain(Box::new(LaneKind::ZExt), Box::new(LaneKind::IntToFloat)),
+        );
         // ── Float ⇄ Char ──────────────────────────────────────────
         self.set_lane("Float", "Char", LaneKind::FloatToInt);
         self.set_lane("Char", "Float", LaneKind::IntToFloat);
         // ── Float ⇄ Data ──────────────────────────────────────────
-        self.set_lane("Float", "Blob", LaneKind::Chain(
-            Box::new(LaneKind::FloatToInt),
-            Box::new(LaneKind::IntToPtr),
-        ));
-        self.set_lane("Blob", "Float", LaneKind::Chain(
-            Box::new(LaneKind::PtrToInt),
-            Box::new(LaneKind::IntToFloat),
-        ));
+        self.set_lane(
+            "Float",
+            "Blob",
+            LaneKind::Chain(Box::new(LaneKind::FloatToInt), Box::new(LaneKind::IntToPtr)),
+        );
+        self.set_lane(
+            "Blob",
+            "Float",
+            LaneKind::Chain(Box::new(LaneKind::PtrToInt), Box::new(LaneKind::IntToFloat)),
+        );
 
         // ── String ⇄ Bool ─────────────────────────────────────────
         self.set_lane("String", "Bool", LaneKind::ExtCall("str_to_bool"));
@@ -316,44 +320,59 @@ impl CastingGraph {
         self.set_lane("String", "Char", LaneKind::ExtCall("str_first_char"));
         self.set_lane("Char", "String", LaneKind::ExtCall("char_to_str"));
         // ── String ⇄ Data ─────────────────────────────────────────
-        self.set_lane("String", "Blob", LaneKind::Chain(
-            Box::new(LaneKind::ExtractData),
-            Box::new(LaneKind::IntToPtr),
-        ));
-        self.set_lane("Blob", "String", LaneKind::Chain(
-            Box::new(LaneKind::PtrToInt),
-            Box::new(LaneKind::Bitcast), // bitcast i64 to {i64,i64}
-        ));
+        self.set_lane(
+            "String",
+            "Blob",
+            LaneKind::Chain(
+                Box::new(LaneKind::ExtractData),
+                Box::new(LaneKind::IntToPtr),
+            ),
+        );
+        self.set_lane(
+            "Blob",
+            "String",
+            LaneKind::Chain(
+                Box::new(LaneKind::PtrToInt),
+                Box::new(LaneKind::Bitcast), // bitcast i64 to {i64,i64}
+            ),
+        );
 
         // ── Bool ⇄ Char ──────────────────────────────────────────
         self.set_lane("Bool", "Char", LaneKind::ZExt);
         self.set_lane("Char", "Bool", LaneKind::Trunc);
         // ── Bool ⇄ Data ──────────────────────────────────────────
-        self.set_lane("Bool", "Blob", LaneKind::Chain(
-            Box::new(LaneKind::ZExt),
-            Box::new(LaneKind::IntToPtr),
-        ));
-        self.set_lane("Blob", "Bool", LaneKind::Chain(
-            Box::new(LaneKind::PtrToInt),
-            Box::new(LaneKind::Trunc),
-        ));
+        self.set_lane(
+            "Bool",
+            "Blob",
+            LaneKind::Chain(Box::new(LaneKind::ZExt), Box::new(LaneKind::IntToPtr)),
+        );
+        self.set_lane(
+            "Blob",
+            "Bool",
+            LaneKind::Chain(Box::new(LaneKind::PtrToInt), Box::new(LaneKind::Trunc)),
+        );
 
         // ── Char ⇄ Data ──────────────────────────────────────────
-        self.set_lane("Char", "Blob", LaneKind::Chain(
-            Box::new(LaneKind::ZExt),
-            Box::new(LaneKind::IntToPtr),
-        ));
-        self.set_lane("Blob", "Char", LaneKind::Chain(
-            Box::new(LaneKind::PtrToInt),
-            Box::new(LaneKind::Trunc),
-        ));
+        self.set_lane(
+            "Char",
+            "Blob",
+            LaneKind::Chain(Box::new(LaneKind::ZExt), Box::new(LaneKind::IntToPtr)),
+        );
+        self.set_lane(
+            "Blob",
+            "Char",
+            LaneKind::Chain(Box::new(LaneKind::PtrToInt), Box::new(LaneKind::Trunc)),
+        );
     }
 
     /// Seed default variant names per category.
     fn seed_defaults(&mut self) {
-        self.defaults.insert("String".to_string(), "UTF8".to_string());
-        self.defaults.insert("Float".to_string(), "IEEE754".to_string());
-        self.defaults.insert("Char".to_string(), "unicode".to_string());
+        self.defaults
+            .insert("String".to_string(), "UTF8".to_string());
+        self.defaults
+            .insert("Float".to_string(), "IEEE754".to_string());
+        self.defaults
+            .insert("Char".to_string(), "unicode".to_string());
     }
 
     /// Seed hardcoded protocol (category, variant) → LLVM type mappings.
@@ -361,49 +380,56 @@ impl CastingGraph {
     /// and the disamb metadata hack. Protocol variants are first-class graph nodes.
     fn seed_protocol_llvm_types(&mut self) {
         // Base protocols
-        self.set_llvm_type("Bit", "",    LlvmTypeResolver::WidthParametric);
-        self.set_llvm_type("Int", "",    LlvmTypeResolver::WidthParametric);
-        self.set_llvm_type("UInt", "",   LlvmTypeResolver::WidthParametric);
-        self.set_llvm_type("Float", "",  LlvmTypeResolver::FloatWidth);
-        self.set_llvm_type("Bool", "",   LlvmTypeResolver::Fixed("i8"));
-        self.set_llvm_type("Char", "",   LlvmTypeResolver::Fixed("i32"));
+        self.set_llvm_type("Bit", "", LlvmTypeResolver::WidthParametric);
+        self.set_llvm_type("Int", "", LlvmTypeResolver::WidthParametric);
+        self.set_llvm_type("UInt", "", LlvmTypeResolver::WidthParametric);
+        self.set_llvm_type("Float", "", LlvmTypeResolver::FloatWidth);
+        self.set_llvm_type("Bool", "", LlvmTypeResolver::Fixed("i8"));
+        self.set_llvm_type("Char", "", LlvmTypeResolver::Fixed("i32"));
         // 2026-08-01 (B0): A Briev String value IS a pointer to a
         // length-prefixed [len: i64][bytes] buffer, in every type-claiming
         // site. The old { i64, i64 } fat-pointer claim caused the 4-way
         // representation split-brain (ptr vs i64 vs {i64,i64} vs i128). The
         // casting graph is the single source of truth, so it now says ptr.
         self.set_llvm_type("String", "", LlvmTypeResolver::Fixed("ptr"));
-        self.set_llvm_type("Blob", "",   LlvmTypeResolver::Fixed("ptr"));
+        self.set_llvm_type("Blob", "", LlvmTypeResolver::Fixed("ptr"));
 
         // Float protocol variants (hardcoded — no disamb hack)
-        self.set_llvm_type("Float", "IEEE754",  LlvmTypeResolver::Fixed("float"));
-        self.set_llvm_type("Float", "Half",     LlvmTypeResolver::Fixed("half"));
-        self.set_llvm_type("Float", "BFloat",   LlvmTypeResolver::Fixed("bfloat"));
-        self.set_llvm_type("Float", "Double",   LlvmTypeResolver::Fixed("double"));
-        self.set_llvm_type("Float", "FP128",    LlvmTypeResolver::Fixed("fp128"));
+        self.set_llvm_type("Float", "IEEE754", LlvmTypeResolver::Fixed("float"));
+        self.set_llvm_type("Float", "Half", LlvmTypeResolver::Fixed("half"));
+        self.set_llvm_type("Float", "BFloat", LlvmTypeResolver::Fixed("bfloat"));
+        self.set_llvm_type("Float", "Double", LlvmTypeResolver::Fixed("double"));
+        self.set_llvm_type("Float", "FP128", LlvmTypeResolver::Fixed("fp128"));
         self.set_llvm_type("Float", "X86_FP80", LlvmTypeResolver::Fixed("x86_fp80"));
         // 2026-08-03: C-boundary Float widths (FFI). Float<C_Float> is the
         // C `float` (32-bit), Float<C_Double> the C `double` (64-bit) — the
         // boundary types in lib/glue/c.bv declare these variants so an export
         // can request the exact ABI width instead of the default float32.
-        self.set_llvm_type("Float", "C_Float",  LlvmTypeResolver::Fixed("float"));
+        self.set_llvm_type("Float", "C_Float", LlvmTypeResolver::Fixed("float"));
         self.set_llvm_type("Float", "C_Double", LlvmTypeResolver::Fixed("double"));
 
         // String protocol variants — all encode as ptr to [len][bytes] (B0).
         // The default String variant is UTF8 (seed_defaults); ASCII and any
         // future sub-protocols keep the same pointer representation.
-        self.set_llvm_type("String", "UTF8",  LlvmTypeResolver::Fixed("ptr"));
+        self.set_llvm_type("String", "UTF8", LlvmTypeResolver::Fixed("ptr"));
         self.set_llvm_type("String", "ASCII", LlvmTypeResolver::Fixed("ptr"));
     }
 
     /// Insert a protocol (category, variant) → LLVM type resolver entry.
-    fn set_llvm_type(&mut self, category: &'static str, variant: &'static str, resolver: LlvmTypeResolver) {
-        self.protocol_llvm_types.insert((category.to_string(), variant.to_string()), resolver);
+    fn set_llvm_type(
+        &mut self,
+        category: &'static str,
+        variant: &'static str,
+        resolver: LlvmTypeResolver,
+    ) {
+        self.protocol_llvm_types
+            .insert((category.to_string(), variant.to_string()), resolver);
     }
 
     /// Get the LLVM type resolver for a (category, variant) pair.
     pub fn get_llvm_type(&self, category: &str, variant: &str) -> Option<&LlvmTypeResolver> {
-        self.protocol_llvm_types.get(&(category.to_string(), variant.to_string()))
+        self.protocol_llvm_types
+            .get(&(category.to_string(), variant.to_string()))
     }
 
     /// Insert a base lane between two protocol categories.
@@ -423,7 +449,10 @@ impl CastingGraph {
 
     /// Get the default variant for a category (empty string if none).
     pub fn default_variant(&self, category: &str) -> &str {
-        self.defaults.get(category).map(|s| s.as_str()).unwrap_or("")
+        self.defaults
+            .get(category)
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     // ── Proto Declaration Registration ────────────────────────────────
@@ -453,7 +482,10 @@ impl CastingGraph {
                     dst_category: edge.target_category.clone(),
                     dst_variant: edge.target_variant.clone(),
                 };
-                self.variant_edges.entry(key.clone()).or_default().push(step);
+                self.variant_edges
+                    .entry(key.clone())
+                    .or_default()
+                    .push(step);
             }
 
             // Reverse edge from CastFrom: the CastFrom binding converts
@@ -480,7 +512,9 @@ impl CastingGraph {
         // cstring_concat(#L, #R)` lets a sub-protocol value use its own
         // operation (zero cast) instead of casting to the base first.
         for op in &pd.cross_ops {
-            let Some(fn_name) = Self::cross_op_fn(&op.impl_args) else { continue };
+            let Some(fn_name) = Self::cross_op_fn(&op.impl_args) else {
+                continue;
+            };
             self.variant_cross_ops
                 .entry((pd.category.clone(), pd.name.clone()))
                 .or_default()
@@ -538,7 +572,9 @@ impl CastingGraph {
 
     /// Check if a type has a CastFrom(Bit) override.
     pub fn get_cast_from_bit(&self, type_name: &str) -> Option<&str> {
-        self.cast_from_bit_overrides.get(type_name).map(|s| s.as_str())
+        self.cast_from_bit_overrides
+            .get(type_name)
+            .map(|s| s.as_str())
     }
 
     // ── Inverse-Pair Registration (P1.5) ───────────────────────────────
@@ -546,7 +582,8 @@ impl CastingGraph {
     /// Register a proven-inverse variant pair (category, a, b): a cast
     /// a → b through the base is identity (the delta is nothing).
     pub fn register_inverse_pair(&mut self, category: &str, a: &str, b: &str) {
-        self.inverse_pairs.insert((category.to_string(), a.to_string(), b.to_string()));
+        self.inverse_pairs
+            .insert((category.to_string(), a.to_string(), b.to_string()));
     }
 
     /// Compute and register all proven-inverse pairs among the program's
@@ -559,7 +596,8 @@ impl CastingGraph {
 
     /// Whether (category, a, b) is a proven inverse pair (a → b is zero-cost).
     pub fn is_inverse_pair(&self, category: &str, a: &str, b: &str) -> bool {
-        self.inverse_pairs.contains(&(category.to_string(), a.to_string(), b.to_string()))
+        self.inverse_pairs
+            .contains(&(category.to_string(), a.to_string(), b.to_string()))
     }
 
     /// 2026-08-03 (P1.4): extract the binding function name from a cross-op's
@@ -602,8 +640,22 @@ impl CastingGraph {
         let has_variant = !src_var.is_empty() || !dst_var.is_empty();
         let (src_var, dst_var) = if has_variant {
             (
-                if src_var.is_empty() { self.defaults.get(src_cat).map(|s| s.as_str()).unwrap_or(src_var) } else { src_var },
-                if dst_var.is_empty() { self.defaults.get(dst_cat).map(|s| s.as_str()).unwrap_or(dst_var) } else { dst_var },
+                if src_var.is_empty() {
+                    self.defaults
+                        .get(src_cat)
+                        .map(|s| s.as_str())
+                        .unwrap_or(src_var)
+                } else {
+                    src_var
+                },
+                if dst_var.is_empty() {
+                    self.defaults
+                        .get(dst_cat)
+                        .map(|s| s.as_str())
+                        .unwrap_or(dst_var)
+                } else {
+                    dst_var
+                },
             )
         } else {
             (src_var, dst_var)
@@ -650,7 +702,11 @@ impl CastingGraph {
             && path[1].src_category == path[1].dst_category
             && path[0].dst_variant == path[1].dst_variant
             && path[0].src_variant != path[1].src_variant
-            && self.is_inverse_pair(&path[0].src_category, &path[0].src_variant, &path[1].src_variant)
+            && self.is_inverse_pair(
+                &path[0].src_category,
+                &path[0].src_variant,
+                &path[1].src_variant,
+            )
         {
             return Some(vec![]);
         }
@@ -678,7 +734,10 @@ impl CastingGraph {
         // exists. This is what makes Data the hub without naming it at every
         // cross-pair.
         if src_cat != "Data" && dst_cat != "Data" {
-            if let (Some(l1), Some(l2)) = (self.get_lane(src_cat, "Data"), self.get_lane("Data", dst_cat)) {
+            if let (Some(l1), Some(l2)) = (
+                self.get_lane(src_cat, "Data"),
+                self.get_lane("Data", dst_cat),
+            ) {
                 return Some(vec![
                     CastStep {
                         lane: l1.clone(),
@@ -765,7 +824,9 @@ impl CastingGraph {
         // (admission OUT), and a handle IS a variant's pointer (admission
         // IN). Same-category variant→variant stays in phase 2 — the
         // declared content deltas decide, never a raw handle round-trip.
-        if (src_is_variant && start.0 != target.0) || (src_is_handle && dst_is_variant && start.0 != target.0) {
+        if (src_is_variant && start.0 != target.0)
+            || (src_is_handle && dst_is_variant && start.0 != target.0)
+        {
             if let Some(p) = self.bfs_repr_only(&start, &target, is_repr_lane, canon) {
                 return Some(p);
             }
@@ -1050,8 +1111,7 @@ impl CastingGraph {
                 // 2026-08-15 (fundamentals): Data and Bit are base
                 // categories too. A type whose base is Data resolves to
                 // Data (the universal parent).
-                "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob"
-                | "Data" | "Bit" => {
+                "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob" | "Data" | "Bit" => {
                     return (cat, var);
                 }
                 _ => {}
@@ -1104,7 +1164,8 @@ impl CastingGraph {
     }
 
     fn get_spirv_type(&self, category: &str, variant: &str) -> Option<&SpirvTypeResolver> {
-        self.protocol_spirv_types.get(&(category.to_string(), variant.to_string()))
+        self.protocol_spirv_types
+            .get(&(category.to_string(), variant.to_string()))
     }
 
     /// 2026-11-09 (float-formats plan): width facts with BASE-CHAIN
@@ -1194,12 +1255,17 @@ impl CastingGraph {
                 // 8 needs the Int8 capability AND storage-only use; kernels are
                 // compute surfaces, so the honest floor is 16.
                 match bits {
-                    8 | 16 | 32 | 64 => SpirvShape::Int { bits: bits as u32, signed },
-                    other => return Err(format!(
-                        "integer width {} is not a Vulkan compute width (8/16/32/64) — \
+                    8 | 16 | 32 | 64 => SpirvShape::Int {
+                        bits: bits as u32,
+                        signed,
+                    },
+                    other => {
+                        return Err(format!(
+                            "integer width {} is not a Vulkan compute width (8/16/32/64) — \
                          declare `spec Bits: N;` on the type with a supported width",
-                        other
-                    )),
+                            other
+                        ));
+                    }
                 }
             }
             SpirvTypeResolver::FloatWidth => {
@@ -1212,12 +1278,14 @@ impl CastingGraph {
                 // only for storage and fragments, so shaderFloat16 stays off.
                 match bits {
                     16 | 32 | 64 => SpirvShape::Float { bits: bits as u32 },
-                    other => return Err(format!(
-                        "float width {} is not a kernel float width (16/32/64) — \
+                    other => {
+                        return Err(format!(
+                            "float width {} is not a kernel float width (16/32/64) — \
                          declare the state field as `spec Bits: 32;` or \
                          `spec Bits: 64;`",
-                        other
-                    )),
+                            other
+                        ));
+                    }
                 }
             }
             SpirvTypeResolver::Fixed(SpirvScalar::Bool) => SpirvShape::Bool,
@@ -1253,7 +1321,8 @@ impl CastingGraph {
         // category's default variant, then the base category — a `String`
         // sub-protocol IS a String (ptr); only its encoding differs. Without
         // this, `type CStr: String<C_String>` resolved to `i64`.
-        let resolver = self.get_llvm_type(&category, &variant)
+        let resolver = self
+            .get_llvm_type(&category, &variant)
             .or_else(|| self.get_llvm_type(&category, self.default_variant(&category)))
             .or_else(|| self.get_llvm_type(&category, ""));
         match resolver {
@@ -1294,7 +1363,9 @@ impl CastingGraph {
         // Fallback for non-protocol types (plain structs, user types without protocol)
         if let Some(rt) = ty.universe_key().and_then(|k| universe.get(k)) {
             if !rt.fields.is_empty() {
-                let field_tys: Vec<String> = rt.fields.iter()
+                let field_tys: Vec<String> = rt
+                    .fields
+                    .iter()
                     .map(|(_, fty)| self.resolve_llvm_type(universe, fty, int_bits))
                     .collect();
                 return format!("{{ {} }}", field_tys.join(", "));
@@ -1322,7 +1393,9 @@ impl Default for CastingGraph {
 /// de-hashtagged fundamental join lost its category at the boundary.
 /// One helper, both callers (rule 17). Visited-set guards cycles. Undo:
 /// restore the explicit-only inline loops in the two callers.
-pub fn derive_type_protocols(items: &[crate::ast::TopLevel]) -> std::collections::HashMap<String, String> {
+pub fn derive_type_protocols(
+    items: &[crate::ast::TopLevel],
+) -> std::collections::HashMap<String, String> {
     use crate::ast::TopLevel;
     use std::collections::HashMap;
     // child → (explicit protocol, parent name)
@@ -1381,9 +1454,9 @@ mod tests {
     /// continue the walk; unknown parents terminate.
     #[test]
     fn derive_type_protocols_walks_fundamental_parents() {
+        use crate::ast::Expr;
         use crate::ast::TopLevel;
         use crate::ast::top::TypeDef;
-        use crate::ast::Expr;
         let td = |name: &str, proto: Option<&str>, parent: Option<&str>| {
             TopLevel::TypeDef(Box::new(TypeDef {
                 name: name.into(),
@@ -1422,10 +1495,16 @@ mod tests {
             td("Weird", None, Some("Unrelated")),
         ];
         let map = derive_type_protocols(&items);
-        assert_eq!(map.get("CStr").map(String::as_str), Some("String<C_String>"));
+        assert_eq!(
+            map.get("CStr").map(String::as_str),
+            Some("String<C_String>")
+        );
         assert_eq!(map.get("Float16").map(String::as_str), Some("Float"));
         assert_eq!(map.get("MyHalf").map(String::as_str), Some("Float"));
-        assert!(!map.contains_key("Weird"), "unknown parent terminates the walk");
+        assert!(
+            !map.contains_key("Weird"),
+            "unknown parent terminates the walk"
+        );
     }
 
     #[test]
@@ -1433,19 +1512,16 @@ mod tests {
         let graph = CastingGraph::new();
         // 2026-08-15 (fundamentals): Data is the root; Bit<N> is the bit type
         // (a Data member). Both are in the base-pair mesh.
-        let protocols = &["Data", "Bit", "Int", "UInt", "Float", "String", "Bool", "Char", "Blob"];
+        let protocols = &[
+            "Data", "Bit", "Int", "UInt", "Float", "String", "Bool", "Char", "Blob",
+        ];
         for src in protocols {
             for dst in protocols {
                 if src == dst {
                     continue; // identity
                 }
                 let path = graph.find_path(src, "", dst, "");
-                assert!(
-                    path.is_some(),
-                    "missing lane: {} → {}",
-                    src,
-                    dst
-                );
+                assert!(path.is_some(), "missing lane: {} → {}", src, dst);
             }
         }
     }
@@ -1506,7 +1582,10 @@ mod tests {
         assert_eq!(cat, "Data");
         assert_eq!(var, "");
         let path = graph.find_path("String", "", "Bit", "");
-        assert!(path.is_some(), "String → Bit must route through the Data root");
+        assert!(
+            path.is_some(),
+            "String → Bit must route through the Data root"
+        );
         assert_eq!(path.unwrap()[0].lane, LaneKind::PtrToInt);
     }
 
@@ -1553,7 +1632,10 @@ mod tests {
         crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
         let graph = CastingGraph::new();
         let (cat, var) = graph.type_to_protocol(&universe, &Type::Custom("Volt".into()));
-        assert_eq!(cat, "Volt", "parentless type must self-root as its own category");
+        assert_eq!(
+            cat, "Volt",
+            "parentless type must self-root as its own category"
+        );
         assert_eq!(var, "");
     }
 
@@ -1578,7 +1660,8 @@ mod tests {
                 target_category: "String".to_string(),
                 target_variant: "UTF8".to_string(),
                 binding: None,
-            trusted_axiom: false}],
+                trusted_axiom: false,
+            }],
             cross_ops: vec![],
             span: None,
         });
@@ -1592,7 +1675,10 @@ mod tests {
     fn test_cast_from_bit_override() {
         let mut graph = CastingGraph::new();
         graph.register_cast_from_bit("MyString", "construct_from_bits");
-        assert_eq!(graph.get_cast_from_bit("MyString"), Some("construct_from_bits"));
+        assert_eq!(
+            graph.get_cast_from_bit("MyString"),
+            Some("construct_from_bits")
+        );
         assert_eq!(graph.get_cast_from_bit("Other"), None);
     }
 
@@ -1604,10 +1690,7 @@ mod tests {
     fn test_applied_fundamental_variant_peel() {
         let graph = CastingGraph::new();
         let universe = crate::type_universe::TypeUniverse::new();
-        let posit = Type::Applied(
-            "Float".to_string(),
-            vec![Type::Custom("Posit".to_string())],
-        );
+        let posit = Type::Applied("Float".to_string(), vec![Type::Custom("Posit".to_string())]);
         assert_eq!(
             graph.type_to_protocol(&universe, &posit),
             ("Float".to_string(), "Posit".to_string()),
@@ -1634,20 +1717,38 @@ mod tests {
     #[test]
     fn test_type_to_protocol_primitives() {
         let graph = CastingGraph::new();
-        let universe = crate::type_universe::TypeUniverse::new();        // Compiler constructs (no universe needed)
-        assert_eq!(graph.type_to_protocol(&universe, &Type::Bits(42)), ("Bit".to_string(), String::new()));
+        let universe = crate::type_universe::TypeUniverse::new(); // Compiler constructs (no universe needed)
+        assert_eq!(
+            graph.type_to_protocol(&universe, &Type::Bits(42)),
+            ("Bit".to_string(), String::new())
+        );
         // 2026-07-30: Ptr<T> is no longer mapped to Data — it's not in
         // type_to_protocol. resolve_llvm_type handles Ptr directly.
         // Ptr fields are stored as i64 in %State to avoid ptrtoint conversion.
 
         // Universe-resolved types (seeded primordials)
-        assert_eq!(graph.type_to_protocol(&universe, &Type::Custom("Int".to_string())), ("Int".to_string(), String::new()));
-        assert_eq!(graph.type_to_protocol(&universe, &Type::Custom("Float".to_string())), ("Float".to_string(), String::new()));
-        assert_eq!(graph.type_to_protocol(&universe, &Type::Custom("Bool".to_string())), ("Bool".to_string(), String::new()));
-        assert_eq!(graph.type_to_protocol(&universe, &Type::Custom("Blob".to_string())), ("Blob".to_string(), String::new()));
+        assert_eq!(
+            graph.type_to_protocol(&universe, &Type::Custom("Int".to_string())),
+            ("Int".to_string(), String::new())
+        );
+        assert_eq!(
+            graph.type_to_protocol(&universe, &Type::Custom("Float".to_string())),
+            ("Float".to_string(), String::new())
+        );
+        assert_eq!(
+            graph.type_to_protocol(&universe, &Type::Custom("Bool".to_string())),
+            ("Bool".to_string(), String::new())
+        );
+        assert_eq!(
+            graph.type_to_protocol(&universe, &Type::Custom("Blob".to_string())),
+            ("Blob".to_string(), String::new())
+        );
         // Fallback — no Cast. properties for unknown types → Data (the
         // universal parent; Bit is now the leaf bit type).
-        assert_eq!(graph.type_to_protocol(&universe, &Type::Custom("UnknownType".to_string())), ("Data".to_string(), String::new()));
+        assert_eq!(
+            graph.type_to_protocol(&universe, &Type::Custom("UnknownType".to_string())),
+            ("Data".to_string(), String::new())
+        );
     }
 
     #[test]
@@ -1670,7 +1771,8 @@ mod tests {
                         fn_name: "cstr_to_briev".to_string(),
                         param: "#Lh".to_string(),
                     }),
-                trusted_axiom: false},
+                    trusted_axiom: false,
+                },
                 crate::ast::top::CastEdge {
                     direction: crate::ast::top::CastDirection::CastFrom,
                     target_category: "String".to_string(),
@@ -1679,20 +1781,26 @@ mod tests {
                         fn_name: "str_to_c".to_string(),
                         param: "#Lh".to_string(),
                     }),
-                trusted_axiom: false},
+                    trusted_axiom: false,
+                },
             ],
             cross_ops: vec![],
             span: None,
         });
 
         // C_String → UTF8 uses the CastTo binding.
-        let path = graph.find_path("String", "C_String", "String", "UTF8")
+        let path = graph
+            .find_path("String", "C_String", "String", "UTF8")
             .expect("C_String -> UTF8 path");
         assert_eq!(path.len(), 1);
-        assert_eq!(path[0].lane, LaneKind::ExtCallDyn("cstr_to_briev".to_string()));
+        assert_eq!(
+            path[0].lane,
+            LaneKind::ExtCallDyn("cstr_to_briev".to_string())
+        );
 
         // UTF8 → C_String uses the CastFrom binding.
-        let rev = graph.find_path("String", "UTF8", "String", "C_String")
+        let rev = graph
+            .find_path("String", "UTF8", "String", "C_String")
             .expect("UTF8 -> C_String path");
         assert_eq!(rev.len(), 1);
         assert_eq!(rev[0].lane, LaneKind::ExtCallDyn("str_to_c".to_string()));
@@ -1716,7 +1824,8 @@ mod tests {
                     fn_name: fn_name.to_string(),
                     param: "#Lh".to_string(),
                 }),
-            trusted_axiom: false}],
+                trusted_axiom: false,
+            }],
             cross_ops: vec![],
             span: None,
         };
@@ -1734,7 +1843,10 @@ mod tests {
         // The reverse direction has no path at all (only A.CastTo + B.CastFrom
         // are declared) — the collapse is asymmetric, keyed to the proven pair.
         let rev = graph.find_path("String", "B", "String", "A");
-        assert!(rev.is_none(), "B → A has no edges; only A.CastTo and B.CastFrom exist");
+        assert!(
+            rev.is_none(),
+            "B → A has no edges; only A.CastTo and B.CastFrom exist"
+        );
     }
 
     #[test]
@@ -1743,9 +1855,18 @@ mod tests {
         // from the type's `bits` metadata, no type names matched.
         let graph = CastingGraph::new();
         let universe = crate::type_universe::TypeUniverse::new();
-        assert_eq!(graph.resolve_llvm_type(&universe, &Type::Custom("Float".to_string()), 64), "float");
-        assert_eq!(graph.resolve_llvm_type(&universe, &Type::Custom("Float64".to_string()), 64), "double");
-        assert_eq!(graph.resolve_llvm_type(&universe, &Type::Custom("Half".to_string()), 64), "half");
+        assert_eq!(
+            graph.resolve_llvm_type(&universe, &Type::Custom("Float".to_string()), 64),
+            "float"
+        );
+        assert_eq!(
+            graph.resolve_llvm_type(&universe, &Type::Custom("Float64".to_string()), 64),
+            "double"
+        );
+        assert_eq!(
+            graph.resolve_llvm_type(&universe, &Type::Custom("Half".to_string()), 64),
+            "half"
+        );
         // Float→Float<C_Double> is a width lane (fpext), not a chain.
         let path = graph.find_path("Float", "", "Float", "C_Double");
         assert!(path.is_some_and(|p| matches!(p[0].lane, LaneKind::FloatWidth)));
@@ -1780,18 +1901,29 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_protocol_base_variants() {        // 2026-08-03: variant bases — the FFI boundary types declare
+    fn test_parse_protocol_base_variants() {
+        // 2026-08-03: variant bases — the FFI boundary types declare
         // `type CStr: String<C_String>` ⇒ base "String<C_String>".
-        assert_eq!(CastingGraph::parse_protocol_base("String<C_String>"),
-            Some(("String".to_string(), "C_String".to_string())));
-        assert_eq!(CastingGraph::parse_protocol_base("Float<C_Double>"),
-            Some(("Float".to_string(), "C_Double".to_string())));
-        assert_eq!(CastingGraph::parse_protocol_base("Int<C_I32>"),
-            Some(("Int".to_string(), "C_I32".to_string())));
-        assert_eq!(CastingGraph::parse_protocol_base("String"),
-            Some(("String".to_string(), String::new())));
-        assert_eq!(CastingGraph::parse_protocol_base("String"),
-            Some(("String".to_string(), String::new())));
+        assert_eq!(
+            CastingGraph::parse_protocol_base("String<C_String>"),
+            Some(("String".to_string(), "C_String".to_string()))
+        );
+        assert_eq!(
+            CastingGraph::parse_protocol_base("Float<C_Double>"),
+            Some(("Float".to_string(), "C_Double".to_string()))
+        );
+        assert_eq!(
+            CastingGraph::parse_protocol_base("Int<C_I32>"),
+            Some(("Int".to_string(), "C_I32".to_string()))
+        );
+        assert_eq!(
+            CastingGraph::parse_protocol_base("String"),
+            Some(("String".to_string(), String::new()))
+        );
+        assert_eq!(
+            CastingGraph::parse_protocol_base("String"),
+            Some(("String".to_string(), String::new()))
+        );
         assert_eq!(CastingGraph::parse_protocol_base(""), None);
         assert_eq!(CastingGraph::parse_protocol_base("<"), None);
     }
@@ -1800,8 +1932,8 @@ mod tests {
 #[cfg(test)]
 mod cross_op_tests {
     use super::*;
-    use crate::ast::top::{CastDirection, CastEdge, CastBinding, OperatorDef, ProtocolDef};
     use crate::ast::PropertyValue;
+    use crate::ast::top::{CastBinding, CastDirection, CastEdge, OperatorDef, ProtocolDef};
 
     #[test]
     fn test_get_variant_op() {
@@ -1818,7 +1950,8 @@ mod cross_op_tests {
                     fn_name: "str_to_c".to_string(),
                     param: "#Lh".to_string(),
                 }),
-            trusted_axiom: false}],
+                trusted_axiom: false,
+            }],
             cross_ops: vec![OperatorDef {
                 op: "Concat".to_string(),
                 params: vec![],
@@ -1831,10 +1964,14 @@ mod cross_op_tests {
                 ])),
                 impl_name: String::new(),
                 span: None,
-                trusted_axiom: false}],
+                trusted_axiom: false,
+            }],
             span: None,
         });
-        assert_eq!(graph.get_variant_op("String", "C_String", "Concat"), Some("cstring_concat"));
+        assert_eq!(
+            graph.get_variant_op("String", "C_String", "Concat"),
+            Some("cstring_concat")
+        );
         assert_eq!(graph.get_variant_op("String", "C_String", "Add"), None);
         assert_eq!(graph.get_variant_op("String", "Other", "Concat"), None);
     }

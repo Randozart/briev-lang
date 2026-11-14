@@ -79,5 +79,9 @@ fn eight_arg_export_sums_via_stack_for_c_caller() {
         .expect("run interop");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     std::fs::remove_dir_all(&dir).ok();
-    assert_eq!(stdout.trim(), "36", "1+..+8 via six registers + two stack args");
+    assert_eq!(
+        stdout.trim(),
+        "36",
+        "1+..+8 via six registers + two stack args"
+    );
 }

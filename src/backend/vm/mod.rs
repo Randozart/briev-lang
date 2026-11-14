@@ -11,8 +11,8 @@ pub mod tests;
 
 pub use assembler::Assembler;
 
-use crate::ast::*;
 use crate::ast::top::*;
+use crate::ast::*;
 use std::collections::{HashMap, HashSet};
 
 /// 2026-08-23 (Plan 0.2): the tamer VM's declared surface — what emit_expr/
@@ -55,17 +55,21 @@ fn vm_field_size(ty: &Type, struct_fields: &HashMap<String, Vec<(String, u64)>>)
         Type::Custom(name) => {
             // Sub-struct (e.g., Frame inside VMFrames)
             let sub = struct_fields.get(name);
-            sub.map(|f| f.iter().map(|(_, s)| *s).sum::<u64>()).unwrap_or(8)
+            sub.map(|f| f.iter().map(|(_, s)| *s).sum::<u64>())
+                .unwrap_or(8)
         }
         Type::Vector(inner, dims) => {
             let elem_size = vm_field_size(inner, struct_fields);
-            let count: u64 = dims.iter().map(|d| match d {
-                crate::ast::Dimension::Anonymous(n) => *n as u64,
-                _ => 1,
-            }).product();
+            let count: u64 = dims
+                .iter()
+                .map(|d| match d {
+                    crate::ast::Dimension::Anonymous(n) => *n as u64,
+                    _ => 1,
+                })
+                .product();
             elem_size * count
         }
-        _ => 8,  // Default: Int size
+        _ => 8, // Default: Int size
     }
 }
 
@@ -143,7 +147,11 @@ impl VmBackend {
     ///
     /// Takes the typed AST items and type universe, returns a complete
     /// .lair binary buffer suitable for the tamer VM interpreter.
-    pub fn generate(&mut self, items: &[crate::ast::TopLevel], _universe: &crate::type_universe::TypeUniverse) -> Vec<u8> {
+    pub fn generate(
+        &mut self,
+        items: &[crate::ast::TopLevel],
+        _universe: &crate::type_universe::TypeUniverse,
+    ) -> Vec<u8> {
         // First pass: collect function names and host function IDs
         self.collect_declarations(items);
         self.collect_symbol_tables(items);
@@ -247,15 +255,12 @@ impl VmBackend {
                         _ => None,
                     }
                 }
-                crate::ast::Expr::Cast(inner, _) => {
-                    eval_const_expr(inner, raw_map, done, visiting)
-                }
+                crate::ast::Expr::Cast(inner, _) => eval_const_expr(inner, raw_map, done, visiting),
                 _ => None,
             }
         }
 
-        let raw_map: HashMap<String, crate::ast::Expr> =
-            raw.iter().cloned().collect();
+        let raw_map: HashMap<String, crate::ast::Expr> = raw.iter().cloned().collect();
         let mut done: HashMap<String, i64> = HashMap::new();
         let mut visiting: HashSet<String> = HashSet::new();
         let mut out: HashMap<String, i64> = HashMap::new();
@@ -308,9 +313,7 @@ impl VmBackend {
                     if !self.host_fn_ids.contains_key(local_name.as_str()) {
                         let id = match canonical_host_id(&local_name) {
                             Some(cid) => cid,
-                            None => {
-                                HOST_ID_CANONICAL_MAX + self.host_fn_ids.len() as u32
-                            }
+                            None => HOST_ID_CANONICAL_MAX + self.host_fn_ids.len() as u32,
                         };
                         let arity = fb.inputs.len() as u32;
                         self.asm.register_host_fn_with_arity(&local_name, id, arity);

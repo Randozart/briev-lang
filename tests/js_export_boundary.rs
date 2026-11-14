@@ -43,6 +43,13 @@ fn node_export_boundary_runs() {
         .output()
         .expect("spawn node gate");
     let stdout = String::from_utf8_lossy(&gate.stdout);
-    assert!(gate.status.success(), "node gate failed:\n{}", String::from_utf8_lossy(&gate.stderr));
-    assert!(stdout.contains("BRIEV_FH") && stdout.contains("BRIEV_ADD"), "node gate output missing: {stdout}");
+    assert!(
+        gate.status.success(),
+        "node gate failed:\n{}",
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    assert!(
+        stdout.contains("BRIEV_FH") && stdout.contains("BRIEV_ADD"),
+        "node gate output missing: {stdout}"
+    );
 }

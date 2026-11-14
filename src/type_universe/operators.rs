@@ -151,8 +151,9 @@ pub fn protocol_category(universe: &TypeUniverse, ty: &Type) -> Option<String> {
         }
         let base = current.base.trim_start_matches('#');
         match base {
-            "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob"
-            | "Data" | "Bit" => return Some(base.to_string()),
+            "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob" | "Data" | "Bit" => {
+                return Some(base.to_string());
+            }
             "" => return None,
             _ => {}
         }
@@ -256,7 +257,8 @@ mod tests {
     #[test]
     fn test_missing_type() {
         // A custom type with no universe entry resolves to no category.
-        let binding = get_operator_intrinsic(&empty_universe(), "+", &Type::Custom("Nonexistent".into()));
+        let binding =
+            get_operator_intrinsic(&empty_universe(), "+", &Type::Custom("Nonexistent".into()));
         assert_eq!(binding, None);
     }
 

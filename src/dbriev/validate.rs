@@ -23,7 +23,9 @@
 //! 2026-08-09 (Phase 13): new module — the parser produced the document; this
 //! is the first consumer beyond the config loaders.
 
-use crate::dbriev::v2::{DataField, DataGroup, DataValue, DbrievDocument, FieldDef, FieldType, SchemaDef};
+use crate::dbriev::v2::{
+    DataField, DataGroup, DataValue, DbrievDocument, FieldDef, FieldType, SchemaDef,
+};
 use std::collections::HashMap;
 
 /// Validate a parsed Data Briev document against its asserted schemas.
@@ -33,11 +35,8 @@ use std::collections::HashMap;
 /// (SPEC 22.1).
 pub fn validate_document(doc: &DbrievDocument) -> Vec<String> {
     let mut errors = Vec::new();
-    let schemas: HashMap<&str, &SchemaDef> = doc
-        .schemas
-        .iter()
-        .map(|s| (s.name.as_str(), s))
-        .collect();
+    let schemas: HashMap<&str, &SchemaDef> =
+        doc.schemas.iter().map(|s| (s.name.as_str(), s)).collect();
     // Key uniqueness is PER SCHEMA across the whole document (the parser
     // creates one group per entry, so a per-group check cannot see duplicates
     // that span groups — SPEC 22.3/22.5).
@@ -83,7 +82,11 @@ pub fn validate_document(doc: &DbrievDocument) -> Vec<String> {
 
 /// Extract an entry's key value for a schema key field: a named field, or the
 /// positional value at the key field's schema index (`.dbvl` / `key: Schema`).
-fn entry_key<'a>(entry: &'a crate::dbriev::v2::DataEntry, schema: &SchemaDef, kf: &str) -> Option<&'a str> {
+fn entry_key<'a>(
+    entry: &'a crate::dbriev::v2::DataEntry,
+    schema: &SchemaDef,
+    kf: &str,
+) -> Option<&'a str> {
     match entry_field(entry, kf) {
         Some(DataValue::String(s)) if !s.is_empty() => Some(s.as_str()),
         Some(DataValue::Int(_)) | Some(DataValue::Float(_)) | Some(DataValue::Bool(_)) => {
@@ -130,7 +133,10 @@ fn validate_entry(
     // map to schema fields by index — handled below. When the entry is
     // positional, the named-field requiredness loop must not fire (a positional
     // entry is fully specified by the positional values).
-    let has_positional = entry.fields.iter().any(|f| matches!(f, DataField::Positional(_)));
+    let has_positional = entry
+        .fields
+        .iter()
+        .any(|f| matches!(f, DataField::Positional(_)));
     let named: Vec<(&str, &DataValue)> = entry
         .fields
         .iter()
@@ -159,7 +165,10 @@ fn validate_entry(
         let Some(field) = schema.fields.iter().find(|f| &f.name == name) else {
             errors.push(format!(
                 "group {} entry {}: unknown field '{}' (schema '{}' has {})",
-                gi, ei, name, schema.name,
+                gi,
+                ei,
+                name,
+                schema.name,
                 schema
                     .fields
                     .iter()
@@ -189,7 +198,11 @@ fn validate_entry(
         let Some(field) = schema.fields.get(pi) else {
             errors.push(format!(
                 "group {} entry {}: too many positional fields ({}, schema '{}' has {} fields)",
-                gi, ei, positional.len(), schema.name, schema.fields.len()
+                gi,
+                ei,
+                positional.len(),
+                schema.name,
+                schema.fields.len()
             ));
             break;
         };
@@ -241,11 +254,7 @@ fn validate_value(
 }
 
 /// Does a value match a declared type?
-fn type_matches(
-    value: &DataValue,
-    ty: &FieldType,
-    schemas: &HashMap<&str, &SchemaDef>,
-) -> bool {
+fn type_matches(value: &DataValue, ty: &FieldType, schemas: &HashMap<&str, &SchemaDef>) -> bool {
     match (value, ty) {
         (DataValue::String(_), FieldType::String) => true,
         (DataValue::Int(_), FieldType::Int) => true,
@@ -257,7 +266,8 @@ fn type_matches(
         }
         (DataValue::Map(m), FieldType::Map(k, v)) => {
             m.values().all(|val| type_matches(val, v, schemas))
-                && m.keys().all(|key| type_matches(&DataValue::String(key.clone()), k, schemas))
+                && m.keys()
+                    .all(|key| type_matches(&DataValue::String(key.clone()), k, schemas))
         }
         (_, FieldType::Option(inner)) => type_matches(value, inner, schemas),
         (DataValue::String(_), FieldType::Named(name)) => {
@@ -376,14 +386,21 @@ mod tests {
             "schema Person (name) { name: String; age: Int; [ >= 0 ] hp: Int; takeable: Bool; }\n\
              ada: Person { Ada; 37; 100; true; };\n",
         );
-        assert!(validate_document(&doc).is_empty(), "{:?}", validate_document(&doc));
+        assert!(
+            validate_document(&doc).is_empty(),
+            "{:?}",
+            validate_document(&doc)
+        );
     }
 
     #[test]
     fn raw_data_without_schema_is_valid() {
         // Bare data with no schema assertion (schema_name = None) is valid.
         let doc = parse("Ada; 37;\n");
-        assert!(validate_document(&doc).is_empty(), "unasserted data must pass");
+        assert!(
+            validate_document(&doc).is_empty(),
+            "unasserted data must pass"
+        );
     }
 
     #[test]
@@ -395,7 +412,9 @@ mod tests {
         );
         let errors = validate_document(&doc);
         assert!(
-            errors.iter().any(|e| e.contains("missing required field 'age'")),
+            errors
+                .iter()
+                .any(|e| e.contains("missing required field 'age'")),
             "{:?}",
             errors
         );
@@ -408,8 +427,20 @@ mod tests {
              ada: Person { 42; \"x\"; };\n",
         );
         let errors = validate_document(&doc);
-        assert!(errors.iter().any(|e| e.contains("expected Int, found String(")), "{:?}", errors);
-        assert!(errors.iter().any(|e| e.contains("expected String, found Int(")), "{:?}", errors);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("expected Int, found String(")),
+            "{:?}",
+            errors
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("expected String, found Int(")),
+            "{:?}",
+            errors
+        );
     }
 
     #[test]
@@ -420,7 +451,9 @@ mod tests {
         );
         let errors = validate_document(&doc);
         assert!(
-            errors.iter().any(|e| e.contains("violates constraint [ >= 0 ]")),
+            errors
+                .iter()
+                .any(|e| e.contains("violates constraint [ >= 0 ]")),
             "{:?}",
             errors
         );
@@ -432,7 +465,11 @@ mod tests {
             "schema Person { name: String; nickname?: String; }\n\
              ada: Person { Ada; };\n",
         );
-        assert!(validate_document(&doc).is_empty(), "{:?}", validate_document(&doc));
+        assert!(
+            validate_document(&doc).is_empty(),
+            "{:?}",
+            validate_document(&doc)
+        );
     }
 
     #[test]
@@ -458,7 +495,9 @@ mod tests {
         );
         let errors = validate_document(&doc);
         assert!(
-            errors.iter().any(|e| e.contains("missing required key field 'name'")),
+            errors
+                .iter()
+                .any(|e| e.contains("missing required key field 'name'")),
             "{:?}",
             errors
         );
@@ -472,7 +511,9 @@ mod tests {
         );
         let errors = validate_document(&doc);
         assert!(
-            errors.iter().any(|e| e.contains("too many positional fields")),
+            errors
+                .iter()
+                .any(|e| e.contains("too many positional fields")),
             "{:?}",
             errors
         );

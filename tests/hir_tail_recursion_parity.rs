@@ -7,7 +7,9 @@ use briev_compiler::analysis::tail_recursion::{
 };
 use briev_compiler::ast::TopLevel;
 use briev_compiler::hir::lower_program;
-use briev_compiler::hir::tail_recursion::{build_tail_loop_plan as hir_loop, build_tail_recursion_plan as hir_tail};
+use briev_compiler::hir::tail_recursion::{
+    build_tail_loop_plan as hir_loop, build_tail_recursion_plan as hir_tail,
+};
 use std::path::{Path, PathBuf};
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");

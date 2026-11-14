@@ -28,17 +28,35 @@ fn host_callback_into_briev_roundtrip() {
     let bv = format!("{}/examples/glue-host/callback.bv", PROJECT_ROOT);
 
     let build = Command::new(brievc)
-        .args(["build", &bv, "--library", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc build --library");
-    assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
+        .args([
+            "build",
+            &bv,
+            "--library",
+            "--out",
+            &out_dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("failed brievc build --library");
+    assert!(
+        build.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let bindings = Command::new(brievc)
         .args(["bindings", &bv, "c", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc bindings");
-    assert!(bindings.status.success(), "bindings failed: {}", String::from_utf8_lossy(&bindings.stderr));
+        .output()
+        .expect("failed brievc bindings");
+    assert!(
+        bindings.status.success(),
+        "bindings failed: {}",
+        String::from_utf8_lossy(&bindings.stderr)
+    );
 
     let driver_c = out_dir.join("driver.c");
-    std::fs::write(&driver_c, r#"
+    std::fs::write(
+        &driver_c,
+        r#"
 #include "callback-bindings/briev_types.h"
 #include <stdio.h>
 
@@ -52,7 +70,9 @@ int main(void) {
     __glue_release(st);
     return 0;
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let header_dir = out_dir.join("callback-bindings");
     let driver = out_dir.join("driver");
@@ -62,14 +82,33 @@ int main(void) {
         .arg(format!("-I{}", header_dir.display()))
         .arg(format!("-L{}", out_dir.display()))
         .arg("-lcallback")
-        .output().expect("failed cc");
-    assert!(cc.status.success(), "cc failed: {}", String::from_utf8_lossy(&cc.stderr));
+        .output()
+        .expect("failed cc");
+    assert!(
+        cc.status.success(),
+        "cc failed: {}",
+        String::from_utf8_lossy(&cc.stderr)
+    );
 
-    let run = Command::new(&driver).output().expect("failed to run driver");
-    assert!(run.status.success(), "driver failed: {}", String::from_utf8_lossy(&run.stderr));
+    let run = Command::new(&driver)
+        .output()
+        .expect("failed to run driver");
+    assert!(
+        run.status.success(),
+        "driver failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let stdout = String::from_utf8_lossy(&run.stdout);
-    assert!(stdout.contains("double:42"), "doubler(21) should be 42: {}", stdout);
-    assert!(stdout.contains("inc:42"), "plus_one(41) should be 42: {}", stdout);
+    assert!(
+        stdout.contains("double:42"),
+        "doubler(21) should be 42: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("inc:42"),
+        "plus_one(41) should be 42: {}",
+        stdout
+    );
 
     let _ = std::fs::remove_dir_all(&out_dir);
 }

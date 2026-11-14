@@ -66,11 +66,7 @@ impl ResolvedDep {
     /// layout — `src/<name>.bv`), else `<root>`.
     pub fn search_root(&self) -> PathBuf {
         let src = self.root.join("src");
-        if src.is_dir() {
-            src
-        } else {
-            self.root.clone()
-        }
+        if src.is_dir() { src } else { self.root.clone() }
     }
 }
 
@@ -94,7 +90,10 @@ pub struct FolioLock {
 
 impl Default for FolioLock {
     fn default() -> Self {
-        Self { version: 1, package: BTreeMap::new() }
+        Self {
+            version: 1,
+            package: BTreeMap::new(),
+        }
     }
 }
 
@@ -139,7 +138,13 @@ pub fn resolve_dependencies(
     let mut deps = Vec::with_capacity(names.len());
     for name in names {
         let dep = &manifest.dependencies[name];
-        deps.push(resolve_one(name, dep, project_root, lock.package.get(name), mode)?);
+        deps.push(resolve_one(
+            name,
+            dep,
+            project_root,
+            lock.package.get(name),
+            mode,
+        )?);
     }
 
     if mode != ResolveMode::Check {
@@ -204,16 +209,28 @@ fn ensure_checkout(
 ) -> Result<(), PackageError> {
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(dir)?;
-        run_git(name, url, &["clone", "--quiet", url, &dir.to_string_lossy()])?;
+        run_git(
+            name,
+            url,
+            &["clone", "--quiet", url, &dir.to_string_lossy()],
+        )?;
     }
     if let Some(pin) = pin {
-        run_git(name, url, &["-C", &dir.to_string_lossy(), "checkout", "--quiet", pin])?;
+        run_git(
+            name,
+            url,
+            &["-C", &dir.to_string_lossy(), "checkout", "--quiet", pin],
+        )?;
     }
     Ok(())
 }
 
 fn git_head(name: &str, url: &str, dir: &Path) -> Result<String, PackageError> {
-    run_git(name, url, &["-C", &dir.to_string_lossy(), "rev-parse", "HEAD"])
+    run_git(
+        name,
+        url,
+        &["-C", &dir.to_string_lossy(), "rev-parse", "HEAD"],
+    )
 }
 
 fn run_git(name: &str, url: &str, args: &[&str]) -> Result<String, PackageError> {
@@ -260,11 +277,14 @@ pub fn project_dependency_roots(
     file_path: &str,
     mode: ResolveMode,
 ) -> Result<Vec<PathBuf>, PackageError> {
-    let start = Path::new(file_path).parent().unwrap_or_else(|| Path::new("."));
+    let start = Path::new(file_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
     let Some(manifest_path) = crate::manifest::find_manifest(start) else {
         return Ok(Vec::new());
     };
-    let manifest = Manifest::load(&manifest_path).map_err(|e| PackageError::Manifest(e.to_string()))?;
+    let manifest =
+        Manifest::load(&manifest_path).map_err(|e| PackageError::Manifest(e.to_string()))?;
     if manifest.dependencies.is_empty() {
         return Ok(Vec::new());
     }
@@ -296,8 +316,17 @@ mod tests {
     fn init_git_repo(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
         let run = |args: &[&str]| {
-            let st = Command::new("git").args(args).current_dir(dir).output().unwrap();
-            assert!(st.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&st.stderr));
+            let st = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                st.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&st.stderr)
+            );
         };
         run(&["init", "--quiet"]);
         run(&["config", "user.email", "t@example.com"]);
@@ -312,14 +341,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let proj = tmp.path();
         std::fs::create_dir_all(proj.join("deps/bar/src")).unwrap();
-        std::fs::write(proj.join("deps/bar/src/bar.bv"), "defn bar() -> Int { term 2; };\n").unwrap();
+        std::fs::write(
+            proj.join("deps/bar/src/bar.bv"),
+            "defn bar() -> Int { term 2; };\n",
+        )
+        .unwrap();
         write_manifest(proj, "bar = { path = \"deps/bar\" }\n");
         let manifest = Manifest::load(&proj.join("folio.toml")).unwrap();
         let deps = resolve_dependencies(&manifest, proj, ResolveMode::Build).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].search_root(), proj.join("deps/bar/src"));
         // Path deps are not locked.
-        assert!(!proj.join("folio.lock").exists(), "path-only projects write no lock");
+        assert!(
+            !proj.join("folio.lock").exists(),
+            "path-only projects write no lock"
+        );
     }
 
     #[test]
@@ -367,7 +403,10 @@ mod tests {
         write_manifest(proj, "baz = { registry = \"baz\", version = \"0.1\" }\n");
         let manifest = Manifest::load(&proj.join("folio.toml")).unwrap();
         let err = resolve_dependencies(&manifest, proj, ResolveMode::Check).unwrap_err();
-        assert!(format!("{err}").contains("registry deps are not supported"), "{err}");
+        assert!(
+            format!("{err}").contains("registry deps are not supported"),
+            "{err}"
+        );
     }
 
     /// 2026-10-06: a path dependency's module is importable by name
@@ -383,9 +422,14 @@ mod tests {
         let bar = tmp.path().join("bar");
         std::fs::create_dir_all(proj.join("src")).unwrap();
         std::fs::create_dir_all(bar.join("src")).unwrap();
-        std::fs::write(bar.join("src/bar.bv"), "defn bar_value() -> Int { term 42; };\n").unwrap();
+        std::fs::write(
+            bar.join("src/bar.bv"),
+            "defn bar_value() -> Int { term 42; };\n",
+        )
+        .unwrap();
         write_manifest(&proj, "bar = { path = \"../bar\" }\n");
-        let src = "import <bar>;\nnode entry [beginprogram][true] { let x: Int = bar_value(); term; };\n";
+        let src =
+            "import <bar>;\nnode entry [beginprogram][true] { let x: Int = bar_value(); term; };\n";
         std::fs::write(proj.join("src/main.bv"), src).unwrap();
         crate::pipeline::check_source_for(proj.join("src/main.bv").to_str().unwrap(), src, None)
             .expect("the dependency module must resolve");

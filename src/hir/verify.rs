@@ -62,7 +62,10 @@ fn verify_unique_ids(
 fn verify_export_metadata(callable: &HirCallable) -> Result<(), String> {
     match (callable.exported, callable.export_symbol.as_deref()) {
         (true, Some(symbol)) if !symbol.is_empty() => Ok(()),
-        (true, _) => Err(format!("exported callable '{}' has no symbol", callable.name)),
+        (true, _) => Err(format!(
+            "exported callable '{}' has no symbol",
+            callable.name
+        )),
         (false, Some(_)) => Err(format!(
             "non-exported callable '{}' carries an export symbol",
             callable.name
@@ -133,10 +136,7 @@ fn verify_stmt(stmt: &HirStmt, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
     }
 }
 
-fn verify_stmt_arms(
-    arms: &[HirStmtMatchArm],
-    nodes: &mut BTreeSet<NodeId>,
-) -> Result<(), String> {
+fn verify_stmt_arms(arms: &[HirStmtMatchArm], nodes: &mut BTreeSet<NodeId>) -> Result<(), String> {
     for arm in arms {
         verify_patterns(&arm.patterns, nodes)?;
         verify_body(&arm.body, nodes)?;
@@ -172,30 +172,44 @@ fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
             Ok(())
         }
         HirExprKind::Call { args, .. } => verify_exprs(args, nodes),
-        HirExprKind::Binary { left, right, .. } => verify_exprs([left.as_ref(), right.as_ref()], nodes),
+        HirExprKind::Binary { left, right, .. } => {
+            verify_exprs([left.as_ref(), right.as_ref()], nodes)
+        }
         HirExprKind::Unary { inner, .. }
         | HirExprKind::Cast { inner, .. }
         | HirExprKind::Deref(inner)
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
         | HirExprKind::Await(inner) => verify_expr(inner, nodes),
-        HirExprKind::Field { receiver, .. }
-        | HirExprKind::Reflect { receiver, .. } => verify_expr(receiver, nodes),
+        HirExprKind::Field { receiver, .. } | HirExprKind::Reflect { receiver, .. } => {
+            verify_expr(receiver, nodes)
+        }
         HirExprKind::MethodCall { receiver, args, .. } => {
             verify_expr(receiver, nodes)?;
             verify_exprs(args, nodes)
         }
         HirExprKind::Index(array, index) => verify_exprs([array.as_ref(), index.as_ref()], nodes),
         HirExprKind::Wildcard => Ok(()),
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             verify_expr(array, nodes)?;
             verify_opt_expr(start.as_deref(), nodes)?;
             verify_opt_expr(end.as_deref(), nodes)?;
             verify_opt_expr(stride.as_deref(), nodes)
         }
-        HirExprKind::Range { start, end, .. } => verify_exprs([start.as_ref(), end.as_ref()], nodes),
+        HirExprKind::Range { start, end, .. } => {
+            verify_exprs([start.as_ref(), end.as_ref()], nodes)
+        }
         HirExprKind::Spawn { args, .. } => verify_exprs(args, nodes),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             verify_expr(condition, nodes)?;
             verify_expr(then_branch, nodes)?;
             verify_opt_expr(else_branch.as_deref(), nodes)
@@ -219,7 +233,6 @@ fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
     }
 }
 
-
 fn verify_expr_arms(arms: &[HirMatchArm], nodes: &mut BTreeSet<NodeId>) -> Result<(), String> {
     for arm in arms {
         verify_pattern(&arm.pattern, nodes)?;
@@ -241,21 +254,19 @@ fn verify_pattern(pattern: &HirPattern, nodes: &mut BTreeSet<NodeId>) -> Result<
         HirPatternKind::Literal(expr)
         | HirPatternKind::Range(expr, _)
         | HirPatternKind::RangeInclusive(expr, _) => verify_expr(expr, nodes),
-        HirPatternKind::EnumVariant(_, pats) | HirPatternKind::Tuple(pats) | HirPatternKind::Multi(pats) => {
-            verify_patterns(pats, nodes)
-        }
+        HirPatternKind::EnumVariant(_, pats)
+        | HirPatternKind::Tuple(pats)
+        | HirPatternKind::Multi(pats) => verify_patterns(pats, nodes),
         HirPatternKind::Range(_, second) | HirPatternKind::RangeInclusive(_, second) => {
             verify_expr(second, nodes)
         }
-        HirPatternKind::Wildcard | HirPatternKind::Binding(_) | HirPatternKind::TypedBinding(_, _) => Ok(()),
+        HirPatternKind::Wildcard
+        | HirPatternKind::Binding(_)
+        | HirPatternKind::TypedBinding(_, _) => Ok(()),
     }
 }
 
-fn verify_node(
-    nodes: &mut BTreeSet<NodeId>,
-    id: NodeId,
-    what: &str,
-) -> Result<(), String> {
+fn verify_node(nodes: &mut BTreeSet<NodeId>, id: NodeId, what: &str) -> Result<(), String> {
     if nodes.insert(id) {
         Ok(())
     } else {
@@ -369,7 +380,9 @@ fn verify_one_stmt_types(
             }
             verify_expr_types(value, env, universe, graph)
         }
-        HirStmtKind::TrgBinding { instance, .. } => verify_expr_types(instance, env, universe, graph),
+        HirStmtKind::TrgBinding { instance, .. } => {
+            verify_expr_types(instance, env, universe, graph)
+        }
         // Expressions carried by the remaining statement kinds.
         HirStmtKind::Term(e) | HirStmtKind::EndProgram(e) | HirStmtKind::Rollback(e) => match e {
             Some(e) => verify_expr_types(e, env, universe, graph),
@@ -469,7 +482,12 @@ fn verify_container_types(
             verify_expr_types(b, env, universe, graph)
         }
         HirExprKind::Wildcard => Ok(()),
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             verify_expr_types(array, env, universe, graph)?;
             for opt in [start, end, stride].into_iter().flatten() {
                 verify_expr_types(opt, env, universe, graph)?;
@@ -481,7 +499,11 @@ fn verify_container_types(
             verify_expr_types(end, env, universe, graph)
         }
         HirExprKind::Spawn { args, .. } => verify_expr_types_in(args, env, universe, graph),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             verify_expr_types(condition, env, universe, graph)?;
             verify_expr_types(then_branch, env, universe, graph)?;
             match else_branch {
@@ -593,7 +615,9 @@ fn is_through_marker(stmt: &HirStmt) -> bool {
 
 fn marker_of(kind: &HirStmtKind) -> Option<&'static str> {
     match kind {
-        HirStmtKind::MetadataAssignment(key, crate::ast::PropertyValue::Bool(true)) if key == "hold" => {
+        HirStmtKind::MetadataAssignment(key, crate::ast::PropertyValue::Bool(true))
+            if key == "hold" =>
+        {
             Some("hold")
         }
         HirStmtKind::MetadataAssignment(key, crate::ast::PropertyValue::Identifier(_))

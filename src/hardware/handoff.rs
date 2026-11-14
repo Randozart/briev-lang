@@ -79,9 +79,7 @@ pub fn extract_from_xparameters(content: &str) -> HashMap<String, HardwarePeriph
         let trimmed = line.trim();
 
         if trimmed.starts_with("#define XPAR_") && trimmed.contains("_BASEADDR") {
-            let prefix = trimmed
-                .strip_prefix("#define ")
-                .unwrap_or("");
+            let prefix = trimmed.strip_prefix("#define ").unwrap_or("");
             let parts: Vec<&str> = prefix.split_whitespace().collect();
             if parts.len() >= 2 {
                 let macro_name = parts[0];
@@ -104,9 +102,7 @@ pub fn extract_from_xparameters(content: &str) -> HashMap<String, HardwarePeriph
                 }
             }
         } else if trimmed.starts_with("#define XPAR_") && trimmed.contains("_HIGHADDR") {
-            let prefix = trimmed
-                .strip_prefix("#define ")
-                .unwrap_or("");
+            let prefix = trimmed.strip_prefix("#define ").unwrap_or("");
             let parts: Vec<&str> = prefix.split_whitespace().collect();
             if parts.len() >= 2 {
                 let macro_name = parts[0];
@@ -203,8 +199,8 @@ fn extract_from_hwh_xml(xml: &str) -> Result<HashMap<String, HardwarePeripheral>
             if let Some(base) = extract_xml_attr(trimmed, "MEMRANGE", "BASEVALUE") {
                 if let Ok(base_addr) = parse_hex_or_dec(base) {
                     let default_high = format!("0x{:X}", base_addr + 0xFFF);
-                    let high_str = extract_xml_attr(trimmed, "MEMRANGE", "HIGHVALUE")
-                        .unwrap_or(&default_high);
+                    let high_str =
+                        extract_xml_attr(trimmed, "MEMRANGE", "HIGHVALUE").unwrap_or(&default_high);
                     let high_addr = parse_hex_or_dec(high_str).unwrap_or(base_addr + 0xFFF);
                     let p = HardwarePeripheral::from_parts(
                         instance,
@@ -323,7 +319,10 @@ pub fn extract_target_addresses(dbv_content: &str) -> Result<HashMap<String, u64
                 _ => continue,
             };
             let hex_str = addr_str.strip_prefix('@').unwrap_or(&addr_str);
-            let hex_clean = hex_str.strip_prefix("0x").or_else(|| hex_str.strip_prefix("0X")).unwrap_or(hex_str);
+            let hex_clean = hex_str
+                .strip_prefix("0x")
+                .or_else(|| hex_str.strip_prefix("0X"))
+                .unwrap_or(hex_str);
             let addr = u64::from_str_radix(hex_clean, 16)
                 .map_err(|e| format!("Invalid hex address '{}': {}", hex_str, e))?;
             addresses.insert(name, addr);
@@ -430,7 +429,8 @@ mod tests {
 
     #[test]
     fn test_extract_target_addresses() {
-        let dbv_content = "> axi_gpio_0; @0x8000A000;\n> axi_uart_1; @0x8000B000;\n> axi_dma_0; @0x80004000;\n";
+        let dbv_content =
+            "> axi_gpio_0; @0x8000A000;\n> axi_uart_1; @0x8000B000;\n> axi_dma_0; @0x80004000;\n";
         let addresses = extract_target_addresses(dbv_content).unwrap();
         assert_eq!(addresses.len(), 3);
         assert_eq!(addresses.get("axi_gpio_0"), Some(&0x8000A000));
@@ -440,7 +440,10 @@ mod tests {
 
     #[test]
     fn test_clean_name() {
-        assert_eq!(HardwarePeripheral::clean_name("XPAR_AXI_GPIO_0"), "axi_gpio_0");
+        assert_eq!(
+            HardwarePeripheral::clean_name("XPAR_AXI_GPIO_0"),
+            "axi_gpio_0"
+        );
         assert_eq!(HardwarePeripheral::clean_name("axi_gpio_0"), "axi_gpio_0");
         assert_eq!(HardwarePeripheral::clean_name("my-ip/S_AXI"), "my_ip_s_axi");
     }

@@ -18,13 +18,32 @@ pub enum HirAggregateKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HirSinkKey {
-    Return { callable: DefId, expr: NodeId },
-    CallArgument { call: NodeId, index: u32 },
-    ObjectField { node: NodeId, field: String },
-    CollectionElement { node: NodeId },
-    Aggregate { node: NodeId, kind: HirAggregateKind },
-    StateCell { node: NodeId, name: String },
-    LocalBinding { statement: NodeId },
+    Return {
+        callable: DefId,
+        expr: NodeId,
+    },
+    CallArgument {
+        call: NodeId,
+        index: u32,
+    },
+    ObjectField {
+        node: NodeId,
+        field: String,
+    },
+    CollectionElement {
+        node: NodeId,
+    },
+    Aggregate {
+        node: NodeId,
+        kind: HirAggregateKind,
+    },
+    StateCell {
+        node: NodeId,
+        name: String,
+    },
+    LocalBinding {
+        statement: NodeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,7 +77,11 @@ fn collect_stmt(facts: &mut HirSinkFacts, callable: &HirCallable, stmt: &HirStmt
     match &stmt.kind {
         HirStmtKind::Let { expr, .. } => {
             if let Some(expr) = expr {
-                insert(facts, HirSinkKey::LocalBinding { statement: stmt.id }, expr.id);
+                insert(
+                    facts,
+                    HirSinkKey::LocalBinding { statement: stmt.id },
+                    expr.id,
+                );
                 scan_expr(facts, expr);
             }
         }
@@ -75,11 +98,25 @@ fn collect_stmt(facts: &mut HirSinkFacts, callable: &HirCallable, stmt: &HirStmt
             scan_expr(facts, value);
         }
         HirStmtKind::Term(Some(expr)) | HirStmtKind::Tail(expr) => {
-            insert(facts, HirSinkKey::Return { callable: callable.id, expr: expr.id }, expr.id);
+            insert(
+                facts,
+                HirSinkKey::Return {
+                    callable: callable.id,
+                    expr: expr.id,
+                },
+                expr.id,
+            );
             scan_expr(facts, expr);
         }
         HirStmtKind::EndProgram(Some(expr)) => {
-            insert(facts, HirSinkKey::Return { callable: callable.id, expr: expr.id }, expr.id);
+            insert(
+                facts,
+                HirSinkKey::Return {
+                    callable: callable.id,
+                    expr: expr.id,
+                },
+                expr.id,
+            );
             scan_expr(facts, expr);
         }
         HirStmtKind::Check(expr) | HirStmtKind::Expression(expr) | HirStmtKind::Gate(expr) => {
@@ -121,7 +158,14 @@ fn collect_stmt(facts: &mut HirSinkFacts, callable: &HirCallable, stmt: &HirStmt
         // still occupies the return sink it was carved out of.
         HirStmtKind::ReleaseOwned { .. } => {}
         HirStmtKind::TempTransfer { expr, .. } => {
-            insert(facts, HirSinkKey::Return { callable: callable.id, expr: expr.id }, expr.id);
+            insert(
+                facts,
+                HirSinkKey::Return {
+                    callable: callable.id,
+                    expr: expr.id,
+                },
+                expr.id,
+            );
             scan_expr(facts, expr);
         }
     }
@@ -163,7 +207,9 @@ fn collect_expr_sinks(facts: &mut HirSinkFacts, expr: &HirExpr) {
                 );
             }
         }
-        HirExprKind::Tuple(items) => collect_aggregate(facts, expr.id, items, HirAggregateKind::Tuple),
+        HirExprKind::Tuple(items) => {
+            collect_aggregate(facts, expr.id, items, HirAggregateKind::Tuple)
+        }
         HirExprKind::List(items) => {
             collect_aggregate(facts, expr.id, items, HirAggregateKind::Collection)
         }

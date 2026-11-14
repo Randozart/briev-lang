@@ -4,9 +4,9 @@
 // Flat code: each function max 2 levels of nesting.
 
 use crate::ast::{DerivationExample, Expr};
-use crate::derive::engine::{evaluate_synthesized, SynthesisEvalContext, SynthesizedProgram};
+use crate::derive::engine::{SynthesisEvalContext, SynthesizedProgram, evaluate_synthesized};
 use crate::derive::mcmc::EquivalenceMode;
-use crate::interpreter::{Atom, values_within_tolerance, Value};
+use crate::interpreter::{Atom, Value, values_within_tolerance};
 
 /// Check if two programs are equivalent for the given examples.
 /// Returns true if equivalent, false if not.
@@ -17,15 +17,9 @@ pub fn check_equivalence(
     mode: &EquivalenceMode,
 ) -> bool {
     match mode {
-        EquivalenceMode::ExamplesOnly => {
-            check_examples_equivalent(proposed, current, examples)
-        }
-        EquivalenceMode::Z3Proof { .. } => {
-            check_examples_equivalent(proposed, current, examples)
-        }
-        EquivalenceMode::Hybrid { .. } => {
-            check_examples_equivalent(proposed, current, examples)
-        }
+        EquivalenceMode::ExamplesOnly => check_examples_equivalent(proposed, current, examples),
+        EquivalenceMode::Z3Proof { .. } => check_examples_equivalent(proposed, current, examples),
+        EquivalenceMode::Hybrid { .. } => check_examples_equivalent(proposed, current, examples),
     }
 }
 
@@ -42,9 +36,13 @@ fn check_examples_equivalent(
             ctx.bind(&format!("x{}", i), val.clone());
         }
 
-        let actual = proposed.body.first()
+        let actual = proposed
+            .body
+            .first()
             .and_then(|e| evaluate_synthesized(e, &mut ctx.clone()).ok());
-        let expected = current.body.first()
+        let expected = current
+            .body
+            .first()
             .and_then(|e| evaluate_synthesized(e, &mut ctx).ok());
 
         match (actual, expected) {
@@ -79,14 +77,26 @@ mod tests {
     use crate::ast::{BinaryOpKind, DerivationExample, Expr};
     use crate::errors::Span;
 
-    fn dummy_span() -> Span { Span::dummy() }
+    fn dummy_span() -> Span {
+        Span::dummy()
+    }
 
     fn make_prog(body: Vec<Expr>) -> SynthesizedProgram {
-        SynthesizedProgram { body, cost: 0, depth: 0, helpers: vec![] }
+        SynthesizedProgram {
+            body,
+            cost: 0,
+            depth: 0,
+            helpers: vec![],
+        }
     }
 
     fn example(inputs: Vec<Expr>, output: Expr, tolerance: Option<f64>) -> DerivationExample {
-        DerivationExample { inputs, output: Box::new(output), tolerance, span: dummy_span() }
+        DerivationExample {
+            inputs,
+            output: Box::new(output),
+            tolerance,
+            span: dummy_span(),
+        }
     }
 
     #[test]
@@ -101,9 +111,11 @@ mod tests {
             Box::new(Expr::Identifier("x1".into())),
             Box::new(Expr::Identifier("x0".into())),
         )]);
-        let examples = vec![
-            example(vec![Expr::Decimal(2), Expr::Decimal(3)], Expr::Decimal(5), None),
-        ];
+        let examples = vec![example(
+            vec![Expr::Decimal(2), Expr::Decimal(3)],
+            Expr::Decimal(5),
+            None,
+        )];
         assert!(check_examples_equivalent(&proposed, &current, &examples));
     }
 
@@ -119,9 +131,11 @@ mod tests {
             Box::new(Expr::Identifier("x0".into())),
             Box::new(Expr::Identifier("x1".into())),
         )]);
-        let examples = vec![
-            example(vec![Expr::Decimal(2), Expr::Decimal(3)], Expr::Decimal(5), None),
-        ];
+        let examples = vec![example(
+            vec![Expr::Decimal(2), Expr::Decimal(3)],
+            Expr::Decimal(5),
+            None,
+        )];
         assert!(!check_examples_equivalent(&proposed, &current, &examples));
     }
 }

@@ -50,10 +50,7 @@ mod tests {
         let mut parser = crate::parser::Parser::new(tokens, src);
         let items = parser.parse_program().expect("parse");
         let program = crate::hir::lower_program(&items);
-        (
-            analyze(&program),
-            crate::analysis::casing::analyze(&items),
-        )
+        (analyze(&program), crate::analysis::casing::analyze(&items))
     }
 
     #[test]

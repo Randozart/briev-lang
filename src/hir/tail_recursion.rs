@@ -6,9 +6,9 @@
 //! `TailRecursionPlan`, `TailLoopPlan`) so consumers cannot drift.
 
 use super::expr::{HirExpr, HirExprKind};
+use super::expr_walk::walk_stmts;
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
-use super::expr_walk::walk_stmts;
 use crate::analysis::tail_recursion::{TailLoopPlan, TailRecursionClass, TailRecursionPlan};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,9 +54,7 @@ pub fn build_tail_loop_plan(program: &HirProgram) -> TailLoopPlan {
 }
 
 fn loop_lowerable_signature(c: &HirCallable) -> bool {
-    c.type_params.is_empty()
-        && !c.variadic
-        && c.params.iter().all(|p| loop_storable_type(&p.ty))
+    c.type_params.is_empty() && !c.variadic && c.params.iter().all(|p| loop_storable_type(&p.ty))
 }
 
 fn tail_calls_match_arity(calls: &[Vec<HirExpr>], arity: usize) -> bool {
@@ -112,7 +110,9 @@ fn collect_tail_self_calls(body: &[HirStmt], name: &str, out: &mut Vec<Vec<HirEx
             }
             // 2026-11-13 (owned-storage seam): the transfer REPLACED the
             // original Term/Tail — collect through its wrapped expression.
-            HirStmtKind::TempTransfer { expr, ret, .. } if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) => {
+            HirStmtKind::TempTransfer { expr, ret, .. }
+                if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) =>
+            {
                 collect_tail_self_calls_expr(expr, name, out);
             }
             HirStmtKind::Guarded(_, inner) | HirStmtKind::Block(inner) => {
@@ -157,7 +157,9 @@ fn tail_calls_in_body(body: &[HirStmt], name: &str) -> usize {
             }
             // 2026-11-13 (owned-storage seam): the transfer REPLACED the
             // original Term/Tail — its wrapped expression is the tail.
-            HirStmtKind::TempTransfer { expr, ret, .. } if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) => {
+            HirStmtKind::TempTransfer { expr, ret, .. }
+                if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) =>
+            {
                 total += tail_calls_in_expr(expr, name)
             }
             HirStmtKind::Guarded(_, inner) | HirStmtKind::Block(inner) => {
@@ -188,7 +190,9 @@ fn tail_calls_in_block(stmts: &[HirStmt], name: &str) -> usize {
             // binding). Its wrapped expression occupies the same tail
             // position — count it, or AST/HIR tail classes drift whenever
             // the owned-storage pass converts a self-recursive tail.
-            HirStmtKind::TempTransfer { expr, ret, .. } if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) => {
+            HirStmtKind::TempTransfer { expr, ret, .. }
+                if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) =>
+            {
                 return tail_calls_in_expr(expr, name);
             }
             HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e) | HirStmtKind::Expression(e) => {
@@ -230,7 +234,11 @@ fn count_self_calls_stmt(stmt: &HirStmt, name: &str) -> usize {
         | HirStmtKind::Mutex(b)
         | HirStmtKind::Foreach { body: b, .. } => count_self_calls_stmts(b, name),
         HirStmtKind::Match { expr: e, arms } => {
-            expr(e) + arms.iter().map(|a| count_self_calls_stmts(&a.body, name)).sum::<usize>()
+            expr(e)
+                + arms
+                    .iter()
+                    .map(|a| count_self_calls_stmts(&a.body, name))
+                    .sum::<usize>()
         }
         HirStmtKind::TrgBinding { instance, .. } => expr(instance),
         HirStmtKind::Open(l, r) => expr(l) + expr(r),
@@ -255,11 +263,20 @@ fn count_self_calls_expr(expr: &HirExpr, name: &str) -> usize {
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
         | HirExprKind::Await(inner)
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        }
         | HirExprKind::Lambda { body: inner, .. } => rec(inner),
         HirExprKind::Index(a, b) => rec(a) + rec(b),
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             rec(array)
                 + start.as_ref().map(|e| rec(e)).unwrap_or(0)
                 + end.as_ref().map(|e| rec(e)).unwrap_or(0)
@@ -268,17 +285,18 @@ fn count_self_calls_expr(expr: &HirExpr, name: &str) -> usize {
         HirExprKind::Range { start, end, .. } => rec(start) + rec(end),
         HirExprKind::Spawn { args, .. } => args.iter().map(rec).sum(),
         HirExprKind::Block(stmts) => count_self_calls_stmts(stmts, name),
-        HirExprKind::If { condition, then_branch, else_branch } => {
-            rec(condition) + rec(then_branch) + else_branch.as_ref().map(|e| rec(e)).unwrap_or(0)
-        }
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => rec(condition) + rec(then_branch) + else_branch.as_ref().map(|e| rec(e)).unwrap_or(0),
         HirExprKind::Match { scrutinee, arms } => {
             rec(scrutinee) + arms.iter().map(|a| rec(&a.body)).sum::<usize>()
         }
         HirExprKind::Tuple(items) | HirExprKind::List(items) => items.iter().map(rec).sum(),
         HirExprKind::StructLiteral { fields, .. } => fields.iter().map(|(_, e)| rec(e)).sum(),
         HirExprKind::PluginIntercept { args, receiver, .. } => {
-            args.iter().map(rec).sum::<usize>()
-                + receiver.as_ref().map(|r| rec(r)).unwrap_or(0)
+            args.iter().map(rec).sum::<usize>() + receiver.as_ref().map(|r| rec(r)).unwrap_or(0)
         }
         _ => 0,
     }

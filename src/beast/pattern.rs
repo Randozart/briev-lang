@@ -58,36 +58,61 @@ fn tokenize_pattern(input: &str) -> Result<Vec<String>, String> {
         let ch = match chars.next() {
             Some(c) => c,
             None => {
-                if !current.is_empty() { tokens.push(current); }
+                if !current.is_empty() {
+                    tokens.push(current);
+                }
                 return Ok(tokens);
             }
         };
         match ch {
             '(' | ')' => {
-                if !current.is_empty() { tokens.push(std::mem::take(&mut current)); }
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
                 tokens.push(ch.to_string());
             }
             ';' => {
-                if !current.is_empty() { tokens.push(std::mem::take(&mut current)); }
-                for c in chars.by_ref() { if c == '\n' { break; } }
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
             }
             ' ' | '\t' | '\n' | '\r' => {
-                if !current.is_empty() { tokens.push(std::mem::take(&mut current)); }
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
             }
             '"' => {
-                if !current.is_empty() { tokens.push(std::mem::take(&mut current)); }
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
                 current.push('"');
                 loop {
                     match chars.next() {
-                        Some('"') => { current.push('"'); tokens.push(std::mem::take(&mut current)); break; }
-                        Some('\\') => { current.push('\\'); if let Some(c) = chars.next() { current.push(c); } }
+                        Some('"') => {
+                            current.push('"');
+                            tokens.push(std::mem::take(&mut current));
+                            break;
+                        }
+                        Some('\\') => {
+                            current.push('\\');
+                            if let Some(c) = chars.next() {
+                                current.push(c);
+                            }
+                        }
                         Some(c) => current.push(c),
                         None => return Err("unterminated string literal in pattern".into()),
                     }
                 }
             }
             '?' => {
-                if !current.is_empty() { tokens.push(std::mem::take(&mut current)); }
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
                 // Collect the variable name after ?
                 let mut var_name = String::from("?");
                 // Peek ahead to collect the rest of the variable name
@@ -108,8 +133,12 @@ fn tokenize_pattern(input: &str) -> Result<Vec<String>, String> {
 
 /// 2026-07-15: Parse a single S-expression (with ? variables) from token stream.
 fn parse_one_pattern(tokens: &[String], pos: &mut usize) -> Result<SExpr, String> {
-    let tok = tokens.get(*pos).ok_or_else(|| "unexpected end of pattern".to_string())?;
-    if tok == ")" { return Err("unexpected ')' in pattern".into()); }
+    let tok = tokens
+        .get(*pos)
+        .ok_or_else(|| "unexpected end of pattern".to_string())?;
+    if tok == ")" {
+        return Err("unexpected ')' in pattern".into());
+    }
     if tok != "(" {
         // Atom or variable
         let atom = if tok.starts_with('?') {
@@ -123,8 +152,13 @@ fn parse_one_pattern(tokens: &[String], pos: &mut usize) -> Result<SExpr, String
     *pos += 1;
     let mut children = Vec::new();
     loop {
-        let next = tokens.get(*pos).ok_or_else(|| "unterminated list in pattern".to_string())?;
-        if next == ")" { *pos += 1; return Ok(SExpr::List(children)); }
+        let next = tokens
+            .get(*pos)
+            .ok_or_else(|| "unterminated list in pattern".to_string())?;
+        if next == ")" {
+            *pos += 1;
+            return Ok(SExpr::List(children));
+        }
         children.push(parse_one_pattern(tokens, pos)?);
     }
 }
@@ -134,10 +168,18 @@ fn parse_pattern_atom(tok: &str) -> Result<Atom, String> {
     if let Some(s) = tok.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         return Ok(Atom::String(s.to_string()));
     }
-    if tok == "true" { return Ok(Atom::Bool(true)); }
-    if tok == "false" { return Ok(Atom::Bool(false)); }
-    if let Ok(n) = tok.parse::<i64>() { return Ok(Atom::Int(n)); }
-    if let Ok(f) = tok.parse::<f64>() { return Ok(Atom::Float(f)); }
+    if tok == "true" {
+        return Ok(Atom::Bool(true));
+    }
+    if tok == "false" {
+        return Ok(Atom::Bool(false));
+    }
+    if let Ok(n) = tok.parse::<i64>() {
+        return Ok(Atom::Int(n));
+    }
+    if let Ok(f) = tok.parse::<f64>() {
+        return Ok(Atom::Float(f));
+    }
     Ok(Atom::String(tok.to_string()))
 }
 
@@ -174,7 +216,10 @@ fn sexpr_to_pattern(expr: &SExpr) -> Result<Pattern, String> {
                     if s == "*" || s == "?*" {
                         (None, 1)
                     } else if s.starts_with('?') {
-                        return Err(format!("variable tag '{}' not supported — use * for any tag", s));
+                        return Err(format!(
+                            "variable tag '{}' not supported — use * for any tag",
+                            s
+                        ));
                     } else {
                         (Some(s.clone()), 1)
                     }
@@ -185,7 +230,10 @@ fn sexpr_to_pattern(expr: &SExpr) -> Result<Pattern, String> {
             for i in child_start..children.len() {
                 patterns.push(sexpr_to_pattern(&children[i])?);
             }
-            Ok(Pattern::List { tag, children: patterns })
+            Ok(Pattern::List {
+                tag,
+                children: patterns,
+            })
         }
     }
 }
@@ -213,10 +261,7 @@ pub fn match_pattern(pattern: &Pattern, expr: &SExpr) -> MatchResult {
 
 /// 2026-07-15: Match a Pattern against a list of S-expressions (children).
 /// Returns bindings for all variables found.
-pub fn match_pattern_children(
-    pattern: &Pattern,
-    exprs: &[SExpr],
-) -> MatchResult {
+pub fn match_pattern_children(pattern: &Pattern, exprs: &[SExpr]) -> MatchResult {
     let mut bindings = HashMap::new();
     if match_children_recursive(pattern, exprs, 0, &mut bindings, false).is_ok() {
         Some(bindings)
@@ -258,7 +303,9 @@ fn match_recursive(
                     Some(SExpr::Atom(Atom::String(s))) => s,
                     _ => return Err(()),
                 };
-                if actual_tag != expected_tag { return Err(()); }
+                if actual_tag != expected_tag {
+                    return Err(());
+                }
             }
             // Match children starting from index 1 (skip tag position).
             // In BEAST every list has a tag at position 0, so even with a
@@ -288,7 +335,10 @@ fn match_children_recursive_list(
                     item_idx += 1;
                 }
                 if let Pattern::VarRest(name) = child {
-                    bindings.entry(name.clone()).or_default().push(SExpr::List(rest_items));
+                    bindings
+                        .entry(name.clone())
+                        .or_default()
+                        .push(SExpr::List(rest_items));
                 }
                 child_idx += 1;
             }
@@ -315,14 +365,18 @@ fn match_children_recursive(
 ) -> Result<(), ()> {
     match pattern {
         Pattern::List { tag, children } => {
-            if start >= items.len() { return Err(()); }
+            if start >= items.len() {
+                return Err(());
+            }
             // Check tag
             if let Some(expected_tag) = tag {
                 let actual_tag = match &items[start] {
                     SExpr::Atom(Atom::String(s)) => s,
                     _ => return Err(()),
                 };
-                if actual_tag != expected_tag { return Err(()); }
+                if actual_tag != expected_tag {
+                    return Err(());
+                }
             }
             let child_start = if tag.is_some() { start + 1 } else { start };
             match_children_recursive_list(children, items, child_start, bindings)
@@ -365,11 +419,7 @@ fn collect_recursive<'a>(pattern: &Pattern, expr: &'a SExpr, results: &mut Vec<&
 
 /// 2026-07-15: Apply a Replacement to an S-expression tree.
 /// Returns a new S-expression with all matches replaced.
-pub fn apply_replacement(
-    pattern: &Pattern,
-    replacement: &Pattern,
-    expr: &SExpr,
-) -> SExpr {
+pub fn apply_replacement(pattern: &Pattern, replacement: &Pattern, expr: &SExpr) -> SExpr {
     apply_recursive(pattern, replacement, expr, false)
 }
 
@@ -389,7 +439,8 @@ fn apply_recursive(
     // Recurse into children
     match expr {
         SExpr::List(children) => {
-            let new_children: Vec<SExpr> = children.iter()
+            let new_children: Vec<SExpr> = children
+                .iter()
                 .map(|c| apply_recursive(pattern, replacement, c, false))
                 .collect();
             SExpr::List(new_children)
@@ -456,11 +507,7 @@ fn build_replacement(pattern: &Pattern, bindings: &HashMap<String, Vec<SExpr>>) 
 
 /// 2026-07-15: Find and replace all matches of a pattern in an S-expression tree.
 /// Returns (new_tree, count_of_replacements)
-pub fn replace_all(
-    pattern: &Pattern,
-    replacement: &Pattern,
-    expr: &SExpr,
-) -> (SExpr, usize) {
+pub fn replace_all(pattern: &Pattern, replacement: &Pattern, expr: &SExpr) -> (SExpr, usize) {
     let mut count = 0;
     let result = replace_recursive(pattern, replacement, expr, &mut count, false);
     (result, count)
@@ -482,7 +529,8 @@ fn replace_recursive(
     }
     match expr {
         SExpr::List(children) => {
-            let new_children: Vec<SExpr> = children.iter()
+            let new_children: Vec<SExpr> = children
+                .iter()
                 .map(|c| replace_recursive(pattern, replacement, c, count, false))
                 .collect();
             SExpr::List(new_children)
@@ -565,8 +613,14 @@ mod tests {
         let pat = parse_pattern("(ident ?*)").unwrap();
         let expr = SExpr::List(vec![
             SExpr::Atom(Atom::String("list".into())),
-            SExpr::List(vec![SExpr::Atom(Atom::String("ident".into())), SExpr::Atom(Atom::String("a".into()))]),
-            SExpr::List(vec![SExpr::Atom(Atom::String("ident".into())), SExpr::Atom(Atom::String("b".into()))]),
+            SExpr::List(vec![
+                SExpr::Atom(Atom::String("ident".into())),
+                SExpr::Atom(Atom::String("a".into())),
+            ]),
+            SExpr::List(vec![
+                SExpr::Atom(Atom::String("ident".into())),
+                SExpr::Atom(Atom::String("b".into())),
+            ]),
         ]);
         let matches = collect_matches(&pat, &expr);
         assert_eq!(matches.len(), 2);
@@ -578,7 +632,10 @@ mod tests {
         let repl = parse_pattern("(reuse ?name)").unwrap();
         let expr = SExpr::List(vec![
             SExpr::Atom(Atom::String("list".into())),
-            SExpr::List(vec![SExpr::Atom(Atom::String("ident".into())), SExpr::Atom(Atom::String("x".into()))]),
+            SExpr::List(vec![
+                SExpr::Atom(Atom::String("ident".into())),
+                SExpr::Atom(Atom::String("x".into())),
+            ]),
         ]);
         let (result, count) = replace_all(&pat, &repl, &expr);
         assert_eq!(count, 1);

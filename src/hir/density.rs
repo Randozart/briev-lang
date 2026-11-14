@@ -13,7 +13,7 @@
 use super::expr::{HirExpr, HirExprKind, HirLiteral};
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
-use crate::analysis::density::{is_float_type, ComputeDensity};
+use crate::analysis::density::{ComputeDensity, is_float_type};
 use crate::ast::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -27,7 +27,10 @@ pub fn compute_densities(program: &HirProgram) -> HashMap<String, ComputeDensity
             && c.sync_domains.is_empty()
             && c.is_reactive
     }) {
-        out.insert(c.name.clone(), density_of_body(&c.body.statements, &program_float));
+        out.insert(
+            c.name.clone(),
+            density_of_body(&c.body.statements, &program_float),
+        );
     }
     out
 }
@@ -89,7 +92,13 @@ fn density_of_body(body: &[HirStmt], program_float: &HashSet<String>) -> Compute
 fn float_let_round(top_lets: &[&HirStmt], float_set: &mut HashSet<String>) -> bool {
     let before = float_set.len();
     for s in top_lets {
-        let HirStmtKind::Let { name, names, expr: Some(e), .. } = &s.kind else {
+        let HirStmtKind::Let {
+            name,
+            names,
+            expr: Some(e),
+            ..
+        } = &s.kind
+        else {
             continue;
         };
         if !expr_is_float(e, float_set) {
@@ -153,10 +162,16 @@ fn expr_has_float_literal(expr: &HirExpr) -> bool {
         HirExprKind::Tuple(items) | HirExprKind::List(items) => {
             items.iter().any(expr_has_float_literal)
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             expr_has_float_literal(condition)
                 || expr_has_float_literal(then_branch)
-                || else_branch.as_ref().map_or(false, |x| expr_has_float_literal(x))
+                || else_branch
+                    .as_ref()
+                    .map_or(false, |x| expr_has_float_literal(x))
         }
         _ => false,
     }
@@ -173,13 +188,15 @@ fn expr_is_float(expr: &HirExpr, float_set: &HashSet<String>) -> bool {
         HirExprKind::Call { args, .. } => args.iter().any(|a| expr_is_float(a, float_set)),
         HirExprKind::Cast { inner, .. } => expr_is_float(inner, float_set),
         HirExprKind::Field { receiver, .. } => expr_is_float(receiver, float_set),
-        HirExprKind::Index(a, i) => {
-            expr_is_float(a, float_set) || expr_is_float(i, float_set)
-        }
+        HirExprKind::Index(a, i) => expr_is_float(a, float_set) || expr_is_float(i, float_set),
         HirExprKind::Tuple(items) | HirExprKind::List(items) => {
             items.iter().any(|x| expr_is_float(x, float_set))
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             expr_is_float(condition, float_set)
                 || expr_is_float(then_branch, float_set)
                 || else_branch
@@ -198,9 +215,7 @@ fn count_cross_float_ops(expr: &HirExpr, float_set: &HashSet<String>) -> u32 {
             } else {
                 0u32
             };
-            count
-                + count_cross_float_ops(left, float_set)
-                + count_cross_float_ops(right, float_set)
+            count + count_cross_float_ops(left, float_set) + count_cross_float_ops(right, float_set)
         }
         _ => 0,
     }
@@ -215,15 +230,17 @@ fn expr_refs_float(expr: &HirExpr, float_set: &HashSet<String>) -> bool {
         HirExprKind::Unary { inner, .. } => expr_refs_float(inner, float_set),
         HirExprKind::Call { args, .. } => args.iter().any(|a| expr_refs_float(a, float_set)),
         HirExprKind::Field { receiver, .. } => expr_refs_float(receiver, float_set),
-        HirExprKind::Index(a, i) => {
-            expr_refs_float(a, float_set) || expr_refs_float(i, float_set)
-        }
+        HirExprKind::Index(a, i) => expr_refs_float(a, float_set) || expr_refs_float(i, float_set),
         HirExprKind::Cast { inner, .. } => expr_refs_float(inner, float_set),
         HirExprKind::Deref(inner) => expr_refs_float(inner, float_set),
         HirExprKind::Tuple(items) | HirExprKind::List(items) => {
             items.iter().any(|x| expr_refs_float(x, float_set))
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             expr_refs_float(condition, float_set)
                 || expr_refs_float(then_branch, float_set)
                 || else_branch
@@ -241,7 +258,9 @@ mod tests {
 
     fn compare(source: &str) -> HashMap<String, ComputeDensity> {
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
         let ast = crate::analysis::density::compute_densities(&items);
         let hir = compute_densities(&lower_program(&items));
         assert_eq!(hir, ast, "HIR/AST density drift");

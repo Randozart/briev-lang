@@ -21,8 +21,8 @@ use super::pattern::HirPatternKind;
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
 use crate::analysis::accel::{
-    is_flat_scalar, AccelDecision, AccelEntry, AccelMode, DeferredNormalization, FoldIdiomBlock,
-    KernelShape, ReductionInfo, ReductionKind,
+    AccelDecision, AccelEntry, AccelMode, DeferredNormalization, FoldIdiomBlock, KernelShape,
+    ReductionInfo, ReductionKind, is_flat_scalar,
 };
 use crate::ast::{BinaryOpKind, Type};
 use crate::type_universe::TypeUniverse;
@@ -2094,21 +2094,27 @@ accel node not_flat [i < N][i == N] {
         for name in ["no_bound", "const_slot", "not_flat"] {
             assert!(!map[name].shape.eligible, "{name} must be ineligible");
         }
-        assert!(map["no_bound"]
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("[i < N]")));
-        assert!(map["const_slot"]
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("cross-work-item")));
-        assert!(map["not_flat"]
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("not a flat scalar")));
+        assert!(
+            map["no_bound"]
+                .shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("[i < N]"))
+        );
+        assert!(
+            map["const_slot"]
+                .shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("cross-work-item"))
+        );
+        assert!(
+            map["not_flat"]
+                .shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("not a flat scalar"))
+        );
     }
 
     #[test]

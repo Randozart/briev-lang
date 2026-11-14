@@ -50,24 +50,49 @@ fn go_roundtrip() {
     let bv = format!("{}/examples/glue-host/boundary.bv", PROJECT_ROOT);
     let build = Command::new(brievc)
         .args(["build", &bv, "--library", "--out", &base.to_string_lossy()])
-        .output().expect("failed brievc build --library");
-    assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
+        .output()
+        .expect("failed brievc build --library");
+    assert!(
+        build.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     std::fs::copy(base.join("libboundary.a"), pkg.join("libboundary.a")).unwrap();
 
     let bindings = Command::new(brievc)
         .args(["bindings", &bv, "c", "--out", &base.to_string_lossy()])
-        .output().expect("failed brievc bindings");
-    assert!(bindings.status.success(), "bindings failed: {}", String::from_utf8_lossy(&bindings.stderr));
-    std::fs::copy(base.join("boundary-bindings/briev_types.h"), pkg.join("briev_types.h")).unwrap();
+        .output()
+        .expect("failed brievc bindings");
+    assert!(
+        bindings.status.success(),
+        "bindings failed: {}",
+        String::from_utf8_lossy(&bindings.stderr)
+    );
+    std::fs::copy(
+        base.join("boundary-bindings/briev_types.h"),
+        pkg.join("briev_types.h"),
+    )
+    .unwrap();
 
     let export = Command::new(brievc)
         .args(["export", &bv, "go", "--out", &base.to_string_lossy()])
-        .output().expect("failed brievc export go");
-    assert!(export.status.success(), "go export failed: {}", String::from_utf8_lossy(&export.stderr));
-    std::fs::copy(base.join("boundary-bridge/bridge.go"), pkg.join("bridge.go")).unwrap();
+        .output()
+        .expect("failed brievc export go");
+    assert!(
+        export.status.success(),
+        "go export failed: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    std::fs::copy(
+        base.join("boundary-bridge/bridge.go"),
+        pkg.join("bridge.go"),
+    )
+    .unwrap();
 
     std::fs::write(base.join("go.mod"), "module briefgobridge\n\ngo 1.22\n").unwrap();
-    std::fs::write(base.join("main.go"), r#"
+    std::fs::write(
+        base.join("main.go"),
+        r#"
 package main
 
 import (
@@ -82,13 +107,20 @@ func main() {
     if b.Join("foo", "bar") != "foobar" { panic("join") }
     fmt.Println("GO OK")
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let run = Command::new(&go)
         .env("CGO_ENABLED", "1")
         .current_dir(&base)
         .args(["run", "."])
-        .output().expect("failed go run");
-    assert!(run.status.success(), "go run failed: {}", String::from_utf8_lossy(&run.stderr));
+        .output()
+        .expect("failed go run");
+    assert!(
+        run.status.success(),
+        "go run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert!(String::from_utf8_lossy(&run.stdout).contains("GO OK"));
 }

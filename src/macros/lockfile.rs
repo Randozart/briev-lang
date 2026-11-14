@@ -34,8 +34,17 @@ pub struct PluginLockEntry {
 /// All stage directory names for plugin discovery.
 /// Must match the directories in discover_system_plugins.
 const STAGE_DIRS: &[&str] = &[
-    "prelex", "parsed", "resolved", "typed", "normalized",
-    "verified", "allocated", "provenanced", "generated", "optimized", "linked",
+    "prelex",
+    "parsed",
+    "resolved",
+    "typed",
+    "normalized",
+    "verified",
+    "allocated",
+    "provenanced",
+    "generated",
+    "optimized",
+    "linked",
 ];
 
 /// Load macro-lock.toml from the given directory.
@@ -136,8 +145,8 @@ pub fn discover_plugin_files(base_dir: Option<&str>) -> Vec<(String, String)> {
 
 /// Scan a single plugin file, returning (hash, capabilities).
 fn scan_file(file_path: &str) -> Result<(String, Vec<String>), String> {
-    let source =
-        std::fs::read_to_string(file_path).map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
+    let source = std::fs::read_to_string(file_path)
+        .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
     let hash = sha256_hex(source.as_bytes());
     let caps = scan_capabilities(&source);
     Ok((hash, caps))
@@ -161,7 +170,10 @@ fn apply_capability(sandbox: &mut crate::macros::eval::Sandbox, cap: &str) -> Re
 /// Only records capabilities that were both requested by the plugin AND
 /// granted via the `granted` set (derived from --allow-* flags).
 /// `base_dir` is the project root (None = current working directory).
-pub fn generate_lockfile(granted: &BTreeSet<String>, base_dir: Option<&str>) -> Result<MacroLock, String> {
+pub fn generate_lockfile(
+    granted: &BTreeSet<String>,
+    base_dir: Option<&str>,
+) -> Result<MacroLock, String> {
     let mut lock = MacroLock {
         version: 1,
         plugins: HashMap::new(),
@@ -367,7 +379,12 @@ mod tests {
     fn test_discover_plugin_files_finds_bv() {
         let dir = tempfile::tempdir().unwrap();
         let dir_str = base(&dir);
-        create_plugin(&dir_str, "parsed", "test-plugin.bv", "$(Parsed) { EmitInfo$(\"hi\"); }");
+        create_plugin(
+            &dir_str,
+            "parsed",
+            "test-plugin.bv",
+            "$(Parsed) { EmitInfo$(\"hi\"); }",
+        );
         let files = discover_plugin_files(Some(&dir_str));
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, "test-plugin");
@@ -386,8 +403,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir_str = base(&dir);
 
-        create_plugin(&dir_str, "parsed", "reader.bv",
-            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};");
+        create_plugin(
+            &dir_str,
+            "parsed",
+            "reader.bv",
+            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};",
+        );
 
         // Generate lockfile with disk-read granted, using temp dir as base
         let granted: BTreeSet<String> = ["disk-read"].iter().map(|s| s.to_string()).collect();
@@ -420,16 +441,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir_str = base(&dir);
 
-        create_plugin(&dir_str, "parsed", "writer.bv",
-            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};");
+        create_plugin(
+            &dir_str,
+            "parsed",
+            "writer.bv",
+            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};",
+        );
 
         let granted: BTreeSet<String> = ["disk-read"].iter().map(|s| s.to_string()).collect();
         let lock = generate_lockfile(&granted, Some(&dir_str)).unwrap();
         save_lockfile(&dir_str, &lock).unwrap();
 
         // Plugin changes to also write — same file path, new content
-        create_plugin(&dir_str, "parsed", "writer.bv",
-            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n    FileWrite$(\"out.txt\", data);\n};");
+        create_plugin(
+            &dir_str,
+            "parsed",
+            "writer.bv",
+            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n    FileWrite$(\"out.txt\", data);\n};",
+        );
 
         let loaded = load_lockfile(&dir_str).unwrap().unwrap();
         let mut pm = crate::plugin::PluginManager::new();
@@ -446,16 +475,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir_str = base(&dir);
 
-        create_plugin(&dir_str, "parsed", "stable.bv",
-            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};");
+        create_plugin(
+            &dir_str,
+            "parsed",
+            "stable.bv",
+            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};",
+        );
 
         let granted: BTreeSet<String> = ["disk-read"].iter().map(|s| s.to_string()).collect();
         let lock = generate_lockfile(&granted, Some(&dir_str)).unwrap();
         save_lockfile(&dir_str, &lock).unwrap();
 
         // Same content, same hash
-        create_plugin(&dir_str, "parsed", "stable.bv",
-            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};");
+        create_plugin(
+            &dir_str,
+            "parsed",
+            "stable.bv",
+            "$(Parsed) {\n    let data = FileRead$(\"input.txt\");\n};",
+        );
 
         let loaded = load_lockfile(&dir_str).unwrap().unwrap();
         let mut pm = crate::plugin::PluginManager::new();
@@ -467,7 +504,10 @@ mod tests {
     #[test]
     fn test_cli_granted_set() {
         let set = cli_granted_set(true, false, true, false, false);
-        let expected: BTreeSet<String> = ["disk-read", "shell"].iter().map(|s| s.to_string()).collect();
+        let expected: BTreeSet<String> = ["disk-read", "shell"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(set, expected);
     }
 }

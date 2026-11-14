@@ -76,9 +76,10 @@ fn variant_name_and_payload(variant: &HirEnumVariant) -> (String, Vec<Type>) {
     match variant {
         HirEnumVariant::Unit(name) => (name.clone(), Vec::new()),
         HirEnumVariant::Tuple(name, types) => (name.clone(), types.clone()),
-        HirEnumVariant::Struct(name, fields) => {
-            (name.clone(), fields.iter().map(|field| field.ty.clone()).collect())
-        }
+        HirEnumVariant::Struct(name, fields) => (
+            name.clone(),
+            fields.iter().map(|field| field.ty.clone()).collect(),
+        ),
     }
 }
 

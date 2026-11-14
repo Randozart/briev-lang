@@ -10,9 +10,7 @@ pub struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self {
-            count: 0,
-        }
+        Self { count: 0 }
     }
 }
 
@@ -27,7 +25,6 @@ impl State {
         // post: Eq(Identifier("count"), Integer(1))
         true
     }
-
 }
 
 fn main() {

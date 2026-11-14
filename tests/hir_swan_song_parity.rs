@@ -3,9 +3,9 @@
 
 use briev_compiler::analysis::swan_song::{has_swan_song as ast_has, hoist_swan_song as ast_hoist};
 use briev_compiler::ast::TopLevel;
+use briev_compiler::hir::HirCallableKind;
 use briev_compiler::hir::lower_program;
 use briev_compiler::hir::swan_song::{has_swan_song as hir_has, hoist_swan_song as hir_hoist};
-use briev_compiler::hir::HirCallableKind;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -18,7 +18,9 @@ fn parse(src: &str) -> Vec<TopLevel> {
 }
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -36,7 +38,9 @@ fn compare(src: &str) -> Vec<String> {
     let mut bad = Vec::new();
     for txn in briev_compiler::analysis::effective_txns(&items) {
         let Some(hir_txn) = program.callables.iter().find(|c| {
-            matches!(c.kind, HirCallableKind::Transaction) && c.owner.is_none() && c.name == txn.name
+            matches!(c.kind, HirCallableKind::Transaction)
+                && c.owner.is_none()
+                && c.name == txn.name
         }) else {
             bad.push(format!("{}: missing HIR txn", txn.name));
             continue;
@@ -44,13 +48,19 @@ fn compare(src: &str) -> Vec<String> {
         let ast_flag = ast_has(&txn.body);
         let hir_flag = hir_has(&hir_txn.body.statements);
         if ast_flag != hir_flag {
-            bad.push(format!("{}: has_swan_song ast={ast_flag} hir={hir_flag}", txn.name));
+            bad.push(format!(
+                "{}: has_swan_song ast={ast_flag} hir={hir_flag}",
+                txn.name
+            ));
         }
         let (ast_body, ast_hoist) = ast_hoist(&txn.body, &state_fields);
         let (hir_body, hir_hoist) = hir_hoist(&hir_txn.body.statements, &state_fields);
         if ast_body.len() != hir_body.len()
             || ast_hoist.len() != hir_hoist.len()
-            || ast_hoist.iter().zip(&hir_hoist).any(|(a, h)| a.len() != h.len())
+            || ast_hoist
+                .iter()
+                .zip(&hir_hoist)
+                .any(|(a, h)| a.len() != h.len())
         {
             bad.push(format!(
                 "{}: hoist shape ast=({},{},{:?}) hir=({},{},{:?})",
@@ -88,15 +98,23 @@ fn corpus_swan_song_parity() {
     let mut skipped = 0usize;
     let mut mismatches = Vec::new();
     for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else { continue };
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else {
+            continue;
+        };
         let program = lower_program(&items);
         if briev_compiler::hir::unsupported_counts(&program).total() != 0 {
             skipped += 1;
             continue;
         }
         compared += 1;
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for b in compare(&source) {
             mismatches.push(format!("{rel}: {b}"));
         }
@@ -105,5 +123,9 @@ fn corpus_swan_song_parity() {
         "HIR_SWAN_SONG_PARITY compared={compared} skipped_unsupported={skipped} mismatches={}",
         mismatches.len()
     );
-    assert!(mismatches.is_empty(), "HIR swan-song mismatches:\n{}", mismatches.join("\n"));
+    assert!(
+        mismatches.is_empty(),
+        "HIR swan-song mismatches:\n{}",
+        mismatches.join("\n")
+    );
 }

@@ -4,8 +4,8 @@
 //! belongs to a mechanism fact body and is spelled `through` (`thru` is
 //! retired with a fix).
 
-use briev_compiler::ast::{format_program, TopLevel};
-use briev_compiler::lexer::{tokenize, Token};
+use briev_compiler::ast::{TopLevel, format_program};
+use briev_compiler::lexer::{Token, tokenize};
 
 fn parse(src: &str) -> Vec<TopLevel> {
     let tokens = tokenize(src).expect("tokenize");
@@ -31,9 +31,8 @@ fn top_level_laws(items: &[TopLevel]) -> usize {
 
 #[test]
 fn lexer_recognizes_hold() {
-    let tokens = |src: &str| -> Vec<Token> {
-        tokenize(src).unwrap().into_iter().map(|(t, _)| t).collect()
-    };
+    let tokens =
+        |src: &str| -> Vec<Token> { tokenize(src).unwrap().into_iter().map(|(t, _)| t).collect() };
     assert_eq!(tokens("hold"), vec![Token::Hold]);
     assert_eq!(tokens("when"), vec![Token::When]);
 }
@@ -46,7 +45,8 @@ fn top_level_hold_declares_a_law() {
 
 #[test]
 fn obj_body_bare_hold_declares_a_law() {
-    let items = parse("obj Sensor { temperature: Int; hold temperature > 100 { alarm = true; } };\n");
+    let items =
+        parse("obj Sensor { temperature: Int; hold temperature > 100 { alarm = true; } };\n");
     // obj bodies are TypeDef bodies (parse_obj_like), so the law lands in
     // `body.hold_laws` like any component clause.
     let TopLevel::TypeDef(o) = &items[0] else {
@@ -106,7 +106,8 @@ fn top_level_when_is_rejected_with_fix() {
 
 #[test]
 fn obj_body_when_is_rejected_with_fix() {
-    let err = parse_err("obj Sensor { temperature: Int; when temperature > 100 { alarm = true; } };\n");
+    let err =
+        parse_err("obj Sensor { temperature: Int; when temperature > 100 { alarm = true; } };\n");
     assert!(err.contains("hold"), "{err}");
 }
 
@@ -117,34 +118,25 @@ fn body_when_stays_a_runtime_guard() {
 
 #[test]
 fn when_with_strategy_clause_is_rejected() {
-    let err = parse_err(
-        "node n [true][true] { when true { x = 1; } through Fet; };\n",
-    );
+    let err = parse_err("node n [true][true] { when true { x = 1; } through Fet; };\n");
     assert!(err.contains("hold"), "{err}");
 }
 
 #[test]
 fn retired_thru_is_rejected_with_through_fix() {
-    let err = parse_err(
-        "node n [true][true] { hold true { x = 1; } thru Fet; };\n",
-    );
+    let err = parse_err("node n [true][true] { hold true { x = 1; } thru Fet; };\n");
     assert!(err.contains("through"), "{err}");
 }
 
-const BODY_HOLD: &str =
-    "let x: Int = 0;\ndefn f() -> Int { hold x == 0 { term 1; }; term 0; };\n";
+const BODY_HOLD: &str = "let x: Int = 0;\ndefn f() -> Int { hold x == 0 { term 1; }; term 0; };\n";
 
 #[test]
 fn body_hold_is_rejected_on_the_software_surface() {
     let mut items = parse(BODY_HOLD);
     let universe = briev_compiler::type_universe::TypeUniverse::new();
-    let errors = briev_compiler::typechecker::check_program_with_target(
-        &mut items,
-        &universe,
-        None,
-        false,
-    )
-    .expect_err("hold in a reactive body must be rejected");
+    let errors =
+        briev_compiler::typechecker::check_program_with_target(&mut items, &universe, None, false)
+            .expect_err("hold in a reactive body must be rejected");
     assert!(
         errors.iter().any(|e| e.to_string().contains("static law")),
         "{errors:?}"
@@ -155,11 +147,6 @@ fn body_hold_is_rejected_on_the_software_surface() {
 fn body_hold_is_accepted_on_the_electronics_surface() {
     let mut items = parse(BODY_HOLD);
     let universe = briev_compiler::type_universe::TypeUniverse::new();
-    briev_compiler::typechecker::check_program_with_target(
-        &mut items,
-        &universe,
-        None,
-        true,
-    )
-    .expect("electronics body facts are legal");
+    briev_compiler::typechecker::check_program_with_target(&mut items, &universe, None, true)
+        .expect("electronics body facts are legal");
 }

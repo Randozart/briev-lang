@@ -81,7 +81,12 @@ unsafe impl Sync for SharedRegion {}
 
 impl SharedRegion {
     /// Create a new shared region (real mmap on Unix/Windows, Vec fallback for tests)
-    pub fn new(id: &str, size: usize, permissions: &str, foreign_lang: &str) -> Result<Self, String> {
+    pub fn new(
+        id: &str,
+        size: usize,
+        permissions: &str,
+        foreign_lang: &str,
+    ) -> Result<Self, String> {
         #[cfg(unix)]
         {
             Self::new_unix(id, size, permissions, foreign_lang)
@@ -97,15 +102,20 @@ impl SharedRegion {
     }
 
     #[cfg(unix)]
-    fn new_unix(id: &str, size: usize, permissions: &str, foreign_lang: &str) -> Result<Self, String> {
-        use libc::{mmap, munmap, PROT_READ, PROT_WRITE, MAP_ANONYMOUS, MAP_SHARED, MAP_FAILED};
-        
+    fn new_unix(
+        id: &str,
+        size: usize,
+        permissions: &str,
+        foreign_lang: &str,
+    ) -> Result<Self, String> {
+        use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, mmap, munmap};
+
         let prot = if permissions.contains('w') {
             PROT_READ | PROT_WRITE
         } else {
             PROT_READ
         };
-        
+
         let ptr = unsafe {
             mmap(
                 std::ptr::null_mut(),
@@ -116,11 +126,11 @@ impl SharedRegion {
                 0,
             )
         };
-        
+
         if ptr == MAP_FAILED {
             return Err(format!("mmap failed for region {}", id));
         }
-        
+
         Ok(SharedRegion {
             id: id.to_string(),
             base_addr: ptr as usize,
@@ -135,31 +145,29 @@ impl SharedRegion {
     }
 
     #[cfg(windows)]
-    fn new_windows(id: &str, size: usize, permissions: &str, foreign_lang: &str) -> Result<Self, String> {
+    fn new_windows(
+        id: &str,
+        size: usize,
+        permissions: &str,
+        foreign_lang: &str,
+    ) -> Result<Self, String> {
         use windows::Win32::System::Memory::{
-            VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, MEM_RELEASE,
-            PAGE_READWRITE, PAGE_READONLY,
+            MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READONLY, PAGE_READWRITE, VirtualAlloc,
+            VirtualFree,
         };
-        
+
         let protect = if permissions.contains('w') {
             PAGE_READWRITE
         } else {
             PAGE_READONLY
         };
-        
-        let ptr = unsafe {
-            VirtualAlloc(
-                None,
-                size,
-                MEM_COMMIT | MEM_RESERVE,
-                protect,
-            )
-        };
-        
+
+        let ptr = unsafe { VirtualAlloc(None, size, MEM_COMMIT | MEM_RESERVE, protect) };
+
         if ptr.is_null() {
             return Err(format!("VirtualAlloc failed for region {}", id));
         }
-        
+
         Ok(SharedRegion {
             id: id.to_string(),
             base_addr: ptr as usize,
@@ -173,7 +181,12 @@ impl SharedRegion {
         })
     }
 
-    fn new_fallback(id: &str, size: usize, permissions: &str, foreign_lang: &str) -> Result<Self, String> {
+    fn new_fallback(
+        id: &str,
+        size: usize,
+        permissions: &str,
+        foreign_lang: &str,
+    ) -> Result<Self, String> {
         Ok(SharedRegion {
             id: id.to_string(),
             base_addr: 0,
@@ -191,19 +204,28 @@ impl SharedRegion {
     /// Write data to the shared region at offset
     pub fn write(&self, offset: usize, data: &[u8]) -> Result<(), String> {
         if offset + data.len() > self.size {
-            return Err(format!("Write exceeds region bounds: {} + {} > {}", offset, data.len(), self.size));
+            return Err(format!(
+                "Write exceeds region bounds: {} + {} > {}",
+                offset,
+                data.len(),
+                self.size
+            ));
         }
-        
+
         #[cfg(unix)]
         {
             if !self.mmap_ptr.is_null() {
                 unsafe {
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), self.mmap_ptr.add(offset), data.len());
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        self.mmap_ptr.add(offset),
+                        data.len(),
+                    );
                 }
                 return Ok(());
             }
         }
-        
+
         #[cfg(windows)]
         {
             if !self.handle.is_null() {
@@ -214,7 +236,7 @@ impl SharedRegion {
                 return Ok(());
             }
         }
-        
+
         // Fallback
         let region_data = unsafe { &mut *self.data.get() };
         region_data[offset..offset + data.len()].copy_from_slice(data);
@@ -224,20 +246,27 @@ impl SharedRegion {
     /// Read data from the shared region at offset
     pub fn read(&self, offset: usize, size: usize) -> Result<Vec<u8>, String> {
         if offset + size > self.size {
-            return Err(format!("Read exceeds region bounds: {} + {} > {}", offset, size, self.size));
+            return Err(format!(
+                "Read exceeds region bounds: {} + {} > {}",
+                offset, size, self.size
+            ));
         }
-        
+
         #[cfg(unix)]
         {
             if !self.mmap_ptr.is_null() {
                 let mut buf = vec![0u8; size];
                 unsafe {
-                    std::ptr::copy_nonoverlapping(self.mmap_ptr.add(offset), buf.as_mut_ptr(), size);
+                    std::ptr::copy_nonoverlapping(
+                        self.mmap_ptr.add(offset),
+                        buf.as_mut_ptr(),
+                        size,
+                    );
                 }
                 return Ok(buf);
             }
         }
-        
+
         #[cfg(windows)]
         {
             if !self.handle.is_null() {
@@ -249,7 +278,7 @@ impl SharedRegion {
                 return Ok(buf);
             }
         }
-        
+
         // Fallback
         let region_data = unsafe { &*self.data.get() };
         Ok(region_data[offset..offset + size].to_vec())
@@ -260,7 +289,7 @@ impl SharedRegion {
         if offset + 8 > self.size {
             return Err("Status offset out of bounds".to_string());
         }
-        
+
         #[cfg(unix)]
         {
             if !self.mmap_ptr.is_null() {
@@ -268,7 +297,7 @@ impl SharedRegion {
                 return Ok(MetroStatus::from_u64(atomic_ptr.load(Ordering::SeqCst)));
             }
         }
-        
+
         // Fallback
         let data = self.read(offset, 8)?;
         let val = u64::from_le_bytes(data.try_into().unwrap());
@@ -280,7 +309,7 @@ impl SharedRegion {
         if offset + 8 > self.size {
             return Err("Status offset out of bounds".to_string());
         }
-        
+
         #[cfg(unix)]
         {
             if !self.mmap_ptr.is_null() {
@@ -289,7 +318,7 @@ impl SharedRegion {
                 return Ok(());
             }
         }
-        
+
         // Fallback
         let val = status.to_u64();
         let bytes = val.to_le_bytes();
@@ -301,15 +330,17 @@ impl SharedRegion {
         if offset + 8 > self.size {
             return Err("CAS offset out of bounds".to_string());
         }
-        
+
         #[cfg(unix)]
         {
             if !self.mmap_ptr.is_null() {
                 let atomic_ptr = unsafe { &*(self.mmap_ptr.add(offset) as *const AtomicU64) };
-                return Ok(atomic_ptr.compare_exchange(expected, new_value, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v));
+                return Ok(atomic_ptr
+                    .compare_exchange(expected, new_value, Ordering::SeqCst, Ordering::SeqCst)
+                    .unwrap_or_else(|v| v));
             }
         }
-        
+
         // Fallback (not truly atomic, but works for single-threaded tests)
         let current = self.read_status(offset)?.to_u64();
         if current == expected {
@@ -334,13 +365,17 @@ impl Drop for SharedRegion {
                 }
             }
         }
-        
+
         #[cfg(windows)]
         {
             use windows::Win32::System::Memory::VirtualFree;
             if !self.handle.is_null() {
                 unsafe {
-                    VirtualFree(self.handle.as_ptr(), 0, windows::Win32::System::Memory::MEM_RELEASE);
+                    VirtualFree(
+                        self.handle.as_ptr(),
+                        0,
+                        windows::Win32::System::Memory::MEM_RELEASE,
+                    );
                 }
             }
         }
@@ -368,10 +403,15 @@ pub struct NegotiatedLayout {
 
 impl MetropolitanChannel {
     /// Create a new Metropolitan channel with negotiated shared memory
-    pub fn create(channel_id: &str, foreign_lang: &str, input_size: usize, output_size: usize) -> Result<Self, String> {
+    pub fn create(
+        channel_id: &str,
+        foreign_lang: &str,
+        input_size: usize,
+        output_size: usize,
+    ) -> Result<Self, String> {
         // Calculate total sync region size: request_status + response_status + barrier
         let sync_size = 64;
-        
+
         // Request three shared regions
         let request_region = Arc::new(SharedRegion::new(
             &format!("{}_request", channel_id),
@@ -379,27 +419,27 @@ impl MetropolitanChannel {
             "rw",
             foreign_lang,
         )?);
-        
+
         let response_region = Arc::new(SharedRegion::new(
             &format!("{}_response", channel_id),
             output_size,
             "rw",
             foreign_lang,
         )?);
-        
+
         let sync_region = Arc::new(SharedRegion::new(
             &format!("{}_sync", channel_id),
             sync_size,
             "rw",
             foreign_lang,
         )?);
-        
+
         // Initialize status words to Ready
         request_region.write_status(0, MetroStatus::Ready)?;
         response_region.write_status(0, MetroStatus::Ready)?;
-        sync_region.write_status(0, MetroStatus::Ready)?;  // Request status at offset 0
-        sync_region.write_status(8, MetroStatus::Ready)?;  // Response status at offset 8
-        
+        sync_region.write_status(0, MetroStatus::Ready)?; // Request status at offset 0
+        sync_region.write_status(8, MetroStatus::Ready)?; // Response status at offset 8
+
         Ok(MetropolitanChannel {
             id: channel_id.to_string(),
             request_region,
@@ -413,18 +453,22 @@ impl MetropolitanChannel {
     /// Send data through the channel (zero-copy write to shared memory)
     pub fn send(&self, data: &[u8]) -> Result<(), String> {
         if data.len() > self.input_size {
-            return Err(format!("Data size {} exceeds input buffer {}", data.len(), self.input_size));
+            return Err(format!(
+                "Data size {} exceeds input buffer {}",
+                data.len(),
+                self.input_size
+            ));
         }
-        
+
         // Write data to request region
         self.request_region.write(0, data)?;
-        
+
         // Signal "request ready" via sync region
         self.sync_region.write_status(0, MetroStatus::Processing)?;
-        
+
         // Memory barrier to ensure ordering
         SharedRegion::memory_barrier();
-        
+
         Ok(())
     }
 
@@ -432,21 +476,21 @@ impl MetropolitanChannel {
     pub fn receive(&self, timeout_ms: u64) -> Result<Vec<u8>, String> {
         let start = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
-        
+
         while start.elapsed() < timeout {
-            let status = self.sync_region.read_status(8)?;  // Response status at offset 8
-            
+            let status = self.sync_region.read_status(8)?; // Response status at offset 8
+
             match status {
                 MetroStatus::Complete => {
                     // Memory barrier before reading response
                     SharedRegion::memory_barrier();
-                    
+
                     // Read response from response region
                     let response = self.response_region.read(0, self.output_size)?;
-                    
+
                     // Reset response status to Ready
                     self.sync_region.write_status(8, MetroStatus::Ready)?;
-                    
+
                     return Ok(response);
                 }
                 MetroStatus::Error(code) => {
@@ -458,7 +502,7 @@ impl MetropolitanChannel {
                 }
             }
         }
-        
+
         Err("Timeout waiting for response".to_string())
     }
 
@@ -469,7 +513,7 @@ impl MetropolitanChannel {
             input_size: self.input_size,
             output_offset: 0,
             output_size: self.output_size,
-            status_offset: 0,  // Relative to sync_region
+            status_offset: 0, // Relative to sync_region
         }
     }
 
@@ -511,8 +555,11 @@ impl MetropolitanHub {
             input_size,
             output_size,
         )?);
-        
-        self.channels.lock().unwrap().insert(channel_id.to_string(), channel.clone());
+
+        self.channels
+            .lock()
+            .unwrap()
+            .insert(channel_id.to_string(), channel.clone());
         Ok(channel)
     }
 
@@ -529,12 +576,14 @@ impl MetropolitanHub {
 
     /// Generate C header for foreign side
     pub fn generate_c_header(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
-        
+
         let addrs = channel.get_addresses();
-        
-        Ok(format!(r#"
+
+        Ok(format!(
+            r#"
 // Metropolitan FFI - C Header for channel: {channel_id}
 // Generated by Briev Compiler
 // DO NOT EDIT MANUALLY
@@ -593,12 +642,14 @@ static inline void reset_request() {{
 
     /// Generate Rust module for foreign side
     pub fn generate_rust_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
-        
+
         let addrs = channel.get_addresses();
-        
-        Ok(format!(r#"
+
+        Ok(format!(
+            r#"
 // Metropolitan FFI - Rust Module for channel: {channel_id}
 // Generated by Briev Compiler
 // DO NOT EDIT MANUALLY
@@ -667,12 +718,14 @@ pub fn reset_request() {{
 
     /// Generate Python module for foreign side
     pub fn generate_python_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
-        
+
         let addrs = channel.get_addresses();
-        
-        Ok(format!(r#"
+
+        Ok(format!(
+            r#"
 # Metropolitan FFI - Python Module for channel: {channel_id}
 # Generated by Briev Compiler
 # DO NOT EDIT MANUALLY
@@ -743,14 +796,19 @@ def reset_request():
 
     /// Generate a metropipe C header (32-byte header matching metropipe/clients/c/metropipe.h)
     pub fn generate_metropipe_c_header(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
 
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"
+        Ok(format!(
+            r#"
 /* metropipe C header for channel: {channel_id} */
 /* 32-byte header — metropipe/clients/c/metropipe.h compatible */
 /* Auto-generated — DO NOT EDIT */
@@ -802,19 +860,27 @@ static inline uint32_t metro_read_size(MetroChannel *ch) {{
 static inline void metro_write_size(MetroChannel *ch, uint32_t size) {{
     atomic_store_explicit((_Atomic uint32_t*)&ch->header[2], size, memory_order_seq_cst);
 }}
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 
     /// Generate a metropipe Python module (32-byte header, single-region)
     pub fn generate_metropipe_python_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
 
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"""
+        Ok(format!(
+            r#"""
 metropipe Python stub for {channel_id}
 32-byte header — metropipe/clients/python/metropipe.py compatible
 
@@ -887,19 +953,27 @@ class MetroChannel:
             if (time.monotonic() - start) * 1000 > timeout_ms:
                 raise MetroTimeoutError("Timeout")
             time.sleep(0.001)
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 
     /// Generate a metropipe JavaScript module (32-byte header, SharedArrayBuffer)
     pub fn generate_metropipe_js_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
 
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"
+        Ok(format!(
+            r#"
 // metropipe JS stub for {channel_id}
 // 32-byte header — metropipe/clients/javascript/metropipe.js compatible
 
@@ -954,18 +1028,26 @@ class MetroChannel {{
 }}
 
 module.exports = {{ MetroChannel }};
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 
     /// Generate a metropipe Rust module (32-byte header via mmap)
     pub fn generate_metropipe_rust_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"
+        Ok(format!(
+            r#"
 // metropipe Rust stub for {channel_id}
 // 32-byte header — metropipe protocol compatible
 
@@ -1042,18 +1124,26 @@ impl MetroChannel {{
         }}
     }}
 }}
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 
     /// Generate a metropipe Go module (32-byte header via syscall.Mmap)
     pub fn generate_metropipe_go_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"
+        Ok(format!(
+            r#"
 // metropipe Go stub for {channel_id}
 // 32-byte header — metropipe protocol compatible
 
@@ -1123,18 +1213,26 @@ func (ch *MetroChannel) Request(payload []byte, timeoutMs int) ([]byte, error) {
         time.Sleep(time.Millisecond)
     }}
 }}
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 
     /// Generate a metropipe Java module (32-byte header via MappedByteBuffer)
     pub fn generate_metropipe_java_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"
+        Ok(format!(
+            r#"
 // metropipe Java stub for {channel_id}
 // 32-byte header — metropipe protocol compatible
 
@@ -1190,18 +1288,26 @@ public class MetroChannel {{
         }}
     }}
 }}
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 
     /// Generate a metropipe C# module (32-byte header via MemoryMappedFile)
     pub fn generate_metropipe_csharp_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"
+        Ok(format!(
+            r#"
 // metropipe C# stub for {channel_id}
 // 32-byte header — metropipe protocol compatible
 
@@ -1266,18 +1372,26 @@ class MetroChannel
         mmf?.Dispose();
     }}
 }}
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 
     /// Generate a metropipe Ruby module (32-byte header via IO/mmap)
     pub fn generate_metropipe_ruby_module(&self, channel_id: &str) -> Result<String, String> {
-        let channel = self.get_channel(channel_id)
+        let channel = self
+            .get_channel(channel_id)
             .ok_or_else(|| format!("Channel {} not found", channel_id))?;
         let addrs = channel.get_addresses();
-        let max_size = addrs.get("input_size").copied().unwrap_or(4096)
+        let max_size = addrs
+            .get("input_size")
+            .copied()
+            .unwrap_or(4096)
             .max(addrs.get("output_size").copied().unwrap_or(4096));
 
-        Ok(format!(r#"
+        Ok(format!(
+            r#"
 # metropipe Ruby stub for {channel_id}
 # 32-byte header — metropipe protocol compatible
 
@@ -1327,7 +1441,10 @@ class MetroChannel
     @fd.close
   end
 end
-"#, channel_id = channel_id, max_size = max_size))
+"#,
+            channel_id = channel_id,
+            max_size = max_size
+        ))
     }
 }
 
@@ -1346,7 +1463,7 @@ mod tests {
         let region = SharedRegion::new("test", 1024, "rw", "c").unwrap();
         assert_eq!(region.size, 1024);
         assert_eq!(region.id, "test");
-        
+
         region.write(0, &[1, 2, 3, 4]).unwrap();
         let data = region.read(0, 4).unwrap();
         assert_eq!(data, vec![1, 2, 3, 4]);
@@ -1355,16 +1472,16 @@ mod tests {
     #[test]
     fn test_status_word_atomic() {
         let region = SharedRegion::new("test_status", 64, "rw", "c").unwrap();
-        
+
         region.write_status(0, MetroStatus::Ready).unwrap();
         assert_eq!(region.read_status(0).unwrap(), MetroStatus::Ready);
-        
+
         region.write_status(0, MetroStatus::Processing).unwrap();
         assert_eq!(region.read_status(0).unwrap(), MetroStatus::Processing);
-        
+
         region.write_status(0, MetroStatus::Complete).unwrap();
         assert_eq!(region.read_status(0).unwrap(), MetroStatus::Complete);
-        
+
         region.write_status(0, MetroStatus::Error(42)).unwrap();
         assert_eq!(region.read_status(0).unwrap(), MetroStatus::Error(42));
     }
@@ -1373,10 +1490,10 @@ mod tests {
     fn test_atomic_cas() {
         let region = SharedRegion::new("test_cas", 64, "rw", "c").unwrap();
         region.write_status(0, MetroStatus::Ready).unwrap();
-        
+
         let result = region.atomic_cas(0, 0, 1).unwrap();
-        assert_eq!(result, 0);  // Returned old value
-        
+        assert_eq!(result, 0); // Returned old value
+
         let status = region.read_status(0).unwrap();
         assert_eq!(status, MetroStatus::Processing);
     }
@@ -1385,7 +1502,7 @@ mod tests {
     fn test_metropolitan_channel() {
         let hub = MetropolitanHub::new();
         let channel = hub.create_channel("test_channel", "c", 4096, 4096).unwrap();
-        
+
         assert_eq!(channel.id, "test_channel");
         assert_eq!(channel.input_size, 4096);
         assert_eq!(channel.output_size, 4096);
@@ -1394,24 +1511,29 @@ mod tests {
     #[test]
     fn test_channel_send_receive() {
         let hub = MetropolitanHub::new();
-        let channel = hub.create_channel("test_send_recv", "c", 4096, 4096).unwrap();
-        
+        let channel = hub
+            .create_channel("test_send_recv", "c", 4096, 4096)
+            .unwrap();
+
         // Send data
         let input = vec![1, 2, 3, 4, 5];
         channel.send(&input).unwrap();
-        
+
         // Verify data was written to request region
         let request_data = channel.request_region.read(0, 5).unwrap();
         assert_eq!(request_data, input);
-        
+
         // Verify status was set to Processing
         let status = channel.sync_region.read_status(0).unwrap();
         assert_eq!(status, MetroStatus::Processing);
-        
+
         // Simulate foreign side processing
         channel.response_region.write(0, &[10, 20, 30]).unwrap();
-        channel.sync_region.write_status(8, MetroStatus::Complete).unwrap();
-        
+        channel
+            .sync_region
+            .write_status(8, MetroStatus::Complete)
+            .unwrap();
+
         // Receive response
         let response = channel.receive(1000).unwrap();
         assert_eq!(&response[..3], &[10, 20, 30]);
@@ -1421,12 +1543,12 @@ mod tests {
     fn test_channel_timeout() {
         let hub = MetropolitanHub::new();
         let channel = hub.create_channel("test_timeout", "c", 4096, 4096).unwrap();
-        
+
         // Send without foreign side responding
         channel.send(&[1, 2, 3]).unwrap();
-        
+
         // Should timeout
-        let result = channel.receive(10);  // 10ms timeout
+        let result = channel.receive(10); // 10ms timeout
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Timeout"));
     }
@@ -1435,7 +1557,7 @@ mod tests {
     fn test_generate_c_header() {
         let hub = MetropolitanHub::new();
         hub.create_channel("test_c", "c", 1024, 1024).unwrap();
-        
+
         let header = hub.generate_c_header("test_c").unwrap();
         assert!(header.contains("REQUEST_BASE"));
         assert!(header.contains("RESPONSE_BASE"));
@@ -1447,7 +1569,7 @@ mod tests {
     fn test_generate_rust_module() {
         let hub = MetropolitanHub::new();
         hub.create_channel("test_rust", "rust", 2048, 2048).unwrap();
-        
+
         let module = hub.generate_rust_module("test_rust").unwrap();
         assert!(module.contains("REQUEST_BASE"));
         assert!(module.contains("wait_for_request"));
@@ -1457,8 +1579,9 @@ mod tests {
     #[test]
     fn test_generate_python_module() {
         let hub = MetropolitanHub::new();
-        hub.create_channel("test_python", "python", 512, 512).unwrap();
-        
+        hub.create_channel("test_python", "python", 512, 512)
+            .unwrap();
+
         let module = hub.generate_python_module("test_python").unwrap();
         assert!(module.contains("REQUEST_BASE"));
         assert!(module.contains("wait_for_request"));

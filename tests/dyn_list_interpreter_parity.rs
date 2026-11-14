@@ -73,13 +73,17 @@ fn run_to_exit(src: &str) -> Result<Value, String> {
     let items = p.parse_program().map_err(|e| format!("parse: {e:?}"))?;
     let mut interp = Interpreter::new();
     interp.load_program(&items);
-    interp.seed_inits(&items).map_err(|e| format!("seed: {e:?}"))?;
+    interp
+        .seed_inits(&items)
+        .map_err(|e| format!("seed: {e:?}"))?;
     // Top-level `let` statements are state fields: execute each through the
     // statement path so the dyn coercion at the annotation fires (a raw
     // eval_expr would skip it). seed_inits only covers `TopLevel::Init`.
     for item in &items {
         if let briev_compiler::ast::TopLevel::Statement(s) = item {
-            interp.exec_stmt(s).map_err(|err| format!("seed stmt: {err:?}"))?;
+            interp
+                .exec_stmt(s)
+                .map_err(|err| format!("seed stmt: {err:?}"))?;
         }
     }
     let mut reactor = Reactor::new();
@@ -91,9 +95,7 @@ fn run_to_exit(src: &str) -> Result<Value, String> {
     loop {
         match reactor.run(&mut interp) {
             Ok(true) => {}
-            Ok(false) => {
-                return Err("reactor reached equilibrium without endprogram".into())
-            }
+            Ok(false) => return Err("reactor reached equilibrium without endprogram".into()),
             Err(RuntimeError::ProgramExit(v)) => return Ok(v),
             Err(e) => return Err(format!("runtime: {e:?}")),
         }
@@ -103,11 +105,19 @@ fn run_to_exit(src: &str) -> Result<Value, String> {
 #[test]
 fn interpreter_list_dyn_first_element_dispatch() {
     let v = run_to_exit(PROBE_A).expect("probe A runs to endprogram");
-    assert_eq!(v.as_i64(), Some(701), "handlers[0].greet(1) = Dog.base*100+1");
+    assert_eq!(
+        v.as_i64(),
+        Some(701),
+        "handlers[0].greet(1) = Dog.base*100+1"
+    );
 }
 
 #[test]
 fn interpreter_list_dyn_second_element_differing_field() {
     let v = run_to_exit(PROBE_B).expect("probe B runs to endprogram");
-    assert_eq!(v.as_i64(), Some(91), "handlers[1].greet(1) = Cat.lives*10+1");
+    assert_eq!(
+        v.as_i64(),
+        Some(91),
+        "handlers[1].greet(1) = Cat.lives*10+1"
+    );
 }

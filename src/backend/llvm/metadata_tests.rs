@@ -76,12 +76,16 @@ fn module_metadata_lifetime_exceeds_function_resets_and_snapshots() {
     );
     snapshot.restore_preserve_counters(&mut backend.fun);
     assert!(second > first);
-    assert!(backend
-        .ctx
-        .pending_metadata
-        .contains(&format!("!{first} =")));
-    assert!(backend
-        .ctx
-        .pending_metadata
-        .contains(&format!("!{second} =")));
+    assert!(
+        backend
+            .ctx
+            .pending_metadata
+            .contains(&format!("!{first} ="))
+    );
+    assert!(
+        backend
+            .ctx
+            .pending_metadata
+            .contains(&format!("!{second} ="))
+    );
 }

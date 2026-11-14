@@ -28,10 +28,18 @@ impl std::fmt::Display for WatchdogError {
                 )
             }
             WatchdogError::NoConflict(txn, trigger, var) => {
-                write!(f, "Watchdog in '{}': @{} handler writes to '{}' but no conflict with precondition", txn, trigger, var)
+                write!(
+                    f,
+                    "Watchdog in '{}': @{} handler writes to '{}' but no conflict with precondition",
+                    txn, trigger, var
+                )
             }
             WatchdogError::HandlerDoesNotFalsify(txn, trigger, var) => {
-                write!(f, "Watchdog in '{}': @{} handler writes to '{}' but does not falsify precondition", txn, trigger, var)
+                write!(
+                    f,
+                    "Watchdog in '{}': @{} handler writes to '{}' but does not falsify precondition",
+                    txn, trigger, var
+                )
             }
             WatchdogError::HandlerRestoresPrecondition(txn, trigger, var) => {
                 write!(

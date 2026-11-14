@@ -7013,7 +7013,11 @@ fn complete_pin_intent(
         }
         n => Err(format!(
             "pin intent '{}.{} = true' (node '{}') is ambiguous: {} drive-capable pins could complete it ({}). State the connection explicitly in the node guard",
-            pin.component, pin.pin, node, n, candidates.join(", ")
+            pin.component,
+            pin.pin,
+            node,
+            n,
+            candidates.join(", ")
         )),
     }
 }
@@ -7087,7 +7091,12 @@ fn complete_intent(
         }
         n => Err(format!(
             "drive intent '{} = true' (node '{}') is ambiguous: {} drive-capable pins could complete '{}.{}' ({}). State the connection explicitly in the node guard",
-            inst_name, node, n, inst_name, open[0].0, candidates.join(", ")
+            inst_name,
+            node,
+            n,
+            inst_name,
+            open[0].0,
+            candidates.join(", ")
         )),
     }
 }
@@ -8442,7 +8451,9 @@ mod tests {
 
     #[test]
     fn net_binds_through_forced_pin_and_propagates() {
-        let src = net_board("net<v3_3> let a: ChipA = ChipA { value: \"a\" };\nlet b: Chip = Chip { value: \"b\" };");
+        let src = net_board(
+            "net<v3_3> let a: ChipA = ChipA { value: \"a\" };\nlet b: Chip = Chip { value: \"b\" };",
+        );
         let nl = analyze(&src);
         assert!(
             nl.convention_errors.is_empty(),
@@ -9556,10 +9567,11 @@ mod tests {
             "body wiring forms the net: {:?}",
             nl.nets
         );
-        assert!(nl
-            .intent_proofs
-            .iter()
-            .any(|p| p.contains("wired in node 'on'")));
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("wired in node 'on'"))
+        );
     }
 
     #[test]
@@ -11038,11 +11050,13 @@ mod tests {
             "{:?}",
             within.voltage.violations
         );
-        assert!(within
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("P(r1)") && p.contains("component-law DC")));
+        assert!(
+            within
+                .voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("P(r1)") && p.contains("component-law DC"))
+        );
     }
 
     #[test]
@@ -11113,11 +11127,12 @@ mod tests {
             "{:?}",
             pass.voltage.violations
         );
-        assert!(pass
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("I(r1.a)") && p.contains("component-law DC")));
+        assert!(
+            pass.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("I(r1.a)") && p.contains("component-law DC"))
+        );
         let fail = analyze(&body(">= 20mAmp"));
         assert!(
             fail.voltage
@@ -11269,16 +11284,18 @@ mod tests {
             "{:?}",
             pass.voltage.violations
         );
-        assert!(pass
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("mode=01") && p.contains("I(f1.a)")));
-        assert!(pass
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("mode=02") && p.contains("I(f1.a)")));
+        assert!(
+            pass.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("mode=01") && p.contains("I(f1.a)"))
+        );
+        assert!(
+            pass.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("mode=02") && p.contains("I(f1.a)"))
+        );
 
         // The negative state violates a non-negative lower bound even though
         // the positive state satisfies it: contracts hold in every state.
@@ -11305,21 +11322,27 @@ mod tests {
             "{:?}",
             valid.voltage.violations
         );
-        assert!(valid
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("mode=01") && p.contains("participation=present")));
-        assert!(valid
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("mode=02") && p.contains("participation=present")));
-        assert!(valid
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("participation=absent") && p.contains("'r1' omitted")));
+        assert!(
+            valid
+                .voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("mode=01") && p.contains("participation=present"))
+        );
+        assert!(
+            valid
+                .voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("mode=02") && p.contains("participation=present"))
+        );
+        assert!(
+            valid
+                .voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("participation=absent") && p.contains("'r1' omitted"))
+        );
 
         let mixed = analyze(include_str!(
             "../../tests/electronics/operating_states_bound.ebv"
@@ -11347,16 +11370,18 @@ mod tests {
             "{:?}",
             nl.voltage.violations
         );
-        assert!(nl
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("sw1=closed") && p.contains("I(r1.a)")));
-        assert!(nl
-            .voltage
-            .proved
-            .iter()
-            .any(|p| p.contains("sw1=open") && p.contains("I(r1.a)")));
+        assert!(
+            nl.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("sw1=closed") && p.contains("I(r1.a)"))
+        );
+        assert!(
+            nl.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("sw1=open") && p.contains("I(r1.a)"))
+        );
 
         let typo = analyze(include_str!(
             "../../tests/electronics/spst_unknown_mode.ebv"
@@ -11662,11 +11687,12 @@ mod tests {
             "unrated pin on a driven net must violate: {:?}",
             nl.voltage.violations
         );
-        assert!(nl
-            .voltage
-            .net_voltage
-            .values()
-            .any(|v| (*v - 12.0).abs() < 1e-9));
+        assert!(
+            nl.voltage
+                .net_voltage
+                .values()
+                .any(|v| (*v - 12.0).abs() < 1e-9)
+        );
 
         let declared_any = r#"
             struct Pin { voltage: Float; current: Float; };

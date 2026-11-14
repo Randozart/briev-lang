@@ -7,10 +7,10 @@ use briev_compiler::analysis::loop_shape::{
 };
 use briev_compiler::analysis::transition_graph::ReactorTransitionGraph;
 use briev_compiler::ast::TopLevel;
-use briev_compiler::hir::lower_program;
 use briev_compiler::hir::loop_shape::{
     build_loop_shapes as hir_shapes, program_convergence as hir_program_convergence,
 };
+use briev_compiler::hir::lower_program;
 use briev_compiler::hir::transition_graph::HirReactorTransitionGraph;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +23,9 @@ fn parse(src: &str) -> Vec<TopLevel> {
 }
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -92,15 +94,23 @@ fn benchmarks_loop_shape_parity() {
     let mut skipped = 0usize;
     let mut mismatches = Vec::new();
     for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else { continue };
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else {
+            continue;
+        };
         let program = lower_program(&items);
         if briev_compiler::hir::unsupported_counts(&program).total() != 0 {
             skipped += 1;
             continue;
         }
         compared += 1;
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for b in compare_file(&source) {
             mismatches.push(format!("{rel}: {b}"));
         }

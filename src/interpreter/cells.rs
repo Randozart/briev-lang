@@ -5,7 +5,7 @@
 
 use crate::ast::{Expr, Statement, TopLevel, Transaction};
 use crate::errors::RuntimeError;
-use crate::interpreter::{eval_expr, eval_statement, Value, VirtualHeap};
+use crate::interpreter::{Value, VirtualHeap, eval_expr, eval_statement};
 use std::collections::HashMap;
 
 /// Evaluate a cell transaction body.

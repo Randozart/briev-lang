@@ -44,7 +44,10 @@ fn inject_drop_calls_in_body(body: &mut Vec<ast::Statement>, universe: &TypeUniv
     // analysis level and emitted during codegen.
     for name in bound.iter().rev() {
         if has_op_drop(name, universe) {
-            eprintln!("info: '{}' would receive op Drop call at scope exit (deferred)", name);
+            eprintln!(
+                "info: '{}' would receive op Drop call at scope exit (deferred)",
+                name
+            );
         }
     }
 }
@@ -82,9 +85,10 @@ mod tests {
     #[test]
     fn test_inject_drop_no_drop_type() {
         let universe = TypeUniverse::new();
-        let mut body = vec![
-            Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(42)),
-        ];
+        let mut body = vec![Statement::Assign(
+            Expr::Identifier("x".into()),
+            Expr::Decimal(42),
+        )];
         let len_before = body.len();
         inject_drop_calls_in_body(&mut body, &universe);
         // No drop should be injected for Int (no op Drop)

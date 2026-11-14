@@ -9,7 +9,7 @@
 use super::RegionAnalyzer as HirAnalyzer;
 use crate::analysis::region::RegionAnalyzer as AstAnalyzer;
 use crate::ast::{
-    Annotation, BinaryOpKind, Constant, Contract, Expr, Statement, StateDecl, TopLevel,
+    Annotation, BinaryOpKind, Constant, Contract, Expr, StateDecl, Statement, TopLevel,
     Transaction, Trigger, Type,
 };
 use crate::hir::program::HirProgram;
@@ -80,7 +80,10 @@ fn foreach(item: &str, list: Expr, body: Vec<Statement>) -> Statement {
         item: item.to_string(),
         list: Box::new(list),
         body,
-        modifiers: vec![Annotation { name: "seq".to_string(), value: None }],
+        modifiers: vec![Annotation {
+            name: "seq".to_string(),
+            value: None,
+        }],
     }
 }
 
@@ -126,7 +129,12 @@ fn normalize_final(
         values
             .into_iter()
             .map(|(chain, bindings)| {
-                (chain, bindings.into_iter().collect::<std::collections::BTreeMap<_, _>>())
+                (
+                    chain,
+                    bindings
+                        .into_iter()
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                )
             })
             .collect(),
     )
@@ -174,7 +182,12 @@ fn single_region_reads_and_writes_match() {
     let items = vec![
         trigger("btn"),
         state("x"),
-        txn("bump", Expr::Bool(true), Expr::Bool(true), vec![assign("x", ident("btn"))]),
+        txn(
+            "bump",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", ident("btn"))],
+        ),
     ];
     let (ast, hir) = analyze_pair(&items);
     assert_eq!(hir.classification_of("x"), ast.classification_of("x"));
@@ -190,8 +203,18 @@ fn multiple_independent_regions_match() {
         trigger("tb"),
         state("x"),
         state("y"),
-        txn("tx_a", Expr::Bool(true), Expr::Bool(true), vec![assign("x", ident("ta"))]),
-        txn("tx_b", Expr::Bool(true), Expr::Bool(true), vec![assign("y", ident("tb"))]),
+        txn(
+            "tx_a",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", ident("ta"))],
+        ),
+        txn(
+            "tx_b",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("y", ident("tb"))],
+        ),
     ];
     let (_ast, hir) = analyze_pair(&items);
     assert_eq!(hir.regions.len(), 2);
@@ -205,8 +228,18 @@ fn chained_dependency_is_one_region() {
         trigger("trg"),
         state("x"),
         state("y"),
-        txn("t1", Expr::Bool(true), Expr::Bool(true), vec![assign("x", ident("trg"))]),
-        txn("t2", Expr::Bool(true), Expr::Bool(true), vec![assign("y", ident("x"))]),
+        txn(
+            "t1",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", ident("trg"))],
+        ),
+        txn(
+            "t2",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("y", ident("x"))],
+        ),
     ];
     let (_ast, hir) = analyze_pair(&items);
     assert_eq!(hir.regions.len(), 1);
@@ -219,9 +252,15 @@ fn chained_dependency_is_one_region() {
 fn constant_interval_and_value_set_match() {
     let items = vec![constant("total", 100)];
     let (_ast, hir) = analyze_pair(&items);
-    assert_eq!(hir.classification_of("total"), Some(crate::analysis::region::VarClass::Pure));
+    assert_eq!(
+        hir.classification_of("total"),
+        Some(crate::analysis::region::VarClass::Pure)
+    );
     let info = hir.var_info.get("total").unwrap();
-    assert_eq!(info.interval, Some(crate::analysis::region::Interval { lo: 100, hi: 100 }));
+    assert_eq!(
+        info.interval,
+        Some(crate::analysis::region::Interval { lo: 100, hi: 100 })
+    );
     assert_eq!(info.value_set_size, Some(1));
     assert_full_parity(&items, 10);
 }
@@ -239,7 +278,10 @@ fn precondition_dependency_and_iteration_bound_match() {
         ),
     ];
     let (ast, hir) = analyze_pair(&items);
-    assert_eq!(hir.iteration_bound_of("step"), ast.iteration_bound_of("step"));
+    assert_eq!(
+        hir.iteration_bound_of("step"),
+        ast.iteration_bound_of("step")
+    );
     assert_eq!(hir.iteration_bound_of("step"), Some(7));
     assert_full_parity(&items, 10);
 }
@@ -253,7 +295,10 @@ fn conditional_bodies_match() {
             "cond",
             less(ident("x"), int(10)),
             Expr::Bool(true),
-            vec![guarded(ident("btn"), vec![assign("x", add(ident("x"), int(1)))])],
+            vec![guarded(
+                ident("btn"),
+                vec![assign("x", add(ident("x"), int(1)))],
+            )],
         ),
     ];
     assert_full_parity(&items, 10);
@@ -268,7 +313,11 @@ fn loop_bodies_match() {
             "loop",
             Expr::Bool(true),
             Expr::Bool(true),
-            vec![foreach("item", ident("btn"), vec![assign("x", ident("btn"))])],
+            vec![foreach(
+                "item",
+                ident("btn"),
+                vec![assign("x", ident("btn"))],
+            )],
         ),
     ];
     assert_full_parity(&items, 10);
@@ -279,9 +328,24 @@ fn aliasing_multiple_writers_match() {
     let items = vec![
         trigger("trg"),
         state("x"),
-        txn("a", Expr::Bool(true), Expr::Bool(true), vec![assign("x", ident("trg"))]),
-        txn("b", Expr::Bool(true), Expr::Bool(true), vec![assign("x", add(ident("trg"), int(1)))]),
-        txn("c", Expr::Bool(true), Expr::Bool(true), vec![assign("x", add(ident("x"), int(2)))]),
+        txn(
+            "a",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", ident("trg"))],
+        ),
+        txn(
+            "b",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", add(ident("trg"), int(1)))],
+        ),
+        txn(
+            "c",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", add(ident("x"), int(2)))],
+        ),
     ];
     let (_ast, hir) = analyze_pair(&items);
     assert_eq!(hir.regions.len(), 1);
@@ -295,9 +359,24 @@ fn nested_regions_with_independent_chains_match() {
         trigger("tb"),
         state("x"),
         state("y"),
-        txn("a1", Expr::Bool(true), Expr::Bool(true), vec![assign("x", ident("ta"))]),
-        txn("a2", Expr::Bool(true), Expr::Bool(true), vec![assign("y", ident("x"))]),
-        txn("b1", Expr::Bool(true), Expr::Bool(true), vec![assign("y", ident("tb"))]),
+        txn(
+            "a1",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", ident("ta"))],
+        ),
+        txn(
+            "a2",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("y", ident("x"))],
+        ),
+        txn(
+            "b1",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("y", ident("tb"))],
+        ),
     ];
     assert_full_parity(&items, 10);
 }
@@ -316,7 +395,10 @@ fn terminator_region_is_ineligible_and_unbounded() {
     ];
     let (_ast, hir) = analyze_pair(&items);
     let score = hir.region_scores.first().expect("region score");
-    assert_eq!(score.complexity, crate::analysis::region::ComplexityClass::Unbounded);
+    assert_eq!(
+        score.complexity,
+        crate::analysis::region::ComplexityClass::Unbounded
+    );
     assert!(!score.gpu_eligible);
     assert_full_parity(&items, 10);
 }
@@ -332,27 +414,38 @@ fn all_internal_chain_precomputes_final_values() {
             "step_a",
             less(ident("count"), ident("total")),
             Expr::Bool(true),
-            vec![assign("x", int(42)), assign("count", add(ident("count"), int(1)))],
+            vec![
+                assign("x", int(42)),
+                assign("count", add(ident("count"), int(1))),
+            ],
         ),
         txn(
             "step_b",
             less(ident("count"), ident("total")),
             Expr::Bool(true),
-            vec![assign("y", add(ident("x"), int(1))), assign("count", add(ident("count"), int(1)))],
+            vec![
+                assign("y", add(ident("x"), int(1))),
+                assign("count", add(ident("count"), int(1))),
+            ],
         ),
     ];
     let (mut ast, mut hir) = analyze_pair(&items);
     ast.compose_chains();
     hir.compose_chains();
     assert_dump_parity(&ast, &hir, "compose_chains");
-    assert_eq!(hir.is_fully_precomputable(10), ast.is_fully_precomputable(10));
+    assert_eq!(
+        hir.is_fully_precomputable(10),
+        ast.is_fully_precomputable(10)
+    );
     assert!(hir.is_fully_precomputable(10));
     assert!(!hir.is_fully_precomputable(0));
 
     let program = lower(&items);
     let values = normalize_final(hir.collect_final_values(&program)).expect("final values");
     assert!(
-        values.iter().any(|(_, bindings)| bindings.get("count") == Some(&100)),
+        values
+            .iter()
+            .any(|(_, bindings)| bindings.get("count") == Some(&100)),
         "final counter must equal the declared bound: {values:?}"
     );
     assert_eq!(
@@ -386,7 +479,10 @@ fn indexed_write_blocks_precomputation() {
     hir.compose_chains();
     assert_dump_parity(&ast, &hir, "compose_chains");
     assert!(!hir.is_fully_precomputable(100));
-    assert_eq!(hir.is_fully_precomputable(100), ast.is_fully_precomputable(100));
+    assert_eq!(
+        hir.is_fully_precomputable(100),
+        ast.is_fully_precomputable(100)
+    );
 }
 
 #[test]
@@ -417,7 +513,10 @@ fn observable_call_blocks_precomputation() {
     hir.compose_chains();
     assert_dump_parity(&ast, &hir, "compose_chains");
     assert!(!hir.is_fully_precomputable(100));
-    assert_eq!(hir.is_fully_precomputable(100), ast.is_fully_precomputable(100));
+    assert_eq!(
+        hir.is_fully_precomputable(100),
+        ast.is_fully_precomputable(100)
+    );
 }
 
 #[test]
@@ -425,7 +524,12 @@ fn budget_plan_parity_when_exhausted() {
     let items = vec![
         trigger("ta"),
         state("x"),
-        txn("tx_a", Expr::Bool(true), Expr::Bool(true), vec![assign("x", ident("ta"))]),
+        txn(
+            "tx_a",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![assign("x", ident("ta"))],
+        ),
     ];
     assert_full_parity(&items, 0);
 }

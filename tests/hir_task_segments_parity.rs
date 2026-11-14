@@ -6,13 +6,13 @@ use briev_compiler::analysis::task_segments::{
     mentions_param_field as ast_mentions, split_task_body as ast_split,
 };
 use briev_compiler::ast::{Statement, TopLevel};
+use briev_compiler::hir::HirCallableKind;
 use briev_compiler::hir::lower_program;
 use briev_compiler::hir::stmt::{HirStmt, HirStmtKind};
 use briev_compiler::hir::task_segments::{
     collect_spawn_targets as hir_targets, collect_task_abi_errors as hir_abi,
     mentions_param_field as hir_mentions, split_task_body as hir_split,
 };
-use briev_compiler::hir::HirCallableKind;
 use briev_compiler::type_universe::TypeUniverse;
 use std::path::{Path, PathBuf};
 
@@ -25,7 +25,9 @@ fn parse(src: &str) -> Vec<TopLevel> {
 }
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -107,16 +109,23 @@ fn compare(src: &str) -> Vec<String> {
     // Duplicate defn names exist in the corpus; match the Nth occurrence.
     let mut by_name: std::collections::HashMap<&str, Vec<&briev_compiler::hir::HirCallable>> =
         std::collections::HashMap::new();
-    for c in program.callables.iter().filter(|c| {
-        matches!(c.kind, HirCallableKind::Defn) && c.owner.is_none()
-    }) {
+    for c in program
+        .callables
+        .iter()
+        .filter(|c| matches!(c.kind, HirCallableKind::Defn) && c.owner.is_none())
+    {
         by_name.entry(c.name.as_str()).or_default().push(c);
     }
     let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for item in &items {
-        let TopLevel::Definition(d) = item else { continue };
+        let TopLevel::Definition(d) = item else {
+            continue;
+        };
         let occurrence = seen.entry(d.name.as_str()).or_insert(0);
-        let Some(h) = by_name.get(d.name.as_str()).and_then(|v| v.get(*occurrence)) else {
+        let Some(h) = by_name
+            .get(d.name.as_str())
+            .and_then(|v| v.get(*occurrence))
+        else {
             *occurrence += 1;
             continue;
         };
@@ -133,7 +142,10 @@ fn compare(src: &str) -> Vec<String> {
             .map(|s| s.iter().map(hir_tag).collect())
             .collect();
         if a_shape != h_shape {
-            bad.push(format!("{}: segments ast={a_shape:?} hir={h_shape:?}", d.name));
+            bad.push(format!(
+                "{}: segments ast={a_shape:?} hir={h_shape:?}",
+                d.name
+            ));
         }
         if a_segs.len() == h_segs.len() {
             for (i, (asg, hsg)) in a_segs.iter().zip(h_segs.iter()).enumerate() {
@@ -141,7 +153,10 @@ fn compare(src: &str) -> Vec<String> {
                     let am = ast_mentions(ast, &params);
                     let hm = hir_mentions(hst, &params);
                     if am != hm {
-                        bad.push(format!("{}: seg {i} stmt {j} mentions ast={am} hir={hm}", d.name));
+                        bad.push(format!(
+                            "{}: seg {i} stmt {j} mentions ast={am} hir={hm}",
+                            d.name
+                        ));
                     }
                 }
             }
@@ -156,7 +171,11 @@ fn curated_task_segments_parity() {
                defn spinner(ch: Chan) -> Int { side(); yield; term ch.wire.v; };\n\
                defn spawner() -> Int { let t: Int = spawn job(1, w); term t; };";
     let bad = compare(src);
-    assert!(bad.is_empty(), "HIR task-segment parity:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "HIR task-segment parity:\n{}",
+        bad.join("\n")
+    );
 }
 
 #[test]
@@ -171,15 +190,23 @@ fn corpus_task_segments_parity() {
     let mut skipped = 0usize;
     let mut mismatches = Vec::new();
     for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else { continue };
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(items) = std::panic::catch_unwind(|| parse(&source)) else {
+            continue;
+        };
         let program = lower_program(&items);
         if briev_compiler::hir::unsupported_counts(&program).total() != 0 {
             skipped += 1;
             continue;
         }
         compared += 1;
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for b in compare(&source) {
             mismatches.push(format!("{rel}: {b}"));
         }
@@ -188,5 +215,9 @@ fn corpus_task_segments_parity() {
         "HIR_TASK_SEGMENTS_PARITY compared={compared} skipped_unsupported={skipped} mismatches={}",
         mismatches.len()
     );
-    assert!(mismatches.is_empty(), "HIR task-segment mismatches:\n{}", mismatches.join("\n"));
+    assert!(
+        mismatches.is_empty(),
+        "HIR task-segment mismatches:\n{}",
+        mismatches.join("\n")
+    );
 }

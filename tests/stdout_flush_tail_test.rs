@@ -40,25 +40,55 @@ fn build_and_run(src: &str, name: &str) -> String {
     std::fs::write(&bv, src).unwrap();
 
     let build = Command::new(brievc)
-        .args(["build", &bv.to_string_lossy(), "--llvm", "--out", &out_dir.to_string_lossy(),
-               "--stdlib-path", &format!("{}/lib/std", PROJECT_ROOT)])
+        .args([
+            "build",
+            &bv.to_string_lossy(),
+            "--llvm",
+            "--out",
+            &out_dir.to_string_lossy(),
+            "--stdlib-path",
+            &format!("{}/lib/std", PROJECT_ROOT),
+        ])
         .output()
         .expect("failed brievc build");
-    assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
+    assert!(
+        build.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let ll = out_dir.join(format!("{name}.ll"));
     let exe = out_dir.join(name);
     let link = Command::new("clang")
-        .args(["-O3", "-flto", "-march=native", "-ffast-math", "-fdata-sections", "-ffunction-sections",
-               "-Wl,--gc-sections", &ll.to_string_lossy(),
-               &format!("{}/lib/runtime/briev_rt.c", PROJECT_ROOT), "-o", &exe.to_string_lossy()])
+        .args([
+            "-O3",
+            "-flto",
+            "-march=native",
+            "-ffast-math",
+            "-fdata-sections",
+            "-ffunction-sections",
+            "-Wl,--gc-sections",
+            &ll.to_string_lossy(),
+            &format!("{}/lib/runtime/briev_rt.c", PROJECT_ROOT),
+            "-o",
+            &exe.to_string_lossy(),
+        ])
         .output()
         .expect("failed clang link");
-    assert!(link.status.success(), "link failed:\n{}",
-        String::from_utf8_lossy(&link.stderr));
+    assert!(
+        link.status.success(),
+        "link failed:\n{}",
+        String::from_utf8_lossy(&link.stderr)
+    );
 
-    let run = Command::new(&exe).output().expect("failed to run linked binary");
-    assert!(run.status.success(), "run failed: {}", String::from_utf8_lossy(&run.stderr));
+    let run = Command::new(&exe)
+        .output()
+        .expect("failed to run linked binary");
+    assert!(
+        run.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     String::from_utf8_lossy(&run.stdout).to_string()
 }
 
@@ -79,7 +109,11 @@ node tick [i < 1][i == 1] {
     if out.is_empty() && !has("clang") {
         return; // SKIP path: clang missing, build_and_run bailed
     }
-    assert_eq!(out.trim(), "42", "sub-CAP output lost at exit (no flush tail): {out:?}");
+    assert_eq!(
+        out.trim(),
+        "42",
+        "sub-CAP output lost at exit (no flush tail): {out:?}"
+    );
 }
 
 #[test]

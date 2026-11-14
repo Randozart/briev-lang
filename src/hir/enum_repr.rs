@@ -90,10 +90,7 @@ fn seed_candidates(
     program: &HirProgram,
     enum_set: &HashMap<&str, ()>,
     variant_set: &HashMap<&str, ()>,
-) -> (
-    BTreeMap<String, EnumRepresentation>,
-    HashMap<String, ()>,
-) {
+) -> (BTreeMap<String, EnumRepresentation>, HashMap<String, ()>) {
     let mut defns = BTreeMap::new();
     let mut candidates: HashMap<String, ()> = HashMap::new();
     for c in program.callables.iter().filter(|c| is_top_defn(c)) {
@@ -129,7 +126,9 @@ fn converge_candidates(
 }
 
 fn returns_enum(c: &HirCallable, enum_set: &HashMap<&str, ()>) -> bool {
-    c.result.as_ref().map_or(false, |t| type_is_enum(t, enum_set))
+    c.result
+        .as_ref()
+        .map_or(false, |t| type_is_enum(t, enum_set))
 }
 
 fn is_top_defn(c: &HirCallable) -> bool {
@@ -180,7 +179,11 @@ fn return_shaped(
         .statements
         .iter()
         .find_map(|s| match &s.kind {
-            HirStmtKind::Let { name, expr: Some(init), .. } if name == local => Some(init),
+            HirStmtKind::Let {
+                name,
+                expr: Some(init),
+                ..
+            } if name == local => Some(init),
             _ => None,
         })
         .map(|init| constructor_shaped_return(init, variants, sret_calls))
@@ -374,7 +377,12 @@ fn escaping_let_names(
     let reassigned = reassigned_identifiers(&c.body.statements);
     let mut names = BTreeSet::new();
     for stmt in &c.body.statements {
-        let HirStmtKind::Let { name, expr: Some(init), .. } = &stmt.kind else {
+        let HirStmtKind::Let {
+            name,
+            expr: Some(init),
+            ..
+        } = &stmt.kind
+        else {
             continue;
         };
         let immutable = !reassigned.contains(name);
@@ -400,8 +408,14 @@ fn collect_return_identifiers(body: &[HirStmt], out: &mut BTreeSet<String>) {
 
 fn collect_stmt_return_ids(stmt: &super::stmt::HirStmt, out: &mut BTreeSet<String>) {
     match &stmt.kind {
-        HirStmtKind::Term(Some(HirExpr { kind: HirExprKind::Identifier(name), .. }))
-        | HirStmtKind::Tail(HirExpr { kind: HirExprKind::Identifier(name), .. }) => {
+        HirStmtKind::Term(Some(HirExpr {
+            kind: HirExprKind::Identifier(name),
+            ..
+        }))
+        | HirStmtKind::Tail(HirExpr {
+            kind: HirExprKind::Identifier(name),
+            ..
+        }) => {
             out.insert(name.clone());
         }
         HirStmtKind::Guarded(_, inner)
@@ -440,7 +454,9 @@ fn walk_assign_targets(body: &[HirStmt], f: &mut dyn FnMut(&HirExpr)) {
 fn walk_stmt_assign_targets(stmt: &super::stmt::HirStmt, f: &mut dyn FnMut(&HirExpr)) {
     match &stmt.kind {
         HirStmtKind::Assign(lhs, _) => f(lhs),
-        HirStmtKind::ArrowAssign { target: Some(t), .. } => f(t),
+        HirStmtKind::ArrowAssign {
+            target: Some(t), ..
+        } => f(t),
         HirStmtKind::Guarded(_, inner)
         | HirStmtKind::Block(inner)
         | HirStmtKind::SyncBlock(inner)

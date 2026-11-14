@@ -13,7 +13,7 @@ pub(crate) mod quantity;
 mod statements;
 mod types;
 
-pub use bad::{parse_bad, BadParseError};
+pub use bad::{BadParseError, parse_bad};
 pub(crate) use bld::parse_bld;
 pub use definitions::*;
 pub use expressions::*;
@@ -21,4 +21,3 @@ pub use helpers::Parser;
 pub use metadata::*;
 pub use statements::*;
 pub use types::*;
-

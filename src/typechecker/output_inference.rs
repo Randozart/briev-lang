@@ -27,7 +27,7 @@
 //! `fn_return_types` pre-collects in `check_program_with_target`, so
 //! every consumer sees inferred outputs in the same pass.
 
-use super::{infer_type_only, TypecheckContext};
+use super::{TypecheckContext, infer_type_only};
 use crate::ast::top::{OutputType, TopLevel};
 use crate::ast::{Expr, Statement, Type};
 use crate::type_universe::TypeUniverse;
@@ -90,12 +90,8 @@ fn declared_returns(items: &[TopLevel]) -> HashMap<String, Type> {
     let mut map = HashMap::new();
     for item in items {
         match item {
-            TopLevel::Definition(d) => {
-                insert_first(&mut map, &d.name, d.output_type.as_ref())
-            }
-            TopLevel::Transaction(t) => {
-                insert_first(&mut map, &t.name, t.output_type.as_ref())
-            }
+            TopLevel::Definition(d) => insert_first(&mut map, &d.name, d.output_type.as_ref()),
+            TopLevel::Transaction(t) => insert_first(&mut map, &t.name, t.output_type.as_ref()),
             _ => {}
         }
     }
@@ -120,9 +116,7 @@ fn visible_state(items: &[TopLevel]) -> Vec<(String, Type)> {
         match item {
             TopLevel::Statement(s) => {
                 if let Statement::Let {
-                    name,
-                    ty: Some(ty),
-                    ..
+                    name, ty: Some(ty), ..
                 } = s.as_ref()
                 {
                     out.push((name.clone(), ty.clone()));
@@ -215,18 +209,8 @@ fn try_infer_item(
     defined_fns: &HashSet<String>,
 ) -> Option<(String, Type)> {
     let (name, params, body, arrowless) = match item {
-        TopLevel::Definition(d) => (
-            &d.name,
-            &d.parameters,
-            &d.body,
-            d.output_type.is_none(),
-        ),
-        TopLevel::Transaction(t) => (
-            &t.name,
-            &t.parameters,
-            &t.body,
-            t.output_type.is_none(),
-        ),
+        TopLevel::Definition(d) => (&d.name, &d.parameters, &d.body, d.output_type.is_none()),
+        TopLevel::Transaction(t) => (&t.name, &t.parameters, &t.body, t.output_type.is_none()),
         _ => return None,
     };
     if !arrowless {
@@ -247,7 +231,9 @@ fn try_infer_item(
     }
     ctx.defined_fns = defined_fns.clone();
     ctx.fn_return_types = returns.clone();
-    infer_type_only(expr, &mut ctx).ok().map(|ty| (name.clone(), ty))
+    infer_type_only(expr, &mut ctx)
+        .ok()
+        .map(|ty| (name.clone(), ty))
 }
 
 /// Type → OutputType: tuples map element-wise (a `term (a, b);` records
@@ -256,9 +242,7 @@ fn try_infer_item(
 /// `fn_return_types` collect).
 fn type_to_output(ty: Type) -> OutputType {
     match ty {
-        Type::Tuple(elems) => {
-            OutputType::Tuple(elems.into_iter().map(type_to_output).collect())
-        }
+        Type::Tuple(elems) => OutputType::Tuple(elems.into_iter().map(type_to_output).collect()),
         other => OutputType::Single(other),
     }
 }
@@ -331,7 +315,10 @@ node main [n == 0][n == 1] {
     #[test]
     fn inferred_tail_result_is_typed_at_call_site() {
         let src = format!("defn f(x: Int) {{ x * 2 }};\n{}", bound("Bool"));
-        assert!(check(&src).is_err(), "tail Int result bound as Bool must error");
+        assert!(
+            check(&src).is_err(),
+            "tail Int result bound as Bool must error"
+        );
         let src = format!("defn f(x: Int) {{ x * 2 }};\n{}", bound("Int"));
         check(&src).expect("tail Int result bound as Int typechecks");
     }
@@ -348,7 +335,8 @@ node main [n == 0][n == 1] {
         );
         let errs = check(&src).expect_err("Int fallback: Bool binding errors as before");
         assert!(
-            errs.iter().any(|e| format!("{e:?}").contains("found: \"Int\"")),
+            errs.iter()
+                .any(|e| format!("{e:?}").contains("found: \"Int\"")),
             "expected the Int fallback at the call site, got: {errs:?}"
         );
         let src = format!(
@@ -362,15 +350,12 @@ node main [n == 0][n == 1] {
     /// still infers.
     #[test]
     fn forward_reference_resolves_via_fixpoint() {
-        let src = format!(
-            "defn later(x: Int) {{ term x + 1; }};\n{}",
-            bound("Bool")
+        let src = format!("defn later(x: Int) {{ term x + 1; }};\n{}", bound("Bool"));
+        assert!(
+            check(&src).is_err(),
+            "forward-inferred Int bound as Bool must error"
         );
-        assert!(check(&src).is_err(), "forward-inferred Int bound as Bool must error");
-        let src = format!(
-            "defn later(x: Int) {{ term x + 1; }};\n{}",
-            bound("Int")
-        );
+        let src = format!("defn later(x: Int) {{ term x + 1; }};\n{}", bound("Int"));
         check(&src).expect("forward-inferred Int bound as Int typechecks");
     }
 
@@ -386,7 +371,10 @@ node main [n == 0][n == 1] {
             "txn f(x: Int) [x >= 0][x >= 0] {{ term x * 2; }};\n{}",
             bound("Bool")
         );
-        assert!(check(&bad).is_err(), "inferred txn Int bound as Bool must error");
+        assert!(
+            check(&bad).is_err(),
+            "inferred txn Int bound as Bool must error"
+        );
     }
 
     /// A typed local `let` before the term IS in scope at the site — the
@@ -397,7 +385,10 @@ node main [n == 0][n == 1] {
             "defn f(x: Int) {{ let y: Int = x * 2; term y + 1; }};\n{}",
             bound("Bool")
         );
-        assert!(check(&src).is_err(), "local-fed Int result bound as Bool must error");
+        assert!(
+            check(&src).is_err(),
+            "local-fed Int result bound as Bool must error"
+        );
         let src = format!(
             "defn f(x: Int) {{ let y: Int = x * 2; term y + 1; }};\n{}",
             bound("Int")
@@ -416,7 +407,8 @@ node main [n == 0][n == 1] {
         );
         let errs = check(&src).expect_err("unresolved term: Int fallback as before");
         assert!(
-            errs.iter().any(|e| format!("{e:?}").contains("found: \"Int\"")),
+            errs.iter()
+                .any(|e| format!("{e:?}").contains("found: \"Int\"")),
             "expected the Int fallback at the call site, got: {errs:?}"
         );
         let src = format!(

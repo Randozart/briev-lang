@@ -6,8 +6,8 @@
 // Flat code: each function max 2 levels of nesting.
 
 use crate::ast::{BinaryOpKind, DerivationExample, Expr, Type, UnaryOpKind};
-use crate::derive::engine::SynthesizedProgram;
 use crate::derive::SynthesizeError;
+use crate::derive::engine::SynthesizedProgram;
 use std::process::Command;
 
 // ── D.0 — Type Mappings ───────────────────────────────────────────────
@@ -39,7 +39,11 @@ fn expr_to_smt_const(expr: &Expr) -> String {
             format!("#x{:08X}", bits)
         }
         Expr::Bool(b) => {
-            if *b { "true".into() } else { "false".into() }
+            if *b {
+                "true".into()
+            } else {
+                "false".into()
+            }
         }
         Expr::UnaryOp(UnaryOpKind::Neg, inner) => {
             if let Expr::Decimal(n) = inner.as_ref() {
@@ -78,9 +82,7 @@ fn build_sygus_query(
     q.push_str("(set-logic QF_UFBV)\n\n");
 
     let ret_sort = type_to_smt_sort(ret_type);
-    let param_sorts: Vec<String> = params.iter()
-        .map(|(_, ty)| type_to_smt_sort(ty))
-        .collect();
+    let param_sorts: Vec<String> = params.iter().map(|(_, ty)| type_to_smt_sort(ty)).collect();
 
     // 2026-07-28: Use declare-fun instead of synth-fun, because Z3 4.8.x
     // does not support the SyGuS synth-fun command. The declare-fun +
@@ -109,7 +111,7 @@ fn build_sygus_query(
 
     if !q.contains("(assert") {
         return Err(SynthesizeError::NoExamples(
-            "all derivation examples have tolerance; SMT does not support tolerance".into()
+            "all derivation examples have tolerance; SMT does not support tolerance".into(),
         ));
     }
 
@@ -205,7 +207,8 @@ pub fn synthesize_via_smt_typed(
     // Check if Z3 is available
     if Command::new(z3_path).arg("--version").output().is_err() {
         return Err(SynthesizeError::SolverUnavailable(format!(
-            "Z3 not found at '{}'", z3_path
+            "Z3 not found at '{}'",
+            z3_path
         )));
     }
 
@@ -220,7 +223,12 @@ pub fn synthesize_via_smt_typed(
 
     let mut child = match child_result {
         Ok(c) => c,
-        Err(e) => return Err(SynthesizeError::SolverError(format!("failed to spawn z3: {}", e))),
+        Err(e) => {
+            return Err(SynthesizeError::SolverError(format!(
+                "failed to spawn z3: {}",
+                e
+            )));
+        }
     };
 
     // Write query to stdin, flush, then close stdin so Z3 sees EOF
@@ -228,10 +236,12 @@ pub fn synthesize_via_smt_typed(
         let stdin = child.stdin.as_mut();
         if let Some(stdin) = stdin {
             use std::io::Write;
-            writeln!(stdin, "{}", query)
-                .map_err(|e| SynthesizeError::SolverError(format!("failed to write to z3: {}", e)))?;
-            stdin.flush()
-                .map_err(|e| SynthesizeError::SolverError(format!("failed to flush z3 stdin: {}", e)))?;
+            writeln!(stdin, "{}", query).map_err(|e| {
+                SynthesizeError::SolverError(format!("failed to write to z3: {}", e))
+            })?;
+            stdin.flush().map_err(|e| {
+                SynthesizeError::SolverError(format!("failed to flush z3 stdin: {}", e))
+            })?;
         }
     }
     // 2026-07-28: Close stdin so Z3 processes the query (EOF triggers solve).
@@ -240,7 +250,12 @@ pub fn synthesize_via_smt_typed(
 
     let output = match child.wait_with_output() {
         Ok(o) => o,
-        Err(e) => return Err(SynthesizeError::SolverError(format!("z3 execution failed: {}", e))),
+        Err(e) => {
+            return Err(SynthesizeError::SolverError(format!(
+                "z3 execution failed: {}",
+                e
+            )));
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -250,8 +265,15 @@ pub fn synthesize_via_smt_typed(
         return Err(SynthesizeError::NoSolution("SMT: unsat (no model)".into()));
     }
     if stdout.contains("unknown") || !output.status.success() {
-        let err_msg = if stderr.is_empty() { &*stdout } else { &*stderr };
-        return Err(SynthesizeError::SolverError(format!("z3 error: {}", err_msg)));
+        let err_msg = if stderr.is_empty() {
+            &*stdout
+        } else {
+            &*stderr
+        };
+        return Err(SynthesizeError::SolverError(format!(
+            "z3 error: {}",
+            err_msg
+        )));
     }
 
     parse_smt_response(&stdout, params, ret_type)
@@ -291,7 +313,11 @@ fn parse_smt_response(
             };
             extract_define_fun_body(&inner)?
         }
-        None => return Err(SynthesizeError::SolverError("no define-fun in response".into())),
+        None => {
+            return Err(SynthesizeError::SolverError(
+                "no define-fun in response".into(),
+            ));
+        }
     };
 
     let briev_expr = smt_to_briev_expr(&body, params, ret_type)?;
@@ -312,7 +338,10 @@ fn is_define_fun(sexpr: &SExpr) -> bool {
     match sexpr {
         SExpr::List(items) => {
             // Check direct: (define-fun ...)
-            if items.first().map_or(false, |f| matches!(f, SExpr::Atom(a) if a == "define-fun")) {
+            if items
+                .first()
+                .map_or(false, |f| matches!(f, SExpr::Atom(a) if a == "define-fun"))
+            {
                 return true;
             }
             // Check nested: ((define-fun ...) ...) — Z3 model wrapper
@@ -348,7 +377,10 @@ enum SExpr {
 /// 2026-07-28: Phase D.1 — Tokenizes and parses SMT-LIB output.
 fn parse_smt_sexprs(response: &str) -> Vec<SExpr> {
     let tokens = tokenize_smt(response);
-    let mut parser = SexprParser { tokens: &tokens, pos: 0 };
+    let mut parser = SexprParser {
+        tokens: &tokens,
+        pos: 0,
+    };
     let mut result = Vec::new();
     while parser.pos < parser.tokens.len() {
         if let Some(sexpr) = parser.parse_one() {
@@ -479,7 +511,11 @@ fn smt_to_briev_expr(
                     let cond = smt_to_briev_expr(&items[1], params, &Type::bool_())?;
                     let then_ = smt_to_briev_expr(&items[2], params, ret_type)?;
                     let else_ = smt_to_briev_expr(&items[3], params, ret_type)?;
-                    Ok(Expr::If(Box::new(cond), Box::new(then_), Some(Box::new(else_))))
+                    Ok(Expr::If(
+                        Box::new(cond),
+                        Box::new(then_),
+                        Some(Box::new(else_)),
+                    ))
                 }
                 "and" | "or" | "not" => {
                     // These appear in Bool grammars — simplified handling
@@ -502,10 +538,14 @@ fn smt_to_briev_expr(
                         for binding in bindings_list.iter().rev() {
                             if let SExpr::List(pair) = binding {
                                 if pair.len() < 2 {
-                                    return Err(SynthesizeError::SolverError("malformed let binding pair".into()));
+                                    return Err(SynthesizeError::SolverError(
+                                        "malformed let binding pair".into(),
+                                    ));
                                 }
                                 let SExpr::Atom(var_name) = &pair[0] else {
-                                    return Err(SynthesizeError::SolverError("expected variable name in let".into()));
+                                    return Err(SynthesizeError::SolverError(
+                                        "expected variable name in let".into(),
+                                    ));
                                 };
                                 let val_expr = smt_to_briev_expr(&pair[1], params, ret_type)?;
                                 result = substitute_var(&result, var_name, &val_expr);
@@ -515,7 +555,8 @@ fn smt_to_briev_expr(
                     Ok(result)
                 }
                 _ => Err(SynthesizeError::SolverError(format!(
-                    "unknown SMT operator: {}", op
+                    "unknown SMT operator: {}",
+                    op
                 ))),
             }
         }
@@ -574,7 +615,8 @@ fn smt_atom_to_expr(
         return Ok(Expr::Decimal(n));
     }
     Err(SynthesizeError::SolverError(format!(
-        "unknown atom in SMT response: {}", s
+        "unknown atom in SMT response: {}",
+        s
     )))
 }
 
@@ -586,7 +628,9 @@ fn smt_binary_op(
     ret_type: &Type,
 ) -> Result<Expr, SynthesizeError> {
     if items.len() < 3 {
-        return Err(SynthesizeError::SolverError("binary op needs 2 args".into()));
+        return Err(SynthesizeError::SolverError(
+            "binary op needs 2 args".into(),
+        ));
     }
     let lhs = smt_to_briev_expr(&items[1], params, ret_type)?;
     let rhs = smt_to_briev_expr(&items[2], params, ret_type)?;
@@ -614,10 +658,17 @@ fn smt_boolean_op(
             }
             let lhs = smt_to_briev_expr(&items[1], params, &Type::bool_())?;
             let rhs = smt_to_briev_expr(&items[2], params, &Type::bool_())?;
-            let kind = if op == "and" { BinaryOpKind::And } else { BinaryOpKind::Or };
+            let kind = if op == "and" {
+                BinaryOpKind::And
+            } else {
+                BinaryOpKind::Or
+            };
             Ok(Expr::BinaryOp(kind, Box::new(lhs), Box::new(rhs)))
         }
-        _ => Err(SynthesizeError::SolverError(format!("unknown bool op: {}", op))),
+        _ => Err(SynthesizeError::SolverError(format!(
+            "unknown bool op: {}",
+            op
+        ))),
     }
 }
 
@@ -642,7 +693,7 @@ pub fn synthesize_via_smt(
         }
         Err(e @ SynthesizeError::SolverUnavailable(_)) => Err(e),
         Err(e) => Err(e), // 2026-07-28: Propagate error — removed identity fallback
-                           // (Phase D placeholder returned x0 regardless of examples)
+                          // (Phase D placeholder returned x0 regardless of examples)
     }
 }
 
@@ -659,43 +710,43 @@ fn substitute_var(expr: &Expr, var_name: &str, replacement: &Expr) -> Expr {
                 expr.clone()
             }
         }
-        Expr::UnaryOp(kind, inner) => {
-            Expr::UnaryOp(*kind, Box::new(substitute_var(inner, var_name, replacement)))
-        }
-        Expr::BinaryOp(kind, lhs, rhs) => {
-            Expr::BinaryOp(
-                *kind,
-                Box::new(substitute_var(lhs, var_name, replacement)),
-                Box::new(substitute_var(rhs, var_name, replacement)),
-            )
-        }
-        Expr::If(cond, then_, else_) => {
-            Expr::If(
-                Box::new(substitute_var(cond, var_name, replacement)),
-                Box::new(substitute_var(then_, var_name, replacement)),
-                else_.as_ref().map(|e| Box::new(substitute_var(e, var_name, replacement))),
-            )
-        }
-        Expr::Call(name, args, aid) => {
-            Expr::Call(
-                name.clone(),
-                args.iter().map(|a| substitute_var(a, var_name, replacement)).collect(),
-                *aid,
-            )
-        }
-        Expr::Field(inner, fname) => {
-            Expr::Field(Box::new(substitute_var(inner, var_name, replacement)), fname.clone())
-        }
-        Expr::Match(scrut, arms) => {
-            Expr::Match(
-                Box::new(substitute_var(scrut, var_name, replacement)),
-                arms.iter().map(|a| crate::ast::MatchArm {
+        Expr::UnaryOp(kind, inner) => Expr::UnaryOp(
+            *kind,
+            Box::new(substitute_var(inner, var_name, replacement)),
+        ),
+        Expr::BinaryOp(kind, lhs, rhs) => Expr::BinaryOp(
+            *kind,
+            Box::new(substitute_var(lhs, var_name, replacement)),
+            Box::new(substitute_var(rhs, var_name, replacement)),
+        ),
+        Expr::If(cond, then_, else_) => Expr::If(
+            Box::new(substitute_var(cond, var_name, replacement)),
+            Box::new(substitute_var(then_, var_name, replacement)),
+            else_
+                .as_ref()
+                .map(|e| Box::new(substitute_var(e, var_name, replacement))),
+        ),
+        Expr::Call(name, args, aid) => Expr::Call(
+            name.clone(),
+            args.iter()
+                .map(|a| substitute_var(a, var_name, replacement))
+                .collect(),
+            *aid,
+        ),
+        Expr::Field(inner, fname) => Expr::Field(
+            Box::new(substitute_var(inner, var_name, replacement)),
+            fname.clone(),
+        ),
+        Expr::Match(scrut, arms) => Expr::Match(
+            Box::new(substitute_var(scrut, var_name, replacement)),
+            arms.iter()
+                .map(|a| crate::ast::MatchArm {
                     pattern: a.pattern.clone(),
                     guard: a.guard.clone(),
                     body: Box::new(substitute_var(&a.body, var_name, replacement)),
-                }).collect(),
-            )
-        }
+                })
+                .collect(),
+        ),
         _ => expr.clone(),
     }
 }
@@ -707,10 +758,17 @@ mod tests {
     use super::*;
     use crate::errors::Span;
 
-    fn dummy_span() -> Span { Span::dummy() }
+    fn dummy_span() -> Span {
+        Span::dummy()
+    }
 
     fn example(inputs: Vec<Expr>, output: Expr, tolerance: Option<f64>) -> DerivationExample {
-        DerivationExample { inputs, output: Box::new(output), tolerance, span: dummy_span() }
+        DerivationExample {
+            inputs,
+            output: Box::new(output),
+            tolerance,
+            span: dummy_span(),
+        }
     }
 
     // ── D.0 — Query builder tests ─────────────────────────────────
@@ -745,13 +803,12 @@ mod tests {
 
     #[test]
     fn test_build_sygus_query_two_params() {
-        let params = vec![
-            ("x".into(), Type::int()),
-            ("y".into(), Type::int()),
-        ];
-        let examples = vec![
-            example(vec![Expr::Decimal(2), Expr::Decimal(3)], Expr::Decimal(5), None),
-        ];
+        let params = vec![("x".into(), Type::int()), ("y".into(), Type::int())];
+        let examples = vec![example(
+            vec![Expr::Decimal(2), Expr::Decimal(3)],
+            Expr::Decimal(5),
+            None,
+        )];
         let query = build_sygus_query(&params, &Type::int(), &examples).unwrap();
         assert!(query.contains("declare-fun"));
         assert!(query.contains("BitVec"));
@@ -763,9 +820,7 @@ mod tests {
     #[test]
     fn test_build_sygus_query_single_param() {
         let params = vec![("x".into(), Type::int())];
-        let examples = vec![
-            example(vec![Expr::Decimal(0)], Expr::Decimal(1), None),
-        ];
+        let examples = vec![example(vec![Expr::Decimal(0)], Expr::Decimal(1), None)];
         let query = build_sygus_query(&params, &Type::int(), &examples).unwrap();
         assert!(query.contains("declare-fun"));
         assert!(query.contains("x0"));
@@ -776,9 +831,7 @@ mod tests {
     #[test]
     fn test_build_sygus_query_bool_ret() {
         let params = vec![("x".into(), Type::int())];
-        let examples = vec![
-            example(vec![Expr::Decimal(0)], Expr::Bool(true), None),
-        ];
+        let examples = vec![example(vec![Expr::Decimal(0)], Expr::Bool(true), None)];
         let query = build_sygus_query(&params, &Type::bool_(), &examples);
         assert!(query.is_ok());
         let q = query.unwrap();
@@ -791,9 +844,7 @@ mod tests {
     #[test]
     fn test_build_sygus_query_example_constraints() {
         let params = vec![("x".into(), Type::int())];
-        let examples = vec![
-            example(vec![Expr::Decimal(5)], Expr::Decimal(10), None),
-        ];
+        let examples = vec![example(vec![Expr::Decimal(5)], Expr::Decimal(10), None)];
         let query = build_sygus_query(&params, &Type::int(), &examples).unwrap();
         // Upper-case hex from format_smt_int (#x0000000000000005, #x000000000000000A)
         assert!(query.contains("#x0000000000000005"));
@@ -826,7 +877,10 @@ mod tests {
     #[test]
     fn test_parse_simple_sexpr() {
         let tokens = tokenize_smt("(bvadd x0 #x0001)");
-        let mut parser = SexprParser { tokens: &tokens, pos: 0 };
+        let mut parser = SexprParser {
+            tokens: &tokens,
+            pos: 0,
+        };
         let sexpr = parser.parse_one().unwrap();
         match sexpr {
             SExpr::List(items) => {
@@ -843,15 +897,21 @@ mod tests {
     fn test_parse_define_fun() {
         let smt = r#"(define-fun f ((x (_ BitVec 64))) (_ BitVec 64) (bvadd x #x0001))"#;
         let tokens = tokenize_smt(smt);
-        let mut parser = SexprParser { tokens: &tokens, pos: 0 };
+        let mut parser = SexprParser {
+            tokens: &tokens,
+            pos: 0,
+        };
         let sexpr = parser.parse_one().unwrap();
         assert!(is_define_fun(&sexpr));
         let body = extract_define_fun_body(&sexpr).unwrap();
-        assert_eq!(body, SExpr::List(vec![
-            SExpr::Atom("bvadd".into()),
-            SExpr::Atom("x".into()),
-            SExpr::Atom("#x0001".into()),
-        ]));
+        assert_eq!(
+            body,
+            SExpr::List(vec![
+                SExpr::Atom("bvadd".into()),
+                SExpr::Atom("x".into()),
+                SExpr::Atom("#x0001".into()),
+            ])
+        );
     }
 
     // ── D.1 — Expression conversion tests ─────────────────────────
@@ -913,10 +973,7 @@ mod tests {
                 SExpr::Atom("x0".into()),
                 SExpr::Atom("#x0000000000000000".into()),
             ]),
-            SExpr::List(vec![
-                SExpr::Atom("bvneg".into()),
-                SExpr::Atom("x0".into()),
-            ]),
+            SExpr::List(vec![SExpr::Atom("bvneg".into()), SExpr::Atom("x0".into())]),
             SExpr::Atom("x0".into()),
         ]);
         let result = smt_to_briev_expr(&sexpr, &params, &Type::int()).unwrap();
@@ -926,7 +983,8 @@ mod tests {
     #[test]
     fn test_parse_smt_response_add() {
         // Z3 uses x0 (from synth-fun declaration), not the original parameter name
-        let response = "(define-fun f ((x0 (_ BitVec 64))) (_ BitVec 64) (bvadd x0 #x0000000000000001))";
+        let response =
+            "(define-fun f ((x0 (_ BitVec 64))) (_ BitVec 64) (bvadd x0 #x0000000000000001))";
         let params = vec![("x".into(), Type::int())];
         let result = parse_smt_response(response, &params, &Type::int());
         assert!(result.is_ok(), "parse failed: {:?}", result.err());

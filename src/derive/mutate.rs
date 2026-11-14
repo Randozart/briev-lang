@@ -4,8 +4,8 @@
 // Flat code: each function max 2 levels of nesting.
 
 use crate::ast::{BinaryOpKind, Expr, UnaryOpKind};
-use crate::derive::mcmc::MutationWeights;
 use crate::derive::LcgRng;
+use crate::derive::mcmc::MutationWeights;
 
 /// Replace a random subtree with a different subtree of the same type.
 /// 2026-07-28: Phase F.1 — subtree replacement.
@@ -16,21 +16,30 @@ pub fn mutate_replace_subtree(expr: &Expr, rng: &mut LcgRng, depth: u8) -> Expr 
     match expr {
         Expr::BinaryOp(kind, lhs, rhs) => {
             if rng.gen_bool(0.5) {
-                Expr::BinaryOp(*kind, Box::new(mutate_replace_subtree(lhs, rng, depth - 1)), rhs.clone())
+                Expr::BinaryOp(
+                    *kind,
+                    Box::new(mutate_replace_subtree(lhs, rng, depth - 1)),
+                    rhs.clone(),
+                )
             } else {
-                Expr::BinaryOp(*kind, lhs.clone(), Box::new(mutate_replace_subtree(rhs, rng, depth - 1)))
+                Expr::BinaryOp(
+                    *kind,
+                    lhs.clone(),
+                    Box::new(mutate_replace_subtree(rhs, rng, depth - 1)),
+                )
             }
         }
-        Expr::UnaryOp(kind, inner) => {
-            Expr::UnaryOp(*kind, Box::new(mutate_replace_subtree(inner, rng, depth - 1)))
-        }
-        Expr::If(cond, then_, else_) => {
-            Expr::If(
-                Box::new(mutate_replace_subtree(cond, rng, depth - 1)),
-                Box::new(mutate_replace_subtree(then_, rng, depth - 1)),
-                else_.as_ref().map(|e| Box::new(mutate_replace_subtree(e, rng, depth - 1))),
-            )
-        }
+        Expr::UnaryOp(kind, inner) => Expr::UnaryOp(
+            *kind,
+            Box::new(mutate_replace_subtree(inner, rng, depth - 1)),
+        ),
+        Expr::If(cond, then_, else_) => Expr::If(
+            Box::new(mutate_replace_subtree(cond, rng, depth - 1)),
+            Box::new(mutate_replace_subtree(then_, rng, depth - 1)),
+            else_
+                .as_ref()
+                .map(|e| Box::new(mutate_replace_subtree(e, rng, depth - 1))),
+        ),
         _ => generate_random_leaf(expr, rng),
     }
 }
@@ -66,24 +75,42 @@ pub fn mutate_change_operator(expr: &Expr, rng: &mut LcgRng) -> Expr {
 
 fn random_binary_op(rng: &mut LcgRng) -> BinaryOpKind {
     const OPS: &[BinaryOpKind] = &[
-        BinaryOpKind::Add, BinaryOpKind::Sub, BinaryOpKind::Mul, BinaryOpKind::Div,
-        BinaryOpKind::Eq, BinaryOpKind::Neq, BinaryOpKind::Lt, BinaryOpKind::Gt,
-        BinaryOpKind::And, BinaryOpKind::Or,
+        BinaryOpKind::Add,
+        BinaryOpKind::Sub,
+        BinaryOpKind::Mul,
+        BinaryOpKind::Div,
+        BinaryOpKind::Eq,
+        BinaryOpKind::Neq,
+        BinaryOpKind::Lt,
+        BinaryOpKind::Gt,
+        BinaryOpKind::And,
+        BinaryOpKind::Or,
     ];
     OPS[rng.gen_range(0, OPS.len())]
 }
 
 fn random_unary_op(rng: &mut LcgRng) -> UnaryOpKind {
-    if rng.gen_bool(0.5) { UnaryOpKind::Neg } else { UnaryOpKind::Not }
+    if rng.gen_bool(0.5) {
+        UnaryOpKind::Neg
+    } else {
+        UnaryOpKind::Not
+    }
 }
 
 /// Swap operands of commutative operations: x + y → y + x.
 /// 2026-07-28: Phase F.1 — commutative swap.
 pub fn mutate_swap_commutative(expr: &Expr, _rng: &mut LcgRng) -> Expr {
     match expr {
-        Expr::BinaryOp(kind @ (BinaryOpKind::Add | BinaryOpKind::Mul | BinaryOpKind::And | BinaryOpKind::Or | BinaryOpKind::Eq | BinaryOpKind::Neq), lhs, rhs) => {
-            Expr::BinaryOp(*kind, rhs.clone(), lhs.clone())
-        }
+        Expr::BinaryOp(
+            kind @ (BinaryOpKind::Add
+            | BinaryOpKind::Mul
+            | BinaryOpKind::And
+            | BinaryOpKind::Or
+            | BinaryOpKind::Eq
+            | BinaryOpKind::Neq),
+            lhs,
+            rhs,
+        ) => Expr::BinaryOp(*kind, rhs.clone(), lhs.clone()),
         _ => expr.clone(),
     }
 }
@@ -97,8 +124,12 @@ pub fn mutate_fold_constant(expr: &Expr, _rng: &mut LcgRng) -> Expr {
         Expr::BinaryOp(BinaryOpKind::Sub, lhs, rhs) if is_zero(rhs) => *lhs.clone(),
         Expr::BinaryOp(BinaryOpKind::Mul, lhs, rhs) if is_one(rhs) => *lhs.clone(),
         Expr::BinaryOp(BinaryOpKind::Mul, lhs, rhs) if is_one(lhs) => *rhs.clone(),
-        Expr::BinaryOp(BinaryOpKind::Mul, lhs, _) if is_zero(lhs) || is_zero_by_trait(lhs) => Expr::Decimal(0),
-        Expr::BinaryOp(BinaryOpKind::Mul, _, rhs) if is_zero(rhs) || is_zero_by_trait(rhs) => Expr::Decimal(0),
+        Expr::BinaryOp(BinaryOpKind::Mul, lhs, _) if is_zero(lhs) || is_zero_by_trait(lhs) => {
+            Expr::Decimal(0)
+        }
+        Expr::BinaryOp(BinaryOpKind::Mul, _, rhs) if is_zero(rhs) || is_zero_by_trait(rhs) => {
+            Expr::Decimal(0)
+        }
         Expr::BinaryOp(BinaryOpKind::Div, lhs, rhs) if is_one(rhs) => *lhs.clone(),
         _ => expr.clone(),
     }
@@ -127,9 +158,17 @@ pub fn mutate_insert_identity(expr: &Expr, rng: &mut LcgRng) -> Expr {
     match expr {
         Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Identifier(_) => {
             if rng.gen_bool(0.5) {
-                Expr::BinaryOp(BinaryOpKind::Add, Box::new(expr.clone()), Box::new(expr_to_zero(expr)))
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(expr.clone()),
+                    Box::new(expr_to_zero(expr)),
+                )
             } else {
-                Expr::BinaryOp(BinaryOpKind::Mul, Box::new(expr.clone()), Box::new(expr_to_one(expr)))
+                Expr::BinaryOp(
+                    BinaryOpKind::Mul,
+                    Box::new(expr.clone()),
+                    Box::new(expr_to_one(expr)),
+                )
             }
         }
         _ => expr.clone(),
@@ -330,10 +369,14 @@ mod tests {
         );
         let weights = MutationWeights::default();
         let mut rng = make_rng();
-        let types: Vec<String> = (0..50).map(|_| {
-            format!("{:?}", apply_random_mutation(&expr, &weights, &mut rng, 3))
-        }).collect();
+        let types: Vec<String> = (0..50)
+            .map(|_| format!("{:?}", apply_random_mutation(&expr, &weights, &mut rng, 3)))
+            .collect();
         let distinct = types.iter().collect::<std::collections::HashSet<_>>().len();
-        assert!(distinct >= 2, "should produce varied mutations, got {} unique", distinct);
+        assert!(
+            distinct >= 2,
+            "should produce varied mutations, got {} unique",
+            distinct
+        );
     }
 }

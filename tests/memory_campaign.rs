@@ -169,10 +169,18 @@ impl Profile {
     fn cflags(self) -> &'static [&'static str] {
         match self {
             Profile::AsanO0 => &[
-                "-O0", "-g", "-fsanitize=address", "-fno-omit-frame-pointer", "-fno-inline",
+                "-O0",
+                "-g",
+                "-fsanitize=address",
+                "-fno-omit-frame-pointer",
+                "-fno-inline",
             ],
             Profile::AsanO1 => &[
-                "-O1", "-g", "-fsanitize=address", "-fno-omit-frame-pointer", "-march=native",
+                "-O1",
+                "-g",
+                "-fsanitize=address",
+                "-fno-omit-frame-pointer",
+                "-march=native",
             ],
             Profile::PlainO1 => &["-O1", "-g"],
         }
@@ -209,13 +217,19 @@ fn link(profile: Profile, root: &Path, ll: &Path, binary: &Path) -> Result<(), S
 /// Valgrind is on by default for the small generated programs; set
 /// `MEM_VALGRIND=0` to skip it.
 fn valgrind_enabled() -> bool {
-    !matches!(std::env::var("MEM_VALGRIND").as_deref(), Ok("0") | Ok("false"))
+    !matches!(
+        std::env::var("MEM_VALGRIND").as_deref(),
+        Ok("0") | Ok("false")
+    )
 }
 
 /// The corpus sweep opts into Valgrind only when asked (`MEM_VALGRIND=1`), so
 /// `cargo test --all` stays bounded on the larger fixtures.
 fn valgrind_explicit() -> bool {
-    matches!(std::env::var("MEM_VALGRIND").as_deref(), Ok("1") | Ok("true"))
+    matches!(
+        std::env::var("MEM_VALGRIND").as_deref(),
+        Ok("1") | Ok("true")
+    )
 }
 
 /// Markers that mean a memory/UB defect, not a normal result.
@@ -231,7 +245,10 @@ fn run_profile(profile: Profile, binary: &Path, require_zero_exit: bool) -> Resu
     let output = Command::new("timeout")
         .arg("60")
         .arg(binary)
-        .env("ASAN_OPTIONS", "detect_leaks=1:detect_stack_use_after_return=1:abort_on_error=1")
+        .env(
+            "ASAN_OPTIONS",
+            "detect_leaks=1:detect_stack_use_after_return=1:abort_on_error=1",
+        )
         .env("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1")
         .env("LSAN_OPTIONS", "exitcode=23")
         .output()
@@ -247,10 +264,17 @@ fn run_profile(profile: Profile, binary: &Path, require_zero_exit: bool) -> Resu
         }
     }
     if let Some(signal) = signal_of(&output.status) {
-        return Err(format!("{}: killed by signal {signal}\n{stderr}", profile.name()));
+        return Err(format!(
+            "{}: killed by signal {signal}\n{stderr}",
+            profile.name()
+        ));
     }
     if require_zero_exit && !output.status.success() {
-        return Err(format!("{}: exit {}\n{stderr}", profile.name(), output.status));
+        return Err(format!(
+            "{}: exit {}\n{stderr}",
+            profile.name(),
+            output.status
+        ));
     }
     Ok(())
 }
@@ -330,7 +354,11 @@ fn exercise(case: &Case, artifact: &Path) -> Result<(), TestCaseError> {
 
 fn save_artifact(case: &Case, directory: &Path, artifact: &Path, error: &str) {
     fs::create_dir_all(artifact).expect("create memory artifact directory");
-    fs::write(artifact.join("case.json"), serde_json::to_vec_pretty(case).unwrap()).unwrap();
+    fs::write(
+        artifact.join("case.json"),
+        serde_json::to_vec_pretty(case).unwrap(),
+    )
+    .unwrap();
     fs::write(artifact.join("failure.txt"), error).unwrap();
     for name in ["memory.bv", "memory.ll"] {
         let source = directory.join(name);
@@ -351,7 +379,10 @@ fn replay(path: &std::path::PathBuf, artifact: &Path) {
         .expect("decode replay case");
     assert!((1..512).contains(&case.size), "replay size 1..=511");
     assert!((0..8).contains(&case.depth), "replay depth 0..=7");
-    assert!((1..64).contains(&case.iterations), "replay iterations 1..=63");
+    assert!(
+        (1..64).contains(&case.iterations),
+        "replay iterations 1..=63"
+    );
     assert!(case.family <= 7, "family 0..=7");
     exercise(&case, artifact).unwrap();
 }
@@ -363,10 +394,19 @@ fn generated_memory_programs_are_memory_safe() {
         replay(&std::path::PathBuf::from(path), &artifact);
         return;
     }
-    let seed: u64 = std::env::var("MEM_SEED").unwrap_or_else(|_| "1".into()).parse().expect("seed");
-    let family: u8 = std::env::var("MEM_FAMILY").unwrap_or_else(|_| "0".into()).parse().expect("family");
+    let seed: u64 = std::env::var("MEM_SEED")
+        .unwrap_or_else(|_| "1".into())
+        .parse()
+        .expect("seed");
+    let family: u8 = std::env::var("MEM_FAMILY")
+        .unwrap_or_else(|_| "0".into())
+        .parse()
+        .expect("family");
     assert!(family <= 7, "family 0..=7");
-    let count: u32 = std::env::var("MEM_CASES").unwrap_or_else(|_| "4".into()).parse().expect("count");
+    let count: u32 = std::env::var("MEM_CASES")
+        .unwrap_or_else(|_| "4".into())
+        .parse()
+        .expect("count");
     assert!(count > 0, "count must be positive");
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&seed.to_le_bytes());
@@ -376,8 +416,12 @@ fn generated_memory_programs_are_memory_safe() {
         failure_persistence: None,
         ..Config::default()
     };
-    let mut runner = TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
-    eprintln!("memory family={family} seed={seed} cases={count}; failures: {}", artifact.display());
+    let mut runner =
+        TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
+    eprintln!(
+        "memory family={family} seed={seed} cases={count}; failures: {}",
+        artifact.display()
+    );
     let result = runner.run(&cases(family), |case| exercise(&case, &artifact));
     if let Err(proptest::test_runner::TestError::Fail(_, case)) = &result {
         let _ = exercise(case, &artifact);
@@ -388,7 +432,12 @@ fn generated_memory_programs_are_memory_safe() {
 #[test]
 fn memory_campaign_families_generate_terminating_programs() {
     for family in 0..=7 {
-        let case = Case { family, size: 16, depth: 2, iterations: 3 };
+        let case = Case {
+            family,
+            size: 16,
+            depth: 2,
+            iterations: 3,
+        };
         let source = program(&case);
         assert!(source.contains("endprogram;"), "family {family} terminates");
         assert!(!source.contains("todo"), "family {family} is concrete");
@@ -424,7 +473,11 @@ fn existing_memory_fixtures_are_sanitizer_clean() {
                 .arg(directory.path()),
         )
         .unwrap_or_else(|e| panic!("{fixture}: build failed:\n{e}"));
-        let stem = Path::new(fixture).file_stem().unwrap().to_string_lossy().into_owned();
+        let stem = Path::new(fixture)
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let ll = directory.path().join(format!("{stem}.ll"));
         let mut profiles = vec![Profile::AsanO0, Profile::AsanO1];
         if valgrind_explicit() {
@@ -432,7 +485,8 @@ fn existing_memory_fixtures_are_sanitizer_clean() {
         }
         for profile in profiles {
             let binary = directory.path().join(format!("{stem}-{}", profile.name()));
-            link(profile, root, &ll, &binary).unwrap_or_else(|e| panic!("{fixture}: link failed:\n{e}"));
+            link(profile, root, &ll, &binary)
+                .unwrap_or_else(|e| panic!("{fixture}: link failed:\n{e}"));
             let outcome = if matches!(profile, Profile::PlainO1) {
                 valgrind(&binary)
             } else {

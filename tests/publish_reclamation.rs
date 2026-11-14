@@ -30,11 +30,23 @@ fn published_storage_into_a_local_receiver_is_reclaimed() {
         String::from_utf8_lossy(&build.stderr)
     );
     let binary = directory.path().join("publish_into_parameter_leak");
-    let run = Command::new("timeout").arg("30").arg(&binary).output().unwrap();
-    assert!(run.status.success(), "run failed: {}", String::from_utf8_lossy(&run.stderr));
+    let run = Command::new("timeout")
+        .arg("30")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     if Command::new("valgrind").arg("--version").output().is_ok() {
         let checked = Command::new("valgrind")
-            .args(["--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "--error-exitcode=91"])
+            .args([
+                "--leak-check=full",
+                "--errors-for-leak-kinds=definite,indirect",
+                "--error-exitcode=91",
+            ])
             .arg(&binary)
             .output()
             .unwrap();

@@ -67,12 +67,24 @@ pub struct BottleneckSection {
     pub fpga_clock_mhz: f64,
 }
 
-fn default_pcie_bw() -> f64 { 15.75 }
-fn default_ram_bw() -> f64 { 40.0 }
-fn default_l1() -> u64 { 32 }
-fn default_l2() -> u64 { 256 }
-fn default_l3() -> u64 { 8192 }
-fn default_port_width() -> u64 { 1 }
+fn default_pcie_bw() -> f64 {
+    15.75
+}
+fn default_ram_bw() -> f64 {
+    40.0
+}
+fn default_l1() -> u64 {
+    32
+}
+fn default_l2() -> u64 {
+    256
+}
+fn default_l3() -> u64 {
+    8192
+}
+fn default_port_width() -> u64 {
+    1
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MemoryBank {
@@ -97,7 +109,7 @@ pub struct TargetSection {
     #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(default)]
-    pub import_ffi: Option<String>,  // Phase 4: inherit FFI from profile
+    pub import_ffi: Option<String>, // Phase 4: inherit FFI from profile
 }
 
 /// Errors for TargetSpec operations
@@ -118,8 +130,16 @@ impl std::fmt::Display for TargetError {
         match self {
             TargetError::SpecNotFound(s) => write!(f, "Target spec '{}' not found", s),
             TargetError::ParseError(s) => write!(f, "Parse error: {}", s),
-            TargetError::CapabilityMismatch { source_capability, target, missing } => {
-                write!(f, "B4001: Target '{}' lacks '{}' capability required by source", target, missing)
+            TargetError::CapabilityMismatch {
+                source_capability,
+                target,
+                missing,
+            } => {
+                write!(
+                    f,
+                    "B4001: Target '{}' lacks '{}' capability required by source",
+                    target, missing
+                )
             }
             TargetError::BackendNotFound(s) => write!(f, "Backend '{}' not found", s),
         }
@@ -153,7 +173,10 @@ impl TargetSpec {
             if !target_caps.contains(&sc.to_string()) && *sc != "logic" {
                 warnings.push(format!(
                     "B4005: Target '{}' lacks '{}'; feature may be stripped",
-                    self.target.as_ref().map(|t| &t.name).unwrap_or(&"default".to_string()),
+                    self.target
+                        .as_ref()
+                        .map(|t| &t.name)
+                        .unwrap_or(&"default".to_string()),
                     sc
                 ));
             }
@@ -164,7 +187,11 @@ impl TargetSpec {
         } else {
             Err(TargetError::CapabilityMismatch {
                 source_capability: source_caps.join(", "),
-                target: self.target.as_ref().map(|t| t.name.clone()).unwrap_or_default(),
+                target: self
+                    .target
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default(),
                 missing: warnings.join("; "),
             })
         }
@@ -243,7 +270,7 @@ pub struct TypeOverride {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CodegenSection {
     #[serde(default)]
-    pub backend: String,  // Kept for backward compatibility
+    pub backend: String, // Kept for backward compatibility
     #[serde(default)]
     pub extension: String,
     #[serde(default, rename = "state_allocation")]
@@ -301,31 +328,29 @@ impl TargetSpec {
     /// Validate program against this spec's validation rules
     pub fn validate_program(&self, _program: &[crate::ast::TopLevel]) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
-        
+
         // Check for blocked types in [codegen.validation]
         if let Some(codegen) = &self.codegen {
             for (type_name, rule) in &codegen.validation {
                 if rule.starts_with("error:") {
                     // In a real implementation, check if the program uses this type
                     // For now, just record that validation is active
-                    errors.push(format!(
-                        "Type '{}' validation rule: {}", 
-                        type_name, rule
-                    ));
+                    errors.push(format!("Type '{}' validation rule: {}", type_name, rule));
                 }
             }
         }
-        
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
     }
-    
+
     /// Get the inference rule for a given key
     pub fn inference(&self, key: &str) -> Option<&str> {
-        self.codegen.as_ref()
+        self.codegen
+            .as_ref()
             .and_then(|c| c.inference.get(key))
             .map(|s| s.as_str())
     }

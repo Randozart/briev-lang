@@ -6,15 +6,14 @@ use super::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
-    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField, HirInit,
-    HirForeign, HirGlobal, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind,
-    HirWatchdog,
+    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField, HirForeign,
+    HirGlobal, HirInit, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
     HirWatchdogOnFire,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use crate::ast::{
-    Contract, Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm,
-    TopLevel, Transaction, Type,
+    Contract, Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm, TopLevel,
+    Transaction, Type,
 };
 
 pub fn lower_program(items: &[TopLevel]) -> HirProgram {
@@ -67,7 +66,11 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             has_triggers: false,
         };
         for (top_index, item) in items.iter().enumerate() {
-            let ctx = ItemCtx { exported: false, export_symbol: None, top_index };
+            let ctx = ItemCtx {
+                exported: false,
+                export_symbol: None,
+                top_index,
+            };
             lower_item(item, ctx, &mut ids, &mut out);
         }
         has_triggers = out.has_triggers;
@@ -123,7 +126,6 @@ struct LowerOutputs<'a> {
     has_triggers: bool,
 }
 
-
 /// Cast-edge / cross-op bindings named by a protocol definition (emission
 /// roots; mirrors the AST index).
 fn lower_protocol_bindings(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOutputs<'_>) {
@@ -140,7 +142,12 @@ fn lower_protocol_bindings(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOut
 }
 
 /// TypeDef members (owner-qualified) plus the type declaration itself.
-fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>, top_index: usize) {
+fn lower_typedef_item(
+    td: &crate::ast::TypeDef,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+    top_index: usize,
+) {
     for member in &td.body.members {
         match member {
             TopLevel::Definition(d) => {
@@ -206,7 +213,11 @@ fn lower_impl_item(imp: &crate::ast::top::ImplDef, ids: &mut IdSupply, out: &mut
 }
 
 /// Trait defaults are indexed by BARE name plus the requirement-slot table.
-fn lower_trait_item(tr: &crate::ast::top::TraitDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+fn lower_trait_item(
+    tr: &crate::ast::top::TraitDef,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+) {
     if !out.trait_functions.iter().any(|(n, _)| n == &tr.name) {
         out.trait_functions.push((
             tr.name.clone(),
@@ -249,7 +260,6 @@ fn lower_sync_group(ctx: &SyncGroupCtx<'_>, ids: &mut IdSupply, out: &mut LowerO
     }
 }
 
-
 /// Top-level `let` (non-exported) → state-field leaf global.
 fn lower_global_statement(
     stmt: &crate::ast::Statement,
@@ -288,7 +298,6 @@ fn lower_global_statement(
     });
 }
 
-
 /// Top-level `const`: the name set, initializer, and declared type.
 fn lower_constant_item(
     c: &crate::ast::top::Constant,
@@ -296,7 +305,8 @@ fn lower_constant_item(
     out: &mut LowerOutputs<'_>,
 ) {
     out.constants.push(c.name.clone());
-    out.const_exprs.push((c.name.clone(), lower_expr(&c.expr, ids)));
+    out.const_exprs
+        .push((c.name.clone(), lower_expr(&c.expr, ids)));
     out.const_types.push((c.name.clone(), c.ty.clone()));
 }
 
@@ -311,7 +321,11 @@ fn lower_init_item(i: &crate::ast::top::InitDecl, ids: &mut IdSupply, out: &mut 
 }
 
 fn lower_item(item: &TopLevel, ctx: ItemCtx, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
-    let ItemCtx { exported, export_symbol, top_index } = ctx;
+    let ItemCtx {
+        exported,
+        export_symbol,
+        top_index,
+    } = ctx;
     match item {
         TopLevel::Definition(d) => out.callables.push(lower_definition(
             d,
@@ -359,7 +373,11 @@ fn lower_item(item: &TopLevel, ctx: ItemCtx, ids: &mut IdSupply, out: &mut Lower
         // 2026-11-05 (H3.4b): `export`/`sync<group>` wrap a callable that the
         // reactor still dispatches; HIR must contain the inner node.
         TopLevel::Export(_) | TopLevel::SyncGroup { .. } => {
-            let wrapped = ItemCtx { exported, export_symbol, top_index };
+            let wrapped = ItemCtx {
+                exported,
+                export_symbol,
+                top_index,
+            };
             lower_wrapped_item(item, wrapped, ids, out);
         }
         TopLevel::TypeDef(_) => lower_typedef_top(item, ids, out, top_index),
@@ -411,7 +429,12 @@ fn binding_fns(def: &crate::ast::TypeDef) -> Vec<String> {
     out
 }
 
-fn lower_typedef_top(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>, top_index: usize) {
+fn lower_typedef_top(
+    item: &TopLevel,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+    top_index: usize,
+) {
     if let TopLevel::TypeDef(td) = item {
         out.type_names.push(td.name.clone());
         lower_typedef_item(td, ids, out, top_index);
@@ -586,7 +609,11 @@ fn parent_name(def: &crate::ast::TypeDef) -> Option<String> {
     })
 }
 
-fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply, top_index: usize) -> Option<HirTypeDef> {
+fn lower_type_def(
+    def: &crate::ast::TypeDef,
+    ids: &mut IdSupply,
+    top_index: usize,
+) -> Option<HirTypeDef> {
     // A body-less declaration is a boundary alias (`type CStr: String<C_String>`)
     // when it carries a protocol; otherwise it has no HIR shape. Component
     // types (`pin`/`hold`/mode clauses only) keep their declaration.
@@ -680,7 +707,11 @@ fn has_user_operators(def: &crate::ast::TypeDef) -> bool {
     })
 }
 
-fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
+fn lower_enum_type_def(
+    def: &crate::ast::TypeDef,
+    ids: &mut IdSupply,
+    top_index: usize,
+) -> HirTypeDef {
     let variants = def
         .body
         .slots
@@ -723,7 +754,11 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply, top_index:
     }
 }
 
-fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
+fn lower_enum(
+    def: &crate::ast::EnumDefinition,
+    ids: &mut IdSupply,
+    top_index: usize,
+) -> HirTypeDef {
     let variants = def
         .variants
         .iter()
@@ -768,7 +803,11 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply, top_index: u
     }
 }
 
-fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
+fn lower_object(
+    def: &crate::ast::StructDefinition,
+    ids: &mut IdSupply,
+    top_index: usize,
+) -> HirTypeDef {
     HirTypeDef {
         node: ids.node(),
         item: ids.item(),
@@ -943,7 +982,11 @@ fn lower_contract(c: &Contract, ids: &mut IdSupply) -> HirContract {
             is_required: w.is_required,
         }
     });
-    HirContract { pre, post, watchdog }
+    HirContract {
+        pre,
+        post,
+        watchdog,
+    }
 }
 
 fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallable {
@@ -996,12 +1039,21 @@ pub fn lower_body_statements(body: &[Statement]) -> Vec<HirStmt> {
 }
 
 fn lower_body(body: &[Statement], ids: &mut IdSupply) -> Vec<HirStmt> {
-    body.iter().map(|statement| lower_stmt(statement, ids)).collect()
+    body.iter()
+        .map(|statement| lower_stmt(statement, ids))
+        .collect()
 }
 
 fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
     let kind = match statement {
-        Statement::Let { name, names, ty, expr, modifiers, .. } => HirStmtKind::Let {
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+            ..
+        } => HirStmtKind::Let {
             name: name.clone(),
             names: names.clone(),
             ty: ty.clone(),
@@ -1028,7 +1080,13 @@ fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
             HirStmtKind::Guarded(lower_expr(cond, ids), lower_body(body, ids))
         }
         Statement::Block(body) => HirStmtKind::Block(lower_body(body, ids)),
-        Statement::Foreach { item, list, body, modifiers, .. } => HirStmtKind::Foreach {
+        Statement::Foreach {
+            item,
+            list,
+            body,
+            modifiers,
+            ..
+        } => HirStmtKind::Foreach {
             item: item.clone(),
             list: lower_expr(list, ids),
             body: lower_body(body, ids),
@@ -1036,27 +1094,42 @@ fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
         },
         Statement::Match { expr, arms } => HirStmtKind::Match {
             expr: lower_expr(expr, ids),
-            arms: arms.iter().map(|arm| lower_stmt_match_arm(arm, ids)).collect(),
+            arms: arms
+                .iter()
+                .map(|arm| lower_stmt_match_arm(arm, ids))
+                .collect(),
         },
         Statement::Break => HirStmtKind::Break,
         Statement::Trap => HirStmtKind::Trap,
         Statement::Halt => HirStmtKind::Halt,
         Statement::Yield => HirStmtKind::Yield,
-        Statement::EndProgram(expr) => HirStmtKind::EndProgram(expr.as_ref().map(|expr| lower_expr(expr, ids))),
+        Statement::EndProgram(expr) => {
+            HirStmtKind::EndProgram(expr.as_ref().map(|expr| lower_expr(expr, ids)))
+        }
         Statement::Gate(expr) => HirStmtKind::Gate(lower_expr(expr, ids)),
-        Statement::Rollback(expr) => HirStmtKind::Rollback(expr.as_ref().map(|expr| lower_expr(expr, ids))),
+        Statement::Rollback(expr) => {
+            HirStmtKind::Rollback(expr.as_ref().map(|expr| lower_expr(expr, ids)))
+        }
         Statement::FreeHint(name) => HirStmtKind::FreeHint(name.clone()),
         Statement::KeepHint(name) => HirStmtKind::KeepHint(name.clone()),
         Statement::SyncBlock(body) => HirStmtKind::SyncBlock(lower_body(body, ids)),
         Statement::Defer(body) => HirStmtKind::Defer(lower_body(body, ids)),
         Statement::Mutex(body) => HirStmtKind::Mutex(lower_body(body, ids)),
-        Statement::Open(left, right) => HirStmtKind::Open(lower_expr(left, ids), lower_expr(right, ids)),
+        Statement::Open(left, right) => {
+            HirStmtKind::Open(lower_expr(left, ids), lower_expr(right, ids))
+        }
         Statement::TrgBinding { name, instance } => HirStmtKind::TrgBinding {
             name: name.clone(),
             instance: lower_expr(instance, ids),
         },
-        Statement::MetadataAssignment(name, value) => HirStmtKind::MetadataAssignment(name.clone(), value.clone()),
-        Statement::InlineAsm { asm_string, clobbers, span } => HirStmtKind::InlineAsm {
+        Statement::MetadataAssignment(name, value) => {
+            HirStmtKind::MetadataAssignment(name.clone(), value.clone())
+        }
+        Statement::InlineAsm {
+            asm_string,
+            clobbers,
+            span,
+        } => HirStmtKind::InlineAsm {
             asm_string: asm_string.clone(),
             clobbers: clobbers.clone(),
             span: *span,
@@ -1072,7 +1145,11 @@ fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
 
 fn lower_stmt_match_arm(arm: &StmtMatchArm, ids: &mut IdSupply) -> HirStmtMatchArm {
     HirStmtMatchArm {
-        patterns: arm.patterns.iter().map(|pat| lower_pattern(pat, ids)).collect(),
+        patterns: arm
+            .patterns
+            .iter()
+            .map(|pat| lower_pattern(pat, ids))
+            .collect(),
         body: lower_body(&arm.body, ids),
     }
 }
@@ -1086,49 +1163,114 @@ pub fn lower_standalone_expr(expr: &Expr) -> HirExpr {
 
 fn lower_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
     let (ty, kind) = match expr {
-        Expr::Quoted(bytes) => (Some(Type::Custom("String".into())), HirExprKind::Literal(HirLiteral::Bytes(bytes.clone()))),
-        Expr::Decimal(value) => (Some(Type::int()), HirExprKind::Literal(HirLiteral::Int(*value))),
-        Expr::Char(value) => (Some(Type::Custom("Char".into())), HirExprKind::Literal(HirLiteral::Char(*value))),
-        Expr::TaggedLiteral(value, tag) => (Some(Type::int()), HirExprKind::Literal(HirLiteral::TaggedInt(*value, tag.clone()))),
-        Expr::TaggedQuotedLiteral(bytes, tag) => (Some(Type::Custom("String".into())), HirExprKind::Literal(HirLiteral::TaggedBytes(bytes.clone(), tag.clone()))),
-        Expr::Bool(value) => (Some(Type::Custom("Bool".into())), HirExprKind::Literal(HirLiteral::Bool(*value))),
-        Expr::Float(value) => (Some(Type::float()), HirExprKind::Literal(HirLiteral::Float(*value))),
-        Expr::BeginProgram => (Some(Type::Custom("Bool".into())), HirExprKind::Literal(HirLiteral::BeginProgram)),
+        Expr::Quoted(bytes) => (
+            Some(Type::Custom("String".into())),
+            HirExprKind::Literal(HirLiteral::Bytes(bytes.clone())),
+        ),
+        Expr::Decimal(value) => (
+            Some(Type::int()),
+            HirExprKind::Literal(HirLiteral::Int(*value)),
+        ),
+        Expr::Char(value) => (
+            Some(Type::Custom("Char".into())),
+            HirExprKind::Literal(HirLiteral::Char(*value)),
+        ),
+        Expr::TaggedLiteral(value, tag) => (
+            Some(Type::int()),
+            HirExprKind::Literal(HirLiteral::TaggedInt(*value, tag.clone())),
+        ),
+        Expr::TaggedQuotedLiteral(bytes, tag) => (
+            Some(Type::Custom("String".into())),
+            HirExprKind::Literal(HirLiteral::TaggedBytes(bytes.clone(), tag.clone())),
+        ),
+        Expr::Bool(value) => (
+            Some(Type::Custom("Bool".into())),
+            HirExprKind::Literal(HirLiteral::Bool(*value)),
+        ),
+        Expr::Float(value) => (
+            Some(Type::float()),
+            HirExprKind::Literal(HirLiteral::Float(*value)),
+        ),
+        Expr::BeginProgram => (
+            Some(Type::Custom("Bool".into())),
+            HirExprKind::Literal(HirLiteral::BeginProgram),
+        ),
         Expr::Identifier(name) => (None, HirExprKind::Identifier(name.clone())),
-        Expr::Call(callee, args, analysis_id) => (None, HirExprKind::Call {
-            callee: callee.clone(),
-            args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
-            analysis_id: *analysis_id,
-        }),
-        Expr::BinaryOp(op, left, right) => (None, HirExprKind::Binary {
-            op: *op,
-            left: Box::new(lower_expr(left, ids)),
-            right: Box::new(lower_expr(right, ids)),
-        }),
-        Expr::UnaryOp(op, inner) => (None, HirExprKind::Unary {
-            op: *op,
-            inner: Box::new(lower_expr(inner, ids)),
-        }),
-        Expr::Field(receiver, name) => (None, HirExprKind::Field {
-            receiver: Box::new(lower_expr(receiver, ids)),
-            name: name.clone(),
-        }),
-        Expr::Cast(inner, to) => (Some(to.clone()), HirExprKind::Cast {
-            inner: Box::new(lower_expr(inner, ids)),
-            to: to.clone(),
-            via: None,
-        }),
-        Expr::Tuple(items) => (None, HirExprKind::Tuple(items.iter().map(|item| lower_expr(item, ids)).collect())),
-        Expr::List(items) => (None, HirExprKind::List(items.iter().map(|item| lower_expr(item, ids)).collect())),
-        Expr::StructLiteral { type_name, fields, specs, .. } => (None, HirExprKind::StructLiteral {
-            type_name: type_name.clone(),
-            fields: fields.iter().map(|(name, value)| (name.clone(), lower_expr(value, ids))).collect(),
-            specs: specs.iter().map(|(name, value)| (name.clone(), lower_expr(value, ids))).collect(),
-        }),
-        Expr::Match(scrutinee, arms) => (None, HirExprKind::Match {
-            scrutinee: Box::new(lower_expr(scrutinee, ids)),
-            arms: arms.iter().map(|arm| lower_expr_match_arm(arm, ids)).collect(),
-        }),
+        Expr::Call(callee, args, analysis_id) => (
+            None,
+            HirExprKind::Call {
+                callee: callee.clone(),
+                args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
+                analysis_id: *analysis_id,
+            },
+        ),
+        Expr::BinaryOp(op, left, right) => (
+            None,
+            HirExprKind::Binary {
+                op: *op,
+                left: Box::new(lower_expr(left, ids)),
+                right: Box::new(lower_expr(right, ids)),
+            },
+        ),
+        Expr::UnaryOp(op, inner) => (
+            None,
+            HirExprKind::Unary {
+                op: *op,
+                inner: Box::new(lower_expr(inner, ids)),
+            },
+        ),
+        Expr::Field(receiver, name) => (
+            None,
+            HirExprKind::Field {
+                receiver: Box::new(lower_expr(receiver, ids)),
+                name: name.clone(),
+            },
+        ),
+        Expr::Cast(inner, to) => (
+            Some(to.clone()),
+            HirExprKind::Cast {
+                inner: Box::new(lower_expr(inner, ids)),
+                to: to.clone(),
+                via: None,
+            },
+        ),
+        Expr::Tuple(items) => (
+            None,
+            HirExprKind::Tuple(items.iter().map(|item| lower_expr(item, ids)).collect()),
+        ),
+        Expr::List(items) => (
+            None,
+            HirExprKind::List(items.iter().map(|item| lower_expr(item, ids)).collect()),
+        ),
+        Expr::StructLiteral {
+            type_name,
+            fields,
+            specs,
+            ..
+        } => (
+            None,
+            HirExprKind::StructLiteral {
+                type_name: type_name.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), lower_expr(value, ids)))
+                    .collect(),
+                specs: specs
+                    .iter()
+                    .map(|(name, value)| (name.clone(), lower_expr(value, ids)))
+                    .collect(),
+            },
+        ),
+        Expr::Match(scrutinee, arms) => (
+            None,
+            HirExprKind::Match {
+                scrutinee: Box::new(lower_expr(scrutinee, ids)),
+                arms: arms
+                    .iter()
+                    .map(|arm| lower_expr_match_arm(arm, ids))
+                    .collect(),
+            },
+        ),
         Expr::Block(body) => (None, HirExprKind::Block(lower_body(body, ids))),
         other => return lower_special_expr(other, ids),
     };
@@ -1142,72 +1284,120 @@ fn lower_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
 
 fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
     let (ty, kind) = match expr {
-        Expr::MethodCall(receiver, name, args, analysis_id) => (None, HirExprKind::MethodCall {
-            receiver: Box::new(lower_expr(receiver, ids)),
-            name: name.clone(),
-            args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
-            analysis_id: *analysis_id,
-        }),
-        Expr::Reflect(receiver, name, kind) => (None, HirExprKind::Reflect {
-            receiver: Box::new(lower_expr(receiver, ids)),
-            name: name.clone(),
-            kind: *kind,
-        }),
-        Expr::Index(array, index) => (None, HirExprKind::Index(
-            Box::new(lower_expr(array, ids)),
-            Box::new(lower_expr(index, ids)),
-        )),
+        Expr::MethodCall(receiver, name, args, analysis_id) => (
+            None,
+            HirExprKind::MethodCall {
+                receiver: Box::new(lower_expr(receiver, ids)),
+                name: name.clone(),
+                args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
+                analysis_id: *analysis_id,
+            },
+        ),
+        Expr::Reflect(receiver, name, kind) => (
+            None,
+            HirExprKind::Reflect {
+                receiver: Box::new(lower_expr(receiver, ids)),
+                name: name.clone(),
+                kind: *kind,
+            },
+        ),
+        Expr::Index(array, index) => (
+            None,
+            HirExprKind::Index(
+                Box::new(lower_expr(array, ids)),
+                Box::new(lower_expr(index, ids)),
+            ),
+        ),
         // 2026-11-12 (electronics full-surface port): the `[*]` wildcard
         // selector. Only ever an index; the electronics analysis expands it.
         Expr::Wildcard => (None, HirExprKind::Wildcard),
-        Expr::Slice { array, start, end, stride } => (None, HirExprKind::Slice {
-            array: Box::new(lower_expr(array, ids)),
-            start: start.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
-            end: end.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
-            stride: stride.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
-        }),
-        Expr::Range { start, end, inclusive } => (None, HirExprKind::Range {
-            start: Box::new(lower_expr(start, ids)),
-            end: Box::new(lower_expr(end, ids)),
-            inclusive: *inclusive,
-        }),
-        Expr::Spawn { type_name, args, storage } => (None, HirExprKind::Spawn {
-            type_name: type_name.clone(),
-            args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
-            storage: *storage,
-        }),
-        Expr::If(condition, then_branch, else_branch) => (None, HirExprKind::If {
-            condition: Box::new(lower_expr(condition, ids)),
-            then_branch: Box::new(lower_expr(then_branch, ids)),
-            else_branch: else_branch.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
-        }),
-        Expr::Lambda(params, body) => (None, HirExprKind::Lambda {
-            params: params.clone(),
-            body: Box::new(lower_expr(body, ids)),
-        }),
-        Expr::IsType(inner, ty) => (None, HirExprKind::IsType {
-            inner: Box::new(lower_expr(inner, ids)),
-            ty: ty.clone(),
-        }),
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => (
+            None,
+            HirExprKind::Slice {
+                array: Box::new(lower_expr(array, ids)),
+                start: start.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
+                end: end.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
+                stride: stride.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
+            },
+        ),
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => (
+            None,
+            HirExprKind::Range {
+                start: Box::new(lower_expr(start, ids)),
+                end: Box::new(lower_expr(end, ids)),
+                inclusive: *inclusive,
+            },
+        ),
+        Expr::Spawn {
+            type_name,
+            args,
+            storage,
+        } => (
+            None,
+            HirExprKind::Spawn {
+                type_name: type_name.clone(),
+                args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
+                storage: *storage,
+            },
+        ),
+        Expr::If(condition, then_branch, else_branch) => (
+            None,
+            HirExprKind::If {
+                condition: Box::new(lower_expr(condition, ids)),
+                then_branch: Box::new(lower_expr(then_branch, ids)),
+                else_branch: else_branch
+                    .as_ref()
+                    .map(|expr| Box::new(lower_expr(expr, ids))),
+            },
+        ),
+        Expr::Lambda(params, body) => (
+            None,
+            HirExprKind::Lambda {
+                params: params.clone(),
+                body: Box::new(lower_expr(body, ids)),
+            },
+        ),
+        Expr::IsType(inner, ty) => (
+            None,
+            HirExprKind::IsType {
+                inner: Box::new(lower_expr(inner, ids)),
+                ty: ty.clone(),
+            },
+        ),
         Expr::Deref(inner) => (None, HirExprKind::Deref(Box::new(lower_expr(inner, ids)))),
         Expr::AddrOf(inner) => (None, HirExprKind::AddrOf(Box::new(lower_expr(inner, ids)))),
         Expr::Consume(inner) => (None, HirExprKind::Consume(Box::new(lower_expr(inner, ids)))),
         Expr::Await(inner) => (None, HirExprKind::Await(Box::new(lower_expr(inner, ids)))),
-        Expr::UnitLiteral { value, unit } => (Some(Type::float()), HirExprKind::UnitLiteral {
-            value: *value,
-            unit: unit.clone(),
-        }),
-        Expr::PluginIntercept { name, args, type_args, receiver } => {
-            (
-                None,
-                HirExprKind::PluginIntercept {
-                    name: name.clone(),
-                    args: args.iter().map(|a| lower_expr(a, ids)).collect(),
-                    type_args: type_args.clone(),
-                    receiver: receiver.as_ref().map(|r| Box::new(lower_expr(r, ids))),
-                },
-            )
-        }
+        Expr::UnitLiteral { value, unit } => (
+            Some(Type::float()),
+            HirExprKind::UnitLiteral {
+                value: *value,
+                unit: unit.clone(),
+            },
+        ),
+        Expr::PluginIntercept {
+            name,
+            args,
+            type_args,
+            receiver,
+        } => (
+            None,
+            HirExprKind::PluginIntercept {
+                name: name.clone(),
+                args: args.iter().map(|a| lower_expr(a, ids)).collect(),
+                type_args: type_args.clone(),
+                receiver: receiver.as_ref().map(|r| Box::new(lower_expr(r, ids))),
+            },
+        ),
         other => (None, HirExprKind::Other(expr_tag(other))),
     };
     HirExpr {
@@ -1231,21 +1421,30 @@ fn lower_pattern(pattern: &Pattern, ids: &mut IdSupply) -> HirPattern {
         Pattern::Wildcard => HirPatternKind::Wildcard,
         Pattern::Literal(expr) => HirPatternKind::Literal(lower_expr(expr, ids)),
         Pattern::Binding(name) => HirPatternKind::Binding(name.clone()),
-        Pattern::TypedBinding(name, ty) => HirPatternKind::TypedBinding(name.clone(), ty.as_ref().clone()),
+        Pattern::TypedBinding(name, ty) => {
+            HirPatternKind::TypedBinding(name.clone(), ty.as_ref().clone())
+        }
         Pattern::EnumVariant(name, pats) => HirPatternKind::EnumVariant(
             name.clone(),
             pats.iter().map(|pat| lower_pattern(pat, ids)).collect(),
         ),
-        Pattern::Tuple(pats) => HirPatternKind::Tuple(
-            pats.iter().map(|pat| lower_pattern(pat, ids)).collect(),
-        ),
-        Pattern::Range(start, end) => HirPatternKind::Range(lower_expr(start, ids), lower_expr(end, ids)),
-        Pattern::RangeInclusive(start, end) => HirPatternKind::RangeInclusive(lower_expr(start, ids), lower_expr(end, ids)),
-        Pattern::Multi(pats) => HirPatternKind::Multi(
-            pats.iter().map(|pat| lower_pattern(pat, ids)).collect(),
-        ),
+        Pattern::Tuple(pats) => {
+            HirPatternKind::Tuple(pats.iter().map(|pat| lower_pattern(pat, ids)).collect())
+        }
+        Pattern::Range(start, end) => {
+            HirPatternKind::Range(lower_expr(start, ids), lower_expr(end, ids))
+        }
+        Pattern::RangeInclusive(start, end) => {
+            HirPatternKind::RangeInclusive(lower_expr(start, ids), lower_expr(end, ids))
+        }
+        Pattern::Multi(pats) => {
+            HirPatternKind::Multi(pats.iter().map(|pat| lower_pattern(pat, ids)).collect())
+        }
     };
-    HirPattern { id: ids.node(), kind }
+    HirPattern {
+        id: ids.node(),
+        kind,
+    }
 }
 
 fn result_type(output: Option<&OutputType>, outputs: &[Type]) -> Option<Type> {
@@ -1310,7 +1509,10 @@ pub fn lower_program_checked(items: &[TopLevel]) -> Result<HirProgram, Vec<HirLo
     // rejects it explicitly; unchecked lowering carries the full surface.
     let intercepts = count_plugin_intercepts(&program);
     if intercepts > 0 {
-        issues.push(HirLowerIssue { tag: "plugin-intercept", count: intercepts });
+        issues.push(HirLowerIssue {
+            tag: "plugin-intercept",
+            count: intercepts,
+        });
     }
     issues.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(b.tag)));
     if issues.is_empty() {
@@ -1354,5 +1556,8 @@ fn callable_intercepts(c: &HirCallable) -> usize {
 }
 
 fn is_intercept(e: &crate::hir::expr::HirExpr) -> bool {
-    matches!(e.kind, crate::hir::expr::HirExprKind::PluginIntercept { .. })
+    matches!(
+        e.kind,
+        crate::hir::expr::HirExprKind::PluginIntercept { .. }
+    )
 }

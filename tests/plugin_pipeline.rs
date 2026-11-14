@@ -49,8 +49,14 @@ node main [done == false][done == true] {
 fn ast_and_ir_stage_plugins_reach_emission() {
     let (ok, log, ll) = compile(SOURCE);
     assert!(ok, "build failed:\n{log}");
-    assert!(log.contains("plugin-typed-ran"), "live-AST stage ran:\n{log}");
-    assert!(ll.contains("; plugin-ran"), "IR stage mutated the emitted text:\n{ll}");
+    assert!(
+        log.contains("plugin-typed-ran"),
+        "live-AST stage ran:\n{log}"
+    );
+    assert!(
+        ll.contains("; plugin-ran"),
+        "IR stage mutated the emitted text:\n{ll}"
+    );
 }
 
 #[test]

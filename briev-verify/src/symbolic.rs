@@ -129,7 +129,9 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
     match expr {
         // Literal values
         Expr::Char(c) => SymbolicValue::Literal(*c as i64, "int".to_string()),
-        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => SymbolicValue::Literal(*n, "int".to_string()),
+        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => {
+            SymbolicValue::Literal(*n, "int".to_string())
+        }
         Expr::Float(_) | Expr::UnitLiteral { .. } => SymbolicValue::Unknown,
         Expr::Bool(b) => SymbolicValue::bool_literal(*b),
         Expr::BeginProgram => SymbolicValue::bool_literal(true),
@@ -270,8 +272,11 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Cast(_, _) | Expr::IsType(_, _) | Expr::Within(_, _) => SymbolicValue::Unknown,
 
         // Derivation and metadata
-        Expr::DerivationBlock(_) | Expr::StructLiteral { .. }
-        | Expr::Field(_, _) | Expr::Reflect(_, _, _) | Expr::MethodCall(..)
+        Expr::DerivationBlock(_)
+        | Expr::StructLiteral { .. }
+        | Expr::Field(_, _)
+        | Expr::Reflect(_, _, _)
+        | Expr::MethodCall(..)
         | Expr::FormattingAnnotation(_) => SymbolicValue::Unknown,
 
         // Pointer dereference
@@ -282,11 +287,12 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Consume(inner) => eval_symbolic(inner, state),
         // 2026-07-19: Plugin-intercept calls — unknown at symbolic eval
         Expr::PluginIntercept { .. } => SymbolicValue::Unknown,
-        Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Slice { .. } => { SymbolicValue::Unknown },
-        Expr::Range { .. } => { SymbolicValue::Unknown },
-        Expr::Spawn { .. } => { SymbolicValue::Unknown },
-
+        Expr::Exists(_) => {
+            unreachable!("fn? only in stage eval")
+        }
+        Expr::Slice { .. } => SymbolicValue::Unknown,
+        Expr::Range { .. } => SymbolicValue::Unknown,
+        Expr::Spawn { .. } => SymbolicValue::Unknown,
     }
 }
 
@@ -315,22 +321,18 @@ fn simplify_binary(op: &str, left: &SymbolicValue, right: &SymbolicValue) -> Opt
         // x−x → 0. These make add/sub CastTo/CastFrom pairs provably
         // 1-to-1 (the P1.5 delta-collapse), which previously required z3
         // (absent from PATH → always failed).
-        ("-", SymbolicValue::Binary(op, inner, r2), r1) if op == "+" => {
-            match (r1, r2.as_ref()) {
-                (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
-                    Some((**inner).clone())
-                }
-                _ => None,
+        ("-", SymbolicValue::Binary(op, inner, r2), r1) if op == "+" => match (r1, r2.as_ref()) {
+            (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
+                Some((**inner).clone())
             }
-        }
-        ("+", SymbolicValue::Binary(op, inner, r2), r1) if op == "-" => {
-            match (r1, r2.as_ref()) {
-                (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
-                    Some((**inner).clone())
-                }
-                _ => None,
+            _ => None,
+        },
+        ("+", SymbolicValue::Binary(op, inner, r2), r1) if op == "-" => match (r1, r2.as_ref()) {
+            (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
+                Some((**inner).clone())
             }
-        }
+            _ => None,
+        },
         ("-", l, r) if symbolic_equals(l, r) => Some(SymbolicValue::int_literal(0)),
 
         // Identity and absorption rules for multiplication
@@ -462,7 +464,10 @@ pub fn enumerate_paths(body: &[Statement]) -> Vec<SymbolicState> {
                     new_paths.push(false_state);
                 }
 
-                Statement::Term(..) | Statement::EndProgram(..) | Statement::Rollback(_) | Statement::Tail(_) => {
+                Statement::Term(..)
+                | Statement::EndProgram(..)
+                | Statement::Rollback(_)
+                | Statement::Tail(_) => {
                     new_paths.push(state);
                 }
 
@@ -522,9 +527,7 @@ pub fn eval_symbolic_expr(
         }
     }
     match expr {
-        Expr::Identifier(name) => {
-            inputs.get(name).cloned().unwrap_or(SymbolicValue::Unknown)
-        }
+        Expr::Identifier(name) => inputs.get(name).cloned().unwrap_or(SymbolicValue::Unknown),
         Expr::Field(_, _) => SymbolicValue::Unknown,
         Expr::BinaryOp(kind, l, r) => {
             let lv = eval_symbolic_expr(l, inputs);
@@ -533,14 +536,12 @@ pub fn eval_symbolic_expr(
             if let Some(simplified) = simplify_binary(sym, &lv, &rv) {
                 simplified
             } else {
-                SymbolicValue::Binary(
-                    sym.to_string(),
-                    Box::new(lv),
-                    Box::new(rv),
-                )
+                SymbolicValue::Binary(sym.to_string(), Box::new(lv), Box::new(rv))
             }
         }
-        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => SymbolicValue::Literal(*n, "i64".to_string()),
+        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => {
+            SymbolicValue::Literal(*n, "i64".to_string())
+        }
         _ => SymbolicValue::Unknown,
     }
 }

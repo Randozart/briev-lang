@@ -15,11 +15,11 @@ use crate::analysis::destination_ownership::{
     EscapeKind, ParamObligation, ResultDestination, SinkKind, ValueFact, ValueId, ValueOrigin,
     is_primitive,
 };
+use crate::ast::Type;
 use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use crate::hir::expr_walk as hir_visit;
 use crate::hir::pattern::{HirPattern, HirPatternKind};
 use crate::hir::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
-use crate::ast::Type;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Coarse expression category. This keeps the source-order traversal
@@ -170,7 +170,9 @@ pub(super) fn collect_calls(body: &[HirStmt], out: &mut BTreeSet<String>) {
 
 fn collect_calls_stmt(stmt: &HirStmt, out: &mut BTreeSet<String>) {
     match &stmt.kind {
-        HirStmtKind::Let { expr: Some(expr), .. }
+        HirStmtKind::Let {
+            expr: Some(expr), ..
+        }
         | HirStmtKind::Assign(_, expr)
         | HirStmtKind::Term(Some(expr))
         | HirStmtKind::Tail(expr)
@@ -231,8 +233,12 @@ fn collect_calls_expr(expr: &HirExpr, out: &mut BTreeSet<String>) {
             collect_calls_expr(right, out);
         }
         HirExprKind::Unary { inner, .. }
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        }
         | HirExprKind::Cast { inner, .. }
         | HirExprKind::IsType { inner, .. }
         | HirExprKind::Deref(inner)
@@ -350,14 +356,18 @@ fn walk_expression_identifiers(expr: &HirExpr, out: &mut dyn FnMut(&str)) {
             walk_expression_identifiers(right, out);
         }
         HirExprKind::Unary { inner, .. }
-        | HirExprKind::Field { receiver: inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
         | HirExprKind::Cast { inner, .. }
         | HirExprKind::IsType { inner, .. }
         | HirExprKind::Deref(inner)
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
         | HirExprKind::Await(inner)
-        | HirExprKind::Reflect { receiver: inner, .. }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        }
         | HirExprKind::Lambda { body: inner, .. } => walk_expression_identifiers(inner, out),
         HirExprKind::Call { args, .. } => {
             for arg in args {
@@ -719,17 +729,29 @@ impl<'a> BodyAnalyzer<'a> {
                 let rhs_id = self.child_expr(right, 1, cursor, scope);
                 self.use_value(&lhs_id);
                 self.use_value(&rhs_id);
-                self.temp_value(cursor, ValueOrigin::BinaryResult, DestinationClass::ScalarValue)
+                self.temp_value(
+                    cursor,
+                    ValueOrigin::BinaryResult,
+                    DestinationClass::ScalarValue,
+                )
             }
             HirExprKind::Unary { inner, .. } => {
                 let id = self.child_expr(inner, 0, cursor, scope);
                 self.use_value(&id);
-                self.temp_value(cursor, ValueOrigin::UnaryResult, DestinationClass::ScalarValue)
+                self.temp_value(
+                    cursor,
+                    ValueOrigin::UnaryResult,
+                    DestinationClass::ScalarValue,
+                )
             }
             HirExprKind::Cast { inner, .. } => {
                 let id = self.child_expr(inner, 0, cursor, scope);
                 self.use_value(&id);
-                self.temp_value(cursor, ValueOrigin::CastResult, DestinationClass::ScalarValue)
+                self.temp_value(
+                    cursor,
+                    ValueOrigin::CastResult,
+                    DestinationClass::ScalarValue,
+                )
             }
             HirExprKind::Field { receiver, .. } => {
                 let id = self.child_expr(receiver, 0, cursor, scope);
@@ -769,7 +791,11 @@ impl<'a> BodyAnalyzer<'a> {
                 let end_id = self.child_expr(end, 1, cursor, scope);
                 self.use_value(&start_id);
                 self.use_value(&end_id);
-                self.temp_value(cursor, ValueOrigin::Composite, DestinationClass::ScalarValue)
+                self.temp_value(
+                    cursor,
+                    ValueOrigin::Composite,
+                    DestinationClass::ScalarValue,
+                )
             }
             // AST parity: IsType classifies as Operator but the AST handler
             // has no arm for it — the inner expression is not walked and the
@@ -895,7 +921,12 @@ impl<'a> BodyAnalyzer<'a> {
         self.temp_value(cursor, ValueOrigin::UnknownCall, DestinationClass::Boxed)
     }
 
-    fn expr_spawn(&mut self, args: &[HirExpr], cursor: &mut ExprCursor, scope: &mut Scope) -> ValueId {
+    fn expr_spawn(
+        &mut self,
+        args: &[HirExpr],
+        cursor: &mut ExprCursor,
+        scope: &mut Scope,
+    ) -> ValueId {
         let mut argument_ids = Vec::new();
         for (index, arg) in args.iter().enumerate() {
             let arg_id = self.child_expr(arg, index, cursor, scope);
@@ -1048,7 +1079,12 @@ impl<'a> BodyAnalyzer<'a> {
         }
     }
 
-    fn expr_lambda(&mut self, body: &HirExpr, cursor: &mut ExprCursor, scope: &mut Scope) -> ValueId {
+    fn expr_lambda(
+        &mut self,
+        body: &HirExpr,
+        cursor: &mut ExprCursor,
+        scope: &mut Scope,
+    ) -> ValueId {
         let mut captures = Vec::new();
         walk_expression_identifiers(body, &mut |name| {
             if let Some(id) = scope.lookup(name) {
@@ -1071,7 +1107,12 @@ impl<'a> BodyAnalyzer<'a> {
         self.temp_value(cursor, ValueOrigin::Unknown, DestinationClass::Boxed)
     }
 
-    fn expr_control(&mut self, expr: &HirExpr, cursor: &mut ExprCursor, scope: &mut Scope) -> ValueId {
+    fn expr_control(
+        &mut self,
+        expr: &HirExpr,
+        cursor: &mut ExprCursor,
+        scope: &mut Scope,
+    ) -> ValueId {
         match &expr.kind {
             HirExprKind::Block(body) => self.expr_block_value(body, cursor, scope),
             HirExprKind::If {
@@ -1083,7 +1124,9 @@ impl<'a> BodyAnalyzer<'a> {
                 cursor,
                 scope,
             ),
-            HirExprKind::Match { scrutinee, arms } => self.expr_match(scrutinee, arms, cursor, scope),
+            HirExprKind::Match { scrutinee, arms } => {
+                self.expr_match(scrutinee, arms, cursor, scope)
+            }
             _ => self.expr_unknown(cursor),
         }
     }
@@ -1130,7 +1173,11 @@ impl<'a> BodyAnalyzer<'a> {
         if then_class == Some(DestinationClass::ScalarValue)
             && else_class == Some(DestinationClass::ScalarValue)
         {
-            self.temp_value(cursor, ValueOrigin::MatchResult, DestinationClass::ScalarValue)
+            self.temp_value(
+                cursor,
+                ValueOrigin::MatchResult,
+                DestinationClass::ScalarValue,
+            )
         } else {
             self.temp_value(cursor, ValueOrigin::MatchResult, DestinationClass::Boxed)
         }
@@ -1196,9 +1243,7 @@ impl<'a> BodyAnalyzer<'a> {
                 self.stmt_assignment(statement, body_path, stmt_path, scope)
             }
             StmtCategory::Return => self.stmt_return(statement, body_path, stmt_path, scope),
-            StmtCategory::Iteration => {
-                self.stmt_iteration(statement, body_path, stmt_path, scope)
-            }
+            StmtCategory::Iteration => self.stmt_iteration(statement, body_path, stmt_path, scope),
             StmtCategory::Control => self.stmt_control(statement, body_path, stmt_path, scope),
             StmtCategory::Effect => self.stmt_effect(statement, body_path, stmt_path, scope),
             StmtCategory::Other => self.stmt_other(statement, body_path, stmt_path, scope),
@@ -1447,7 +1492,12 @@ impl<'a> BodyAnalyzer<'a> {
                 for (arm_index, arm) in arms.iter().enumerate() {
                     let mut child_path = stmt_path.clone();
                     child_path.push(arm_index);
-                    self.stmt_match_arm(arm, &scrutinee_id, (body_path, &child_path), &mut child_scope);
+                    self.stmt_match_arm(
+                        arm,
+                        &scrutinee_id,
+                        (body_path, &child_path),
+                        &mut child_scope,
+                    );
                 }
                 None
             }
@@ -1534,14 +1584,12 @@ impl<'a> BodyAnalyzer<'a> {
                         }
                     }
                 }
-                let collection_like = target
-                    .as_ref()
-                    .is_some_and(|target| {
-                        matches!(
-                            target.kind,
-                            HirExprKind::MethodCall { .. } | HirExprKind::Index(..)
-                        )
-                    });
+                let collection_like = target.as_ref().is_some_and(|target| {
+                    matches!(
+                        target.kind,
+                        HirExprKind::MethodCall { .. } | HirExprKind::Index(..)
+                    )
+                });
                 if collection_like {
                     self.add_sink(
                         &value_id,
@@ -1583,18 +1631,13 @@ impl<'a> BodyAnalyzer<'a> {
         scope: &mut Scope,
     ) -> Option<ValueId> {
         match &statement.kind {
-            HirStmtKind::Expression(expr)
-            | HirStmtKind::Check(expr)
-            | HirStmtKind::Gate(expr) => {
+            HirStmtKind::Expression(expr) | HirStmtKind::Check(expr) | HirStmtKind::Gate(expr) => {
                 let mut expr_path = Vec::new();
                 let value = self.stmt_expr(expr, body_path, &mut expr_path, scope);
                 self.use_value(&value);
                 Some(value)
             }
-            HirStmtKind::Yield
-            | HirStmtKind::Break
-            | HirStmtKind::Trap
-            | HirStmtKind::Halt => None,
+            HirStmtKind::Yield | HirStmtKind::Break | HirStmtKind::Trap | HirStmtKind::Halt => None,
             _ => None,
         }
     }

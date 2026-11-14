@@ -42,8 +42,12 @@ fn collect_expr(e: &HirExpr, bound: &mut HashSet<String>, free: &mut Vec<String>
         | HirExprKind::Deref(inner)
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Await(inner)
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. } => collect_expr(inner, bound, free),
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        } => collect_expr(inner, bound, free),
         HirExprKind::Call { args, .. }
         | HirExprKind::List(args)
         | HirExprKind::Tuple(args)
@@ -67,7 +71,12 @@ fn collect_expr(e: &HirExpr, bound: &mut HashSet<String>, free: &mut Vec<String>
             collect_expr(a, bound, free);
             collect_expr(b, bound, free);
         }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_expr(array, bound, free);
             for part in [start, end, stride].into_iter().flatten() {
                 collect_expr(part, bound, free);
@@ -77,7 +86,11 @@ fn collect_expr(e: &HirExpr, bound: &mut HashSet<String>, free: &mut Vec<String>
             collect_expr(start, bound, free);
             collect_expr(end, bound, free);
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr(condition, bound, free);
             collect_expr(then_branch, bound, free);
             if let Some(other) = else_branch {

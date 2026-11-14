@@ -204,7 +204,7 @@ pub fn infer_postconditions(func: &AnalyzedFunction) -> Vec<String> {
     let mut postconditions = Vec::new();
 
     let return_type = func.return_type.to_lowercase();
-        let _name_lower = func.name.to_lowercase();
+    let _name_lower = func.name.to_lowercase();
 
     // First try to find a matching rule by name
     if let Some(rule) = find_matching_rule(&func.name) {

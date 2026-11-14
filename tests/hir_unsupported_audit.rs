@@ -45,7 +45,8 @@ fn corpus_lowers_with_verified_ids_and_bounded_unsupported_syntax() {
     let mut statements = 0usize;
     let mut parsed = 0usize;
     let mut worst: Vec<(usize, String)> = Vec::new();
-    let mut tags: std::collections::BTreeMap<&'static str, usize> = std::collections::BTreeMap::new();
+    let mut tags: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
     for path in &files {
         let Ok(source) = std::fs::read_to_string(path) else {
             continue;
@@ -68,7 +69,10 @@ fn corpus_lowers_with_verified_ids_and_bounded_unsupported_syntax() {
         }
         worst.push((
             counts.total(),
-            path.strip_prefix(root).unwrap_or(path).display().to_string(),
+            path.strip_prefix(root)
+                .unwrap_or(path)
+                .display()
+                .to_string(),
         ));
     }
     worst.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));

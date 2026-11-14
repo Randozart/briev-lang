@@ -15,7 +15,10 @@ pub fn classify_fields(
 ) -> HashMap<String, FieldClass> {
     let mut out = HashMap::new();
     for f in write_set {
-        out.insert(f.clone(), classify_field(f, body, contract_exprs, observable_bodies));
+        out.insert(
+            f.clone(),
+            classify_field(f, body, contract_exprs, observable_bodies),
+        );
     }
     out
 }
@@ -43,7 +46,13 @@ fn classify_field(
 
 fn statement_writes(stmt: &HirStmt, field: &str) -> bool {
     match &stmt.kind {
-        HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(n), .. }, _) => n == field,
+        HirStmtKind::Assign(
+            HirExpr {
+                kind: HirExprKind::Identifier(n),
+                ..
+            },
+            _,
+        ) => n == field,
         HirStmtKind::Guarded(_, body) | HirStmtKind::Block(body) => {
             body.iter().any(|s| statement_writes(s, field))
         }
@@ -89,7 +98,11 @@ fn expr_reads(expr: &HirExpr, field: &str) -> bool {
             items.iter().any(|i| expr_reads(i, field))
         }
         HirExprKind::Block(stmts) => stmts.iter().any(|s| statement_reads(s, field)),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             expr_reads(condition, field)
                 || expr_reads(then_branch, field)
                 || else_branch.as_ref().map_or(false, |e| expr_reads(e, field))

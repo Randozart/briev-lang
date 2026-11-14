@@ -38,24 +38,26 @@ fn defn(name: &str, params: Vec<(String, Type)>, body: Vec<Statement>) -> TopLev
 #[test]
 fn intrinsic_call_passes_variable_arguments() {
     // fn go(x: Int) { Alloc#(x); term; }
-    let prog = vec![
-        defn(
-            "go",
-            vec![("x".into(), Type::int())],
-            vec![
-                Statement::Expression(Expr::Call(
-                    "Alloc#".into(),
-                    vec![Expr::Identifier("x".into())],
-                    None,
-                )),
-                Statement::Term(None),
-            ],
-        ),
-    ];
+    let prog = vec![defn(
+        "go",
+        vec![("x".into(), Type::int())],
+        vec![
+            Statement::Expression(Expr::Call(
+                "Alloc#".into(),
+                vec![Expr::Identifier("x".into())],
+                None,
+            )),
+            Statement::Term(None),
+        ],
+    )];
     let universe = TypeUniverse::new();
     let mut vm = VmBackend::new();
     let bytes = vm.generate(&prog, &universe);
-    assert!(vm.errors.is_empty(), "variable arg must not error: {:?}", vm.errors);
+    assert!(
+        vm.errors.is_empty(),
+        "variable arg must not error: {:?}",
+        vm.errors
+    );
 
     // Bytecode shape: PUSH_LOCAL 0; HCALL <id>; RET — the load must be there.
     // (The file starts with a LAIR header, so scan the whole buffer.)
@@ -94,17 +96,22 @@ fn test_const_reference_inlines_value() {
         defn(
             "go",
             vec![],
-            vec![
-                Statement::Term(Some(Expr::Identifier("DERIVED".into()))),
-            ],
+            vec![Statement::Term(Some(Expr::Identifier("DERIVED".into())))],
         ),
     ];
     let universe = TypeUniverse::new();
     let mut vm = VmBackend::new();
     let bytes = vm.generate(&prog, &universe);
-    assert!(vm.errors.is_empty(), "const refs must resolve: {:?}", vm.errors);
+    assert!(
+        vm.errors.is_empty(),
+        "const refs must resolve: {:?}",
+        vm.errors
+    );
     // DERIVED = LIMIT*2 = 84 pushed as i64 constant.
-    let has_84 = bytes.windows(9).any(|w| w[0] == super::assembler::OP_PUSH_I64 && i64::from_le_bytes(w[1..9].try_into().unwrap()) == 84);
+    let has_84 = bytes.windows(9).any(|w| {
+        w[0] == super::assembler::OP_PUSH_I64
+            && i64::from_le_bytes(w[1..9].try_into().unwrap()) == 84
+    });
     assert!(has_84, "expected PUSH_I64(84) in bytecode");
 }
 
@@ -149,23 +156,31 @@ fn test_field_offset_fallback_is_seed_independent() {
     use crate::ast::top::{StructDefinition, StructField, Visibility};
     // Prog with two objects whose `val` fields sit at DIFFERENT offsets:
     // Aa { first: Int, val: Int } (offset 8) vs Bb { val: Int } (offset 0).
-    let mk = |name: &str, fields: Vec<(&str, i64)>| TopLevel::Obj(StructDefinition {
-        name: name.into(),
-        type_params: vec![],
-        parent: None,
-        fields: fields.into_iter().map(|(n, _)| StructField {
-            name: n.into(),
-            ty: Type::int(),
-            default: None,
-            visibility: Visibility::Public,
-        }).collect(),
-        transactions: vec![],
-        view_html: None,
-        span: None,
-        modifiers: vec![],
-        variants: vec![],
-    });
-    let prog = vec![mk("Aa", vec![("first", 0), ("val", 8)]), mk("Bb", vec![("val", 0)])];
+    let mk = |name: &str, fields: Vec<(&str, i64)>| {
+        TopLevel::Obj(StructDefinition {
+            name: name.into(),
+            type_params: vec![],
+            parent: None,
+            fields: fields
+                .into_iter()
+                .map(|(n, _)| StructField {
+                    name: n.into(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                })
+                .collect(),
+            transactions: vec![],
+            view_html: None,
+            span: None,
+            modifiers: vec![],
+            variants: vec![],
+        })
+    };
+    let prog = vec![
+        mk("Aa", vec![("first", 0), ("val", 8)]),
+        mk("Bb", vec![("val", 0)]),
+    ];
     let universe = TypeUniverse::new();
     let mut vm = VmBackend::new();
     vm.generate(&prog, &universe);
@@ -177,20 +192,14 @@ fn test_field_offset_fallback_is_seed_independent() {
 /// Plan 1.1: literal arguments still pass through unchanged.
 #[test]
 fn intrinsic_call_passes_literal_arguments() {
-    let prog = vec![
-        defn(
-            "go",
-            vec![],
-            vec![
-                Statement::Expression(Expr::Call(
-                    "Alloc#".into(),
-                    vec![Expr::Decimal(64)],
-                    None,
-                )),
-                Statement::Term(None),
-            ],
-        ),
-    ];
+    let prog = vec![defn(
+        "go",
+        vec![],
+        vec![
+            Statement::Expression(Expr::Call("Alloc#".into(), vec![Expr::Decimal(64)], None)),
+            Statement::Term(None),
+        ],
+    )];
     let universe = TypeUniverse::new();
     let mut vm = VmBackend::new();
     vm.generate(&prog, &universe);
@@ -214,7 +223,11 @@ fn float_literal_records_compile_error() {
     vm.generate(&prog, &universe);
     assert_eq!(vm.errors.len(), 1, "{:?}", vm.errors);
     assert!(vm.errors[0].contains("float literals"), "{}", vm.errors[0]);
-    assert!(vm.errors[0].contains("in 'f'"), "names the function: {}", vm.errors[0]);
+    assert!(
+        vm.errors[0].contains("in 'f'"),
+        "names the function: {}",
+        vm.errors[0]
+    );
 }
 
 /// Plan 1.4: unknown function call is recorded, not silent.
@@ -250,9 +263,10 @@ fn unknown_function_records_error() {
 fn parity_eval_expr(e: &Expr, vars: &HashMap<String, i64>) -> i64 {
     match e {
         Expr::Decimal(n) => *n,
-        Expr::Identifier(name) => vars.get(name.as_str()).copied().unwrap_or_else(|| {
-            panic!("parity eval: unbound variable '{}'", name)
-        }),
+        Expr::Identifier(name) => vars
+            .get(name.as_str())
+            .copied()
+            .unwrap_or_else(|| panic!("parity eval: unbound variable '{}'", name)),
         Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => -parity_eval_expr(inner, vars),
         // 2026-08-23: unary ops from the unary fixture.
         Expr::UnaryOp(kind, inner) => {
@@ -271,10 +285,18 @@ fn parity_eval_expr(e: &Expr, vars: &HashMap<String, i64>) -> i64 {
                 crate::ast::BinaryOpKind::Sub => a.wrapping_sub(b),
                 crate::ast::BinaryOpKind::Mul => a.wrapping_mul(b),
                 crate::ast::BinaryOpKind::Div => {
-                    if b == 0 { 0 } else { a.wrapping_div(b) }
+                    if b == 0 {
+                        0
+                    } else {
+                        a.wrapping_div(b)
+                    }
                 }
                 crate::ast::BinaryOpKind::Mod => {
-                    if b == 0 { 0 } else { a.wrapping_rem(b) }
+                    if b == 0 {
+                        0
+                    } else {
+                        a.wrapping_rem(b)
+                    }
                 }
                 crate::ast::BinaryOpKind::BitAnd | crate::ast::BinaryOpKind::And => a & b,
                 crate::ast::BinaryOpKind::BitOr | crate::ast::BinaryOpKind::Or => a | b,
@@ -346,7 +368,11 @@ fn parity_expected_values_match_independent_evaluation() {
                 }
             }
         }
-        assert!(!prints.is_empty(), "{}: no Print# statements", path.display());
+        assert!(
+            !prints.is_empty(),
+            "{}: no Print# statements",
+            path.display()
+        );
 
         // Independent evaluation with the txn's let-sequence applied.
         let mut vars: HashMap<String, i64> = HashMap::new();
@@ -356,7 +382,11 @@ fn parity_expected_values_match_independent_evaluation() {
                 let t_body = *body;
                 for s in t_body {
                     match s {
-                        Statement::Let { name, expr: Some(e), .. } => {
+                        Statement::Let {
+                            name,
+                            expr: Some(e),
+                            ..
+                        } => {
                             vars.insert(name.clone(), parity_eval_expr(e, &vars));
                         }
                         Statement::Assign(lhs, rhs) => {
@@ -374,17 +404,9 @@ fn parity_expected_values_match_independent_evaluation() {
                         Statement::Guarded(cond, body) => {
                             if parity_eval_expr(cond, &vars) != 0 {
                                 for gs in body {
-                                    if let Statement::Expression(Expr::Call(
-                                        name,
-                                        args,
-                                        _,
-                                    )) = gs
-                                    {
+                                    if let Statement::Expression(Expr::Call(name, args, _)) = gs {
                                         if name == "Print#" && args.len() == 1 {
-                                            actual.push(parity_eval_expr(
-                                                &args[0],
-                                                &vars,
-                                            ));
+                                            actual.push(parity_eval_expr(&args[0], &vars));
                                         }
                                     }
                                 }
@@ -411,7 +433,8 @@ fn parity_expected_values_match_independent_evaluation() {
             .map(|v| v.trim().parse().expect("EXPECT value"))
             .collect();
         assert_eq!(
-            actual, expected,
+            actual,
+            expected,
             "{}: independent evaluation disagrees with the baked contract",
             path.display()
         );

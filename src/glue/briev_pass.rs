@@ -7,7 +7,7 @@
 // / no prebuilt brievc). Transition tests assert the Briev result equals the
 // reference.
 
-use std::ffi::{c_char, c_int, c_void, CString};
+use std::ffi::{CString, c_char, c_int, c_void};
 
 use once_cell::sync::OnceCell;
 
@@ -52,11 +52,13 @@ impl LoadedPass {
             return None;
         }
         let compute = unsafe {
-            dlsym(handle, CString::new(compute_symbol).ok()?.as_ptr() as *const c_char)
+            dlsym(
+                handle,
+                CString::new(compute_symbol).ok()?.as_ptr() as *const c_char,
+            )
         };
-        let init_state = unsafe {
-            dlsym(handle, b"__briev_init_state\0".as_ptr() as *const c_char)
-        };
+        let init_state =
+            unsafe { dlsym(handle, b"__briev_init_state\0".as_ptr() as *const c_char) };
         if compute.is_null() || init_state.is_null() {
             return None;
         }
@@ -87,14 +89,22 @@ static NEEDS_STATE_PASS: OnceCell<Option<LoadedPass>> = OnceCell::new();
 
 fn needs_state_pass() -> Option<&'static LoadedPass> {
     NEEDS_STATE_PASS
-        .get_or_init(|| LoadedPass::load(option_env!("BRIEV_COMPILER_IN_BRIEV_SO"), "needs_state_compute"))
+        .get_or_init(|| {
+            LoadedPass::load(
+                option_env!("BRIEV_COMPILER_IN_BRIEV_SO"),
+                "needs_state_compute",
+            )
+        })
         .as_ref()
 }
 
 /// Compute the needs_state map for a program, preferring the Briev pass when
 /// its library is present. Falls back to the Rust reference (export_abi.rs).
 /// The two must agree — asserted by tests/c_driver_needs_state.rs.
-pub fn compute_export_needs_state(items: &[TopLevel], plain: &std::collections::HashSet<String>) -> std::collections::HashMap<String, bool> {
+pub fn compute_export_needs_state(
+    items: &[TopLevel],
+    plain: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, bool> {
     if let Some(pass) = needs_state_pass() {
         let proj = crate::analysis::needs_state_projection::serialize_needs_state_projection(items);
         let mask = pass.compute(&proj);
@@ -125,7 +135,12 @@ static SOA_REORDER_PASS: OnceCell<Option<LoadedPass>> = OnceCell::new();
 
 fn soa_reorder_pass() -> Option<&'static LoadedPass> {
     SOA_REORDER_PASS
-        .get_or_init(|| LoadedPass::load(option_env!("BRIEV_COMPILER_IN_BRIEV_SOA_SO"), "soa_reorder_compute"))
+        .get_or_init(|| {
+            LoadedPass::load(
+                option_env!("BRIEV_COMPILER_IN_BRIEV_SOA_SO"),
+                "soa_reorder_compute",
+            )
+        })
         .as_ref()
 }
 
@@ -209,10 +224,18 @@ mod tests {
             let src = format!("{}/{}", root, rel);
             let source = std::fs::read_to_string(&src).unwrap();
             let (items, _) = crate::library::parse_and_check(&src, &source).unwrap();
-            let plain = crate::analysis::storage_class::classify_plain_lets(&items, None, &std::collections::HashSet::new());
+            let plain = crate::analysis::storage_class::classify_plain_lets(
+                &items,
+                None,
+                &std::collections::HashSet::new(),
+            );
             let briev = compute_export_needs_state(&items, &plain);
             let reference = crate::analysis::export_abi::compute_export_needs_state(&items, &plain);
-            assert_eq!(briev, reference, "Briev pass diverged from reference for {}", rel);
+            assert_eq!(
+                briev, reference,
+                "Briev pass diverged from reference for {}",
+                rel
+            );
             if needs_state_pass().is_some() {
                 used_briev = true;
             }
@@ -241,14 +264,22 @@ mod tests {
         let items = vec![bx0, by0, bx1];
         let reference: Vec<usize> = crate::analysis::soa_reorder::reorder_fields(&items)
             .iter()
-            .map(|out| items.iter().position(|orig| name_of(orig) == name_of(out)).unwrap())
+            .map(|out| {
+                items
+                    .iter()
+                    .position(|orig| name_of(orig) == name_of(out))
+                    .unwrap()
+            })
             .collect();
         assert_eq!(reference, vec![0, 2, 1], "reference expected AoS→SoA order");
         if let Some(perm) = compute_soa_permutation(&items) {
             assert_eq!(perm, vec![0, 2, 1], "soa pass diverged from reorder_fields");
         }
         if option_env!("BRIEV_COMPILER_IN_BRIEV_SOA_SO").map_or(false, |p| !p.is_empty()) {
-            assert!(soa_pass_available(), "soa pass library was built but never used");
+            assert!(
+                soa_pass_available(),
+                "soa pass library was built but never used"
+            );
         }
     }
 

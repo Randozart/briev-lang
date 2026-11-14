@@ -19,10 +19,9 @@ impl ParetoPoint {
     /// A dominates B if it is no worse in all objectives and strictly better
     /// in at least one (standard Pareto dominance).
     pub fn dominates(&self, other: &ParetoPoint) -> bool {
-        let no_worse = self.error_count <= other.error_count
-            && self.op_count <= other.op_count;
-        let strictly_better = self.error_count < other.error_count
-            || self.op_count < other.op_count;
+        let no_worse = self.error_count <= other.error_count && self.op_count <= other.op_count;
+        let strictly_better =
+            self.error_count < other.error_count || self.op_count < other.op_count;
         no_worse && strictly_better
     }
 }
@@ -61,14 +60,27 @@ impl ParetoFrontier {
         }
 
         let min_err = self.points.iter().map(|p| p.error_count).min().unwrap_or(0) as f64;
-        let max_err = self.points.iter().map(|p| p.error_count).max().unwrap_or(1).max(1) as f64;
+        let max_err = self
+            .points
+            .iter()
+            .map(|p| p.error_count)
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
         let min_op = self.points.iter().map(|p| p.op_count).min().unwrap_or(0) as f64;
-        let max_op = self.points.iter().map(|p| p.op_count).max().unwrap_or(1).max(1) as f64;
+        let max_op = self
+            .points
+            .iter()
+            .map(|p| p.op_count)
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
 
         let extreme_a = (min_err, max_op);
         let extreme_b = (max_err, min_op);
 
-        self.points.iter()
+        self.points
+            .iter()
             .map(|p| {
                 let px = p.error_count as f64;
                 let py = p.op_count as f64;
@@ -81,11 +93,7 @@ impl ParetoFrontier {
 }
 
 /// Distance from a point to a line defined by two points.
-fn point_line_distance(
-    point: (f64, f64),
-    line_a: (f64, f64),
-    line_b: (f64, f64),
-) -> f64 {
+fn point_line_distance(point: (f64, f64), line_a: (f64, f64), line_b: (f64, f64)) -> f64 {
     let (px, py) = point;
     let (ax, ay) = line_a;
     let (bx, by) = line_b;
@@ -93,7 +101,11 @@ fn point_line_distance(
     let dy = by - ay;
     let numerator = ((dy * px - dx * py) + (bx * ay - by * ax)).abs();
     let denominator = (dx * dx + dy * dy).sqrt();
-    if denominator < 1e-10 { 0.0 } else { numerator / denominator }
+    if denominator < 1e-10 {
+        0.0
+    } else {
+        numerator / denominator
+    }
 }
 
 #[cfg(test)]
@@ -102,13 +114,23 @@ mod tests {
     use crate::ast::Expr;
 
     fn make_point(program: SynthesizedProgram, errors: u64, ops: u64) -> ParetoPoint {
-        ParetoPoint { program, error_count: errors, op_count: ops, runtime_ns: None }
+        ParetoPoint {
+            program,
+            error_count: errors,
+            op_count: ops,
+            runtime_ns: None,
+        }
     }
 
     #[test]
     fn test_pareto_insert_dominated() {
         let mut frontier = ParetoFrontier::new();
-        let prog = SynthesizedProgram { body: vec![Expr::Decimal(0)], cost: 0, depth: 0, helpers: vec![] };
+        let prog = SynthesizedProgram {
+            body: vec![Expr::Decimal(0)],
+            cost: 0,
+            depth: 0,
+            helpers: vec![],
+        };
         let p1 = make_point(prog.clone(), 5, 10);
         let p2 = make_point(prog.clone(), 5, 15); // more ops, same errors → dominated
         assert!(frontier.insert(p1));
@@ -118,7 +140,12 @@ mod tests {
     #[test]
     fn test_pareto_insert_non_dominated() {
         let mut frontier = ParetoFrontier::new();
-        let prog = SynthesizedProgram { body: vec![Expr::Decimal(0)], cost: 0, depth: 0, helpers: vec![] };
+        let prog = SynthesizedProgram {
+            body: vec![Expr::Decimal(0)],
+            cost: 0,
+            depth: 0,
+            helpers: vec![],
+        };
         let p1 = make_point(prog.clone(), 5, 10);
         let p2 = make_point(prog.clone(), 3, 12); // fewer errors, more ops → not dominated
         assert!(frontier.insert(p1));
@@ -128,10 +155,15 @@ mod tests {
     #[test]
     fn test_pareto_knee_selection() {
         let mut frontier = ParetoFrontier::new();
-        let prog = SynthesizedProgram { body: vec![Expr::Decimal(0)], cost: 0, depth: 0, helpers: vec![] };
+        let prog = SynthesizedProgram {
+            body: vec![Expr::Decimal(0)],
+            cost: 0,
+            depth: 0,
+            helpers: vec![],
+        };
         frontier.insert(make_point(prog.clone(), 0, 20)); // low error, high ops
         frontier.insert(make_point(prog.clone(), 10, 2)); // high error, low ops
-        frontier.insert(make_point(prog.clone(), 3, 8));  // knee: middle trade-off
+        frontier.insert(make_point(prog.clone(), 3, 8)); // knee: middle trade-off
         let knee = frontier.select_knee().unwrap();
         assert_eq!(knee.error_count, 3);
         assert_eq!(knee.op_count, 8);
@@ -140,7 +172,12 @@ mod tests {
     #[test]
     fn test_pareto_knee_single_point() {
         let mut frontier = ParetoFrontier::new();
-        let prog = SynthesizedProgram { body: vec![Expr::Decimal(0)], cost: 0, depth: 0, helpers: vec![] };
+        let prog = SynthesizedProgram {
+            body: vec![Expr::Decimal(0)],
+            cost: 0,
+            depth: 0,
+            helpers: vec![],
+        };
         frontier.insert(make_point(prog.clone(), 2, 5));
         let knee = frontier.select_knee().unwrap();
         assert_eq!(knee.error_count, 2);

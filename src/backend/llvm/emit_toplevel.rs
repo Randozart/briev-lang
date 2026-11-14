@@ -2,8 +2,8 @@ use crate::ast::{BinaryOpKind, Expr, OutputType, Statement, TopLevel, Type};
 use crate::backend::llvm::emit_stmt::emit_statement;
 use crate::backend::llvm::helpers::WordImageCopy;
 use crate::backend::llvm::{
-    f32_to_f16_hex, float64_to_llvm_hex, float_to_llvm_hex, llvm_type_byte_size,
-    protocol_llvm_type, LlvmBackend, TypedRegister,
+    LlvmBackend, TypedRegister, f32_to_f16_hex, float_to_llvm_hex, float64_to_llvm_hex,
+    llvm_type_byte_size, protocol_llvm_type,
 };
 use crate::type_universe::{ResolvedType, TypeUniverse};
 use crate::typechecker::defn_section_name;
@@ -996,11 +996,7 @@ impl LlvmBackend {
             crate::ast::TopLevel::TypeDefOperator(d) => &d.parameters,
             _ => return None,
         };
-        if params.is_empty() {
-            Some(def)
-        } else {
-            None
-        }
+        if params.is_empty() { Some(def) } else { None }
     }
 
     pub(super) fn emit_header(&self, out: &mut String) {
@@ -5196,7 +5192,9 @@ impl LlvmBackend {
                 self.fun.reg_llvm_ty.insert(conv.clone(), "i64".to_string());
                 // 2026-11-14 (#96): ABI pointer parameters use i64 handles
                 // even on wasm32; cast-width adaptation needs the emitted type.
-                self.fun.reg_value_ll.insert(conv.clone(), "i64".to_string());
+                self.fun
+                    .reg_value_ll
+                    .insert(conv.clone(), "i64".to_string());
                 // 2026-10-20 (pointer provenance): the raw ABI pointer is
                 // already the canonical ptr for this argument; keep it instead
                 // of re-inttoptr-ing the i64 at every access. It is defined in

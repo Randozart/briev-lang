@@ -29,7 +29,10 @@ pub fn resolve_cast_paths(
 }
 
 /// Contract expressions are emitted code; casts there resolve like body casts.
-fn resolve_contract<F: FnMut(&mut super::expr::HirExpr)>(contract: &mut HirContract, resolve: &mut F) {
+fn resolve_contract<F: FnMut(&mut super::expr::HirExpr)>(
+    contract: &mut HirContract,
+    resolve: &mut F,
+) {
     walk_expr_mut(&mut contract.pre, resolve);
     walk_expr_mut(&mut contract.post, resolve);
     let Some(wd) = &mut contract.watchdog else {
