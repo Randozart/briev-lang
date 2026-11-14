@@ -86,9 +86,7 @@ impl<'a> Parser<'a> {
                         return Err(self.dup_modifier(name));
                     }
                     if !other.is_empty() && mods.iter().any(|m| m.name == other) {
-                        return Err(self.dup_modifier(&format!(
-                            "{name}/{other} (contradiction)"
-                        )));
+                        return Err(self.dup_modifier(&format!("{name}/{other} (contradiction)")));
                     }
                     self.pos += 1;
                     mods.push(crate::ast::Annotation {
@@ -134,7 +132,9 @@ impl<'a> Parser<'a> {
             }
             // 2026-08-01 (Phase 3): Discard — `<- queue;` (read discard) /
             // `~<- queue;` (destructive discard). The `&` marker is removed.
-            Some(Token::ArrowLeft) | Some(Token::TildeArrowLeft) => self.parse_arrow_discard_statement(),
+            Some(Token::ArrowLeft) | Some(Token::TildeArrowLeft) => {
+                self.parse_arrow_discard_statement()
+            }
             _ => {
                 // 2026-07-24: Skip doc comments inside blocks too
                 if let Some(&Token::DocComment(_) | &Token::DocCommentBang(_)) = self.peek() {
@@ -499,13 +499,13 @@ impl<'a> Parser<'a> {
             item,
             list: Box::new(list),
             body,
-        modifiers: match invariant {
-            Some(property) => vec![crate::ast::Annotation {
-                name: "invariant".to_string(),
-                value: Some(property),
-            }],
-            None => vec![],
-        },
+            modifiers: match invariant {
+                Some(property) => vec![crate::ast::Annotation {
+                    name: "invariant".to_string(),
+                    value: Some(property),
+                }],
+                None => vec![],
+            },
         })
     }
 
@@ -517,10 +517,7 @@ impl<'a> Parser<'a> {
         let instance = self.parse_expression()?;
         // 2026-08-01 (Phase 4): the `.port` is removed — whole-target form.
         self.expect(Token::Semicolon)?;
-        Ok(Statement::TrgBinding {
-            name,
-            instance,
-        })
+        Ok(Statement::TrgBinding { name, instance })
     }
 
     /// `free x;` (free_hint = true) / `keep x;` (free_hint = false) — a
@@ -685,7 +682,9 @@ impl<'a> Parser<'a> {
                     if !self.check(&Token::RParen) {
                         loop {
                             items.push(self.parse_metadata_value_standalone()?);
-                            if !self.eat(&Token::Comma) { break; }
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
                         }
                     }
                     self.expect(Token::RParen)?;
@@ -733,9 +732,18 @@ impl<'a> Parser<'a> {
                 Ok(PropertyValue::List(items))
             }
             // 2026-07-18: Hash-prefixed compiler words for strategy op bindings
-            Some(Token::HashL) => { self.pos += 1; Ok(PropertyValue::HashL) }
-            Some(Token::HashR) => { self.pos += 1; Ok(PropertyValue::HashR) }
-            Some(Token::HashT) => { self.pos += 1; Ok(PropertyValue::HashT) }
+            Some(Token::HashL) => {
+                self.pos += 1;
+                Ok(PropertyValue::HashL)
+            }
+            Some(Token::HashR) => {
+                self.pos += 1;
+                Ok(PropertyValue::HashR)
+            }
+            Some(Token::HashT) => {
+                self.pos += 1;
+                Ok(PropertyValue::HashT)
+            }
             _ => self.error_at_current(
                 "expected metadata value (identifier, int, bool, string, list, or #L/#R/#T)",
             ),
@@ -766,28 +774,28 @@ impl<'a> Parser<'a> {
     /// Also handles infix `<-` for push/pop: `&queue <- value` or `x <- &queue`.
     fn parse_expression_statement(&mut self) -> Result<Statement, SyntaxError> {
         let lhs = self.parse_expression()?;
-            // 2026-08-01 (Phase 3): Arrow — `dest <- value` (copy into lhs),
-            // `dest ~<- value` (destructive extract). The dispatch to
-            // insert/read/extract is by the op binding on each side (done in
-            // the typechecker/codegen); the parser records the ArrowAssign.
-            if self.eat(&Token::ArrowLeft) {
-                let rhs = self.parse_expression()?;
-                self.expect(Token::Semicolon)?;
-                return Ok(Statement::ArrowAssign {
-                    target: Some(Box::new(lhs)),
-                    value: Box::new(rhs),
-                    consume: false,
-                });
-            }
-            if self.eat(&Token::TildeArrowLeft) {
-                let rhs = self.parse_expression()?;
-                self.expect(Token::Semicolon)?;
-                return Ok(Statement::ArrowAssign {
-                    target: Some(Box::new(lhs)),
-                    value: Box::new(rhs),
-                    consume: true,
-                });
-            }
+        // 2026-08-01 (Phase 3): Arrow — `dest <- value` (copy into lhs),
+        // `dest ~<- value` (destructive extract). The dispatch to
+        // insert/read/extract is by the op binding on each side (done in
+        // the typechecker/codegen); the parser records the ArrowAssign.
+        if self.eat(&Token::ArrowLeft) {
+            let rhs = self.parse_expression()?;
+            self.expect(Token::Semicolon)?;
+            return Ok(Statement::ArrowAssign {
+                target: Some(Box::new(lhs)),
+                value: Box::new(rhs),
+                consume: false,
+            });
+        }
+        if self.eat(&Token::TildeArrowLeft) {
+            let rhs = self.parse_expression()?;
+            self.expect(Token::Semicolon)?;
+            return Ok(Statement::ArrowAssign {
+                target: Some(Box::new(lhs)),
+                value: Box::new(rhs),
+                consume: true,
+            });
+        }
         // 2026-07-24: Compound assignment += and -=.
         // x += 1 → Statement::Assign(id("x"), BinaryOp(Add, id("x"), 1))
         let compound_kind = if self.eat(&Token::PlusEq) {
@@ -886,7 +894,11 @@ impl<'a> Parser<'a> {
 /// and its errors are analysis's job — the parser never learns table names).
 fn substitute_index_binders(expr: &Expr, binders: &[(String, i64)]) -> Expr {
     match expr {
-        Expr::StructLiteral { type_name, fields, specs } => Expr::StructLiteral {
+        Expr::StructLiteral {
+            type_name,
+            fields,
+            specs,
+        } => Expr::StructLiteral {
             type_name: type_name.clone(),
             fields: fields
                 .iter()
@@ -927,13 +939,18 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let item = p.parse_program().unwrap().into_iter().next().unwrap();
-        let crate::ast::TopLevel::Transaction(t) = item else { panic!("expected Transaction") };
+        let crate::ast::TopLevel::Transaction(t) = item else {
+            panic!("expected Transaction")
+        };
         match &t.body[0] {
             crate::ast::Statement::Let { name, ty, expr, .. } => {
                 assert_eq!(name, "r");
                 assert!(ty.is_none(), "into infers the type");
-                assert!(matches!(expr, Some(crate::ast::Expr::MethodCall(..))),
-                    "the chain value is the initializer: {:?}", expr);
+                assert!(
+                    matches!(expr, Some(crate::ast::Expr::MethodCall(..))),
+                    "the chain value is the initializer: {:?}",
+                    expr
+                );
             }
             other => panic!("into must lower to a Let binding, got {other:?}"),
         }
@@ -949,7 +966,11 @@ mod tests {
     // a Statement::Return whose semantics disagreed across engines.
     #[test]
     fn return_statement_errors_with_helpful_message() {
-        for src in ["defn f(x: Int) -> Int { return x; };", "return;", "node n [a==0][a==1] { a = 1; return; };"] {
+        for src in [
+            "defn f(x: Int) -> Int { return x; };",
+            "return;",
+            "node n [a==0][a==1] { a = 1; return; };",
+        ] {
             let tokens = tokenize(src).unwrap();
             let mut p = Parser::new(tokens, src);
             let err = p.parse_program().unwrap_err();
@@ -983,13 +1004,22 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let err = p.parse_program().unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'halt' is a reserved keyword"), "names the word: {msg}");
-        assert!(msg.contains("bare-metal stop"), "carries the meaning: {msg}");
+        assert!(
+            msg.contains("'halt' is a reserved keyword"),
+            "names the word: {msg}"
+        );
+        assert!(
+            msg.contains("bare-metal stop"),
+            "carries the meaning: {msg}"
+        );
         assert!(msg.contains("rename"), "carries the fix: {msg}");
         // The recovery-consumes-boundary fix: no bogus cascade errors after
         // the real one (they used to read "expected identifier, found '}'"
         // at the following nodes' closing braces).
-        assert!(!msg.contains("found '}'"), "no brace-cascade after recovery: {msg}");
+        assert!(
+            !msg.contains("found '}'"),
+            "no brace-cascade after recovery: {msg}"
+        );
         assert_eq!(msg.matches("parse error").count(), 1, "single error: {msg}");
     }
 
@@ -1002,8 +1032,14 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let err = p.parse_program().unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("expected identifier"), "generic message kept: {msg}");
-        assert!(!msg.contains("reserved keyword"), "no reserved-word claim: {msg}");
+        assert!(
+            msg.contains("expected identifier"),
+            "generic message kept: {msg}"
+        );
+        assert!(
+            !msg.contains("reserved keyword"),
+            "no reserved-word claim: {msg}"
+        );
     }
 
     // 2026-08-22 (spec-conformance plan Phase 1b): SPEC §11.1 — no `if`/`else`.
@@ -1075,11 +1111,15 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         assert!(p.parse_program().is_ok(), "int-or patterns must parse");
 
-        let src2 = "defn pick(flag: Bool, other: Bool) -> Int { match flag { true => 1, _ => 0 } };";
+        let src2 =
+            "defn pick(flag: Bool, other: Bool) -> Int { match flag { true => 1, _ => 0 } };";
         let tokens2 = tokenize(src2).unwrap();
         let mut p2 = Parser::new(tokens2, src2);
         let prog = p2.parse_program().unwrap();
-        assert!(matches!(prog.first(), Some(crate::ast::TopLevel::Definition(_))), "bool-pattern match parses inside a defn");
+        assert!(
+            matches!(prog.first(), Some(crate::ast::TopLevel::Definition(_))),
+            "bool-pattern match parses inside a defn"
+        );
     }
 
     #[test]
@@ -1162,7 +1202,9 @@ mod tests {
         let tokens = tokenize(ok).unwrap();
         let mut p = Parser::new(tokens, ok);
         let program = p.parse_program().unwrap();
-        let crate::ast::TopLevel::Definition(d) = &program[0] else { panic!() };
+        let crate::ast::TopLevel::Definition(d) = &program[0] else {
+            panic!()
+        };
         assert!(d.body.iter().any(|s| matches!(
             s,
             crate::ast::Statement::Foreach { modifiers, .. }
@@ -1230,10 +1272,18 @@ mod tests {
         let tokens = crate::lexer::tokenize("defn f() -> Int { halt; term 1; };").unwrap();
         let mut p = crate::parser::Parser::new(tokens, "");
         let items = p.parse_program().unwrap();
-        let crate::ast::TopLevel::Definition(d) = &items[0] else { panic!("expected Definition") };
-        assert!(matches!(d.body[0], crate::ast::Statement::Halt), "halt; must parse to Statement::Halt");
+        let crate::ast::TopLevel::Definition(d) = &items[0] else {
+            panic!("expected Definition")
+        };
+        assert!(
+            matches!(d.body[0], crate::ast::Statement::Halt),
+            "halt; must parse to Statement::Halt"
+        );
         let printed = crate::ast::format_item(&items[0]);
-        assert!(printed.contains("halt;"), "canonical form must round-trip, got: {printed}");
+        assert!(
+            printed.contains("halt;"),
+            "canonical form must round-trip, got: {printed}"
+        );
     }
 
     // ── 2026-09-23 (E1): bounded instance arrays ────────────────────────
@@ -1266,7 +1316,9 @@ mod tests {
         let src = r#"let m[i:2][j:3]: Mesh = Mesh { value: "x" };"#;
         assert_eq!(
             let_names(src),
-            ["m[0][0]", "m[0][1]", "m[0][2]", "m[1][0]", "m[1][1]", "m[1][2]"]
+            [
+                "m[0][0]", "m[0][1]", "m[0][2]", "m[1][0]", "m[1][1]", "m[1][2]"
+            ]
         );
     }
 
@@ -1379,6 +1431,9 @@ mod tests {
         assert_eq!(let_names("let x: Int = 1;"), ["x"]);
         let tokens = crate::lexer::tokenize("let (a, b) = pair;").unwrap();
         let mut p = Parser::new(tokens, "let (a, b) = pair;");
-        assert!(p.parse_program().is_ok(), "tuple let must not take the array path");
+        assert!(
+            p.parse_program().is_ok(),
+            "tuple let must not take the array path"
+        );
     }
 }

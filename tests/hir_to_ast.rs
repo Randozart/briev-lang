@@ -4,7 +4,7 @@
 //! results without changing IR).
 
 use briev_compiler::ast::TopLevel;
-use briev_compiler::hir::{lower_program, to_ast, HirCallableKind};
+use briev_compiler::hir::{HirCallableKind, lower_program, to_ast};
 
 fn parse(src: &str) -> Vec<TopLevel> {
     let tokens = briev_compiler::lexer::tokenize(src).expect("tokenize");

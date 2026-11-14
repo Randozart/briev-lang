@@ -7,7 +7,7 @@
 use super::expr::{HirExpr, HirExprKind};
 use super::program::{HirProgram, HirTypeDefKind};
 use crate::analysis::dyn_concrete_sets::{
-    collection_dyn_trait, dispatch_form_for, DynCollectionInfo, DynDispatchForm,
+    DynCollectionInfo, DynDispatchForm, collection_dyn_trait, dispatch_form_for,
 };
 use crate::ast::Type;
 use std::collections::{BTreeSet, HashMap};
@@ -48,7 +48,10 @@ fn analyze_let(
         return;
     };
     let elems = match expr {
-        Some(HirExpr { kind: HirExprKind::List(elems), .. }) => elems,
+        Some(HirExpr {
+            kind: HirExprKind::List(elems),
+            ..
+        }) => elems,
         _ => {
             out.insert(
                 name.to_string(),
@@ -108,7 +111,11 @@ fn conforms(program: &HirProgram, concrete: &str, trait_name: &str) -> bool {
             .map_or(false, |td| td.traits.iter().any(|t| t == trait_name));
     }
     let mut provided: BTreeSet<String> = BTreeSet::new();
-    for c in program.callables.iter().filter(|c| c.owner.as_deref() == Some(concrete)) {
+    for c in program
+        .callables
+        .iter()
+        .filter(|c| c.owner.as_deref() == Some(concrete))
+    {
         provided.insert(c.name.clone());
     }
     trait_slots.iter().all(|s| provided.contains(s))
@@ -159,7 +166,9 @@ impl Cat {
 
     fn compare(src: &str) -> HashMap<String, DynCollectionInfo> {
         let tokens = crate::lexer::tokenize(src).unwrap();
-        let items = crate::parser::Parser::new(tokens, src).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .unwrap();
         let ast = crate::analysis::dyn_concrete_sets::analyze(&items);
         let hir = analyze(&lower_program(&items));
         assert_eq!(hir, ast, "HIR/AST dyn concrete-set drift");

@@ -2,7 +2,7 @@
 //! H1d frontend -> HIR boundary. All syntax-expanding stages run before
 //! checked HIR, so no plugin/composite/desugar marker reaches the semantic IR.
 
-use super::lower::{lower_program_checked, HirLowerIssue};
+use super::lower::{HirLowerIssue, lower_program_checked};
 use super::program::HirProgram;
 use crate::ast::{StageKind, TopLevel};
 use crate::plugin::PluginManager;
@@ -33,5 +33,8 @@ fn format_issues(issues: Vec<HirLowerIssue>) -> String {
         .into_iter()
         .map(|issue| format!("{} x{}", issue.tag, issue.count))
         .collect();
-    format!("frontend left unresolved HIR nodes: {}", rendered.join(", "))
+    format!(
+        "frontend left unresolved HIR nodes: {}",
+        rendered.join(", ")
+    )
 }

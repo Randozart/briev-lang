@@ -41,7 +41,9 @@ fn strip_comment(line: &str) -> &str {
 
 /// Every `.bv` under `root`, recursively, sorted for determinism.
 fn collect_bv(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(root) else { return };
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -71,7 +73,9 @@ fn is_dogfood_compiler(path: &Path) -> bool {
 
 /// One file's `defn __` / `out defn __` / `let __` hits (comments stripped).
 fn dunder_hits_in(path: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
     let rel = path.strip_prefix(PROJECT_ROOT).unwrap_or(path);
     text.lines()
         .enumerate()
@@ -95,7 +99,9 @@ fn llvm_dunder_hits_in(path: &Path) -> Vec<String> {
     if is_dogfood_compiler(path) {
         return Vec::new();
     }
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
     let rel = path.strip_prefix(PROJECT_ROOT).unwrap_or(path);
     text.lines()
         .enumerate()
@@ -112,7 +118,10 @@ fn llvm_dunder_hits_in(path: &Path) -> Vec<String> {
 
 #[test]
 fn no_dunder_defn_let_in_shipped_bv() {
-    let hits: Vec<String> = gate_files().iter().flat_map(|f| dunder_hits_in(f)).collect();
+    let hits: Vec<String> = gate_files()
+        .iter()
+        .flat_map(|f| dunder_hits_in(f))
+        .collect();
     assert!(
         hits.is_empty(),
         "core-usable dunder gate: the shipped .bv surface must contain no \
@@ -125,7 +134,10 @@ fn no_dunder_defn_let_in_shipped_bv() {
 
 #[test]
 fn no_dunder_llvm_symbol_in_shipped_bv() {
-    let hits: Vec<String> = gate_files().iter().flat_map(|f| llvm_dunder_hits_in(f)).collect();
+    let hits: Vec<String> = gate_files()
+        .iter()
+        .flat_map(|f| llvm_dunder_hits_in(f))
+        .collect();
     assert!(
         hits.is_empty(),
         "core-usable dunder gate: the shipped .bv surface must not reference \
@@ -148,8 +160,7 @@ fn no_dunder_llvm_symbol_in_shipped_bv() {
 // changes.
 
 /// The only directories in `lib/` allowed to carry a live `frgn`.
-const FRGN_ALLOWLIST: &[&str] =
-    &["lib/std/web/", "lib/tamer/", "lib/glue/", "lib/std/ai/"];
+const FRGN_ALLOWLIST: &[&str] = &["lib/std/web/", "lib/tamer/", "lib/glue/", "lib/std/ai/"];
 
 /// One file's live `frgn` declaration hits (comments stripped). Returns
 /// `path:line: text` for every declaration outside the allowlist.
@@ -159,7 +170,9 @@ fn frgn_hits_in(path: &Path) -> Vec<String> {
     if FRGN_ALLOWLIST.iter().any(|a| rel_str.starts_with(a)) {
         return Vec::new();
     }
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
     text.lines()
         .enumerate()
         .filter_map(|(i, line)| {

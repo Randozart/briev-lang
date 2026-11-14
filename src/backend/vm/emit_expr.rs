@@ -1,10 +1,10 @@
 // 2026-07-25: VM backend — expression bytecode emission.
 // Each expression pushes its result onto the operand stack.
 
-use crate::ast::*;
-use crate::ast::Expr;
 use super::assembler::Assembler;
-use super::{canonical_host_id, VmBackend};
+use super::{VmBackend, canonical_host_id};
+use crate::ast::Expr;
+use crate::ast::*;
 
 impl VmBackend {
     /// Emit VM bytecode for an expression. Result is left on the stack.
@@ -41,38 +41,38 @@ impl VmBackend {
             }
 
             // ── Identifiers (variable access) ──────────────────────────
-                    Expr::Identifier(name) => {
-                        match self.local_slots.get(name.as_str()) {
-                            Some(slot) => {
-                                self.asm.emit_load_local(*slot);
-                            }
-                            None => {
-                                // 2026-08-26 (parity plan §1.3): a top-level
-                                // const reference inlines its compile-time
-                                // value — the corpus (tamer host dispatch)
-                                // compares against HOST_ID_* consts, and an
-                                // integer stack machine has no global load;
-                                // PUSH_I64 of the resolved value IS the
-                                // semantically-correct lowering for an
-                                // immutable Int const.
-                                if let Some(val) = self.const_values.get(name.as_str()) {
-                                    self.asm.emit_push_i64(*val);
-                                } else {
-                                    // 2026-08-23 (Plan 1.4): unresolvable
-                                    // identifier (state field, global, or
-                                    // strategy tag) records a compile error —
-                                    // the old silent push-0+trap shipped wrong
-                                    // values to install time.
-                                    self.record_unsupported(
-                                        &format!("reference '{}' (not a local/param)", name),
-                                        &self.current_fn.clone(),
-                                    );
-                                    self.asm.emit_push_i64(0);
-                                    self.asm.emit_trap();
-                                }
-                            }
+            Expr::Identifier(name) => {
+                match self.local_slots.get(name.as_str()) {
+                    Some(slot) => {
+                        self.asm.emit_load_local(*slot);
+                    }
+                    None => {
+                        // 2026-08-26 (parity plan §1.3): a top-level
+                        // const reference inlines its compile-time
+                        // value — the corpus (tamer host dispatch)
+                        // compares against HOST_ID_* consts, and an
+                        // integer stack machine has no global load;
+                        // PUSH_I64 of the resolved value IS the
+                        // semantically-correct lowering for an
+                        // immutable Int const.
+                        if let Some(val) = self.const_values.get(name.as_str()) {
+                            self.asm.emit_push_i64(*val);
+                        } else {
+                            // 2026-08-23 (Plan 1.4): unresolvable
+                            // identifier (state field, global, or
+                            // strategy tag) records a compile error —
+                            // the old silent push-0+trap shipped wrong
+                            // values to install time.
+                            self.record_unsupported(
+                                &format!("reference '{}' (not a local/param)", name),
+                                &self.current_fn.clone(),
+                            );
+                            self.asm.emit_push_i64(0);
+                            self.asm.emit_trap();
                         }
                     }
+                }
+            }
 
             // ── Binary operations ──────────────────────────────────────
             Expr::BinaryOp(kind, lhs, rhs) => {
@@ -97,22 +97,26 @@ impl VmBackend {
                 self.emit_expr(lhs);
                 self.emit_expr(rhs);
                 match kind {
-                    BinaryOpKind::Add    => self.asm.emit_add(),
-                    BinaryOpKind::Sub    => self.asm.emit_sub(),
-                    BinaryOpKind::Mul    => self.asm.emit_mul(),
-                    BinaryOpKind::Div    => self.asm.emit_div_s(),
-                    BinaryOpKind::Mod    => self.asm.emit_rem_s(),
-                    BinaryOpKind::Eq     => self.asm.emit_eq(),
-                    BinaryOpKind::Neq    => { self.asm.emit_eq(); self.asm.emit_push_i8(1); self.asm.emit_xor(); },
-                    BinaryOpKind::Lt     => self.asm.emit_lt_s(),
-                    BinaryOpKind::Gt     => self.asm.emit_gt_s(),
-                    BinaryOpKind::Le     => self.asm.emit_le_s(),
-                    BinaryOpKind::Ge     => self.asm.emit_ge_s(),
+                    BinaryOpKind::Add => self.asm.emit_add(),
+                    BinaryOpKind::Sub => self.asm.emit_sub(),
+                    BinaryOpKind::Mul => self.asm.emit_mul(),
+                    BinaryOpKind::Div => self.asm.emit_div_s(),
+                    BinaryOpKind::Mod => self.asm.emit_rem_s(),
+                    BinaryOpKind::Eq => self.asm.emit_eq(),
+                    BinaryOpKind::Neq => {
+                        self.asm.emit_eq();
+                        self.asm.emit_push_i8(1);
+                        self.asm.emit_xor();
+                    }
+                    BinaryOpKind::Lt => self.asm.emit_lt_s(),
+                    BinaryOpKind::Gt => self.asm.emit_gt_s(),
+                    BinaryOpKind::Le => self.asm.emit_le_s(),
+                    BinaryOpKind::Ge => self.asm.emit_ge_s(),
                     BinaryOpKind::And | BinaryOpKind::BitAnd => self.asm.emit_and(),
-                    BinaryOpKind::Or  | BinaryOpKind::BitOr  => self.asm.emit_or(),
+                    BinaryOpKind::Or | BinaryOpKind::BitOr => self.asm.emit_or(),
                     BinaryOpKind::BitXor => self.asm.emit_xor(),
-                    BinaryOpKind::Shl    => self.asm.emit_shl(),
-                    BinaryOpKind::Shr    => self.asm.emit_shr_s(),
+                    BinaryOpKind::Shl => self.asm.emit_shl(),
+                    BinaryOpKind::Shr => self.asm.emit_shr_s(),
                     BinaryOpKind::Concat => {
                         // 2026-08-23 (Plan 1.4): string concat needs the
                         // string opcode family — compile error, not a
@@ -230,7 +234,8 @@ impl VmBackend {
                                     + self.host_fn_ids.len() as u32
                             }
                         };
-                        self.asm.register_host_fn_with_arity(name, id, args.len() as u32);
+                        self.asm
+                            .register_host_fn_with_arity(name, id, args.len() as u32);
                         self.host_fn_ids.insert(name.clone(), id);
                     }
                     let host_id = self.host_fn_ids[name.as_str()];
@@ -285,7 +290,7 @@ impl VmBackend {
                 // data[sl] → push base, push idx, mul 8, add, LOAD
                 self.emit_expr(obj);
                 self.emit_expr(idx);
-                self.asm.emit_push_i8(3);  // scale by 8 (Int size)
+                self.asm.emit_push_i8(3); // scale by 8 (Int size)
                 self.asm.emit_shl();
                 self.asm.emit_add();
                 self.asm.emit_load();
@@ -337,10 +342,7 @@ impl VmBackend {
                     .next()
                     .unwrap_or("this")
                     .to_string();
-                self.record_unsupported(
-                    &format!("{} expressions", kind),
-                    &self.current_fn.clone(),
-                );
+                self.record_unsupported(&format!("{} expressions", kind), &self.current_fn.clone());
                 self.asm.emit_push_i64(0);
                 self.asm.emit_trap();
             }

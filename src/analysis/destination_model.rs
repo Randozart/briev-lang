@@ -2262,9 +2262,10 @@ mod tests {
         assert_eq!(parameter.obligation, ParamObligation::Value);
         assert!(parameter.ty.is_some());
         assert!(plan.values.contains_key(&parameter.value));
-        assert!(plan
-            .values
-            .contains_key(callable.result.value.as_ref().expect("result value")));
+        assert!(
+            plan.values
+                .contains_key(callable.result.value.as_ref().expect("result value"))
+        );
     }
 
     #[test]
@@ -2299,13 +2300,15 @@ defn total(n: Int) -> Int {
 };
 "#,
         );
-        assert!(legacy
-            .callables_by_owner
-            .values()
-            .flat_map(|facts| facts.values.values())
-            .any(|fact| fact
-                .sinks
-                .contains_key(&crate::analysis::destination_ownership::SinkKind::LoopCarrier)));
+        assert!(
+            legacy
+                .callables_by_owner
+                .values()
+                .flat_map(|facts| facts.values.values())
+                .any(|fact| fact
+                    .sinks
+                    .contains_key(&crate::analysis::destination_ownership::SinkKind::LoopCarrier))
+        );
         assert!(!plan.loops.is_empty());
         let loop_plan = plan.loops.values().next().expect("loop plan");
         assert!(!loop_plan.carrier_values.is_empty());
@@ -2333,12 +2336,14 @@ defn run(n: Int) -> P {
 "#,
         );
         let loop_plan = plan.loops.values().next().expect("aggregate carrier");
-        assert!(loop_plan
-            .carrier_values
-            .iter()
-            .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
-                && carrier.requires_backedge_copy
-                && matches!(carrier.proof, ProofStatus::Proven { .. })));
+        assert!(
+            loop_plan
+                .carrier_values
+                .iter()
+                .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
+                    && carrier.requires_backedge_copy
+                    && matches!(carrier.proof, ProofStatus::Proven { .. }))
+        );
         let obligations = plan.foreach_carrier_obligations("defn:run");
         assert!(obligations.values().all(|obligation| {
             obligation.class == GeneralDestinationClass::Boxed
@@ -2618,10 +2623,12 @@ defn make(x: Int) -> (P, Int) {
             .expect("tuple child object");
         assert!(child.requires_materialization);
         assert!(child.escapes.contains(&EscapeKind::TupleLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2641,10 +2648,12 @@ defn make(x: Int) -> List<P> {
             .expect("collection child object");
         assert!(child.requires_materialization);
         assert!(child.escapes.contains(&EscapeKind::CollectionLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2667,10 +2676,12 @@ defn address(x: Int) -> Int {
             })
             .expect("addressed object");
         assert!(escaped.requires_materialization);
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:address")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:address")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2696,10 +2707,12 @@ defn make(n: Int) -> Parent {
             })
             .expect("loop-assigned field child");
         assert!(child.requires_materialization);
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("Child")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("Child"))
+        );
     }
 
     #[test]
@@ -2720,10 +2733,12 @@ defn make(x: Int) -> Parent {
             .expect("child object");
         assert!(child.requires_materialization);
         assert!(child.escapes.contains(&EscapeKind::ObjectLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("Child")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("Child"))
+        );
     }
 
     #[test]
@@ -2754,10 +2769,12 @@ defn assign(w: Wrap) -> Void {
             "a nested field store must own the constructed object"
         );
         assert!(inner.escapes.contains(&EscapeKind::ObjectLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:assign")
-            .is_some_and(|types| types.contains("Inner")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:assign")
+                .is_some_and(|types| types.contains("Inner"))
+        );
     }
 
     #[test]
@@ -2771,10 +2788,12 @@ defn read(x: Int) -> Int {
 };
 "#,
         );
-        assert!(local
-            .stack_object_types_by_owner()
-            .get("defn:read")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            local
+                .stack_object_types_by_owner()
+                .get("defn:read")
+                .is_some_and(|types| types.contains("P"))
+        );
 
         let (_, escaping) = analyze_items(
             r#"
@@ -2786,10 +2805,12 @@ defn caller(x: Int) -> Int {
 };
 "#,
         );
-        assert!(!escaping
-            .stack_object_types_by_owner()
-            .get("defn:caller")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !escaping
+                .stack_object_types_by_owner()
+                .get("defn:caller")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2807,18 +2828,21 @@ defn run(v: Int) -> Int {
 };
 "#,
         );
-        assert!(plan
-            .sinks
-            .values()
-            .any(|sink| sink.kind == DestinationSinkKind::State && sink.requires_copy));
-        assert!(plan
-            .sinks
-            .values()
-            .any(|sink| sink.kind == DestinationSinkKind::ObjectField));
-        assert!(plan
-            .sinks
-            .values()
-            .any(|sink| sink.kind == DestinationSinkKind::Collection));
+        assert!(
+            plan.sinks
+                .values()
+                .any(|sink| sink.kind == DestinationSinkKind::State && sink.requires_copy)
+        );
+        assert!(
+            plan.sinks
+                .values()
+                .any(|sink| sink.kind == DestinationSinkKind::ObjectField)
+        );
+        assert!(
+            plan.sinks
+                .values()
+                .any(|sink| sink.kind == DestinationSinkKind::Collection)
+        );
         let tuple = plan.tuples.values().next().expect("tuple construction");
         assert_eq!(tuple.element_count, 2);
         assert_eq!(tuple.class, GeneralDestinationClass::PackedMemory);
@@ -2840,14 +2864,17 @@ defn run(n: Int) -> Int {
 };
 "#,
         );
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:run")
-            .is_some_and(|types| types.contains("P")));
-        assert!(plan
-            .object_values
-            .values()
-            .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime)));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:run")
+                .is_some_and(|types| types.contains("P"))
+        );
+        assert!(
+            plan.object_values
+                .values()
+                .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime))
+        );
     }
 
     #[test]

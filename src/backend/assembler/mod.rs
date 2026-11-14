@@ -52,15 +52,21 @@ pub trait AsmAssembler: Debug {
 pub struct StubAssembler;
 
 impl AsmAssembler for StubAssembler {
-    fn name(&self) -> &str { "none" }
+    fn name(&self) -> &str {
+        "none"
+    }
 
     fn assemble(&self, text: &str, arch: &str) -> Result<Vec<u8>, String> {
         eprintln!("  warning: assembly not validated for {}: {}", arch, text);
-        eprintln!("  warning: set assembler = \"keystone\" or assembler = \"platform\" in config/targets.dbvl");
+        eprintln!(
+            "  warning: set assembler = \"keystone\" or assembler = \"platform\" in config/targets.dbvl"
+        );
         Ok(vec![])
     }
 
-    fn is_available(&self) -> bool { true }
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 // ── Platform Implementation ──────────────────────────────────────────
@@ -84,7 +90,9 @@ impl PlatformAssembler {
 }
 
 impl AsmAssembler for PlatformAssembler {
-    fn name(&self) -> &str { "platform" }
+    fn name(&self) -> &str {
+        "platform"
+    }
 
     fn assemble(&self, text: &str, arch: &str) -> Result<Vec<u8>, String> {
         let (assembler, flags) = Self::assembler_for_arch(arch);
@@ -110,8 +118,8 @@ impl AsmAssembler for PlatformAssembler {
             return Err(format!("assembler error for {}: {}", arch, stderr.trim()));
         }
 
-        let bytes = std::fs::read(&obj_path)
-            .map_err(|e| format!("cannot read assembled output: {}", e))?;
+        let bytes =
+            std::fs::read(&obj_path).map_err(|e| format!("cannot read assembled output: {}", e))?;
         let _ = std::fs::remove_dir_all(&tmp_dir);
         Ok(bytes)
     }
@@ -133,7 +141,10 @@ pub fn get_assembler(config: &crate::target::TargetEntry) -> Box<dyn AsmAssemble
         "none" => Box::new(StubAssembler),
         "platform" => Box::new(PlatformAssembler),
         other => {
-            eprintln!("  warning: unknown assembler '{}', falling back to 'none'", other);
+            eprintln!(
+                "  warning: unknown assembler '{}', falling back to 'none'",
+                other
+            );
             Box::new(StubAssembler)
         }
     }
@@ -177,7 +188,11 @@ mod tests {
             linker_script: None,
         };
         let asm = get_assembler(&entry);
-        assert_eq!(asm.name(), "none", "unknown assembler should fall back to stub");
+        assert_eq!(
+            asm.name(),
+            "none",
+            "unknown assembler should fall back to stub"
+        );
     }
 
     #[test]
@@ -216,7 +231,13 @@ mod tests {
     fn test_platform_assembler_is_available() {
         let pa = PlatformAssembler;
         // Should be available on any system with `as` installed
-        assert_eq!(pa.is_available(), std::process::Command::new("as").arg("--version").output().is_ok());
+        assert_eq!(
+            pa.is_available(),
+            std::process::Command::new("as")
+                .arg("--version")
+                .output()
+                .is_ok()
+        );
     }
 
     #[test]

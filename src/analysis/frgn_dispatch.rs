@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use crate::ast::top::{ForeignBinding, FromSpec};
-use crate::glue::config::{find_language_by_extension, GlueTarget};
+use crate::glue::config::{GlueTarget, find_language_by_extension};
 use crate::target::BackendKind;
 
 /// The dispatch strategy for a single frgn declaration.

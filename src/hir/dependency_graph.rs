@@ -74,12 +74,24 @@ fn collect_stmt(stmt: &HirStmt, graph: &mut DependencyGraph) {
             if !graph.all_vars.contains(&lhs) || rhs_ids.is_empty() {
                 return;
             }
-            graph.dependencies.entry(lhs.clone()).or_default().extend(rhs_ids.clone());
+            graph
+                .dependencies
+                .entry(lhs.clone())
+                .or_default()
+                .extend(rhs_ids.clone());
             for dep in &rhs_ids {
-                graph.dependents.entry(dep.clone()).or_default().push(lhs.clone());
+                graph
+                    .dependents
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(lhs.clone());
             }
         }
-        HirStmtKind::Let { name, expr: Some(e), .. } => {
+        HirStmtKind::Let {
+            name,
+            expr: Some(e),
+            ..
+        } => {
             let rhs_ids: Vec<String> = collect_expr_identifiers(e)
                 .into_iter()
                 .filter(|r| graph.all_vars.contains(r))
@@ -87,9 +99,17 @@ fn collect_stmt(stmt: &HirStmt, graph: &mut DependencyGraph) {
             if !graph.all_vars.contains(name) || rhs_ids.is_empty() {
                 return;
             }
-            graph.dependencies.entry(name.clone()).or_default().extend(rhs_ids.clone());
+            graph
+                .dependencies
+                .entry(name.clone())
+                .or_default()
+                .extend(rhs_ids.clone());
             for dep in &rhs_ids {
-                graph.dependents.entry(dep.clone()).or_default().push(name.clone());
+                graph
+                    .dependents
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(name.clone());
             }
         }
         HirStmtKind::Guarded(_, body) => {
@@ -123,8 +143,12 @@ fn collect_expr_ids_inner(expr: &HirExpr, ids: &mut Vec<String>) {
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
         | HirExprKind::Await(inner)
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. } => collect_expr_ids_inner(inner, ids),
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        } => collect_expr_ids_inner(inner, ids),
         HirExprKind::Call { args, .. }
         | HirExprKind::List(args)
         | HirExprKind::Tuple(args)
@@ -147,7 +171,11 @@ fn collect_expr_ids_inner(expr: &HirExpr, ids: &mut Vec<String>) {
                 collect_stmt_ids(stmt, ids);
             }
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr_ids_inner(condition, ids);
             collect_expr_ids_inner(then_branch, ids);
             if let Some(other) = else_branch {
@@ -160,7 +188,12 @@ fn collect_expr_ids_inner(expr: &HirExpr, ids: &mut Vec<String>) {
             collect_exprs(args, ids);
         }
         HirExprKind::PluginIntercept { args, .. } => collect_exprs(args, ids),
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_expr_ids_inner(array, ids);
             for part in [start, end, stride].into_iter().flatten() {
                 collect_expr_ids_inner(part, ids);
@@ -259,7 +292,12 @@ mod tests {
     use super::*;
     use crate::analysis::dependency_graph::DependencyGraph as AstGraph;
 
-    fn graphs(src: &str) -> (Result<DependencyGraph, DependencyError>, Result<AstGraph, DependencyError>) {
+    fn graphs(
+        src: &str,
+    ) -> (
+        Result<DependencyGraph, DependencyError>,
+        Result<AstGraph, DependencyError>,
+    ) {
         let tokens = crate::lexer::tokenize(src).expect("tokenize");
         let mut parser = crate::parser::Parser::new(tokens, src);
         let items = parser.parse_program().expect("parse");

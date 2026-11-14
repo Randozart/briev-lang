@@ -13,7 +13,7 @@
 // miss it. `peel_count_zero` records this; the emission runs one compute
 // iteration at entry and fires the guard body.
 
-use crate::analysis::node_decompose::{split_into_segments, PredicateClass, Segment};
+use crate::analysis::node_decompose::{PredicateClass, Segment, split_into_segments};
 use crate::ast::{BinaryOpKind, Expr, Statement};
 use std::collections::HashMap;
 
@@ -313,10 +313,11 @@ mod tests {
         assert_eq!(bs.batch_size, 5000000);
         // inner body = pre + post (increment included), guard removed
         assert_eq!(bs.inner_body.len(), 2);
-        assert!(bs
-            .inner_body
-            .iter()
-            .any(|s| is_counter_increment(s, "count")));
+        assert!(
+            bs.inner_body
+                .iter()
+                .any(|s| is_counter_increment(s, "count"))
+        );
     }
 
     /// knucleotide-style: guard BEFORE the increment (pre-increment) — REJECTED

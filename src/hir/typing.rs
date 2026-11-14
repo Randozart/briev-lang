@@ -9,9 +9,9 @@
 
 use super::expr::{HirExpr, HirExprKind};
 use super::program::HirProgram;
+use super::program::HirTypeDefKind;
 use super::stmt::{HirStmt, HirStmtKind};
 use crate::ast::{BinaryOpKind, Type, UnaryOpKind};
-use super::program::HirTypeDefKind;
 use crate::casting::graph::CastingGraph;
 use crate::type_universe::TypeUniverse;
 use std::collections::HashMap;
@@ -37,11 +37,18 @@ fn build_type_facts(program: &HirProgram) -> TypeFacts {
             HirTypeDefKind::Object { fields } | HirTypeDefKind::Struct { fields } => fields,
             HirTypeDefKind::Enum { .. } => continue,
         };
-        let table = fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
-        facts.fields.insert(def.name.clone(), (def.type_params.clone(), table));
+        let table = fields
+            .iter()
+            .map(|f| (f.name.clone(), f.ty.clone()))
+            .collect();
+        facts
+            .fields
+            .insert(def.name.clone(), (def.type_params.clone(), table));
     }
     for callable in &program.callables {
-        let Some(owner) = &callable.owner else { continue };
+        let Some(owner) = &callable.owner else {
+            continue;
+        };
         let outputs = declared_outputs(callable);
         let result = match outputs.as_slice() {
             [single] => Some(single.clone()),
@@ -205,7 +212,12 @@ fn annotate_expr(expr: &mut HirExpr, env: &Env, returns: &Returns, facts: &TypeF
             annotate_expr(receiver, env, returns, facts);
             field_type(facts, receiver.ty.as_ref(), name)
         }
-        HirExprKind::MethodCall { receiver, name, args, .. } => {
+        HirExprKind::MethodCall {
+            receiver,
+            name,
+            args,
+            ..
+        } => {
             annotate_expr(receiver, env, returns, facts);
             for arg in args.iter_mut() {
                 annotate_expr(arg, env, returns, facts);
@@ -232,12 +244,21 @@ fn annotate_expr(expr: &mut HirExpr, env: &Env, returns: &Returns, facts: &TypeF
     }
 }
 
-
 /// Container/structural expression kinds: annotate children, derive a type
 /// only where it is unambiguous.
-fn annotate_container(kind: &mut HirExprKind, env: &Env, returns: &Returns, facts: &TypeFacts) -> Option<Type> {
+fn annotate_container(
+    kind: &mut HirExprKind,
+    env: &Env,
+    returns: &Returns,
+    facts: &TypeFacts,
+) -> Option<Type> {
     match kind {
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             annotate_expr(array, env, returns, facts);
             for opt in [start, end, stride].into_iter().flatten() {
                 annotate_expr(opt, env, returns, facts);
@@ -255,7 +276,11 @@ fn annotate_container(kind: &mut HirExprKind, env: &Env, returns: &Returns, fact
             }
             None
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             annotate_expr(condition, env, returns, facts);
             annotate_expr(then_branch, env, returns, facts);
             if let Some(e) = else_branch {
@@ -463,9 +488,8 @@ mod tests {
 
     #[test]
     fn identifiers_get_declared_types_and_cast_paths_resolve() {
-        let (program, resolved) = annotated(
-            "defn f(x: Int) -> Float { let y: Int = x; term y as Float; };",
-        );
+        let (program, resolved) =
+            annotated("defn f(x: Int) -> Float { let y: Int = x; term y as Float; };");
         assert_eq!(resolved, 1, "identifier-source cast must resolve");
         let body = body_of(&program, "f");
         let HirStmtKind::Term(Some(cast)) = &body.body.statements[1].kind else {
@@ -496,7 +520,11 @@ mod tests {
         let HirExprKind::Binary { left, .. } = &add.kind else {
             panic!("binary expected");
         };
-        assert_eq!(left.ty, Some(Type::int()), "call result type from output_list");
+        assert_eq!(
+            left.ty,
+            Some(Type::int()),
+            "call result type from output_list"
+        );
     }
 
     #[test]
@@ -513,7 +541,9 @@ mod tests {
         let mut out = Vec::new();
         for callable in &mut program.callables {
             let mut collect = |e: &mut HirExpr| match &e.kind {
-                HirExprKind::Field { name, .. } => out.push((format!("field:{name}"), e.ty.clone())),
+                HirExprKind::Field { name, .. } => {
+                    out.push((format!("field:{name}"), e.ty.clone()))
+                }
                 HirExprKind::Index(..) => out.push(("index".to_string(), e.ty.clone())),
                 HirExprKind::MethodCall { .. } => out.push(("method".to_string(), e.ty.clone())),
                 HirExprKind::Reflect { .. } => out.push(("reflect".to_string(), e.ty.clone())),
@@ -530,9 +560,24 @@ mod tests {
             "struct Point { x: Float; y: Int; };\n             defn f(p: Point, xs: List<Int>) -> Float { let i: Int = p.y; term p.x + (xs[0] as Float); };",
         );
         let typed = collect_typed(&mut program);
-        assert!(typed.iter().any(|(n, t)| n == "field:x" && *t == Some(Type::float())), "{typed:?}");
-        assert!(typed.iter().any(|(n, t)| n == "field:y" && *t == Some(Type::int())), "{typed:?}");
-        assert!(typed.iter().any(|(n, t)| n == "index" && *t == Some(Type::int())), "{typed:?}");
+        assert!(
+            typed
+                .iter()
+                .any(|(n, t)| n == "field:x" && *t == Some(Type::float())),
+            "{typed:?}"
+        );
+        assert!(
+            typed
+                .iter()
+                .any(|(n, t)| n == "field:y" && *t == Some(Type::int())),
+            "{typed:?}"
+        );
+        assert!(
+            typed
+                .iter()
+                .any(|(n, t)| n == "index" && *t == Some(Type::int())),
+            "{typed:?}"
+        );
     }
 
     #[test]
@@ -542,7 +587,9 @@ mod tests {
         );
         let typed = collect_typed(&mut program);
         assert!(
-            typed.iter().any(|(n, t)| n == "field:value" && *t == Some(Type::int())),
+            typed
+                .iter()
+                .any(|(n, t)| n == "field:value" && *t == Some(Type::int())),
             "{typed:?}"
         );
     }
@@ -564,9 +611,7 @@ mod tests {
              defn g(xs: List<Int>) -> Float { term xs.^Length as Float; };",
         );
         let typed = collect_typed(&mut program);
-        assert!(
-            typed.iter().any(|(n, _)| n == "method"), "{typed:?}"
-        );
+        assert!(typed.iter().any(|(n, _)| n == "method"), "{typed:?}");
         // Two explicit casts with known sources must resolve.
         assert_eq!(resolved, 2, "method/reflect source casts must resolve");
     }

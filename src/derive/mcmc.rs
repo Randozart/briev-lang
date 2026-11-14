@@ -3,9 +3,9 @@
 // Flat code: each function max 2 levels of nesting.
 
 use crate::ast::{DerivationExample, Expr, PropertyValue};
-use crate::interpreter::Atom;
-use crate::derive::engine::SynthesizedProgram;
 use crate::derive::SynthesizeError;
+use crate::derive::engine::SynthesizedProgram;
+use crate::interpreter::Atom;
 use std::collections::HashMap;
 
 // ── F.0 — LCG Random Number Generator ───────────────────────────────
@@ -21,12 +21,17 @@ pub struct LcgRng {
 
 impl LcgRng {
     pub fn new(seed: u64) -> Self {
-        LcgRng { state: if seed == 0 { 1 } else { seed } }
+        LcgRng {
+            state: if seed == 0 { 1 } else { seed },
+        }
     }
 
     /// Generate f64 in [0, 1).
     pub fn gen_f64(&mut self) -> f64 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.state = self
+            .state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let upper = (self.state >> 11) as f64;
         upper / 9007199254740992.0
     }
@@ -38,7 +43,9 @@ impl LcgRng {
 
     /// Generate a random index in [lo, hi).
     pub fn gen_range(&mut self, lo: usize, hi: usize) -> usize {
-        if hi <= lo { return lo; }
+        if hi <= lo {
+            return lo;
+        }
         lo + (self.gen_f64() * (hi - lo) as f64) as usize
     }
 }
@@ -158,7 +165,9 @@ impl Default for McmcConfig {
             max_iterations: 100_000,
             convergence_window: 1000,
             mutation_weights: MutationWeights::default(),
-            equivalence: EquivalenceMode::Hybrid { z3_path: "z3".to_string() },
+            equivalence: EquivalenceMode::Hybrid {
+                z3_path: "z3".to_string(),
+            },
             correctness_weight: 1000.0,
             performance_weight: 1.0,
             seed: None,
@@ -182,7 +191,9 @@ fn count_expr_ops(expr: &Expr) -> u64 {
         Expr::UnaryOp(_, inner) => 1 + count_expr_ops(inner),
         Expr::BinaryOp(_, lhs, rhs) => 1 + count_expr_ops(lhs) + count_expr_ops(rhs),
         Expr::If(cond, then_, else_) => {
-            1 + count_expr_ops(cond) + count_expr_ops(then_) + else_.as_ref().map(|e| count_expr_ops(e)).unwrap_or(0)
+            1 + count_expr_ops(cond)
+                + count_expr_ops(then_)
+                + else_.as_ref().map(|e| count_expr_ops(e)).unwrap_or(0)
         }
         _ => 1,
     }
@@ -233,10 +244,16 @@ fn correctness_search(
     for i in 0..config.max_iterations {
         state.iteration = i;
 
-        let proposal_body: Vec<Expr> = state.current.body.iter()
+        let proposal_body: Vec<Expr> = state
+            .current
+            .body
+            .iter()
             .map(|e| super::mutate::apply_random_mutation(e, &config.mutation_weights, rng, 3))
             .collect();
-        let proposed_prog = SynthesizedProgram { body: proposal_body, ..state.current.clone() };
+        let proposed_prog = SynthesizedProgram {
+            body: proposal_body,
+            ..state.current.clone()
+        };
 
         let proposal_cost = cost_function(&proposed_prog, examples);
         let delta = proposal_cost - state.current_cost;
@@ -277,13 +294,22 @@ fn performance_optimization(
     for i in 0..config.max_iterations {
         state.iteration = i;
 
-        let proposal_body: Vec<Expr> = state.current.body.iter()
+        let proposal_body: Vec<Expr> = state
+            .current
+            .body
+            .iter()
             .map(|e| super::mutate::apply_random_mutation(e, &config.mutation_weights, rng, 3))
             .collect();
-        let proposed_prog = SynthesizedProgram { body: proposal_body, ..state.current.clone() };
+        let proposed_prog = SynthesizedProgram {
+            body: proposal_body,
+            ..state.current.clone()
+        };
 
         let is_equivalent = super::equivalence::check_equivalence(
-            &proposed_prog, &state.current, examples, &config.equivalence,
+            &proposed_prog,
+            &state.current,
+            examples,
+            &config.equivalence,
         );
 
         if is_equivalent {
@@ -314,10 +340,7 @@ fn performance_optimization(
 }
 
 /// Combined cost function: correctness violations + performance.
-fn cost_function(
-    program: &SynthesizedProgram,
-    examples: &[DerivationExample],
-) -> f64 {
+fn cost_function(program: &SynthesizedProgram, examples: &[DerivationExample]) -> f64 {
     let mut violations = 0u64;
     for ex in examples {
         let mut ctx = crate::derive::engine::SynthesisEvalContext::new();
@@ -325,12 +348,19 @@ fn cost_function(
             let val = expr_to_value(input_expr);
             ctx.bind(&format!("x{}", i), val);
         }
-        let result = program.body.first()
+        let result = program
+            .body
+            .first()
             .and_then(|e| crate::derive::engine::evaluate_synthesized(e, &mut ctx).ok());
-        let expected = crate::derive::engine::evaluate_synthesized(&ex.output, &mut crate::derive::engine::SynthesisEvalContext::new()).ok();
+        let expected = crate::derive::engine::evaluate_synthesized(
+            &ex.output,
+            &mut crate::derive::engine::SynthesisEvalContext::new(),
+        )
+        .ok();
         match (result, expected) {
             (Some(r), Some(e)) => {
-                if !crate::interpreter::values_within_tolerance(&r, &e, ex.tolerance.unwrap_or(0.0)) {
+                if !crate::interpreter::values_within_tolerance(&r, &e, ex.tolerance.unwrap_or(0.0))
+                {
                     violations += 1;
                 }
             }
@@ -346,8 +376,12 @@ fn expr_to_value(expr: &Expr) -> crate::interpreter::Value {
         Expr::Float(f) => crate::interpreter::Value::Atom(Atom::Float(*f)),
         Expr::Bool(b) => crate::interpreter::Value::Bits(vec![if *b { 1 } else { 0 }]),
         Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match expr_to_value(inner) {
-            crate::interpreter::Value::Atom(Atom::Int(n)) => crate::interpreter::Value::Atom(Atom::Int(-n)),
-            crate::interpreter::Value::Atom(Atom::Float(f)) => crate::interpreter::Value::Atom(Atom::Float(-f)),
+            crate::interpreter::Value::Atom(Atom::Int(n)) => {
+                crate::interpreter::Value::Atom(Atom::Int(-n))
+            }
+            crate::interpreter::Value::Atom(Atom::Float(f)) => {
+                crate::interpreter::Value::Atom(Atom::Float(-f))
+            }
             _ => crate::interpreter::Value::Atom(Atom::Int(0)),
         },
         _ => crate::interpreter::Value::Atom(Atom::Int(0)),
@@ -381,7 +415,8 @@ pub fn mcmc_config_from_metadata(metadata: &HashMap<String, PropertyValue>) -> M
     }
 
     if let Some(PropertyValue::List(mutations)) = metadata.get("allowed_mutations") {
-        config.allowed_mutations = mutations.iter()
+        config.allowed_mutations = mutations
+            .iter()
             .filter_map(|v| match v {
                 PropertyValue::String(s) => Some(s.clone()),
                 _ => None,
@@ -433,15 +468,25 @@ mod tests {
     #[test]
     fn test_mutation_weights_sum_to_one() {
         let w = MutationWeights::default();
-        let sum = w.replace_subtree + w.change_operator + w.swap_commutative
-            + w.fold_constant + w.insert_identity + w.delete_dead_code
-            + w.distribute + w.vector_fuse;
+        let sum = w.replace_subtree
+            + w.change_operator
+            + w.swap_commutative
+            + w.fold_constant
+            + w.insert_identity
+            + w.delete_dead_code
+            + w.distribute
+            + w.vector_fuse;
         assert!((sum - 1.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_performance_cost_constant() {
-        let prog = SynthesizedProgram { body: vec![Expr::Decimal(42)], cost: 0, depth: 0, helpers: vec![] };
+        let prog = SynthesizedProgram {
+            body: vec![Expr::Decimal(42)],
+            cost: 0,
+            depth: 0,
+            helpers: vec![],
+        };
         assert_eq!(performance_cost(&prog), 0);
     }
 
@@ -453,7 +498,8 @@ mod tests {
                 Box::new(Expr::Identifier("x".into())),
                 Box::new(Expr::Decimal(1)),
             )],
-            cost: 0, depth: 0,
+            cost: 0,
+            depth: 0,
             helpers: vec![],
         };
         assert_eq!(performance_cost(&prog), 1);
@@ -478,7 +524,10 @@ mod tests {
     #[test]
     fn test_mcmc_config_from_metadata_search_space_linear() {
         let mut meta = HashMap::new();
-        meta.insert("search_space".into(), PropertyValue::String("linear".into()));
+        meta.insert(
+            "search_space".into(),
+            PropertyValue::String("linear".into()),
+        );
         let cfg = mcmc_config_from_metadata(&meta);
         assert_eq!(cfg.mutation_weights.replace_subtree, 0.0);
     }
@@ -486,7 +535,10 @@ mod tests {
     #[test]
     fn test_mcmc_config_from_metadata_cost_model() {
         let mut meta = HashMap::new();
-        meta.insert("cost_model".into(), PropertyValue::String("throughput".into()));
+        meta.insert(
+            "cost_model".into(),
+            PropertyValue::String("throughput".into()),
+        );
         let cfg = mcmc_config_from_metadata(&meta);
         assert_eq!(cfg.cost_fn, CostFn::Throughput);
     }
@@ -502,10 +554,13 @@ mod tests {
     #[test]
     fn test_mcmc_config_from_metadata_allowed_mutations() {
         let mut meta = HashMap::new();
-        meta.insert("allowed_mutations".into(), PropertyValue::List(vec![
-            PropertyValue::String("replace_subtree".into()),
-            PropertyValue::String("fold_constant".into()),
-        ]));
+        meta.insert(
+            "allowed_mutations".into(),
+            PropertyValue::List(vec![
+                PropertyValue::String("replace_subtree".into()),
+                PropertyValue::String("fold_constant".into()),
+            ]),
+        );
         let cfg = mcmc_config_from_metadata(&meta);
         assert_eq!(cfg.allowed_mutations.len(), 2);
         assert!(cfg.allowed_mutations.contains(&"replace_subtree".into()));

@@ -26,8 +26,8 @@
 use crate::ast::{Annotation, OutputType, TopLevel};
 use crate::glue::config::GlueTarget;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Information extracted from a bridge .bv file for adapter consumption.
 /// This is the structured representation of everything a language adapter
@@ -46,7 +46,7 @@ pub struct BridgeInfo {
 #[derive(Debug, Clone)]
 pub struct ExportDecl {
     pub name: String,
-    pub params: Vec<(String, String)>,  // (name, type string)
+    pub params: Vec<(String, String)>, // (name, type string)
     pub return_type: String,
     /// 2026-08-03: Whether the emitted C-ABI signature carries a leading
     /// `ptr %state` parameter (body-dependent ABI, export_abi analysis).
@@ -121,30 +121,41 @@ fn extract_exports(
     // 2026-08-04 (compiler-in-Briev, P4): the Briev pass (briev_pass.rs)
     // computes this through the GLUE C ABI when its library is present;
     // otherwise the Rust reference runs.
-    let plain = crate::analysis::storage_class::classify_plain_lets(items, None, &std::collections::HashSet::new());
+    let plain = crate::analysis::storage_class::classify_plain_lets(
+        items,
+        None,
+        &std::collections::HashSet::new(),
+    );
     let needs_state = crate::glue::briev_pass::compute_export_needs_state(items, &plain);
     // 2026-08-31 (boundary ownership plan): per-export param/return ownership
     // classes. The convention is defaulted to c_abi (the GLUE target config
     // is not threaded here); lto/wasm refinements are a later wiring step.
-    let ownership = crate::analysis::boundary_ownership::compute_boundary_ownership(
-        items,
-        universe,
-        &|_| None,
-    );
+    let ownership =
+        crate::analysis::boundary_ownership::compute_boundary_ownership(items, universe, &|_| None);
     let mut exports = Vec::new();
     for item in items {
         match item {
             // 2026-07-22: Form A — `export defn name(...) { ... }` keyword form
             TopLevel::Export(export) => {
                 if let TopLevel::Definition(defn) = export.inner.as_ref() {
-                    let params: Vec<(String, String)> = defn.parameters.iter()
+                    let params: Vec<(String, String)> = defn
+                        .parameters
+                        .iter()
                         .map(|p| (p.0.clone(), format_type(&p.1)))
                         .collect();
-                    let return_type = defn.output_type.as_ref()
+                    let return_type = defn
+                        .output_type
+                        .as_ref()
                         .map(|ot| format_output_type(ot))
                         .or_else(|| {
                             if !defn.outputs.is_empty() {
-                                Some(defn.outputs.iter().map(|t| format_type(t)).collect::<Vec<_>>().join("|"))
+                                Some(
+                                    defn.outputs
+                                        .iter()
+                                        .map(|t| format_type(t))
+                                        .collect::<Vec<_>>()
+                                        .join("|"),
+                                )
                             } else {
                                 None
                             }
@@ -154,8 +165,8 @@ fn extract_exports(
                     let param_ownership = entry
                         .map(|e| e.params.iter().map(|o| o.as_str().to_string()).collect())
                         .unwrap_or_default();
-                    let return_ownership = entry
-                        .and_then(|e| e.ret.map(|o| o.as_str().to_string()));
+                    let return_ownership =
+                        entry.and_then(|e| e.ret.map(|o| o.as_str().to_string()));
                     exports.push(ExportDecl {
                         name: defn.name.clone(),
                         params,
@@ -168,14 +179,24 @@ fn extract_exports(
             }
             // 2026-07-22: Form B — `#export` modifier on defn
             TopLevel::Definition(defn) if has_export_modifier(&defn.modifiers) => {
-                let params: Vec<(String, String)> = defn.parameters.iter()
+                let params: Vec<(String, String)> = defn
+                    .parameters
+                    .iter()
                     .map(|p| (p.0.clone(), format_type(&p.1)))
                     .collect();
-                let return_type = defn.output_type.as_ref()
+                let return_type = defn
+                    .output_type
+                    .as_ref()
                     .map(|ot| format_output_type(ot))
                     .or_else(|| {
                         if !defn.outputs.is_empty() {
-                            Some(defn.outputs.iter().map(|t| format_type(t)).collect::<Vec<_>>().join("|"))
+                            Some(
+                                defn.outputs
+                                    .iter()
+                                    .map(|t| format_type(t))
+                                    .collect::<Vec<_>>()
+                                    .join("|"),
+                            )
                         } else {
                             None
                         }
@@ -185,8 +206,7 @@ fn extract_exports(
                 let param_ownership = entry
                     .map(|e| e.params.iter().map(|o| o.as_str().to_string()).collect())
                     .unwrap_or_default();
-                let return_ownership = entry
-                    .and_then(|e| e.ret.map(|o| o.as_str().to_string()));
+                let return_ownership = entry.and_then(|e| e.ret.map(|o| o.as_str().to_string()));
                 exports.push(ExportDecl {
                     name: defn.name.clone(),
                     params,
@@ -212,7 +232,9 @@ fn extract_frgns(items: &[TopLevel]) -> Vec<FrgnDecl> {
             let return_type = format_result_type(&sig.outputs);
             frgns.push(FrgnDecl {
                 name: sig.name.clone(),
-                params: sig.params.iter()
+                params: sig
+                    .params
+                    .iter()
                     .map(|p| (p.0.clone(), format_type(&p.1)))
                     .collect(),
                 return_type,
@@ -293,13 +315,22 @@ fn serialize_exports_tagged(exports: &[ExportDecl]) -> String {
         // pass the pointer without copying.
         let pown = e.param_ownership.join("|");
         let rown = e.return_ownership.clone().unwrap_or_else(|| "".to_string());
-        lines.push(format!("export,{},{},{},{},{},{}", e.name, params.join("|"), e.return_type, ns, pown, rown));
+        lines.push(format!(
+            "export,{},{},{},{},{},{}",
+            e.name,
+            params.join("|"),
+            e.return_type,
+            ns,
+            pown,
+            rown
+        ));
     }
     lines.join("\n")
 }
 
 fn serialize_ctypes_dbvl(c_type_map: &HashMap<String, String>) -> String {
-    let mut lines: Vec<String> = c_type_map.iter()
+    let mut lines: Vec<String> = c_type_map
+        .iter()
         .map(|(briev_type, c_type)| format!("ctype,{},{}", briev_type, c_type))
         .collect();
     lines.sort();
@@ -312,7 +343,11 @@ fn serialize_ctypes_dbvl(c_type_map: &HashMap<String, String>) -> String {
 /// from the body-dependent ABI (needs_state) and the target's config-driven
 /// state representation. Boundary conversions come from target.conversions
 /// (config), never hardcoded in Rust.
-fn export_template_vars(export: &ExportDecl, target: &GlueTarget, type_protocols: &HashMap<String, String>) -> HashMap<String, String> {
+fn export_template_vars(
+    export: &ExportDecl,
+    target: &GlueTarget,
+    type_protocols: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut fn_vars: HashMap<String, String> = HashMap::new();
     fn_vars.insert("name".to_string(), export.name.clone());
     // 2026-08-04 (ship common languages): camelCase the export name — Go/Java
@@ -320,25 +355,31 @@ fn export_template_vars(export: &ExportDecl, target: &GlueTarget, type_protocols
     // `feature_hash`); the source names are snake_case.
     fn_vars.insert("name_upper".to_string(), to_camel_case(&export.name));
 
-    let params: Vec<String> = export.params.iter()
+    let params: Vec<String> = export
+        .params
+        .iter()
         .map(|(name, ty)| {
             let (native, _) = resolve_protocol(ty, &target.protocols, type_protocols);
             // 2026-08-04 (ship common languages): `{{params}}` uses the
             // target's param_decl (C-family `{type} {name}`, Go `{name} {type}`,
             // python/rust `{name}: {type}`) with NATIVE types — previously the
             // `name: native` colon form was hardcoded, which is wrong for Go.
-            target.param_decl
+            target
+                .param_decl
                 .replace("{name}", name)
                 .replace("{type}", &native)
         })
         .collect();
-    let ffi_params: Vec<String> = export.params.iter()
+    let ffi_params: Vec<String> = export
+        .params
+        .iter()
         .map(|(name, ty)| {
             // 2026-08-03: function-pointer (callback) params use the target's
             // fn_param_decl (C embeds the name: `int64_t (*cb)(int64_t)`).
             if ty.starts_with("fn(") {
                 let (ret, params) = fn_pointer_parts(ty, &target.protocols, type_protocols);
-                return target.fn_param_decl
+                return target
+                    .fn_param_decl
                     .replace("{ret}", &ret)
                     .replace("{name}", name)
                     .replace("{params}", &params);
@@ -346,13 +387,16 @@ fn export_template_vars(export: &ExportDecl, target: &GlueTarget, type_protocols
             let (_, c_abi) = resolve_protocol(ty, &target.protocols, type_protocols);
             // Config-driven param decl format (C uses `type name`,
             // python/rust use `name: type`).
-            target.param_decl.replace("{name}", name).replace("{type}", &c_abi)
+            target
+                .param_decl
+                .replace("{name}", name)
+                .replace("{type}", &c_abi)
         })
         .collect();
-    let args: Vec<String> = export.params.iter()
-        .map(|(name, _)| name.clone())
-        .collect();
-    let c_types: Vec<String> = export.params.iter()
+    let args: Vec<String> = export.params.iter().map(|(name, _)| name.clone()).collect();
+    let c_types: Vec<String> = export
+        .params
+        .iter()
         .map(|(_, ty)| {
             let (_, c_abi) = resolve_protocol(ty, &target.protocols, type_protocols);
             c_abi
@@ -361,13 +405,19 @@ fn export_template_vars(export: &ExportDecl, target: &GlueTarget, type_protocols
 
     let args_abi = to_abi_args(export, target, type_protocols);
     let return_expr = from_abi_return(export, target, type_protocols);
-    let (state_arg, state_ffi_param, state_ffi_type) =
-        state_vars(export, target, !args_abi.is_empty(), !ffi_params.is_empty(), !c_types.is_empty());
+    let (state_arg, state_ffi_param, state_ffi_type) = state_vars(
+        export,
+        target,
+        !args_abi.is_empty(),
+        !ffi_params.is_empty(),
+        !c_types.is_empty(),
+    );
 
     fn_vars.insert("s_param".to_string(), state_arg);
     fn_vars.insert("s_ffi_param".to_string(), state_ffi_param);
     fn_vars.insert("s_ffi_type".to_string(), state_ffi_type);
-    let (native_ret, c_ret) = resolve_protocol(&export.return_type, &target.protocols, type_protocols);
+    let (native_ret, c_ret) =
+        resolve_protocol(&export.return_type, &target.protocols, type_protocols);
     fn_vars.insert("return".to_string(), native_ret.clone());
     fn_vars.insert("c_return".to_string(), c_ret.clone());
 
@@ -389,10 +439,15 @@ fn to_abi_args(
     target: &GlueTarget,
     type_protocols: &HashMap<String, String>,
 ) -> Vec<String> {
-    export.params.iter()
+    export
+        .params
+        .iter()
         .map(|(name, ty)| {
             let key = protocol_category_of(ty, type_protocols);
-            target.conversions.to_abi.get(&key)
+            target
+                .conversions
+                .to_abi
+                .get(&key)
                 .map(|expr| expr.replace("{name}", name))
                 .unwrap_or_else(|| name.clone())
         })
@@ -407,7 +462,10 @@ fn from_abi_return(
     type_protocols: &HashMap<String, String>,
 ) -> String {
     let key = protocol_category_of(&export.return_type, type_protocols);
-    target.conversions.from_abi.get(&key)
+    target
+        .conversions
+        .from_abi
+        .get(&key)
         .cloned()
         .unwrap_or_else(|| "result_abi".to_string())
 }
@@ -415,7 +473,8 @@ fn from_abi_return(
 /// The protocol category of a type string — `CStr` → "String" (via its
 /// declared `String<C_String>` protocol), `Int` → "Int".
 fn protocol_category_of(ty: &str, type_protocols: &HashMap<String, String>) -> String {
-    type_protocols.get(ty)
+    type_protocols
+        .get(ty)
         .map(|p| protocol_category(p).to_string())
         .unwrap_or_else(|| ty.to_string())
 }
@@ -459,7 +518,9 @@ fn render_ffi_decls(
 ) -> String {
     let mut ffi_buf = String::new();
     for (i, export) in exports.iter().enumerate() {
-        if i > 0 { ffi_buf.push('\n'); }
+        if i > 0 {
+            ffi_buf.push('\n');
+        }
         let fn_vars = export_template_vars(export, target, type_protocols);
         let mut merged = template_vars.clone();
         merged.extend(fn_vars);
@@ -487,8 +548,17 @@ pub fn run_bindings_cli(file_path: &str, language: &str, out_dir: &str) -> Resul
     let target = crate::glue::config::load_glue_language(language)?;
     let info = extract_bridge_info(&items, bridge_name, Some(&universe));
     if std::env::var("BRIEV_DEBUG_BINDINGS").is_ok() {
-        eprintln!("DBG target.templates keys: {:?}", target.templates.keys().collect::<Vec<_>>());
-        eprintln!("DBG exports: {:?}", info.exports.iter().map(|e| e.name.clone()).collect::<Vec<_>>());
+        eprintln!(
+            "DBG target.templates keys: {:?}",
+            target.templates.keys().collect::<Vec<_>>()
+        );
+        eprintln!(
+            "DBG exports: {:?}",
+            info.exports
+                .iter()
+                .map(|e| e.name.clone())
+                .collect::<Vec<_>>()
+        );
     }
     // 2026-08-03 (P3): type → declared protocol (`type CStr: String<C_String>`)
     // so boundary types resolve to their category's ABI names in the header/
@@ -499,19 +569,40 @@ pub fn run_bindings_cli(file_path: &str, language: &str, out_dir: &str) -> Resul
     let mut template_vars: HashMap<String, String> = HashMap::new();
     template_vars.insert("bridge_name".to_string(), bridge_name.to_string());
 
-    let bindings_ffi = target.templates.get("bindings.ffi_template")
+    let bindings_ffi = target
+        .templates
+        .get("bindings.ffi_template")
         .or_else(|| target.templates.get("ffi_template"))
-        .ok_or_else(|| format!("target '{}' has no bindings.ffi_template in lib/glue/<lang>/glue.dbv", language))?;
-    let ffi_decls = render_ffi_decls(&info.exports, &target, &template_vars, bindings_ffi, &type_protocols);
+        .ok_or_else(|| {
+            format!(
+                "target '{}' has no bindings.ffi_template in lib/glue/<lang>/glue.dbv",
+                language
+            )
+        })?;
+    let ffi_decls = render_ffi_decls(
+        &info.exports,
+        &target,
+        &template_vars,
+        bindings_ffi,
+        &type_protocols,
+    );
     template_vars.insert("ffi_decls".to_string(), ffi_decls);
 
     let output_dir = std::path::Path::new(out_dir).join(format!("{}-bindings", bridge_name));
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("Failed to create output dir '{}': {}", output_dir.display(), e))?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| {
+        format!(
+            "Failed to create output dir '{}': {}",
+            output_dir.display(),
+            e
+        )
+    })?;
 
     let mut written = 0;
     for (filename, template) in &target.templates {
-        if filename == "bindings.ffi_template" || filename == "ffi_template" || filename == "fn_template" {
+        if filename == "bindings.ffi_template"
+            || filename == "ffi_template"
+            || filename == "fn_template"
+        {
             continue;
         }
         if !filename.starts_with("bindings.") {
@@ -530,7 +621,10 @@ pub fn run_bindings_cli(file_path: &str, language: &str, out_dir: &str) -> Resul
         written += 1;
     }
     if written == 0 {
-        return Err(format!("target '{}' has no bindings.* templates in lib/glue/<lang>/glue.dbv", language));
+        return Err(format!(
+            "target '{}' has no bindings.* templates in lib/glue/<lang>/glue.dbv",
+            language
+        ));
     }
     Ok(())
 }
@@ -559,14 +653,16 @@ pub fn run_extension_cli(file_path: &str, language: &str, out_dir: &str) -> Resu
     // extension is self-contained (links the real-ELF objects directly).
     let lib_dir = std::path::Path::new(out_dir);
     std::fs::create_dir_all(lib_dir).map_err(|e| format!("create {}: {}", lib_dir.display(), e))?;
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("cannot locate brievc: {}", e))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate brievc: {}", e))?;
     let build = std::process::Command::new(&exe)
         .args(["build", file_path, "--library", "--out", out_dir])
         .output()
         .map_err(|e| format!("failed to run brievc build --library: {}", e))?;
     if !build.status.success() {
-        return Err(format!("brievc build --library failed:\n{}", String::from_utf8_lossy(&build.stderr)));
+        return Err(format!(
+            "brievc build --library failed:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        ));
     }
 
     // Render the native shim (.c).
@@ -580,14 +676,25 @@ pub fn run_extension_cli(file_path: &str, language: &str, out_dir: &str) -> Resu
     let include_flags = run_recipe_cmd(&target.native_include_cmd).unwrap_or_default();
     let shim_o = lib_dir.join(format!("{}_module.o", bridge_name));
     let cc_c = std::process::Command::new(&cc)
-        .arg("-fPIC").arg("-c").arg(&shim_path).arg("-o").arg(&shim_o)
+        .arg("-fPIC")
+        .arg("-c")
+        .arg(&shim_path)
+        .arg("-o")
+        .arg(&shim_o)
         .args(include_flags.split_whitespace())
-        .output().map_err(|e| format!("failed to run {}: {}", cc, e))?;
+        .output()
+        .map_err(|e| format!("failed to run {}: {}", cc, e))?;
     if !cc_c.status.success() {
-        return Err(format!("{} failed:\n{}", cc, String::from_utf8_lossy(&cc_c.stderr)));
+        return Err(format!(
+            "{} failed:\n{}",
+            cc,
+            String::from_utf8_lossy(&cc_c.stderr)
+        ));
     }
 
-    let suffix = target.native_suffix.clone()
+    let suffix = target
+        .native_suffix
+        .clone()
         .or_else(|| run_recipe_cmd(&target.native_suffix_cmd))
         .unwrap_or_else(|| ".so".to_string());
     let prefix = target.native_prefix.clone().unwrap_or_default();
@@ -599,12 +706,20 @@ pub fn run_extension_cli(file_path: &str, language: &str, out_dir: &str) -> Resu
     // named like a libc function (`read`, `open`, `exec`) otherwise resolves
     // through the PLT to the host's symbol and returns garbage (read → -1).
     let cc_link = std::process::Command::new(&cc)
-        .arg("-shared").arg("-o").arg(&ext_path).arg(&shim_o).arg(&archive)
+        .arg("-shared")
+        .arg("-o")
+        .arg(&ext_path)
+        .arg(&shim_o)
+        .arg(&archive)
         .arg("-Wl,-Bsymbolic-functions")
         .args(ldflags.split_whitespace())
-        .output().map_err(|e| format!("failed to link extension: {}", e))?;
+        .output()
+        .map_err(|e| format!("failed to link extension: {}", e))?;
     if !cc_link.status.success() {
-        return Err(format!("link failed:\n{}", String::from_utf8_lossy(&cc_link.stderr)));
+        return Err(format!(
+            "link failed:\n{}",
+            String::from_utf8_lossy(&cc_link.stderr)
+        ));
     }
     let _ = std::fs::remove_file(&shim_o);
     if std::env::var("BRIEV_KEEP_SHIM").is_ok() {
@@ -623,7 +738,11 @@ pub fn run_extension_cli(file_path: &str, language: &str, out_dir: &str) -> Resu
 /// or it fails (e.g. node needs no link flags).
 fn run_recipe_cmd(cmd: &Option<String>) -> Option<String> {
     let cmd = cmd.as_ref()?;
-    let out = std::process::Command::new("sh").arg("-c").arg(cmd).output().ok()?;
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .ok()?;
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -674,7 +793,11 @@ fn render_native_shim(
         }
         let ret_key = native_key(&export.return_type, type_protocols);
         let ret_c = tpl_for(target, &format!("native.ret.{}", ret_key), "long long");
-        let build = tpl_for(target, &format!("native.build.{}", ret_key), "return PyLong_FromLongLong(r);");
+        let build = tpl_for(
+            target,
+            &format!("native.build.{}", ret_key),
+            "return PyLong_FromLongLong(r);",
+        );
         let ret_jni = tpl_for(target, &format!("native.ret_jni.{}", ret_key), "jlong");
         // 2026-08-03 (node bridge): the shim calls each export under a unique
         // C identifier (`__briev_export_<name>`) aliased to the real symbol via
@@ -689,12 +812,22 @@ fn render_native_shim(
         vars.insert("bridge_name".to_string(), bridge_name.to_string());
         vars.insert("parse_code".to_string(), parse_code);
         vars.insert("ret_c".to_string(), ret_c.clone());
-        vars.insert("call".to_string(), format!("{}({})", call_name, call_args.join(", ")));
+        vars.insert(
+            "call".to_string(),
+            format!("{}({})", call_name, call_args.join(", ")),
+        );
         vars.insert("build_code".to_string(), build);
         vars.insert("sig_params".to_string(), sig_params.join(", "));
         // 2026-08-04 (JNI): a comma before the first host param in the
         // signature (`jclass cls, jlong count`) — absent for 0-param exports.
-        vars.insert("sig_comma".to_string(), if export.params.is_empty() { String::new() } else { ", ".to_string() });
+        vars.insert(
+            "sig_comma".to_string(),
+            if export.params.is_empty() {
+                String::new()
+            } else {
+                ", ".to_string()
+            },
+        );
         vars.insert("ret_jni".to_string(), ret_jni);
         // Node native shim: argc is the real param count; array sizes must be
         // >= 1 (a 0-param export like `read()` must not emit `argv[0]`).
@@ -722,7 +855,10 @@ fn render_native_shim(
         }
         protos.push_str(&format!(
             "extern {} {}({}) asm(\"{}\");",
-            ret_c, call_name, proto_params.join(", "), export.name
+            ret_c,
+            call_name,
+            proto_params.join(", "),
+            export.name
         ));
     }
 
@@ -750,7 +886,11 @@ fn native_key(ty: &str, type_protocols: &HashMap<String, String>) -> String {
 }
 
 fn tpl_for(target: &GlueTarget, key: &str, default: &str) -> String {
-    target.templates.get(key).cloned().unwrap_or_else(|| default.to_string())
+    target
+        .templates
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| default.to_string())
 }
 
 /// camelCase a snake_case export name for host conventions: `feature_hash` →
@@ -798,10 +938,18 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
     let glue_targets = crate::glue::config::load_glue_config(None)?;
     let info = extract_bridge_info(&items, bridge_name, Some(&universe));
     let type_protocols = build_type_protocols(&items);
-    println!("  Bridge '{}': {} exports, {} frgns",
-        info.name, info.exports.len(), info.frgns.len());
-    println!("  Target: {} (types: {}, bridge: {})",
-        target.language, target.types_module.display(), target.bridge_kind);
+    println!(
+        "  Bridge '{}': {} exports, {} frgns",
+        info.name,
+        info.exports.len(),
+        info.frgns.len()
+    );
+    println!(
+        "  Target: {} (types: {}, bridge: {})",
+        target.language,
+        target.types_module.display(),
+        target.bridge_kind
+    );
 
     // 2026-07-22: Step 3 — collect resolved frgns for dispatch
     let mut resolved_frgns = std::collections::HashMap::new();
@@ -809,7 +957,11 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
         if let crate::ast::TopLevel::ForeignBinding(fb) = item {
             let ext = fb.from.extension().unwrap_or_default();
             if let Ok(dispatch) = crate::analysis::frgn_dispatch::resolve_single_frgn(
-                fb, &ext, &glue_targets, crate::target::BackendKind::Llvm, Some(&universe),
+                fb,
+                &ext,
+                &glue_targets,
+                crate::target::BackendKind::Llvm,
+                Some(&universe),
             ) {
                 resolved_frgns.insert(fb.effective_briev_name().to_string(), dispatch);
             }
@@ -832,8 +984,13 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
 
     // 2026-07-22: Step 5 — create output directory and write files
     let output_dir = std::path::Path::new(out_dir).join(format!("{}-bridge", bridge_name));
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("Failed to create output dir '{}': {}", output_dir.display(), e))?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| {
+        format!(
+            "Failed to create output dir '{}': {}",
+            output_dir.display(),
+            e
+        )
+    })?;
 
     // Write LLVM IR
     let ll_path = output_dir.join("bridge.ll");
@@ -869,7 +1026,10 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
         template_vars.insert("s_init".to_string(), String::new());
     } else {
         // LTO path (Rust): init_state is declared as an FFI function
-        template_vars.insert("s_init".to_string(), "    pub fn init_state(state: *mut c_void);\n".to_string());
+        template_vars.insert(
+            "s_init".to_string(),
+            "    pub fn init_state(state: *mut c_void);\n".to_string(),
+        );
     }
 
     // Render all exports + FFI declarations
@@ -879,8 +1039,12 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
     let mut ffi_buf = String::new();
 
     for (i, export) in info.exports.iter().enumerate() {
-        if i > 0 { exports_buf.push('\n'); }
-        if i > 0 { ffi_buf.push('\n'); }
+        if i > 0 {
+            exports_buf.push('\n');
+        }
+        if i > 0 {
+            ffi_buf.push('\n');
+        }
 
         let fn_vars = export_template_vars(export, &target, &type_protocols);
 
@@ -909,7 +1073,10 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
 
     // Write each file template
     for (filename, template) in &target.templates {
-        if filename == "fn_template" || filename == "ffi_template" || filename.starts_with("native.") {
+        if filename == "fn_template"
+            || filename == "ffi_template"
+            || filename.starts_with("native.")
+        {
             continue;
         }
         let rendered = render_template(template, &template_vars);
@@ -930,8 +1097,15 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
         file_extension: target.extension.clone(),
         llvm_triple: "x86_64-unknown-linux-gnu".to_string(),
         // 2026-07-26: c_abi is optional — fall back to native type if absent
-        c_type_map: target.protocols.iter()
-            .map(|(k, v)| (k.clone(), v.c_abi.clone().unwrap_or_else(|| v.native.clone())))
+        c_type_map: target
+            .protocols
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    v.c_abi.clone().unwrap_or_else(|| v.native.clone()),
+                )
+            })
             .collect(),
     };
     let mut dbvl_content = String::new();
@@ -971,12 +1145,15 @@ fn resolve_protocol(
     // protocol CATEGORY so the config's category-keyed c_abi applies. The
     // protocol string may carry a variant (`String<C_String>`) — the ABI
     // name comes from the category entry.
-    let category = type_protocols.get(briev_type_name)
+    let category = type_protocols
+        .get(briev_type_name)
         .map(|p| protocol_category(p).to_string())
         .unwrap_or_else(|| briev_type_name.to_string());
     let protocol_key = category;
     if let Some(entry) = protocols.get(&protocol_key) {
-        let abi = entry.c_abi.clone()
+        let abi = entry
+            .c_abi
+            .clone()
             .or_else(|| entry.wasm_abi.clone())
             .unwrap_or_else(|| entry.native.clone());
         (entry.native.clone(), abi)
@@ -1017,7 +1194,8 @@ fn fn_pointer_parts(
     let inner = fn_str.strip_prefix("fn(").unwrap_or(fn_str);
     let (params_part, ret) = inner.split_once("->").unwrap_or((inner, ""));
     let params_part = params_part.trim_end_matches(')');
-    let params: Vec<String> = params_part.split(',')
+    let params: Vec<String> = params_part
+        .split(',')
         .filter(|p| !p.trim().is_empty())
         .map(|p| resolve_protocol(p.trim(), protocols, type_protocols).1)
         .collect();
@@ -1039,7 +1217,6 @@ fn fn_pointer_abi(
     let (ret, params) = fn_pointer_parts(fn_str, protocols, type_protocols);
     format!("{} (*)({})", ret, params)
 }
-
 
 /// Simple mustache-like template substitution.
 ///
@@ -1106,7 +1283,10 @@ mod tests {
             return_ownership: Some("value".to_string()),
         }];
         let result = serialize_exports_tagged(&exports);
-        assert_eq!(result, "export,write_file,String|Blob,Int,state,owned|owned,value");
+        assert_eq!(
+            result,
+            "export,write_file,String|Blob,Int,state,owned|owned,value"
+        );
     }
 
     #[test]
@@ -1131,7 +1311,10 @@ mod tests {
         let exports = vec![
             ExportDecl {
                 name: "add".to_string(),
-                params: vec![("a".to_string(), "Int".to_string()), ("b".to_string(), "Int".to_string())],
+                params: vec![
+                    ("a".to_string(), "Int".to_string()),
+                    ("b".to_string(), "Int".to_string()),
+                ],
                 return_type: "Int".to_string(),
                 needs_state: false,
                 param_ownership: vec!["value".to_string(), "value".to_string()],
@@ -1147,6 +1330,9 @@ mod tests {
             },
         ];
         let result = serialize_exports_tagged(&exports);
-        assert_eq!(result, "export,add,Int|Int,Int,pure,value|value,value\nexport,greet,String,String,state,borrowed,owned");
+        assert_eq!(
+            result,
+            "export,add,Int|Int,Int,pure,value|value,value\nexport,greet,String,String,state,borrowed,owned"
+        );
     }
 }

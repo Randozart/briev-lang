@@ -63,7 +63,8 @@ pub fn emit_protocol_chain(
                     out,
                     "  {} = bitcast {} {} to {}",
                     result, current_ty, current_reg, target_ty
-                ).ok();
+                )
+                .ok();
                 current_reg = result;
                 current_ty = target_ty.to_string();
             }
@@ -85,7 +86,8 @@ pub fn emit_protocol_chain(
                     out,
                     "  {} = bitcast {} {} to {}",
                     result, current_ty, current_reg, target_ty_str
-                ).ok();
+                )
+                .ok();
                 current_reg = result;
                 current_ty = target_ty_str.to_string();
             }
@@ -102,13 +104,15 @@ pub fn emit_protocol_chain(
                     out,
                     "  declare {} @{}({})",
                     target_ty, intrinsic, current_ty
-                ).ok();
+                )
+                .ok();
                 let result = gen_reg();
                 writeln!(
                     out,
                     "  {} = call {} @{}({} {})",
                     result, target_ty, intrinsic, current_ty, current_reg
-                ).ok();
+                )
+                .ok();
                 current_reg = result;
                 current_ty = target_ty.to_string();
             }
@@ -121,7 +125,7 @@ pub fn emit_protocol_chain(
 mod tests {
     use super::*;
     use crate::analysis::frgn_dispatch::TransformKind;
-        use crate::ast::Type;
+    use crate::ast::Type;
 
     /// Helper: creates a mutable closure for register generation.
     fn test_gen_reg() -> Box<dyn FnMut() -> String> {
@@ -179,7 +183,11 @@ mod tests {
         let mut gen_reg = test_gen_reg();
         let result = emit_protocol_chain(&mut out, "%val", &path, "i64", &mut gen_reg).unwrap();
         // MeldShuffle currently falls back to bitcast
-        assert!(out.contains("bitcast"), "should emit bitcast for meld: {}", out);
+        assert!(
+            out.contains("bitcast"),
+            "should emit bitcast for meld: {}",
+            out
+        );
         assert_eq!(result, "%t0");
     }
 
@@ -194,9 +202,12 @@ mod tests {
         let mut gen_reg = test_gen_reg();
         let result = emit_protocol_chain(&mut out, "%val", &path, "i64", &mut gen_reg).unwrap();
         assert!(out.contains("declare"), "should emit declare: {}", out);
-        assert!(out.contains("_CastTo_String"), "should emit _CastTo_: {}", out);
+        assert!(
+            out.contains("_CastTo_String"),
+            "should emit _CastTo_: {}",
+            out
+        );
         assert!(out.contains("call"), "should emit call: {}", out);
         assert_eq!(result, "%t0");
     }
-
 }

@@ -15,9 +15,9 @@
 //! (unknown base, non-shape type, arity mismatch) is a compile error —
 //! fail closed, never a silent miscompile.
 
-use crate::ast::top::{Statement, TopLevel};
 use crate::ast::Expr;
 use crate::ast::Type;
+use crate::ast::top::{Statement, TopLevel};
 use crate::type_universe::TypeUniverse;
 use std::collections::HashMap;
 
@@ -107,7 +107,7 @@ fn fold_indices(
                 "a[{}, {}] on a shape-bearing field needs 2 indices (rows = {rows}), or 3 when the type declares spec Depth > 1 (depth = {depth})",
                 idxs.len(),
                 idxs.len(),
-            ))
+            ));
         }
     };
     let _ = rows; // rows bound the first index; not needed in the linear form

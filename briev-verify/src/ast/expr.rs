@@ -51,8 +51,8 @@ pub enum Expr {
     /// 2026-07-27: Tagged quoted string: sql"SELECT", my"hello"
     /// First field is the string content, second is the prefix tag.
     TaggedQuotedLiteral(Vec<u8>, String),
-    Bool(bool),      // true, false
-    Float(f64),      // 3.14
+    Bool(bool), // true, false
+    Float(f64), // 3.14
     /// 2026-08-06 (beginprogram plan): the `beginprogram` precondition marker —
     /// true exactly once at program start. Only meaningful in a node's
     /// precondition; the node it annotates is an entry loop.
@@ -177,7 +177,10 @@ pub enum Expr {
     /// `3.3V` (volts), `10mA` (milliamps), `330R` (ohms), etc.
     /// Parsed from adjacent numeric + identifier tokens; the analysis
     /// pass interprets the unit.
-    UnitLiteral { value: f64, unit: String },
+    UnitLiteral {
+        value: f64,
+        unit: String,
+    },
 }
 
 /// 2026-07-31: Reflection kind — distinguishes value-derived (runtime)
@@ -381,7 +384,10 @@ impl Expr {
                     }
                 }
             }
-            Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) | Expr::Await(inner) => inner.collect_vars_into(acc),
+            Expr::Deref(inner)
+            | Expr::AddrOf(inner)
+            | Expr::Consume(inner)
+            | Expr::Await(inner) => inner.collect_vars_into(acc),
             _ => {}
         }
     }

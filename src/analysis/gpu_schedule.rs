@@ -14,9 +14,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::analysis::accel::AccelEntry;
-use crate::ast::top::{Statement, TopLevel, Transaction};
 use crate::ast::BinaryOpKind;
 use crate::ast::Expr;
+use crate::ast::top::{Statement, TopLevel, Transaction};
 
 /// The scheduling DAG computed from the program's node read/write sets.
 #[derive(Debug, Clone, Default, PartialEq)]

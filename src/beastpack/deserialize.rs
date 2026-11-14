@@ -42,16 +42,14 @@ pub fn deserialize(data: &[u8]) -> Result<(Vec<TopLevel>, TypeUniverse), String>
     }
 
     let _obfuscation_seed = u64::from_le_bytes([
-        data[14], data[15], data[16], data[17],
-        data[18], data[19], data[20], data[21],
+        data[14], data[15], data[16], data[17], data[18], data[19], data[20], data[21],
     ]);
 
     let flags = u32::from_le_bytes([data[22], data[23], data[24], data[25]]);
     let _reserved = [data[26], data[27], data[28], data[29]];
 
     let data_size = u64::from_le_bytes([
-        data[30], data[31], data[32], data[33],
-        data[34], data[35], data[36], data[37],
+        data[30], data[31], data[32], data[33], data[34], data[35], data[36], data[37],
     ]) as usize;
 
     // 4. Extract data section (after header, before checksum)
@@ -68,7 +66,8 @@ pub fn deserialize(data: &[u8]) -> Result<(Vec<TopLevel>, TypeUniverse), String>
         use std::io::Read;
         let mut decoder = GzDecoder::new(raw_data);
         let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed)
+        decoder
+            .read_to_end(&mut decompressed)
             .map_err(|e| format!("beastpack: decompression failed: {}", e))?;
         decompressed
     } else {

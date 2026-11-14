@@ -76,14 +76,10 @@ fn expr_involves_trigger(expr: &Expr) -> bool {
             // Heuristic: trigger variables often have signal-like names
             is_trigger_like_name(name)
         }
-        Expr::BinaryOp(_, l, r) => {
-            expr_involves_trigger(l) || expr_involves_trigger(r)
-        }
+        Expr::BinaryOp(_, l, r) => expr_involves_trigger(l) || expr_involves_trigger(r),
         Expr::UnaryOp(_, e) => expr_involves_trigger(e),
         Expr::Call(_, args, _) => args.iter().any(expr_involves_trigger),
-        Expr::Index(list, idx) => {
-            expr_involves_trigger(list) || expr_involves_trigger(idx)
-        }
+        Expr::Index(list, idx) => expr_involves_trigger(list) || expr_involves_trigger(idx),
         _ => false,
     }
 }
@@ -91,13 +87,32 @@ fn expr_involves_trigger(expr: &Expr) -> bool {
 /// Heuristic: check if a variable name looks like a trigger/signal
 fn is_trigger_like_name(name: &str) -> bool {
     let trigger_prefixes = [
-        "sig", "signal", "trg", "trigger", "event", "irq", "interrupt",
-        "input", "sensor", "button", "key", "click", "tick", "clock",
-        "stdin", "stdout", "network", "socket", "file_", "fs_",
+        "sig",
+        "signal",
+        "trg",
+        "trigger",
+        "event",
+        "irq",
+        "interrupt",
+        "input",
+        "sensor",
+        "button",
+        "key",
+        "click",
+        "tick",
+        "clock",
+        "stdin",
+        "stdout",
+        "network",
+        "socket",
+        "file_",
+        "fs_",
     ];
 
     let name_lower = name.to_lowercase();
-    trigger_prefixes.iter().any(|prefix| name_lower.starts_with(prefix))
+    trigger_prefixes
+        .iter()
+        .any(|prefix| name_lower.starts_with(prefix))
         || name_lower.ends_with("_trg")
         || name_lower.ends_with("_trigger")
         || name_lower.ends_with("_signal")
@@ -232,7 +247,9 @@ pub fn generate_concolic_test_cases(txn: &Transaction) -> Vec<Vec<(String, i64)>
     }
 
     // Also generate a "default" test case with zero values
-    let param_defaults: Vec<(String, i64)> = txn.parameters.iter()
+    let param_defaults: Vec<(String, i64)> = txn
+        .parameters
+        .iter()
         .map(|(name, _)| (name.clone(), 0))
         .collect();
     if !param_defaults.is_empty() {
@@ -292,7 +309,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             span: None,
             metadata: HashMap::new(),
@@ -318,17 +336,40 @@ mod tests {
 
     #[test]
     fn test_extract_path_constraints_simple() {
-        let txn = make_txn("foo",
-            Expr::BinaryOp(BinaryOpKind::Lt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(100))),
+        let txn = make_txn(
+            "foo",
+            Expr::BinaryOp(
+                BinaryOpKind::Lt,
+                Box::new(Expr::Identifier("x".into())),
+                Box::new(Expr::Decimal(100)),
+            ),
             Expr::Bool(true),
             vec![
                 Statement::Guarded(
-                    Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(0))),
-                    vec![Statement::Assign(Expr::Identifier("x".into()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(1))))],
+                    Expr::BinaryOp(
+                        BinaryOpKind::Gt,
+                        Box::new(Expr::Identifier("x".into())),
+                        Box::new(Expr::Decimal(0)),
+                    ),
+                    vec![Statement::Assign(
+                        Expr::Identifier("x".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("x".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    )],
                 ),
                 Statement::Guarded(
-                    Expr::BinaryOp(BinaryOpKind::Eq, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(0))),
-                    vec![Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(1))],
+                    Expr::BinaryOp(
+                        BinaryOpKind::Eq,
+                        Box::new(Expr::Identifier("x".into())),
+                        Box::new(Expr::Decimal(0)),
+                    ),
+                    vec![Statement::Assign(
+                        Expr::Identifier("x".into()),
+                        Expr::Decimal(1),
+                    )],
                 ),
                 Statement::Term(None),
             ],
@@ -344,13 +385,17 @@ mod tests {
 
     #[test]
     fn test_extract_path_constraints_with_trigger() {
-        let txn = make_txn("handle_click",
+        let txn = make_txn(
+            "handle_click",
             Expr::Bool(true),
             Expr::Bool(true),
             vec![
                 Statement::Guarded(
                     Expr::Identifier("sensor".into()),
-                    vec![Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(1))],
+                    vec![Statement::Assign(
+                        Expr::Identifier("x".into()),
+                        Expr::Decimal(1),
+                    )],
                 ),
                 Statement::Term(None),
             ],
@@ -359,22 +404,44 @@ mod tests {
         assert_eq!(constraints.len(), 1, "Should find 1 guard constraint");
 
         // The guard involves 'sensor' which is trigger-like
-        assert!(constraints[0].involves_trigger, "Guard involves trigger variable");
+        assert!(
+            constraints[0].involves_trigger,
+            "Guard involves trigger variable"
+        );
     }
 
     #[test]
     fn test_filter_pre_evaluable_constraints() {
-        let txn = make_txn("process",
-            Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(0))),
+        let txn = make_txn(
+            "process",
+            Expr::BinaryOp(
+                BinaryOpKind::Gt,
+                Box::new(Expr::Identifier("x".into())),
+                Box::new(Expr::Decimal(0)),
+            ),
             Expr::Bool(true),
             vec![
                 Statement::Guarded(
-                    Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(10))),
-                    vec![Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(1))],
+                    Expr::BinaryOp(
+                        BinaryOpKind::Gt,
+                        Box::new(Expr::Identifier("x".into())),
+                        Box::new(Expr::Decimal(10)),
+                    ),
+                    vec![Statement::Assign(
+                        Expr::Identifier("x".into()),
+                        Expr::Decimal(1),
+                    )],
                 ),
                 Statement::Guarded(
-                    Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("sensor".into())), Box::new(Expr::Decimal(0))),
-                    vec![Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(2))],
+                    Expr::BinaryOp(
+                        BinaryOpKind::Gt,
+                        Box::new(Expr::Identifier("sensor".into())),
+                        Box::new(Expr::Decimal(0)),
+                    ),
+                    vec![Statement::Assign(
+                        Expr::Identifier("x".into()),
+                        Expr::Decimal(2),
+                    )],
                 ),
                 Statement::Term(None),
             ],
@@ -393,7 +460,8 @@ mod tests {
 
         // Test x > 5
         let constraint = PathConstraintInfo {
-            condition: Expr::BinaryOp(BinaryOpKind::Gt,
+            condition: Expr::BinaryOp(
+                BinaryOpKind::Gt,
                 Box::new(Expr::Identifier("x".to_string())),
                 Box::new(Expr::Decimal(5)),
             ),
@@ -408,7 +476,8 @@ mod tests {
 
         // Test x == 10
         let constraint = PathConstraintInfo {
-            condition: Expr::BinaryOp(BinaryOpKind::Eq,
+            condition: Expr::BinaryOp(
+                BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("y".to_string())),
                 Box::new(Expr::Decimal(10)),
             ),
@@ -424,20 +493,52 @@ mod tests {
 
     #[test]
     fn test_generate_concolic_test_cases() {
-        let txn = make_txn("increment",
-            Expr::BinaryOp(BinaryOpKind::And,
-                Box::new(Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("amount".into())), Box::new(Expr::Decimal(0)))),
-                Box::new(Expr::BinaryOp(BinaryOpKind::Lt, Box::new(Expr::Identifier("counter".into())), Box::new(Expr::Decimal(100)))),
+        let txn = make_txn(
+            "increment",
+            Expr::BinaryOp(
+                BinaryOpKind::And,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Gt,
+                    Box::new(Expr::Identifier("amount".into())),
+                    Box::new(Expr::Decimal(0)),
+                )),
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("counter".into())),
+                    Box::new(Expr::Decimal(100)),
+                )),
             ),
             Expr::Bool(true),
             vec![
                 Statement::Guarded(
-                    Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("amount".into())), Box::new(Expr::Decimal(10))),
-                    vec![Statement::Assign(Expr::Identifier("counter".into()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("counter".into())), Box::new(Expr::Identifier("amount".into()))))],
+                    Expr::BinaryOp(
+                        BinaryOpKind::Gt,
+                        Box::new(Expr::Identifier("amount".into())),
+                        Box::new(Expr::Decimal(10)),
+                    ),
+                    vec![Statement::Assign(
+                        Expr::Identifier("counter".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("counter".into())),
+                            Box::new(Expr::Identifier("amount".into())),
+                        ),
+                    )],
                 ),
                 Statement::Guarded(
-                    Expr::BinaryOp(BinaryOpKind::Le, Box::new(Expr::Identifier("amount".into())), Box::new(Expr::Decimal(10))),
-                    vec![Statement::Assign(Expr::Identifier("counter".into()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("counter".into())), Box::new(Expr::Identifier("amount".into()))))],
+                    Expr::BinaryOp(
+                        BinaryOpKind::Le,
+                        Box::new(Expr::Identifier("amount".into())),
+                        Box::new(Expr::Decimal(10)),
+                    ),
+                    vec![Statement::Assign(
+                        Expr::Identifier("counter".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("counter".into())),
+                            Box::new(Expr::Identifier("amount".into())),
+                        ),
+                    )],
                 ),
                 Statement::Term(None),
             ],
@@ -446,7 +547,10 @@ mod tests {
         let test_cases = generate_concolic_test_cases(&txn);
 
         // Should have test cases for amount > 10, amount <= 10, and default
-        assert!(!test_cases.is_empty(), "Should generate at least one test case");
+        assert!(
+            !test_cases.is_empty(),
+            "Should generate at least one test case"
+        );
 
         // Verify test cases have valid values
         for case in &test_cases {
@@ -462,27 +566,73 @@ mod tests {
     fn test_run_concolic_analysis() {
         let program: Vec<TopLevel> = vec![
             make_state("x"),
-            make_txn_top("inc",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(100))),
+            make_txn_top(
+                "inc",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("x".into())),
+                    Box::new(Expr::Decimal(100)),
+                ),
                 Expr::Bool(true),
                 vec![
                     Statement::Guarded(
-                        Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(50))),
-                        vec![Statement::Assign(Expr::Identifier("x".into()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(2))))],
+                        Expr::BinaryOp(
+                            BinaryOpKind::Gt,
+                            Box::new(Expr::Identifier("x".into())),
+                            Box::new(Expr::Decimal(50)),
+                        ),
+                        vec![Statement::Assign(
+                            Expr::Identifier("x".into()),
+                            Expr::BinaryOp(
+                                BinaryOpKind::Add,
+                                Box::new(Expr::Identifier("x".into())),
+                                Box::new(Expr::Decimal(2)),
+                            ),
+                        )],
                     ),
-                    Statement::Assign(Expr::Identifier("x".into()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(1)))),
+                    Statement::Assign(
+                        Expr::Identifier("x".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("x".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    ),
                     Statement::Term(None),
                 ],
             ),
-            make_txn_top("dec",
-                Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(0))),
+            make_txn_top(
+                "dec",
+                Expr::BinaryOp(
+                    BinaryOpKind::Gt,
+                    Box::new(Expr::Identifier("x".into())),
+                    Box::new(Expr::Decimal(0)),
+                ),
                 Expr::Bool(true),
                 vec![
                     Statement::Guarded(
-                        Expr::BinaryOp(BinaryOpKind::Lt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(10))),
-                        vec![Statement::Assign(Expr::Identifier("x".into()), Expr::BinaryOp(BinaryOpKind::Sub, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(2))))],
+                        Expr::BinaryOp(
+                            BinaryOpKind::Lt,
+                            Box::new(Expr::Identifier("x".into())),
+                            Box::new(Expr::Decimal(10)),
+                        ),
+                        vec![Statement::Assign(
+                            Expr::Identifier("x".into()),
+                            Expr::BinaryOp(
+                                BinaryOpKind::Sub,
+                                Box::new(Expr::Identifier("x".into())),
+                                Box::new(Expr::Decimal(2)),
+                            ),
+                        )],
                     ),
-                    Statement::Assign(Expr::Identifier("x".into()), Expr::BinaryOp(BinaryOpKind::Sub, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(1)))),
+                    Statement::Assign(
+                        Expr::Identifier("x".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Sub,
+                            Box::new(Expr::Identifier("x".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    ),
                     Statement::Term(None),
                 ],
             ),
@@ -495,7 +645,10 @@ mod tests {
         for result in &results {
             assert!(!result.txn_name.is_empty());
             // Each transaction has a guard, so should have at least one test case
-            assert!(result.total_constraints >= 1, "Should have at least one constraint");
+            assert!(
+                result.total_constraints >= 1,
+                "Should have at least one constraint"
+            );
         }
     }
 

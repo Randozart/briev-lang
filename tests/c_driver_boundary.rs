@@ -29,23 +29,54 @@ fn boundary_types_roundtrip() {
 
     let bv = format!("{}/examples/glue-host/boundary.bv", PROJECT_ROOT);
     let build = Command::new(brievc)
-        .args(["build", &bv, "--library", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc build --library");
-    assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
+        .args([
+            "build",
+            &bv,
+            "--library",
+            "--out",
+            &out_dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("failed brievc build --library");
+    assert!(
+        build.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let bindings = Command::new(brievc)
         .args(["bindings", &bv, "c", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc bindings");
-    assert!(bindings.status.success(), "bindings failed: {}", String::from_utf8_lossy(&bindings.stderr));
+        .output()
+        .expect("failed brievc bindings");
+    assert!(
+        bindings.status.success(),
+        "bindings failed: {}",
+        String::from_utf8_lossy(&bindings.stderr)
+    );
 
     // The generated header must resolve the boundary types to C ABI names.
-    let header = std::fs::read_to_string(out_dir.join("boundary-bindings").join("briev_types.h")).unwrap();
-    assert!(header.contains("int64_t echo(int64_t name)"), "CStr → int64_t: {}", header);
-    assert!(header.contains("int64_t join(int64_t a, int64_t b)"), "CStr params: {}", header);
-    assert!(header.contains("double identity(double x)"), "CDouble → double: {}", header);
+    let header =
+        std::fs::read_to_string(out_dir.join("boundary-bindings").join("briev_types.h")).unwrap();
+    assert!(
+        header.contains("int64_t echo(int64_t name)"),
+        "CStr → int64_t: {}",
+        header
+    );
+    assert!(
+        header.contains("int64_t join(int64_t a, int64_t b)"),
+        "CStr params: {}",
+        header
+    );
+    assert!(
+        header.contains("double identity(double x)"),
+        "CDouble → double: {}",
+        header
+    );
 
     let driver_c = out_dir.join("driver.c");
-    std::fs::write(&driver_c, r#"
+    std::fs::write(
+        &driver_c,
+        r#"
 #include "boundary-bindings/briev_types.h"
 #include <stdio.h>
 
@@ -62,7 +93,9 @@ int main(void) {
     __glue_release(st);
     return 0;
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let header_dir = out_dir.join("boundary-bindings");
     let driver = out_dir.join("driver");
@@ -72,16 +105,39 @@ int main(void) {
         .arg(format!("-I{}", header_dir.display()))
         .arg(format!("-L{}", out_dir.display()))
         .arg("-lboundary")
-        .output().expect("failed cc");
-    assert!(cc.status.success(), "cc failed: {}", String::from_utf8_lossy(&cc.stderr));
+        .output()
+        .expect("failed cc");
+    assert!(
+        cc.status.success(),
+        "cc failed: {}",
+        String::from_utf8_lossy(&cc.stderr)
+    );
 
-    let run = Command::new(&driver).output().expect("failed to run driver");
-    assert!(run.status.success(), "driver failed: {}", String::from_utf8_lossy(&run.stderr));
+    let run = Command::new(&driver)
+        .output()
+        .expect("failed to run driver");
+    assert!(
+        run.status.success(),
+        "driver failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(stdout.contains("echo:hello"), "echo: {}", stdout);
-    assert!(stdout.contains("greet:hello"), "greet (marshalled): {}", stdout);
-    assert!(stdout.contains("join:foobar"), "join (cstring_concat): {}", stdout);
-    assert!(stdout.contains("ident:3.140000"), "identity (CDouble → double): {}", stdout);
+    assert!(
+        stdout.contains("greet:hello"),
+        "greet (marshalled): {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("join:foobar"),
+        "join (cstring_concat): {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("ident:3.140000"),
+        "identity (CDouble → double): {}",
+        stdout
+    );
 
     let _ = std::fs::remove_dir_all(&out_dir);
 }

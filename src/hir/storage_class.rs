@@ -97,7 +97,9 @@ fn walk_written(stmts: &[HirStmt], out: &mut HashSet<String>) {
 fn written_of_stmt(stmt: &HirStmt, out: &mut HashSet<String>) {
     match &stmt.kind {
         HirStmtKind::Assign(lhs, _) => insert_ident_name(lhs, out),
-        HirStmtKind::ArrowAssign { target: Some(t), .. } => insert_ident_name(t, out),
+        HirStmtKind::ArrowAssign {
+            target: Some(t), ..
+        } => insert_ident_name(t, out),
         HirStmtKind::Guarded(_, body)
         | HirStmtKind::Block(body)
         | HirStmtKind::SyncBlock(body)
@@ -202,7 +204,11 @@ pub(crate) fn collect_raw_idents(expr: &HirExpr, out: &mut HashSet<String>) {
                 collect_raw_idents(&arm.body, out);
             }
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_raw_idents(condition, out);
             collect_raw_idents(then_branch, out);
             if let Some(e) = else_branch {
@@ -226,9 +232,7 @@ fn collect_stmts_surface(stmts: &[HirStmt], out: &mut HashSet<String>) {
 
 fn collect_stmt_surface(stmt: &HirStmt, out: &mut HashSet<String>) {
     match &stmt.kind {
-        HirStmtKind::EndProgram(Some(e)) | HirStmtKind::Term(Some(e)) => {
-            collect_raw_idents(e, out)
-        }
+        HirStmtKind::EndProgram(Some(e)) | HirStmtKind::Term(Some(e)) => collect_raw_idents(e, out),
         HirStmtKind::Guarded(_, body)
         | HirStmtKind::Block(body)
         | HirStmtKind::SyncBlock(body)

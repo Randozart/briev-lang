@@ -51,7 +51,14 @@ fn item_key(tl: &TopLevel) -> String {
         Codec(c) => format!("codec:{}", c.name),
         Assertion { .. } => "assertion".into(),
         Fuzzed { .. } => "fuzzed".into(),
-        Statement(_) | Stylesheet(_) | SvgComponent { .. } | SyncGroup { .. } | StageBlock(_) | RenderBlock(_) | FabBlock(_) | Cfg(_) => {
+        Statement(_)
+        | Stylesheet(_)
+        | SvgComponent { .. }
+        | SyncGroup { .. }
+        | StageBlock(_)
+        | RenderBlock(_)
+        | FabBlock(_)
+        | Cfg(_) => {
             format!("{:?}", tl)
         }
         AsmFn(a) => format!("asm:<{}> {}", a.target, a.name),
@@ -131,7 +138,8 @@ pub fn item_summary(tl: &TopLevel) -> String {
 /// Compute a diff between two programs.
 pub fn compute_diff(before: &[TopLevel], after: &[TopLevel]) -> Vec<DiffEntry> {
     let mut result = Vec::new();
-    let before_keys: HashMap<String, (usize, &TopLevel)> = before.iter()
+    let before_keys: HashMap<String, (usize, &TopLevel)> = before
+        .iter()
         .enumerate()
         .map(|(i, tl)| (item_key(tl), (i, tl)))
         .collect();
@@ -185,7 +193,10 @@ pub fn print_diff(diff: &[DiffEntry]) {
                 println!("  - [{}] {}", idx, summary);
             }
             DiffEntry::Modified(before_idx, after_idx, before_summary, after_summary) => {
-                println!("  ~ [{}→{}] {} → {}", before_idx, after_idx, before_summary, after_summary);
+                println!(
+                    "  ~ [{}→{}] {} → {}",
+                    before_idx, after_idx, before_summary, after_summary
+                );
             }
         }
     }
@@ -230,10 +241,7 @@ mod tests {
     #[test]
     fn test_diff_added() {
         let before = vec![make_import("std/io.bv")];
-        let after = vec![
-            make_import("std/io.bv"),
-            make_import("std/foo.bv"),
-        ];
+        let after = vec![make_import("std/io.bv"), make_import("std/foo.bv")];
         let diff = compute_diff(&before, &after);
         assert_eq!(diff.len(), 1, "one addition expected");
         match &diff[0] {
@@ -247,17 +255,17 @@ mod tests {
 
     #[test]
     fn test_diff_removed() {
-        let before = vec![
-            make_import("std/io.bv"),
-            make_import("std/net.bv"),
-        ];
+        let before = vec![make_import("std/io.bv"), make_import("std/net.bv")];
         let after = vec![make_import("std/io.bv")];
         let diff = compute_diff(&before, &after);
         assert_eq!(diff.len(), 1, "one removal expected");
         match &diff[0] {
             DiffEntry::Removed(idx, summary) => {
                 assert_eq!(*idx, 1);
-                assert!(summary.contains("net"), "summary should mention removed item");
+                assert!(
+                    summary.contains("net"),
+                    "summary should mention removed item"
+                );
             }
             other => panic!("expected Removed, got {:?}", other),
         }
@@ -280,13 +288,16 @@ mod tests {
     #[test]
     fn test_diff_ordering() {
         let before = vec![make_import("std/a.bv"), make_import("std/b.bv")];
-        let after = vec![
-            make_import("std/c.bv"),
-            make_import("std/a.bv"),
-        ];
+        let after = vec![make_import("std/c.bv"), make_import("std/a.bv")];
         let diff = compute_diff(&before, &after);
-        let adds: Vec<_> = diff.iter().filter(|e| matches!(e, DiffEntry::Added(..))).collect();
-        let removes: Vec<_> = diff.iter().filter(|e| matches!(e, DiffEntry::Removed(..))).collect();
+        let adds: Vec<_> = diff
+            .iter()
+            .filter(|e| matches!(e, DiffEntry::Added(..)))
+            .collect();
+        let removes: Vec<_> = diff
+            .iter()
+            .filter(|e| matches!(e, DiffEntry::Removed(..)))
+            .collect();
         assert_eq!(adds.len(), 1, "one addition");
         assert_eq!(removes.len(), 1, "one removal");
     }

@@ -19,11 +19,7 @@ use crate::ast::{BinaryOpKind, UnaryOpKind};
 use std::collections::{BTreeSet, HashSet};
 
 pub fn analyze(program: &HirProgram) -> Vec<WatchdogError> {
-    let trigger_names: HashSet<&str> = program
-        .trigger_names
-        .iter()
-        .map(|n| n.as_str())
-        .collect();
+    let trigger_names: HashSet<&str> = program.trigger_names.iter().map(|n| n.as_str()).collect();
     let mut errors = Vec::new();
     for c in bare_reactive_txns(program) {
         let Some(wd) = c.contract.as_ref().and_then(|ct| ct.watchdog.as_ref()) else {
@@ -51,7 +47,13 @@ pub fn analyze(program: &HirProgram) -> Vec<WatchdogError> {
             if optional_convergent_skip(contract, wd.is_required) {
                 continue;
             }
-            report_no_conflict(&pre_vars, &handler_writes, wd.is_required, names, &mut errors);
+            report_no_conflict(
+                &pre_vars,
+                &handler_writes,
+                wd.is_required,
+                names,
+                &mut errors,
+            );
             continue;
         }
         let vctx = VarConflictCtx {
@@ -69,7 +71,10 @@ pub fn analyze(program: &HirProgram) -> Vec<WatchdogError> {
 /// legitimately have no conflicting handler.
 fn optional_convergent_skip(contract: &super::program::HirContract, required: bool) -> bool {
     !required
-        && !matches!(&contract.pre.kind, HirExprKind::Literal(HirLiteral::Bool(true)))
+        && !matches!(
+            &contract.pre.kind,
+            HirExprKind::Literal(HirLiteral::Bool(true))
+        )
         && check_convergent_loop(contract)
 }
 
@@ -82,7 +87,10 @@ fn report_no_conflict(
     (txn_name, cond_name): (String, String),
     errors: &mut Vec<WatchdogError>,
 ) {
-    let written: Vec<&String> = pre_vars.iter().filter(|v| handler_writes.contains(*v)).collect();
+    let written: Vec<&String> = pre_vars
+        .iter()
+        .filter(|v| handler_writes.contains(*v))
+        .collect();
     if !written.is_empty() {
         for var in written {
             errors.push(WatchdogError::NoConflict(
@@ -94,7 +102,11 @@ fn report_no_conflict(
     } else if required {
         let mut vars_list: Vec<String> = pre_vars.iter().cloned().collect();
         vars_list.sort();
-        errors.push(WatchdogError::NoConflict(txn_name, cond_name, vars_list.join(", ")));
+        errors.push(WatchdogError::NoConflict(
+            txn_name,
+            cond_name,
+            vars_list.join(", "),
+        ));
     }
 }
 
@@ -112,7 +124,12 @@ fn report_var_conflicts(
     (txn_name, cond_name): (String, String),
     errors: &mut Vec<WatchdogError>,
 ) {
-    let VarConflictCtx { program, handlers, contract, intersecting } = *ctx;
+    let VarConflictCtx {
+        program,
+        handlers,
+        contract,
+        intersecting,
+    } = *ctx;
     for var in intersecting {
         if !check_falsifies(program, handlers, contract, var) {
             errors.push(WatchdogError::HandlerDoesNotFalsify(
@@ -186,7 +203,9 @@ pub fn check_on_fire_handlers(program: &HirProgram) -> Result<(), String> {
 fn find_handlers(program: &HirProgram, trigger_name: &str) -> Vec<String> {
     let mut handlers = Vec::new();
     for c in bare_reactive_txns(program) {
-        let Some(contract) = &c.contract else { continue };
+        let Some(contract) = &c.contract else {
+            continue;
+        };
         if contains_trigger_in_guard(&contract.pre, trigger_name) {
             handlers.push(c.name.clone());
         }
@@ -197,7 +216,11 @@ fn find_handlers(program: &HirProgram, trigger_name: &str) -> Vec<String> {
 fn contains_trigger_in_guard(expr: &HirExpr, trigger_name: &str) -> bool {
     match &expr.kind {
         HirExprKind::Identifier(name) => name == trigger_name,
-        HirExprKind::Binary { op: BinaryOpKind::And | BinaryOpKind::Or, left, right } => {
+        HirExprKind::Binary {
+            op: BinaryOpKind::And | BinaryOpKind::Or,
+            left,
+            right,
+        } => {
             contains_trigger_in_guard(left, trigger_name)
                 || contains_trigger_in_guard(right, trigger_name)
         }
@@ -205,10 +228,7 @@ fn contains_trigger_in_guard(expr: &HirExpr, trigger_name: &str) -> bool {
     }
 }
 
-fn collect_handler_writes(
-    program: &HirProgram,
-    handler_names: &[String],
-) -> HashSet<String> {
+fn collect_handler_writes(program: &HirProgram, handler_names: &[String]) -> HashSet<String> {
     let handler_set: HashSet<&str> = handler_names.iter().map(|n| n.as_str()).collect();
     let mut writes = HashSet::new();
     for c in bare_reactive_txns(program) {
@@ -267,7 +287,11 @@ fn collect_vars(expr: &HirExpr, vars: &mut HashSet<String>) {
             collect_vars(list, vars);
             collect_vars(idx, vars);
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_vars(condition, vars);
             collect_vars(then_branch, vars);
             if let Some(else_) = else_branch {
@@ -346,13 +370,17 @@ fn check_falsifies_in_body(
 /// `!var` only via `var = true`; any other shape is treated as falsified.
 fn assign_falsifies(pre: &HirExpr, expr: &HirExpr) -> bool {
     match &pre.kind {
-        HirExprKind::Binary { op: BinaryOpKind::Eq | BinaryOpKind::Neq, .. } => {
-            evaluate_literal(expr).is_some()
-        }
+        HirExprKind::Binary {
+            op: BinaryOpKind::Eq | BinaryOpKind::Neq,
+            ..
+        } => evaluate_literal(expr).is_some(),
         HirExprKind::Identifier(_) => {
             matches!(&expr.kind, HirExprKind::Literal(HirLiteral::Bool(false)))
         }
-        HirExprKind::Unary { op: UnaryOpKind::Not, inner } => {
+        HirExprKind::Unary {
+            op: UnaryOpKind::Not,
+            inner,
+        } => {
             matches!(&inner.kind, HirExprKind::Identifier(_))
                 && matches!(&expr.kind, HirExprKind::Literal(HirLiteral::Bool(true)))
         }
@@ -387,9 +415,7 @@ fn check_restores_in_body(
         match &stmt.kind {
             HirStmtKind::Assign(lhs, expr) => {
                 if let HirExprKind::Identifier(name) = &lhs.kind {
-                    if name == var
-                        && assign_restores(&contract.pre, expr, &mut found_falsify)
-                    {
+                    if name == var && assign_restores(&contract.pre, expr, &mut found_falsify) {
                         return true;
                     }
                 }
@@ -432,9 +458,10 @@ fn evaluate_literal(expr: &HirExpr) -> Option<bool> {
     match &expr.kind {
         HirExprKind::Literal(HirLiteral::Bool(b)) => Some(*b),
         HirExprKind::Literal(HirLiteral::Int(n)) => Some(*n != 0),
-        HirExprKind::Unary { op: UnaryOpKind::Not, inner } => {
-            evaluate_literal(inner).map(|v| !v)
-        }
+        HirExprKind::Unary {
+            op: UnaryOpKind::Not,
+            inner,
+        } => evaluate_literal(inner).map(|v| !v),
         _ => None,
     }
 }
@@ -454,14 +481,16 @@ fn check_convergent_loop(contract: &super::program::HirContract) -> bool {
     );
     let post_matches = matches!(
         &contract.post.kind,
-        Binary { op: BinaryOpKind::Eq, .. }
+        Binary {
+            op: BinaryOpKind::Eq,
+            ..
+        }
     );
     pre_matches && post_matches
 }
 
 // Re-exported literal/kind imports used only in the patterns above.
 use super::expr::HirLiteral;
-
 
 #[cfg(test)]
 mod tests {
@@ -472,7 +501,9 @@ mod tests {
 
     fn compare(src: &str) -> Vec<WatchdogError> {
         let tokens = crate::lexer::tokenize(src).unwrap();
-        let items = crate::parser::Parser::new(tokens, src).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .unwrap();
         let ast = crate::analysis::watchdog::analyze(&items);
         let hir = analyze(&lower_program(&items));
         assert_eq!(hir, ast, "HIR/AST watchdog drift");
@@ -516,7 +547,10 @@ mod tests {
              let ready: Bool = false;"
         ));
         assert_eq!(errors.len(), 1);
-        assert!(matches!(&errors[0], WatchdogError::HandlerDoesNotFalsify(..)));
+        assert!(matches!(
+            &errors[0],
+            WatchdogError::HandlerDoesNotFalsify(..)
+        ));
     }
 
     #[test]
@@ -538,7 +572,9 @@ mod tests {
         );
         assert!(src.contains("ghost_handler"));
         let tokens = crate::lexer::tokenize(&src).unwrap();
-        let items = crate::parser::Parser::new(tokens, &src).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, &src)
+            .parse_program()
+            .unwrap();
         let ast = crate::analysis::watchdog::check_on_fire_handlers(&items);
         let hir = check_on_fire_handlers(&lower_program(&items));
         assert_eq!(hir, ast, "on-fire parity drift");

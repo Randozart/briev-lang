@@ -240,8 +240,14 @@ impl LlvmBackend {
                 Self::rewrite_cell_identifiers(lhs, cell_name),
                 Self::rewrite_cell_identifiers(expr, cell_name),
             ),
-            Statement::ArrowAssign { target, value, consume } => Statement::ArrowAssign {
-                target: target.as_ref().map(|t| Box::new(Self::rewrite_cell_identifiers(t, cell_name))),
+            Statement::ArrowAssign {
+                target,
+                value,
+                consume,
+            } => Statement::ArrowAssign {
+                target: target
+                    .as_ref()
+                    .map(|t| Box::new(Self::rewrite_cell_identifiers(t, cell_name))),
                 value: Box::new(Self::rewrite_cell_identifiers(value, cell_name)),
                 consume: *consume,
             },
@@ -251,16 +257,16 @@ impl LlvmBackend {
                 Self::rewrite_cell_identifiers(cond, cell_name),
                 Self::rewrite_cell_stmt_body(stmts, cell_name),
             ),
-            Statement::Gate(cond) => Statement::Gate(Self::rewrite_cell_identifiers(cond, cell_name)),
+            Statement::Gate(cond) => {
+                Statement::Gate(Self::rewrite_cell_identifiers(cond, cell_name))
+            }
             Statement::Trap | Statement::Halt => stmt.clone(),
             Statement::Break => Statement::Break,
             Statement::Term(e) => Statement::Term(
                 e.as_ref()
                     .map(|e| Self::rewrite_cell_identifiers(e, cell_name)),
             ),
-            Statement::Tail(e) => {
-                Statement::Tail(Self::rewrite_cell_identifiers(e, cell_name))
-            }
+            Statement::Tail(e) => Statement::Tail(Self::rewrite_cell_identifiers(e, cell_name)),
             Statement::EndProgram(e) => Statement::EndProgram(
                 e.as_ref()
                     .map(|e| Self::rewrite_cell_identifiers(e, cell_name)),
@@ -272,7 +278,13 @@ impl LlvmBackend {
             Statement::Expression(e) => {
                 Statement::Expression(Self::rewrite_cell_identifiers(e, cell_name))
             }
-            Statement::Let { name, ty, expr, modifiers, .. } => Statement::Let {
+            Statement::Let {
+                name,
+                ty,
+                expr,
+                modifiers,
+                ..
+            } => Statement::Let {
                 names: vec![],
                 name: name.clone(),
                 ty: ty.clone(),
@@ -281,30 +293,37 @@ impl LlvmBackend {
                     .map(|e| Self::rewrite_cell_identifiers(e, cell_name)),
                 modifiers: modifiers.clone(),
             },
-            Statement::Block(stmts) => Statement::Block(
-                Self::rewrite_cell_stmt_body(stmts, cell_name),
-            ),
-            Statement::SyncBlock(stmts) => Statement::SyncBlock(
-                Self::rewrite_cell_stmt_body(stmts, cell_name),
-            ),
-            Statement::Defer(stmts) => Statement::Defer(
-                Self::rewrite_cell_stmt_body(stmts, cell_name),
-            ),
-            Statement::Mutex(stmts) => Statement::Mutex(
-                Self::rewrite_cell_stmt_body(stmts, cell_name),
-            ),
+            Statement::Block(stmts) => {
+                Statement::Block(Self::rewrite_cell_stmt_body(stmts, cell_name))
+            }
+            Statement::SyncBlock(stmts) => {
+                Statement::SyncBlock(Self::rewrite_cell_stmt_body(stmts, cell_name))
+            }
+            Statement::Defer(stmts) => {
+                Statement::Defer(Self::rewrite_cell_stmt_body(stmts, cell_name))
+            }
+            Statement::Mutex(stmts) => {
+                Statement::Mutex(Self::rewrite_cell_stmt_body(stmts, cell_name))
+            }
             Statement::InlineAsm { .. } => stmt.clone(),
             Statement::TrgBinding { name, instance } => Statement::TrgBinding {
                 name: name.clone(),
                 instance: Self::rewrite_cell_identifiers(instance, cell_name),
             },
-            Statement::Foreach { item, list, body, modifiers } => Statement::Foreach {
+            Statement::Foreach {
+                item,
+                list,
+                body,
+                modifiers,
+            } => Statement::Foreach {
                 item: item.clone(),
                 list: Box::new(Self::rewrite_cell_identifiers(list, cell_name)),
                 body: Self::rewrite_cell_stmt_body(body, cell_name),
                 modifiers: modifiers.clone(),
             },
-            Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::Match { .. } => stmt.clone(),
+            Statement::MetadataAssignment(..)
+            | Statement::InlineDefn(_)
+            | Statement::Match { .. } => stmt.clone(),
             // 2026-09-22 (D16 p3b): `open` — rewrite identifiers in its
             // expressions, else keep intact.
             Statement::Open(lhs, rhs) => Statement::Open(
@@ -360,12 +379,7 @@ impl LlvmBackend {
     /// `capture` is false for the precomputed main (pure-compile-time fold,
     /// no runtime argv needed — it still takes argv params for a uniform
     /// signature so the runtime can link).
-    pub(crate) fn emit_main_header(
-        &mut self,
-        out: &mut String,
-        attrs: &str,
-        capture: bool,
-    ) {
+    pub(crate) fn emit_main_header(&mut self, out: &mut String, attrs: &str, capture: bool) {
         // 2026-09-07 (init-block phi predecessor fix): a fresh function starts
         // with NO current block — the previous function's cur_block (a txn's
         // guard.end_N or a match's .match_end_N) is a label in that function,
@@ -399,7 +413,11 @@ impl LlvmBackend {
             // global, so the getenv adapters work on every target.)
             writeln!(out, "  %argc64 = sext i32 %argc to i64").ok();
             writeln!(out, "  %envp_slot = getelementptr ptr, ptr %argv, i64 1").ok();
-            writeln!(out, "  %envp_slot2 = getelementptr ptr, ptr %envp_slot, i64 %argc64").ok();
+            writeln!(
+                out,
+                "  %envp_slot2 = getelementptr ptr, ptr %envp_slot, i64 %argc64"
+            )
+            .ok();
             // environ = the ADDRESS of the envp[0] slot (the array base),
             // NOT the first entry loaded from it.
             writeln!(out, "  store ptr %envp_slot2, ptr @__briev_environ").ok();
@@ -415,7 +433,11 @@ impl LlvmBackend {
     /// provenance; SROA sees an address-taken local either way).
     pub(crate) fn emit_state_base(&mut self, out: &mut String) {
         if self.ctx.state_is_global {
-            writeln!(out, "  %state = getelementptr %State, ptr @__briev_state, i64 0").ok();
+            writeln!(
+                out,
+                "  %state = getelementptr %State, ptr @__briev_state, i64 0"
+            )
+            .ok();
         } else {
             writeln!(out, "  %state = alloca %State, align 8").ok();
         }
@@ -572,7 +594,12 @@ impl LlvmBackend {
         let phase_watchdogs: Vec<(String, Option<crate::ast::top::WatchdogSpec>)> =
             self.ctx.async_phase_watchdogs.clone();
         for (name, wd) in &phase_watchdogs {
-            writeln!(out, "  call void @async_body_{}(ptr noalias nocapture {})", name, state_var).ok();
+            writeln!(
+                out,
+                "  call void @async_body_{}(ptr noalias nocapture {})",
+                name, state_var
+            )
+            .ok();
             if let Some(wd) = wd {
                 self.emit_async_node_watchdog_gate(out, name, wd, deadline_start.as_deref());
             }
@@ -683,9 +710,7 @@ impl LlvmBackend {
         indent: &str,
         reg: &TypedRegister,
     ) -> String {
-        if self.is_protocol_member(&reg.ty, "String")
-            || self.is_protocol_member(&reg.ty, "Blob")
-        {
+        if self.is_protocol_member(&reg.ty, "String") || self.is_protocol_member(&reg.ty, "Blob") {
             let p = self.next_reg_with_prefix("ptri");
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, p, reg.name).ok();
             p
@@ -758,8 +783,7 @@ impl LlvmBackend {
         // 2026-08-01 (B4): is_string_like (the 2-field structural heuristic)
         // retired — protocol membership only. A trigger whose type is a
         // String or Blob member carries a pointer-typed payload.
-        self.is_protocol_member(&trg.ty, "String")
-            || self.is_protocol_member(&trg.ty, "Blob")
+        self.is_protocol_member(&trg.ty, "String") || self.is_protocol_member(&trg.ty, "Blob")
     }
 
     /// Emit a cached projection: load valid flag, branch on hit/miss.
@@ -910,7 +934,12 @@ impl LlvmBackend {
             if self.llvm_type(&reg.ty) == "ptr" {
                 let boxed = self.fun.gen_reg();
                 let hw = format!("i{}", self.ctx.int_bits);
-                writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, boxed, reg.name, hw).ok();
+                writeln!(
+                    out,
+                    "{}{} = ptrtoint ptr {} to {}",
+                    indent, boxed, reg.name, hw
+                )
+                .ok();
                 boxed
             } else {
                 self.adapt_to_i64(out, indent, reg)
@@ -937,29 +966,51 @@ impl LlvmBackend {
             writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, ptr, size64).ok();
             let handle = self.fun.gen_reg();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, ptr).ok();
-            self.fun.alloc_strategies.insert(handle.clone(), crate::backend::llvm::AllocStrategy::Malloc);
+            self.fun
+                .alloc_strategies
+                .insert(handle.clone(), crate::backend::llvm::AllocStrategy::Malloc);
             handle
         };
         // Allocation follows the same state-aware policy as Alloc#.
         let result_handle = self.fun.gen_reg();
         let hw = format!("i{}", self.ctx.int_bits);
         if hw == "i32" {
-            writeln!(out, "{}{} = trunc i64 {} to i32", indent, result_handle, result_i64).ok();
+            writeln!(
+                out,
+                "{}{} = trunc i64 {} to i32",
+                indent, result_handle, result_i64
+            )
+            .ok();
         } else {
-            writeln!(out, "{}{} = add i64 0, {}", indent, result_handle, result_i64).ok();
+            writeln!(
+                out,
+                "{}{} = add i64 0, {}",
+                indent, result_handle, result_i64
+            )
+            .ok();
         }
         let result_ptr = self.fun.next_reg_with_prefix("crp");
         self.emit_inttoptr(out, indent, &result_ptr, &result_handle);
         self.emit_write_header(out, indent, &result_ptr, &total, "chp", "cls");
         // First data copy: dest = result + 8 (after length prefix)
         let dest1 = self.fun.next_reg_with_prefix("cd1");
-        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 8", indent, dest1, result_ptr).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr i8, ptr {}, i64 8",
+            indent, dest1, result_ptr
+        )
+        .ok();
         self.emit_copy_data(out, indent, &dest1, &ha, &la, "cac", "cds");
         // Second data copy: dest = result + 8 + la (after first string's data)
         let dest2_off = self.fun.next_reg_with_prefix("cd2");
         writeln!(out, "{}{} = add i64 8, {}", indent, dest2_off, la).ok();
         let dest2 = self.fun.next_reg_with_prefix("cdr");
-        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, dest2, result_ptr, dest2_off).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr i8, ptr {}, i64 {}",
+            indent, dest2, result_ptr, dest2_off
+        )
+        .ok();
         self.emit_copy_data(out, indent, &dest2, &hb, &lb, "cbc", "cdo");
         self.emit_null_terminate(out, indent, &result_ptr, &total, "cnt");
         self.emit_free_temporaries(out, indent, &a_boxed, &b_boxed, "cta", "cia", "ctb", "cib");
@@ -1087,12 +1138,7 @@ impl LlvmBackend {
         .ok();
         // Destination is the provided dest_ptr (caller computes the offset)
         let dest = self.fun.next_reg_with_prefix(dest_prefix);
-        writeln!(
-            out,
-            "{}{} = bitcast ptr {} to ptr",
-            indent, dest, dest_ptr
-        )
-        .ok();
+        writeln!(out, "{}{} = bitcast ptr {} to ptr", indent, dest, dest_ptr).ok();
         writeln!(
             out,
             "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
@@ -1197,7 +1243,11 @@ impl LlvmBackend {
             // 2026-09-23 (stateless-defn mechanism): rt_free's body is
             // `term 0;` — it takes NO state. Gate on defn_takes_state so a
             // stateless caller does not reference an undefined %state.
-            let st = if self.ctx.defn_takes_state("rt_free") { "ptr %state, " } else { "" };
+            let st = if self.ctx.defn_takes_state("rt_free") {
+                "ptr %state, "
+            } else {
+                ""
+            };
             // 2026-10-07 (wasm32): the defn is `(p: Int) -> Int` — param and
             // return are i{int_bits} (i64 native, i32 wasm32). The old
             // hardcoded `call i64 @__briev_free(ptr ...)` mismatched the
@@ -1226,13 +1276,24 @@ impl LlvmBackend {
                 if param_ll == "ptr" {
                     self.emit_inttoptr(out, indent, &t, &clean);
                 } else {
-                    writeln!(out, "{}{} = trunc {} {} to {}", indent, t, clean_ll, clean, param_ll).ok();
+                    writeln!(
+                        out,
+                        "{}{} = trunc {} {} to {}",
+                        indent, t, clean_ll, clean, param_ll
+                    )
+                    .ok();
                 }
                 t
             };
-            writeln!(out, "{}call {} @rt_free({}{} {})", indent, ret_ll, st, param_ll, p).ok();
+            writeln!(
+                out,
+                "{}call {} @rt_free({}{} {})",
+                indent, ret_ll, st, param_ll, p
+            )
+            .ok();
         } else {
-            let free_ptr = self.emit_inttoptr_reg(out, indent, &format!("cf{}", tag_prefix), &clean);
+            let free_ptr =
+                self.emit_inttoptr_reg(out, indent, &format!("cf{}", tag_prefix), &clean);
             writeln!(out, "{}call void @free(ptr {})", indent, free_ptr).ok();
         }
         writeln!(out, "{}br label %{}", indent, afl).ok();
@@ -1269,12 +1330,14 @@ impl LlvmBackend {
     /// — protocol membership only.
     fn is_string_identifier(&self, name: &str) -> bool {
         let is_like = |t: &Type| -> bool {
-            let is_data = self.ctx.type_universe.as_ref()
+            let is_data = self
+                .ctx
+                .type_universe
+                .as_ref()
                 .and_then(|u| t.universe_key().and_then(|k| u.get(k)))
                 .map(|rt| rt.properties.contains_key("Cast.Blob"))
                 .unwrap_or(false);
-            self.is_protocol_member(t, "String")
-                || is_data
+            self.is_protocol_member(t, "String") || is_data
         };
         if self
             .fun
@@ -1417,7 +1480,9 @@ impl LlvmBackend {
         // 2026-08-15 (fundamentals): property keys are `Cast.<Cat>` — strip the
         // `#` so a `Float` hashword matches the `Cast.Float` key.
         let prop_key = format!("Cast.{}", protocol.trim_start_matches('#'));
-        self.ctx.type_universe.as_ref()
+        self.ctx
+            .type_universe
+            .as_ref()
             .and_then(|u| ty.universe_key().and_then(|k| u.get(k)))
             .map(|rt| rt.properties.contains_key(&prop_key))
             .unwrap_or(false)
@@ -1441,12 +1506,14 @@ impl LlvmBackend {
         }
         let universe = self.ctx.type_universe.as_ref()?;
         let rt = ty.universe_key().and_then(|k| universe.get(k))?;
-        rt.properties.iter().find_map(|(k, pv)| match (k.as_str(), pv) {
-            ("bits", crate::ast::PropertyValue::Int(n))
-            | ("maxbits", crate::ast::PropertyValue::Int(n)) => Some(*n as u64),
-            _ => None,
-        })
-        .or(Some(rt.max_bits))
+        rt.properties
+            .iter()
+            .find_map(|(k, pv)| match (k.as_str(), pv) {
+                ("bits", crate::ast::PropertyValue::Int(n))
+                | ("maxbits", crate::ast::PropertyValue::Int(n)) => Some(*n as u64),
+                _ => None,
+            })
+            .or(Some(rt.max_bits))
     }
 
     /// 2026-08-01 (B1): Central String operand check — a Briev String value
@@ -1522,7 +1589,10 @@ impl LlvmBackend {
                 return concretes[tag as usize].clone();
             }
         }
-        concretes.into_iter().next().unwrap_or_else(|| trait_name.to_string())
+        concretes
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| trait_name.to_string())
     }
 
     /// 2026-08-07 (Phase 7): is `ty` a Blob operand (the [len][bytes]
@@ -1536,9 +1606,14 @@ impl LlvmBackend {
     /// is a registered struct/obj type (`Custom` or `Applied`) — `None` for
     /// anything else. Used to gate the boxed-obj-param recovery arm (an i64
     /// handle of obj type is a heap block, inttoptr recovers the self ptr).
-    pub(super) fn boxed_obj_base(ty: &Type, struct_types: &std::collections::HashMap<String, Vec<(String, Type)>>) -> Option<String> {
+    pub(super) fn boxed_obj_base(
+        ty: &Type,
+        struct_types: &std::collections::HashMap<String, Vec<(String, Type)>>,
+    ) -> Option<String> {
         match ty {
-            Type::Custom(n) | Type::Applied(n, _) if struct_types.contains_key(n) => Some(n.clone()),
+            Type::Custom(n) | Type::Applied(n, _) if struct_types.contains_key(n) => {
+                Some(n.clone())
+            }
             _ => None,
         }
     }
@@ -1550,7 +1625,11 @@ impl LlvmBackend {
     /// first, then the binding's DECLARED type (a `let line: String = X`
     /// binds line→reg with let_original_types[line] = String).
     pub(super) fn is_semantic_string(&self, recv: &Expr, reg: &TypedRegister) -> bool {
-        let name = if let Expr::Identifier(name) = recv { Some(name.as_str()) } else { None };
+        let name = if let Expr::Identifier(name) = recv {
+            Some(name.as_str())
+        } else {
+            None
+        };
         self.is_semantic_string_ident(name, reg)
     }
 
@@ -1603,7 +1682,9 @@ impl LlvmBackend {
             return None;
         }
         let key = ty.to_string();
-        if !self.ctx.struct_types.contains_key(&key) { return None; }
+        if !self.ctx.struct_types.contains_key(&key) {
+            return None;
+        }
         Some(self.struct_type_size(&key))
     }
 
@@ -1613,7 +1694,9 @@ impl LlvmBackend {
         }
         // 2026-11-03: arrays preserve the existing word-sized pointer-handle
         // storage ABI; scalar floating widths come from the casting graph.
-        if matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) { return "i64".into(); }
+        if matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) {
+            return "i64".into();
+        }
         self.llvm_type(ty)
     }
 
@@ -1886,9 +1969,7 @@ impl LlvmBackend {
             self.emit_expr(out, r, indent),
         );
         let c = self.fun.next_reg_with_prefix("c");
-        if self.is_native_float(&a.ty)
-            || self.is_native_float(&b.ty)
-        {
+        if self.is_native_float(&a.ty) || self.is_native_float(&b.ty) {
             let fa = self.ensure_float_reg(out, indent, &a);
             let fb = self.ensure_float_reg(out, indent, &b);
             writeln!(
@@ -2273,8 +2354,7 @@ impl LlvmBackend {
         let _ = tu;
         let a = self.emit_expr(out, &lhs, indent);
         let b = self.emit_expr(out, &rhs, indent);
-        if self.is_native_float(&cast_ty)
-        {
+        if self.is_native_float(&cast_ty) {
             self.emit_eor_float_path(out, indent, v, kind, &a, &b, &cast_ty)
         } else {
             self.emit_eor_int_path(out, indent, v, kind, &a, &b, &cast_ty)
@@ -2352,10 +2432,15 @@ impl LlvmBackend {
     /// fundamental-parent-membership): was repeated at the slot-derivation
     /// site and inside emit_binary_op.
     pub(crate) fn float_spelling(bits: u64) -> &'static str {
-        if bits <= 16 { "half" }
-        else if bits <= 32 { "float" }
-        else if bits <= 64 { "double" }
-        else { "i64" }
+        if bits <= 16 {
+            "half"
+        } else if bits <= 32 {
+            "float"
+        } else if bits <= 64 {
+            "double"
+        } else {
+            "i64"
+        }
     }
 
     /// Mixed float/int binop operands: convert the integer side to the
@@ -2382,21 +2467,38 @@ impl LlvmBackend {
             return None;
         }
         let width = Self::float_spelling(l_fbits.or(r_fbits).unwrap_or(32));
-        let fty = if l_fbits.is_some() { l.ty.clone() } else { r.ty.clone() };
+        let fty = if l_fbits.is_some() {
+            l.ty.clone()
+        } else {
+            r.ty.clone()
+        };
         let lc = if l_fbits.is_some() || matches!(l.ty, Type::Ptr(_)) {
             l.clone()
         } else {
             let t = self.fun.gen_reg();
             let src_ty = self.llvm_type(&l.ty);
-            writeln!(out, "{}{} = sitofp {} {} to {}", indent, t, src_ty, l.name, width).ok();
-            TypedRegister { name: t, ty: fty.clone() }
+            writeln!(
+                out,
+                "{}{} = sitofp {} {} to {}",
+                indent, t, src_ty, l.name, width
+            )
+            .ok();
+            TypedRegister {
+                name: t,
+                ty: fty.clone(),
+            }
         };
         let rc = if r_fbits.is_some() || matches!(r.ty, Type::Ptr(_)) {
             r.clone()
         } else {
             let t = self.fun.gen_reg();
             let src_ty = self.llvm_type(&r.ty);
-            writeln!(out, "{}{} = sitofp {} {} to {}", indent, t, src_ty, r.name, width).ok();
+            writeln!(
+                out,
+                "{}{} = sitofp {} {} to {}",
+                indent, t, src_ty, r.name, width
+            )
+            .ok();
             TypedRegister { name: t, ty: fty }
         };
         Some((lc, rc))
@@ -2422,18 +2524,36 @@ impl LlvmBackend {
             return None;
         }
         let target_ty = format!("i{target_bits}");
-        let normalize = |backend: &mut Self, reg: &TypedRegister, width: u32, ty: &str,
-                         output: &mut String| -> TypedRegister {
+        let normalize = |backend: &mut Self,
+                         reg: &TypedRegister,
+                         width: u32,
+                         ty: &str,
+                         output: &mut String|
+         -> TypedRegister {
             if width == target_bits {
                 return reg.clone();
             }
             let converted = backend.fun.gen_reg();
-            let opcode = if backend.is_protocol_member(&reg.ty, "UInt") { "zext" } else { "sext" };
-            writeln!(output, "{indent}{converted} = {opcode} {ty} {} to {target_ty}", reg.name).ok();
-            TypedRegister { name: converted, ty: Type::int() }
+            let opcode = if backend.is_protocol_member(&reg.ty, "UInt") {
+                "zext"
+            } else {
+                "sext"
+            };
+            writeln!(
+                output,
+                "{indent}{converted} = {opcode} {ty} {} to {target_ty}",
+                reg.name
+            )
+            .ok();
+            TypedRegister {
+                name: converted,
+                ty: Type::int(),
+            }
         };
-        Some((normalize(self, left, left_bits, &left_ty, out),
-              normalize(self, right, right_bits, &right_ty, out)))
+        Some((
+            normalize(self, left, left_bits, &left_ty, out),
+            normalize(self, right, right_bits, &right_ty, out),
+        ))
     }
 
     /// Box a typed register to i64 for uniform state storage.
@@ -2501,8 +2621,7 @@ impl LlvmBackend {
         let is_narrow_handle = match &reg.ty {
             Type::Tuple(_) => true,
             Type::Custom(name) | Type::Applied(name, _) => {
-                self.ctx.obj_types.contains(name)
-                    || self.ctx.coll_storage.contains_key(name)
+                self.ctx.obj_types.contains(name) || self.ctx.coll_storage.contains_key(name)
             }
             _ => false,
         };
@@ -2510,7 +2629,12 @@ impl LlvmBackend {
             let llvm_ty = self.llvm_type(&reg.ty);
             if llvm_ty.starts_with('i') {
                 let widened = self.fun.gen_reg();
-                writeln!(out, "{}{} = zext {} {} to i64", indent, widened, llvm_ty, reg.name).ok();
+                writeln!(
+                    out,
+                    "{}{} = zext {} {} to i64",
+                    indent, widened, llvm_ty, reg.name
+                )
+                .ok();
                 return widened;
             }
         }
@@ -2518,9 +2642,13 @@ impl LlvmBackend {
         let ty = &reg.ty;
         // Float protocol: convert float/double to i64
         if self.is_protocol_member(ty, "Float") {
-            let maxbits = self.ctx.type_universe.as_ref()
+            let maxbits = self
+                .ctx
+                .type_universe
+                .as_ref()
                 .and_then(|u| ty.universe_key().and_then(|k| u.get(k)))
-                .map(|rt| rt.max_bits).unwrap_or(32);
+                .map(|rt| rt.max_bits)
+                .unwrap_or(32);
             if maxbits > 32 {
                 let tr = self.fun.gen_reg();
                 writeln!(out, "{}{} = bitcast double {} to i64", indent, tr, reg.name).ok();
@@ -2564,9 +2692,19 @@ impl LlvmBackend {
                 let tr = self.fun.gen_reg();
                 let is_unsigned = self.is_protocol_member(ty, "UInt");
                 if is_unsigned {
-                    writeln!(out, "{}{} = zext {} {} to i64", indent, tr, llvm_ty, reg.name).ok();
+                    writeln!(
+                        out,
+                        "{}{} = zext {} {} to i64",
+                        indent, tr, llvm_ty, reg.name
+                    )
+                    .ok();
                 } else {
-                    writeln!(out, "{}{} = sext {} {} to i64", indent, tr, llvm_ty, reg.name).ok();
+                    writeln!(
+                        out,
+                        "{}{} = sext {} {} to i64",
+                        indent, tr, llvm_ty, reg.name
+                    )
+                    .ok();
                 }
                 return tr;
             }
@@ -2581,12 +2719,26 @@ impl LlvmBackend {
     }
 
     fn pointer_handle_to_word(
-        &mut self, out: &mut String, indent: &str, reg: &TypedRegister,
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &TypedRegister,
     ) -> String {
-        if self.ctx.int_bits == 64 { return reg.name.clone(); }
+        if self.ctx.int_bits == 64 {
+            return reg.name.clone();
+        }
         let widened = self.fun.gen_reg();
-        let opcode = if self.ctx.int_bits < 64 { "zext" } else { "trunc" };
-        writeln!(out, "{indent}{widened} = {opcode} i{} {} to i64", self.ctx.int_bits, reg.name).ok();
+        let opcode = if self.ctx.int_bits < 64 {
+            "zext"
+        } else {
+            "trunc"
+        };
+        writeln!(
+            out,
+            "{indent}{widened} = {opcode} i{} {} to i64",
+            self.ctx.int_bits, reg.name
+        )
+        .ok();
         widened
     }
 
@@ -2687,7 +2839,12 @@ impl LlvmBackend {
             return p.clone();
         }
         let r = self.fun.gen_reg();
-        writeln!(out, "{}{} = load ptr, ptr @__briev_plain_ptr, align 8", indent, r).ok();
+        writeln!(
+            out,
+            "{}{} = load ptr, ptr @__briev_plain_ptr, align 8",
+            indent, r
+        )
+        .ok();
         r
     }
 
@@ -2719,7 +2876,10 @@ impl LlvmBackend {
 
     /// Joined enum layout view. `EnumLoweringPlan` is the sole runtime source;
     /// `EnumLayoutPlanner` is retained only to build that plan.
-    pub(crate) fn enum_layout(&self, ty: &crate::ast::Type) -> Option<crate::analysis::enum_layout::EnumLayout> {
+    pub(crate) fn enum_layout(
+        &self,
+        ty: &crate::ast::Type,
+    ) -> Option<crate::analysis::enum_layout::EnumLayout> {
         self.ctx.enum_lowering.layout(ty).cloned()
     }
 
@@ -2737,7 +2897,12 @@ impl LlvmBackend {
     /// returned by an enum call. Give stored enum values an independent image;
     /// retain stack-backed calls for local consumers. Retire with an ownership
     /// proof that the source image already outlives the destination aggregate.
-    pub(crate) fn own_enum_value(&mut self, out: &mut String, indent: &str, reg: &TypedRegister) -> TypedRegister {
+    pub(crate) fn own_enum_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &TypedRegister,
+    ) -> TypedRegister {
         let Some(layout) = self.enum_layout(&reg.ty) else {
             return reg.clone();
         };
@@ -2751,7 +2916,10 @@ impl LlvmBackend {
         writeln!(out, "{indent}call void @llvm.memcpy.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)").ok();
         let hw = format!("i{}", self.ctx.int_bits);
         writeln!(out, "{indent}{result} = ptrtoint ptr {destination} to {hw}").ok();
-        TypedRegister { name: result, ty: reg.ty.clone() }
+        TypedRegister {
+            name: result,
+            ty: reg.ty.clone(),
+        }
     }
 
     /// 2026-10-25: returning a local enum must transfer its image to the
@@ -2759,18 +2927,37 @@ impl LlvmBackend {
     /// already use that slot; loading the full image first also permits aliasing.
     /// 2026-10-28: an exact source==destination handle is already caller-owned;
     /// copying it again dominated ws_frame by 3.85x.
-    pub(crate) fn retain_enum_return(&mut self, out: &mut String, indent: &str, reg: &TypedRegister) -> TypedRegister {
-        let Some(destination) = self.fun.enum_out_slot.clone() else { return reg.clone(); };
+    pub(crate) fn retain_enum_return(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &TypedRegister,
+    ) -> TypedRegister {
+        let Some(destination) = self.fun.enum_out_slot.clone() else {
+            return reg.clone();
+        };
         let words = self.enum_image_words(self.fun.item_return_type.as_ref());
         let handle = self.adapt_to_i64(out, indent, reg);
         let source_is_destination = self.fun.gen_reg();
         let destination_handle = self.fun.gen_reg();
-        writeln!(out, "{indent}{destination_handle} = ptrtoint ptr {destination} to i64").ok();
-        writeln!(out, "{indent}{source_is_destination} = icmp eq i64 {handle}, {destination_handle}").ok();
+        writeln!(
+            out,
+            "{indent}{destination_handle} = ptrtoint ptr {destination} to i64"
+        )
+        .ok();
+        writeln!(
+            out,
+            "{indent}{source_is_destination} = icmp eq i64 {handle}, {destination_handle}"
+        )
+        .ok();
         let same_block = self.fun.next_label("ret_same");
         let copy_block = self.fun.next_label("ret_copy");
         let done_block = self.fun.next_label("ret_done");
-        writeln!(out, "{indent}br i1 {source_is_destination}, label %{same_block}, label %{copy_block}").ok();
+        writeln!(
+            out,
+            "{indent}br i1 {source_is_destination}, label %{same_block}, label %{copy_block}"
+        )
+        .ok();
         writeln!(out, "{indent}{same_block}:").ok();
         writeln!(out, "{indent}  br label %{done_block}").ok();
         writeln!(out, "{indent}{copy_block}:").ok();
@@ -2780,13 +2967,21 @@ impl LlvmBackend {
         for word in 0..words {
             let address = self.fun.gen_reg();
             let value = self.fun.gen_reg();
-            writeln!(out, "{indent}  {address} = getelementptr i64, ptr {source}, i64 {word}").ok();
+            writeln!(
+                out,
+                "{indent}  {address} = getelementptr i64, ptr {source}, i64 {word}"
+            )
+            .ok();
             writeln!(out, "{indent}  {value} = load i64, ptr {address}").ok();
             values.push(value);
         }
         for (word, value) in values.iter().enumerate() {
             let address = self.fun.gen_reg();
-            writeln!(out, "{indent}  {address} = getelementptr i64, ptr {destination}, i64 {word}").ok();
+            writeln!(
+                out,
+                "{indent}  {address} = getelementptr i64, ptr {destination}, i64 {word}"
+            )
+            .ok();
             writeln!(out, "{indent}  store i64 {value}, ptr {address}").ok();
         }
         writeln!(out, "{indent}  br label %{done_block}").ok();
@@ -2794,7 +2989,10 @@ impl LlvmBackend {
         let result = self.fun.gen_reg();
         let hw = format!("i{}", self.ctx.int_bits);
         writeln!(out, "{indent}{result} = ptrtoint ptr {destination} to {hw}").ok();
-        TypedRegister { name: result, ty: reg.ty.clone() }
+        TypedRegister {
+            name: result,
+            ty: reg.ty.clone(),
+        }
     }
 
     /// 2026-10-21 (B2 nested enum layout): image width in i64 words for a
@@ -2821,18 +3019,15 @@ impl LlvmBackend {
         &'static str,
     > {
         if !self.ctx.destination_plan_attached {
-            return Err(
-                "the compiler did not attach destination ownership before loop lowering",
-            );
+            return Err("the compiler did not attach destination ownership before loop lowering");
         }
         let Some(owner) = self.fun.destination_owner.as_deref() else {
             return Ok(std::collections::BTreeMap::new());
         };
-        Ok(
-            self.ctx
-                .generalized_destination_ownership
-                .foreach_carrier_obligations(owner),
-        )
+        Ok(self
+            .ctx
+            .generalized_destination_ownership
+            .foreach_carrier_obligations(owner))
     }
 
     pub(crate) fn current_loop_field(
@@ -2873,8 +3068,16 @@ impl LlvmBackend {
             let value = self.fun.gen_reg();
             let src_gep = self.fun.gen_reg();
             let dst_gep = self.fun.gen_reg();
-            writeln!(out, "{indent}{src_gep} = getelementptr i64, ptr {source}, i64 {word}").ok();
-            writeln!(out, "{indent}{dst_gep} = getelementptr i64, ptr {destination}, i64 {word}").ok();
+            writeln!(
+                out,
+                "{indent}{src_gep} = getelementptr i64, ptr {source}, i64 {word}"
+            )
+            .ok();
+            writeln!(
+                out,
+                "{indent}{dst_gep} = getelementptr i64, ptr {destination}, i64 {word}"
+            )
+            .ok();
             writeln!(out, "{indent}{value} = load i64, ptr {src_gep}").ok();
             writeln!(out, "{indent}store i64 {value}, ptr {dst_gep}").ok();
         }
@@ -2935,9 +3138,19 @@ impl LlvmBackend {
             let llvm_ty = self.plain_global_llvm_type(&ty);
             if self.plain_context_active() {
                 let slot = self.emit_plain_slot_addr(out, indent, name)?;
-                writeln!(out, "{}store {} {}, ptr {}, align 8", indent, llvm_ty, val, slot).ok();
+                writeln!(
+                    out,
+                    "{}store {} {}, ptr {}, align 8",
+                    indent, llvm_ty, val, slot
+                )
+                .ok();
             } else {
-                writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, val, name).ok();
+                writeln!(
+                    out,
+                    "{}store {} {}, ptr @{}, align 8",
+                    indent, llvm_ty, val, name
+                )
+                .ok();
             }
             return Some(());
         }
@@ -3011,8 +3224,13 @@ impl LlvmBackend {
         write!(
             out,
             "{}{} = load {}, ptr {}, align {}",
-            indent, val, llvm_ty, gep, self.align_of(&llvm_ty)
-        ).ok();
+            indent,
+            val,
+            llvm_ty,
+            gep,
+            self.align_of(&llvm_ty)
+        )
+        .ok();
         // 2026-07-27: Append !range metadata if this field has contract-driven or
         // type-driven bounds. The metadata node was created in emit_transaction.
         if let Some(field_name) = self.ctx.idx_to_field_name.get(&idx) {
@@ -3101,19 +3319,22 @@ impl LlvmBackend {
         // 2026-10-25: boxed Bool/Char parameter registers are i64 in SSA
         // even though their Briev binding type reports flexible Int. Use the
         // physical width before choosing trunc/ext.
-        let have_ll = if self.fun.boxed_scalar_regs.contains(&val.name)
-            || val.name.starts_with("%ac")
-        {
-            "i64".to_string()
-        } else {
-            self.llvm_type(&val.ty)
-        };
+        let have_ll =
+            if self.fun.boxed_scalar_regs.contains(&val.name) || val.name.starts_with("%ac") {
+                "i64".to_string()
+            } else {
+                self.llvm_type(&val.ty)
+            };
         if have_ll == want_ll {
             return val.clone();
         }
         if let (Some(have_bits), Some(want_bits)) = (
-            have_ll.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()),
-            want_ll.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()),
+            have_ll
+                .strip_prefix('i')
+                .and_then(|n| n.parse::<u32>().ok()),
+            want_ll
+                .strip_prefix('i')
+                .and_then(|n| n.parse::<u32>().ok()),
         ) {
             let op = if have_bits > want_bits {
                 "trunc"
@@ -3123,21 +3344,58 @@ impl LlvmBackend {
                 "sext"
             };
             let r = self.fun.gen_reg();
-            writeln!(out, "{}{} = {} {} {} to {}", indent, r, op, have_ll, val.name, want_ll).ok();
-            return crate::backend::llvm::TypedRegister { name: r, ty: want_ty.clone() };
+            writeln!(
+                out,
+                "{}{} = {} {} {} to {}",
+                indent, r, op, have_ll, val.name, want_ll
+            )
+            .ok();
+            return crate::backend::llvm::TypedRegister {
+                name: r,
+                ty: want_ty.clone(),
+            };
         }
         let r = self.fun.gen_reg();
         let emitted = match (have_ll.as_str(), want_ll.as_str()) {
-            ("i64", "float") => writeln!(out, "{}{} = sitofp i64 {} to float", indent, r, val.name).is_ok(),
-            ("i64", "double") => writeln!(out, "{}{} = sitofp i64 {} to double", indent, r, val.name).is_ok(),
-            ("float", "double") => writeln!(out, "{}{} = fpext float {} to double", indent, r, val.name).is_ok(),
-            ("double", "float") => writeln!(out, "{}{} = fptrunc double {} to float", indent, r, val.name).is_ok(),
-            ("float", "i64") | ("double", "i64") => writeln!(out, "{}{} = fptosi {} {} to i64", indent, r, have_ll, val.name).is_ok(),
-            ("i64", "i32") => writeln!(out, "{}{} = trunc i64 {} to i32", indent, r, val.name).is_ok(),
-            ("i64", "i8") => writeln!(out, "{}{} = trunc i64 {} to i8", indent, r, val.name).is_ok(),
-            ("i8", "i64") | ("i32", "i64") => writeln!(out, "{}{} = zext {} {} to i64", indent, r, have_ll, val.name).is_ok(),
-            ("i32", "float") => writeln!(out, "{}{} = sitofp i32 {} to float", indent, r, val.name).is_ok(),
-            ("float", "i32") => writeln!(out, "{}{} = fptosi float {} to i32", indent, r, val.name).is_ok(),
+            ("i64", "float") => {
+                writeln!(out, "{}{} = sitofp i64 {} to float", indent, r, val.name).is_ok()
+            }
+            ("i64", "double") => {
+                writeln!(out, "{}{} = sitofp i64 {} to double", indent, r, val.name).is_ok()
+            }
+            ("float", "double") => {
+                writeln!(out, "{}{} = fpext float {} to double", indent, r, val.name).is_ok()
+            }
+            ("double", "float") => writeln!(
+                out,
+                "{}{} = fptrunc double {} to float",
+                indent, r, val.name
+            )
+            .is_ok(),
+            ("float", "i64") | ("double", "i64") => writeln!(
+                out,
+                "{}{} = fptosi {} {} to i64",
+                indent, r, have_ll, val.name
+            )
+            .is_ok(),
+            ("i64", "i32") => {
+                writeln!(out, "{}{} = trunc i64 {} to i32", indent, r, val.name).is_ok()
+            }
+            ("i64", "i8") => {
+                writeln!(out, "{}{} = trunc i64 {} to i8", indent, r, val.name).is_ok()
+            }
+            ("i8", "i64") | ("i32", "i64") => writeln!(
+                out,
+                "{}{} = zext {} {} to i64",
+                indent, r, have_ll, val.name
+            )
+            .is_ok(),
+            ("i32", "float") => {
+                writeln!(out, "{}{} = sitofp i32 {} to float", indent, r, val.name).is_ok()
+            }
+            ("float", "i32") => {
+                writeln!(out, "{}{} = fptosi float {} to i32", indent, r, val.name).is_ok()
+            }
             _ => false,
         };
         if !emitted {
@@ -3145,7 +3403,10 @@ impl LlvmBackend {
             // at clang (visible), never silently reinterpreted.
             return val.clone();
         }
-        crate::backend::llvm::TypedRegister { name: r.to_string(), ty: want_ty.clone() }
+        crate::backend::llvm::TypedRegister {
+            name: r.to_string(),
+            ty: want_ty.clone(),
+        }
     }
 
     /// Normalize a value register to the target pointer-sized integer handle.
@@ -3329,16 +3590,34 @@ impl LlvmBackend {
         if let Some(cyc) = wd.cycles_bound {
             if let Some(counter) = counter_reg {
                 let exp = self.fun.gen_reg();
-                writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, exp, counter, cyc as i64).ok();
+                writeln!(
+                    out,
+                    "{}{} = icmp slt i64 {}, {}",
+                    indent, exp, counter, cyc as i64
+                )
+                .ok();
                 let andr = self.fun.gen_reg();
-                writeln!(out, "{}{} = and i1 {}, {}", indent, andr, continue_cond, exp).ok();
+                writeln!(
+                    out,
+                    "{}{} = and i1 {}, {}",
+                    indent, andr, continue_cond, exp
+                )
+                .ok();
                 continue_cond = andr;
             }
         }
         if let Some(secs) = wd.deadline_ns {
             if let Some(start) = start_reg {
-                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-                let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
+                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+                    "rt_now_ns"
+                } else {
+                    "__briev_now"
+                };
+                let nst = if self.ctx.defn_takes_state(nsym) {
+                    "%state"
+                } else {
+                    ""
+                };
                 let now = self.fun.gen_reg();
                 writeln!(out, "{}{} = call i64 @{}({})", indent, now, nsym, nst).ok();
                 let el = self.fun.gen_reg();
@@ -3348,7 +3627,12 @@ impl LlvmBackend {
                 let exp = self.fun.gen_reg();
                 writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, exp, el, db).ok();
                 let andr = self.fun.gen_reg();
-                writeln!(out, "{}{} = and i1 {}, {}", indent, andr, continue_cond, exp).ok();
+                writeln!(
+                    out,
+                    "{}{} = and i1 {}, {}",
+                    indent, andr, continue_cond, exp
+                )
+                .ok();
                 continue_cond = andr;
             }
         }
@@ -3372,7 +3656,12 @@ impl LlvmBackend {
         let start_reg = g.start_reg.as_deref();
         let continue_cond =
             self.watchdog_bounds_conj(out, indent, wd, counter_reg, start_reg, bool_reg);
-        writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, continue_cond, g.hold_label, fire_label).ok();
+        writeln!(
+            out,
+            "{}br i1 {}, label %{}, label %{}",
+            indent, continue_cond, g.hold_label, fire_label
+        )
+        .ok();
         writeln!(out, "{}:", fire_label).ok();
         self.fun.cur_block = Some(fire_label.clone());
         if let Some(on_fire) = &wd.on_fire {
@@ -3418,8 +3707,16 @@ bounded counter with increments (a counter-fold dispatch honors the watchdog).",
         if !any {
             return None;
         }
-        let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-        let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
+        let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+            "rt_now_ns"
+        } else {
+            "__briev_now"
+        };
+        let nst = if self.ctx.defn_takes_state(nsym) {
+            "%state"
+        } else {
+            ""
+        };
         let s = self.fun.gen_reg();
         writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
         Some(s)

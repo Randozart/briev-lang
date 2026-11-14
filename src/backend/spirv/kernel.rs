@@ -3,7 +3,7 @@ use crate::ast::Statement;
 use crate::ast::{Expr, Type};
 use crate::backend::spirv::builder::SpirvBuilder;
 use crate::backend::spirv::gemm;
-use crate::backend::spirv::lower::{collect_locals, collect_state_fields, FnLowerer};
+use crate::backend::spirv::lower::{FnLowerer, collect_locals, collect_state_fields};
 /// SPIR-V kernel emission — frontend-driven work-item kernels.
 ///
 /// 2026-08-23 (plan §2.2): kernel selection and body content come from the
@@ -625,7 +625,7 @@ pub fn emit_kernel(
                 return Err(format!(
                     "sum fold length {:?} must be a literal const",
                     other
-                ))
+                ));
             }
         };
         if inner_len <= 0 || inner_len % 32 != 0 {
@@ -654,7 +654,7 @@ pub fn emit_kernel(
                     return Err(format!(
                         "softmax row length '{}' is not a literal const",
                         name
-                    ))
+                    ));
                 }
             },
             Expr::Decimal(n) => *n,
@@ -662,7 +662,7 @@ pub fn emit_kernel(
                 return Err(format!(
                     "softmax row length {:?} must be a literal const",
                     other
-                ))
+                ));
             }
         };
         if inner_len <= 0 || inner_len % 32 != 0 {
@@ -1023,7 +1023,7 @@ pub fn emit_kernel(
                 return Err(format!(
                     "reduction length {:?} must be a literal const for the cooperative path",
                     other
-                ))
+                ));
             }
         };
         if inner_len <= 0 || inner_len % 32 != 0 {

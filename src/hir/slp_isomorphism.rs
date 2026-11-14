@@ -11,15 +11,20 @@ use std::collections::HashMap;
 pub fn exprs_isomorphic(a: &HirExpr, b: &HirExpr, mapping: &HashMap<String, String>) -> bool {
     match (&a.kind, &b.kind) {
         (
-            HirExprKind::Binary { op: k1, left: l1, right: r1 },
-            HirExprKind::Binary { op: k2, left: l2, right: r2 },
-        ) => {
-            k1 == k2 && exprs_isomorphic(l1, l2, mapping) && exprs_isomorphic(r1, r2, mapping)
+            HirExprKind::Binary {
+                op: k1,
+                left: l1,
+                right: r1,
+            },
+            HirExprKind::Binary {
+                op: k2,
+                left: l2,
+                right: r2,
+            },
+        ) => k1 == k2 && exprs_isomorphic(l1, l2, mapping) && exprs_isomorphic(r1, r2, mapping),
+        (HirExprKind::Unary { op: k1, inner: e1 }, HirExprKind::Unary { op: k2, inner: e2 }) => {
+            k1 == k2 && exprs_isomorphic(e1, e2, mapping)
         }
-        (
-            HirExprKind::Unary { op: k1, inner: e1 },
-            HirExprKind::Unary { op: k2, inner: e2 },
-        ) => k1 == k2 && exprs_isomorphic(e1, e2, mapping),
         (HirExprKind::Literal(HirLiteral::Int(n1)), HirExprKind::Literal(HirLiteral::Int(n2))) => {
             n1 == n2
         }
@@ -36,12 +41,22 @@ pub fn exprs_isomorphic(a: &HirExpr, b: &HirExpr, mapping: &HashMap<String, Stri
             None => n1 == n2,
         },
         (
-            HirExprKind::Cast { inner: e1, to: t1, .. },
-            HirExprKind::Cast { inner: e2, to: t2, .. },
+            HirExprKind::Cast {
+                inner: e1, to: t1, ..
+            },
+            HirExprKind::Cast {
+                inner: e2, to: t2, ..
+            },
         ) => t1 == t2 && exprs_isomorphic(e1, e2, mapping),
         (
-            HirExprKind::Field { receiver: obj1, name: f1 },
-            HirExprKind::Field { receiver: obj2, name: f2 },
+            HirExprKind::Field {
+                receiver: obj1,
+                name: f1,
+            },
+            HirExprKind::Field {
+                receiver: obj2,
+                name: f2,
+            },
         ) => f1 == f2 && exprs_isomorphic(obj1, obj2, mapping),
         _ => false,
     }
@@ -55,15 +70,20 @@ pub fn build_mapping(a: &HirExpr, b: &HirExpr) -> Option<HashMap<String, String>
 fn try_build_mapping(a: &HirExpr, b: &HirExpr, mapping: &mut HashMap<String, String>) -> bool {
     match (&a.kind, &b.kind) {
         (
-            HirExprKind::Binary { op: k1, left: l1, right: r1 },
-            HirExprKind::Binary { op: k2, left: l2, right: r2 },
-        ) => {
-            k1 == k2 && try_build_mapping(l1, l2, mapping) && try_build_mapping(r1, r2, mapping)
+            HirExprKind::Binary {
+                op: k1,
+                left: l1,
+                right: r1,
+            },
+            HirExprKind::Binary {
+                op: k2,
+                left: l2,
+                right: r2,
+            },
+        ) => k1 == k2 && try_build_mapping(l1, l2, mapping) && try_build_mapping(r1, r2, mapping),
+        (HirExprKind::Unary { op: k1, inner: e1 }, HirExprKind::Unary { op: k2, inner: e2 }) => {
+            k1 == k2 && try_build_mapping(e1, e2, mapping)
         }
-        (
-            HirExprKind::Unary { op: k1, inner: e1 },
-            HirExprKind::Unary { op: k2, inner: e2 },
-        ) => k1 == k2 && try_build_mapping(e1, e2, mapping),
         (HirExprKind::Literal(HirLiteral::Int(n1)), HirExprKind::Literal(HirLiteral::Int(n2))) => {
             n1 == n2
         }
@@ -91,12 +111,22 @@ fn try_build_mapping(a: &HirExpr, b: &HirExpr, mapping: &mut HashMap<String, Str
             }
         }
         (
-            HirExprKind::Cast { inner: e1, to: t1, .. },
-            HirExprKind::Cast { inner: e2, to: t2, .. },
+            HirExprKind::Cast {
+                inner: e1, to: t1, ..
+            },
+            HirExprKind::Cast {
+                inner: e2, to: t2, ..
+            },
         ) => t1 == t2 && try_build_mapping(e1, e2, mapping),
         (
-            HirExprKind::Field { receiver: obj1, name: f1 },
-            HirExprKind::Field { receiver: obj2, name: f2 },
+            HirExprKind::Field {
+                receiver: obj1,
+                name: f1,
+            },
+            HirExprKind::Field {
+                receiver: obj2,
+                name: f2,
+            },
         ) => f1 == f2 && try_build_mapping(obj1, obj2, mapping),
         _ => false,
     }
@@ -105,8 +135,12 @@ fn try_build_mapping(a: &HirExpr, b: &HirExpr, mapping: &mut HashMap<String, Str
 pub fn statements_isomorphic(a: &HirStmt, b: &HirStmt) -> Option<HashMap<String, String>> {
     match (&a.kind, &b.kind) {
         (
-            HirStmtKind::Let { ty: t1, expr: e1, .. },
-            HirStmtKind::Let { ty: t2, expr: e2, .. },
+            HirStmtKind::Let {
+                ty: t1, expr: e1, ..
+            },
+            HirStmtKind::Let {
+                ty: t2, expr: e2, ..
+            },
         ) => {
             if t1 != t2 {
                 return None;
@@ -141,8 +175,14 @@ fn try_build_mapping_lhs(a: &HirExpr, b: &HirExpr, mapping: &mut HashMap<String,
             }
         }
         (
-            HirExprKind::Field { receiver: obj1, name: f1 },
-            HirExprKind::Field { receiver: obj2, name: f2 },
+            HirExprKind::Field {
+                receiver: obj1,
+                name: f1,
+            },
+            HirExprKind::Field {
+                receiver: obj2,
+                name: f2,
+            },
         ) => f1 == f2 && try_build_mapping_lhs(obj1, obj2, mapping),
         _ => structural_eq(a, b),
     }
@@ -153,28 +193,51 @@ fn structural_eq(a: &HirExpr, b: &HirExpr) -> bool {
     match (&a.kind, &b.kind) {
         (HirExprKind::Identifier(x), HirExprKind::Identifier(y)) => x == y,
         (HirExprKind::Literal(x), HirExprKind::Literal(y)) => x == y,
-        (HirExprKind::UnitLiteral { value: v1, unit: u1 }, HirExprKind::UnitLiteral { value: v2, unit: u2 }) => {
-            v1 == v2 && u1 == u2
+        (
+            HirExprKind::UnitLiteral {
+                value: v1,
+                unit: u1,
+            },
+            HirExprKind::UnitLiteral {
+                value: v2,
+                unit: u2,
+            },
+        ) => v1 == v2 && u1 == u2,
+        (
+            HirExprKind::Binary {
+                op: k1,
+                left: l1,
+                right: r1,
+            },
+            HirExprKind::Binary {
+                op: k2,
+                left: l2,
+                right: r2,
+            },
+        ) => k1 == k2 && structural_eq(l1, l2) && structural_eq(r1, r2),
+        (HirExprKind::Unary { op: k1, inner: e1 }, HirExprKind::Unary { op: k2, inner: e2 }) => {
+            k1 == k2 && structural_eq(e1, e2)
         }
         (
-            HirExprKind::Binary { op: k1, left: l1, right: r1 },
-            HirExprKind::Binary { op: k2, left: l2, right: r2 },
-        ) => k1 == k2 && structural_eq(l1, l2) && structural_eq(r1, r2),
-        (
-            HirExprKind::Unary { op: k1, inner: e1 },
-            HirExprKind::Unary { op: k2, inner: e2 },
-        ) => k1 == k2 && structural_eq(e1, e2),
-        (
-            HirExprKind::Field { receiver: o1, name: n1 },
-            HirExprKind::Field { receiver: o2, name: n2 },
+            HirExprKind::Field {
+                receiver: o1,
+                name: n1,
+            },
+            HirExprKind::Field {
+                receiver: o2,
+                name: n2,
+            },
         ) => n1 == n2 && structural_eq(o1, o2),
+        (HirExprKind::Index(a1, b1), HirExprKind::Index(a2, b2)) => {
+            structural_eq(a1, a2) && structural_eq(b1, b2)
+        }
         (
-            HirExprKind::Index(a1, b1),
-            HirExprKind::Index(a2, b2),
-        ) => structural_eq(a1, a2) && structural_eq(b1, b2),
-        (
-            HirExprKind::Cast { inner: e1, to: t1, .. },
-            HirExprKind::Cast { inner: e2, to: t2, .. },
+            HirExprKind::Cast {
+                inner: e1, to: t1, ..
+            },
+            HirExprKind::Cast {
+                inner: e2, to: t2, ..
+            },
         ) => t1 == t2 && structural_eq(e1, e2),
         (HirExprKind::Tuple(x), HirExprKind::Tuple(y))
         | (HirExprKind::List(x), HirExprKind::List(y)) => {
@@ -193,7 +256,13 @@ fn find_isomorphic_groups(body: &[HirStmt], start_idx: usize) -> Vec<VectorPhiCa
     let mut lhs_names: Vec<String> = Vec::new();
     let template_lhs = match &template.kind {
         HirStmtKind::Let { name, .. } => Some(name.clone()),
-        HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(n), .. }, _) => Some(n.clone()),
+        HirStmtKind::Assign(
+            HirExpr {
+                kind: HirExprKind::Identifier(n),
+                ..
+            },
+            _,
+        ) => Some(n.clone()),
         _ => None,
     };
     let Some(template_lhs) = template_lhs else {
@@ -205,9 +274,13 @@ fn find_isomorphic_groups(body: &[HirStmt], start_idx: usize) -> Vec<VectorPhiCa
         if statements_isomorphic(template, stmt).is_some() {
             let lhs = match &stmt.kind {
                 HirStmtKind::Let { name, .. } => name.clone(),
-                HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(n), .. }, _) => {
-                    n.clone()
-                }
+                HirStmtKind::Assign(
+                    HirExpr {
+                        kind: HirExprKind::Identifier(n),
+                        ..
+                    },
+                    _,
+                ) => n.clone(),
                 _ => break,
             };
             lhs_names.push(lhs);
@@ -307,7 +380,9 @@ fn expr_signature_inner(expr: &HirExpr, sig: &mut Vec<u8>) {
 
 fn group_template_signature(body: &[HirStmt], group: &VectorPhiCandidate) -> Option<Vec<u8>> {
     let field_name = &group.fields[0];
-    let pos = body.iter().position(|s| lhs_name(s) == Some(field_name.as_str()))?;
+    let pos = body
+        .iter()
+        .position(|s| lhs_name(s) == Some(field_name.as_str()))?;
     let expr = match &body.get(pos)?.kind {
         HirStmtKind::Let { expr: Some(e), .. } => e,
         HirStmtKind::Assign(_, e) => e,
@@ -319,7 +394,13 @@ fn group_template_signature(body: &[HirStmt], group: &VectorPhiCandidate) -> Opt
 fn lhs_name(stmt: &HirStmt) -> Option<&str> {
     match &stmt.kind {
         HirStmtKind::Let { name, .. } => Some(name),
-        HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(n), .. }, _) => Some(n),
+        HirStmtKind::Assign(
+            HirExpr {
+                kind: HirExprKind::Identifier(n),
+                ..
+            },
+            _,
+        ) => Some(n),
         _ => None,
     }
 }
@@ -331,7 +412,13 @@ fn build_def_sites(body: &[HirStmt]) -> HashMap<String, usize> {
             HirStmtKind::Let { name, .. } => {
                 defs.insert(name.clone(), i);
             }
-            HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(n), .. }, _) => {
+            HirStmtKind::Assign(
+                HirExpr {
+                    kind: HirExprKind::Identifier(n),
+                    ..
+                },
+                _,
+            ) => {
                 defs.insert(n.clone(), i);
             }
             _ => {}
@@ -481,7 +568,13 @@ fn merge_width_bucket(
 fn groups_starting_at(body: &[HirStmt], i: usize) -> Vec<VectorPhiCandidate> {
     if !matches!(
         &body[i].kind,
-        HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(_), .. }, _)
+        HirStmtKind::Assign(
+            HirExpr {
+                kind: HirExprKind::Identifier(_),
+                ..
+            },
+            _
+        )
     ) {
         return Vec::new();
     }
@@ -502,5 +595,8 @@ pub fn analyze_body(body: &[HirStmt], min_width: usize) -> Vec<VectorPhiCandidat
         groups = merge_groups(body, old);
     }
 
-    groups.into_iter().filter(|g| g.width >= min_width).collect()
+    groups
+        .into_iter()
+        .filter(|g| g.width >= min_width)
+        .collect()
 }

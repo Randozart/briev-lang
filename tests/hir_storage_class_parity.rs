@@ -31,11 +31,20 @@ fn curated_storage_class_parity() {
     // Bare, unreferenced scalar let infers plain.
     assert_parity("let a: Int = 0;", "bare");
     // Referenced by a txn contract pre-condition → machine state.
-    assert_parity("let b: Int = 0;\nnode n [b > 0][true] { term; };", "contract");
+    assert_parity(
+        "let b: Int = 0;\nnode n [b > 0][true] { term; };",
+        "contract",
+    );
     // Observed by `endprogram <expr>` → surface.
-    assert_parity("let c: Int = 0;\nnode n [true][true] { endprogram c; };", "endprogram");
+    assert_parity(
+        "let c: Int = 0;\nnode n [true][true] { endprogram c; };",
+        "endprogram",
+    );
     // Written by a txn body → machine state.
-    assert_parity("let d: Int = 0;\nnode n [true][true] { d = d + 1; term; };", "written");
+    assert_parity(
+        "let d: Int = 0;\nnode n [true][true] { d = d + 1; term; };",
+        "written",
+    );
     // Declared `plain` always.
     assert_parity("plain let e: Int = 0;", "declared-plain");
     // Declared `state` never plain.
@@ -90,10 +99,7 @@ fn corpus_storage_class_parity() {
         let hir = hir_plain(&program, None, &empty);
         if ast != hir {
             let rel = path.strip_prefix(root).unwrap_or(path).display();
-            let mut diff: Vec<String> = ast
-                .symmetric_difference(&hir)
-                .cloned()
-                .collect();
+            let mut diff: Vec<String> = ast.symmetric_difference(&hir).cloned().collect();
             diff.sort();
             mismatches.push(format!("{rel}: {diff:?}"));
         }

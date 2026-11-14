@@ -22,7 +22,7 @@
 // boundary).
 
 use crate::ast::{Annotation, BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
-use crate::symbolic::{eval_symbolic, SymbolicState, SymbolicValue};
+use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic};
 use std::collections::HashMap;
 
 /// Tri-state outcome of evaluating a postcondition on one symbolic path.
@@ -175,7 +175,9 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
         // Substitute each summarised call with the callee's value expression,
         // so the existing path walk reasons about one flat body.
         let Ok(flattened) = inline_body(body, &sums) else {
-            report.skipped.push(format!("{name}: a call could not be inlined"));
+            report
+                .skipped
+                .push(format!("{name}: a call could not be inlined"));
             continue;
         };
         match verify_one(
@@ -1139,7 +1141,10 @@ fn inferred_loop_obligations(
                 body: inner,
                 modifiers,
             } => {
-                if modifiers.iter().any(|annotation| annotation.name == "invariant") {
+                if modifiers
+                    .iter()
+                    .any(|annotation| annotation.name == "invariant")
+                {
                     continue;
                 }
                 let Expr::Range {
@@ -1394,11 +1399,7 @@ fn loop_obligations(
             ));
         }
     }
-    init.push(binop(
-        BinaryOpKind::Eq,
-        loop_var.clone(),
-        lower.clone(),
-    ));
+    init.push(binop(BinaryOpKind::Eq, loop_var.clone(), lower.clone()));
 
     // VC2 — the body preserves it, with the guard and the precondition available.
     let within = if inclusive {
@@ -1425,11 +1426,7 @@ fn loop_obligations(
     } else {
         binop(BinaryOpKind::Ge, loop_var, bound)
     };
-    let exit = vec![
-        contract.pre_condition.clone(),
-        invariant.clone(),
-        past,
-    ];
+    let exit = vec![contract.pre_condition.clone(), invariant.clone(), past];
 
     Some(vec![
         (
@@ -1762,8 +1759,8 @@ fn mentions_only(expr: &Expr, allowed: &[String]) -> bool {
 
 #[cfg(test)]
 mod prover_api_tests {
-    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
     use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
 
     /// Build `defn f(x) [x >= 0][term >= 0] { term x; }` without any frontend.
     #[test]
@@ -1783,7 +1780,12 @@ mod prover_api_tests {
         let item = TopLevel::Definition(Definition::prover_defn("f", contract, body));
 
         let report = verify_bodies(&[item]);
-        assert_eq!(report.proven, vec!["f".to_string()], "unproven: {:?}", report.unproven);
+        assert_eq!(
+            report.proven,
+            vec!["f".to_string()],
+            "unproven: {:?}",
+            report.unproven
+        );
         assert!(report.violated.is_empty());
     }
 

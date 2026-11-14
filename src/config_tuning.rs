@@ -112,7 +112,7 @@ pub struct IrLoweringSettings {
     /// kernel. Measured 3.9× SLOWER (the full-width staging crushes
     /// occupancy; the per-step barriers serialize) — experimental until a
     /// small multi-stage pipeline lands.
-    
+
     /// 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): cooperative row
     /// kernels (lane-strided accumulation + OpGroupNonUniformFAdd). OFF by
     /// default: the emitted kernel passes spirv-val and the minimal subgroup
@@ -515,7 +515,10 @@ pub(crate) fn install_ir_lowering(settings: IrLoweringSettings) {
 /// can install nested guards on the same thread.
 static SETTINGS_TEST_LOCK: LazyLock<parking_lot::ReentrantMutex<()>> =
     LazyLock::new(|| parking_lot::ReentrantMutex::new(()));
-pub(crate) struct SettingsGuard(IrLoweringSettings, parking_lot::ReentrantMutexGuard<'static, ()>);
+pub(crate) struct SettingsGuard(
+    IrLoweringSettings,
+    parking_lot::ReentrantMutexGuard<'static, ()>,
+);
 
 impl SettingsGuard {
     pub(crate) fn install_with(edit: impl FnOnce(&mut IrLoweringSettings)) -> Self {
@@ -551,8 +554,7 @@ pub enum ContractGatePolicy {
     Deny,
 }
 
-static CONTRACT_GATE_POLICY: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(0);
+static CONTRACT_GATE_POLICY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 // 2026-10-20: a thread-local override for TESTS. The global policy is
 // process-wide; tests that exercise the deny stage run in parallel with the
@@ -709,7 +711,10 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push("gpu_schedule_buffer_reuse", b(s.gpu_schedule_buffer_reuse));
     push("spirv_row_cooperative", b(s.spirv_row_cooperative));
     push("spirv_coopmat", b(s.spirv_coopmat));
-    push("spirv_coopmat_tile_rows", s.spirv_coopmat_tile_rows.to_string());
+    push(
+        "spirv_coopmat_tile_rows",
+        s.spirv_coopmat_tile_rows.to_string(),
+    );
     push("spirv_image_storage", b(s.spirv_image_storage));
     push("spirv_coopmat_f16acc", b(s.spirv_coopmat_f16acc));
     push(
@@ -738,7 +743,10 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     );
     push("ptx_tensor_stages", s.ptx_tensor_stages.to_string());
     push("ptx_tensor_nofill", s.ptx_tensor_nofill.to_string());
-    push("ptx_deferred_skip_pass", s.ptx_deferred_skip_pass.to_string());
+    push(
+        "ptx_deferred_skip_pass",
+        s.ptx_deferred_skip_pass.to_string(),
+    );
     push("ptx_deferred_online", s.ptx_deferred_online.to_string());
     push("ptx_gemm_grid_order", s.ptx_gemm_grid_order.to_string());
     push("ptx_tensor_force_mw", s.ptx_tensor_force_mw.to_string());
@@ -814,11 +822,7 @@ pub fn apply_module_config_to(
     // Block > base, per key: the base rows minus the block's keys re-parse
     // ahead of the block text; ConfigDb's last-wins index hands the block
     // rows to parse_ir_lowering.
-    let text = format!(
-        "{}\n{}",
-        render_ir_lowering(base, &block_keys),
-        source
-    );
+    let text = format!("{}\n{}", render_ir_lowering(base, &block_keys), source);
     let settings = parse_ir_lowering(&text);
     Ok(ModuleConfigApplied {
         settings,
@@ -858,16 +862,20 @@ pub fn set_ir_lowering_from_dir(dir: &std::path::Path) -> Result<(), String> {
 pub fn target_settings_for(triple: &str) -> TargetSettings {
     let mut best: Option<(usize, &TargetSettings)> = None;
     for (prefix, settings) in TARGET_SETTINGS.iter() {
-        if triple.starts_with(prefix.as_str()) && best.map_or(true, |(blen, _)| prefix.len() > blen) {
+        if triple.starts_with(prefix.as_str()) && best.map_or(true, |(blen, _)| prefix.len() > blen)
+        {
             best = Some((prefix.len(), settings));
         }
     }
-    best.map(|(_, s)| s.clone()).unwrap_or_else(|| DEFAULT_TARGET_SETTINGS.clone())
+    best.map(|(_, s)| s.clone())
+        .unwrap_or_else(|| DEFAULT_TARGET_SETTINGS.clone())
 }
 
 /// Is the triple's prefix known to config/targets.dbvl?
 pub fn known_target_triple(triple: &str) -> bool {
-    TARGET_SETTINGS.keys().any(|p| triple.starts_with(p.as_str()))
+    TARGET_SETTINGS
+        .keys()
+        .any(|p| triple.starts_with(p.as_str()))
 }
 
 /// Walk config/targets.dbvl's `target.<prefix>` rows.
@@ -883,7 +891,9 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
     };
     let mut out = HashMap::new();
     for key in db.keys() {
-        let Some(prefix) = key.strip_prefix("target.") else { continue };
+        let Some(prefix) = key.strip_prefix("target.") else {
+            continue;
+        };
         let float_registers = db
             .field_int(&key, 0)
             .map(|v| v as usize)
@@ -900,9 +910,7 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
         let isr_mechanism = db.field_string(&key, 3).map(|v| v.to_string());
         // 2026-10-16 (absolute-limit addendum part 1): field 4 — the
         // per-function frame ceiling in bytes. Absent = no declared ceiling.
-        let frame_limit_bytes = db
-            .field_int(&key, 4)
-            .map(|v| v as u64);
+        let frame_limit_bytes = db.field_int(&key, 4).map(|v| v as u64);
         // 2026-10-21 (target-pressure effect shape): field 5 — FP registers
         // reserved for the accumulator, expression temporaries, and effect
         // arguments. The capability gate is float_registers - fp_reserved_temps.
@@ -955,7 +963,8 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
     IrLoweringSettings {
         arena_min_budget: db
             .field_int("arena_min_budget", 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.arena_min_budget as i64) as u32,
+            .unwrap_or(DEFAULT_IR_LOWERING.arena_min_budget as i64)
+            as u32,
         firmem_min_depth: db
             .field_int("circt.firmem_min_depth", 0)
             .map(|v| v as usize)
@@ -970,26 +979,30 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .unwrap_or(DEFAULT_IR_LOWERING.clock_hz),
         arena_initial_size: db
             .field_int("arena_initial_size", 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.arena_initial_size as i64) as u64,
+            .unwrap_or(DEFAULT_IR_LOWERING.arena_initial_size as i64)
+            as u64,
         stack_threshold: db
             .field_int("stack_threshold", 0)
             .unwrap_or(DEFAULT_IR_LOWERING.stack_threshold as i64) as u64,
         max_fields_per_alloca: db
             .field_int("max_fields_per_alloca", 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.max_fields_per_alloca as i64) as usize,
+            .unwrap_or(DEFAULT_IR_LOWERING.max_fields_per_alloca as i64)
+            as usize,
         sso_max_bytes: db
             .field_int("sso_max_bytes", 0)
             .unwrap_or(DEFAULT_IR_LOWERING.sso_max_bytes as i64) as usize,
         callable_inline_weight_threshold: db
             .field_int("callable_inline_weight_threshold", 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.callable_inline_weight_threshold as i64) as u32,
+            .unwrap_or(DEFAULT_IR_LOWERING.callable_inline_weight_threshold as i64)
+            as u32,
         aggregate_zero_init_memset_bytes: db
             .field_int("aggregate_zero_init_memset_bytes", 0)
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_IR_LOWERING.aggregate_zero_init_memset_bytes),
         node_inline_weight_threshold: db
             .field_int("node_inline_weight_threshold", 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.node_inline_weight_threshold as i64) as u32,
+            .unwrap_or(DEFAULT_IR_LOWERING.node_inline_weight_threshold as i64)
+            as u32,
         accel_probe_k: db
             .field_int("accel_probe_k", 0)
             .map(|v| v.max(1) as u64)
@@ -1188,7 +1201,6 @@ fn load_axioms() -> AxiomSettings {
     settings
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1279,11 +1291,18 @@ vector_min_width = 0
         let base = load_ir_lowering();
         for (key, is_float) in IR_LOWERING_KEYS {
             let blocks: Vec<String> = if *is_float {
-                vec![format!("{key}: {};\n", base.accel_probe_tolerance * 2.0 + 0.25)]
+                vec![format!(
+                    "{key}: {};\n",
+                    base.accel_probe_tolerance * 2.0 + 0.25
+                )]
             } else {
                 let current = base_int_field(&base, key);
                 let bumped = (current + 1).to_string();
-                let flipped = if current == 0 { "1".to_string() } else { "0".to_string() };
+                let flipped = if current == 0 {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                };
                 // Each sentinel applies ALONE (rows in one block would be
                 // last-wins); the key is live if EITHER changes the settings.
                 vec![
@@ -1323,17 +1342,18 @@ vector_min_width = 0
         // 2026-09-30 (D30): block > base, per key; untouched keys keep the
         // base (dir/built-in) values.
         let base = load_ir_lowering();
-        let applied = apply_module_config_to(
-            &base,
-            "ptx_tensor_stages: 2;\naccel_probe_margin: 0.5;\n",
-        )
-        .expect("valid block");
+        let applied =
+            apply_module_config_to(&base, "ptx_tensor_stages: 2;\naccel_probe_margin: 0.5;\n")
+                .expect("valid block");
         assert_eq!(applied.settings.ptx_tensor_stages, 2);
         assert!((applied.settings.accel_probe_margin - 0.5).abs() < 1e-12);
         assert_eq!(applied.settings.arena_min_budget, base.arena_min_budget);
         assert_eq!(
             applied.keys,
-            vec!["accel_probe_margin=0.5".to_string(), "ptx_tensor_stages=2".to_string()]
+            vec![
+                "accel_probe_margin=0.5".to_string(),
+                "ptx_tensor_stages=2".to_string()
+            ]
         );
     }
 
@@ -1384,9 +1404,15 @@ vector_min_width = 0
         assert_eq!(s.arena_min_budget as i64, i64_of("arena_min_budget"));
         assert_eq!(s.arena_initial_size as i64, i64_of("arena_initial_size"));
         assert_eq!(s.stack_threshold as i64, i64_of("stack_threshold"));
-        assert_eq!(s.max_fields_per_alloca as i64, i64_of("max_fields_per_alloca"));
+        assert_eq!(
+            s.max_fields_per_alloca as i64,
+            i64_of("max_fields_per_alloca")
+        );
         assert_eq!(s.sso_max_bytes as i64, i64_of("sso_max_bytes"));
-        assert_eq!(s.callable_inline_weight_threshold as i64, i64_of("callable_inline_weight_threshold"));
+        assert_eq!(
+            s.callable_inline_weight_threshold as i64,
+            i64_of("callable_inline_weight_threshold")
+        );
     }
 
     #[test]
@@ -1406,7 +1432,10 @@ vector_min_width = 0
         assert_eq!(e.ptx_warp_slice_warps, 8);
         let lo = parse_ir_lowering("ptx_warp_slice_min_span: -5;\nptx_warp_slice_warps: 0;\n");
         assert_eq!(lo.ptx_warp_slice_min_span, 0, "clamped low");
-        assert_eq!(lo.ptx_warp_slice_warps, 1, "zero warps → 1 (no modulo panic)");
+        assert_eq!(
+            lo.ptx_warp_slice_warps, 1,
+            "zero warps → 1 (no modulo panic)"
+        );
         let hi = parse_ir_lowering("ptx_warp_slice_warps: 99;\n");
         assert_eq!(hi.ptx_warp_slice_warps, 8, "clamped high (block ≤ 256)");
     }
@@ -1434,21 +1463,40 @@ vector_min_width = 0
         let raw: toml::Value = toml::from_str(TARGET_SETTINGS_TOML_GOLDEN).unwrap();
         let toml_targets = raw.get("target").and_then(toml::Value::as_table).unwrap();
 
-        assert_eq!(db_map.len(), toml_targets.len(),
-            "target-prefix count diverges between .dbvl and .toml");
+        assert_eq!(
+            db_map.len(),
+            toml_targets.len(),
+            "target-prefix count diverges between .dbvl and .toml"
+        );
         for (prefix, value) in toml_targets {
             let t = value.as_table().unwrap();
-            let settings = db_map.get(prefix)
+            let settings = db_map
+                .get(prefix)
                 .unwrap_or_else(|| panic!("prefix '{}' missing from targets.dbvl", prefix));
-            assert_eq!(settings.float_registers as i64,
-                t.get("float_registers").and_then(toml::Value::as_integer).unwrap(),
-                "float_registers for '{}' diverges", prefix);
-            assert_eq!(settings.dense_compute_density,
-                t.get("dense_compute_density").and_then(toml::Value::as_float).unwrap(),
-                "dense_compute_density for '{}' diverges", prefix);
-            assert_eq!(settings.vector_min_width as i64,
-                t.get("vector_min_width").and_then(toml::Value::as_integer).unwrap(),
-                "vector_min_width for '{}' diverges", prefix);
+            assert_eq!(
+                settings.float_registers as i64,
+                t.get("float_registers")
+                    .and_then(toml::Value::as_integer)
+                    .unwrap(),
+                "float_registers for '{}' diverges",
+                prefix
+            );
+            assert_eq!(
+                settings.dense_compute_density,
+                t.get("dense_compute_density")
+                    .and_then(toml::Value::as_float)
+                    .unwrap(),
+                "dense_compute_density for '{}' diverges",
+                prefix
+            );
+            assert_eq!(
+                settings.vector_min_width as i64,
+                t.get("vector_min_width")
+                    .and_then(toml::Value::as_integer)
+                    .unwrap(),
+                "vector_min_width for '{}' diverges",
+                prefix
+            );
         }
     }
 
@@ -1476,7 +1524,7 @@ vector_min_width = 0
         // A more specific prefix beats a shorter one (both present).
         let s = target_settings_for("x86_64-foo");
         assert_eq!(s.float_registers, 16);
-}
+    }
 
     // ── Axiom settings (plan 2026-08-26-axiom-facility) ──
 
@@ -1496,5 +1544,4 @@ vector_min_width = 0
         assert_eq!(AxiomPolicy::from_str_loose("sometimes"), AxiomPolicy::Allow);
         assert_eq!(AxiomPolicy::from_str_loose(""), AxiomPolicy::Allow);
     }
-
 }

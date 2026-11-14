@@ -111,7 +111,7 @@ fn fits_board(bb: &(f64, f64, f64, f64), board: (f64, f64)) -> bool {
 fn clearance_warnings(boxes: &[(String, (f64, f64, f64, f64))]) -> Vec<String> {
     let mut sorted: Vec<(&String, (f64, f64, f64, f64))> =
         boxes.iter().map(|(n, b)| (n, *b)).collect();
-    sorted.sort_by(|a, b| a.1 .0.total_cmp(&b.1 .0));
+    sorted.sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
     let mut warnings = Vec::new();
     for i in 0..sorted.len() {
         warnings.extend(warn_close(&sorted, i));

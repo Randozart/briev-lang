@@ -182,8 +182,8 @@ impl Graph {
             Constraint::Copy(source, target) => {
                 let refs = self.points[source].clone();
                 let constants = self.constants[source].clone();
-                let inexact =
-                    self.inexact_constants.contains(&source) && self.inexact_constants.insert(target);
+                let inexact = self.inexact_constants.contains(&source)
+                    && self.inexact_constants.insert(target);
                 self.points[target].union_with(&refs)
                     | extend(&mut self.constants[target], constants)
                     | inexact
@@ -297,7 +297,10 @@ impl Graph {
     }
 
     pub(super) fn plan(&self) -> ReclamationPlan {
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
+        let global_roots = self
+            .globals
+            .values()
+            .flat_map(|node| self.points[*node].iter());
         let escaped = self.reachable(global_roots.chain(self.escaped.iter().copied()));
         let mut plan = ReclamationPlan {
             known: self.callables.keys().cloned().collect(),
@@ -308,9 +311,13 @@ impl Graph {
                 plan.escape_barriers.insert(owner.clone());
             }
         }
-        plan.escape_barriers.extend(self.unsupported.iter().cloned());
+        plan.escape_barriers
+            .extend(self.unsupported.iter().cloned());
         let publishers: BTreeSet<String> = self.incoming_store_owners.iter().cloned().collect();
-        plan.publish_only = publishers.difference(&plan.escape_barriers).cloned().collect();
+        plan.publish_only = publishers
+            .difference(&plan.escape_barriers)
+            .cloned()
+            .collect();
         plan.barriers = plan.escape_barriers.clone();
         plan.barriers.extend(publishers.iter().cloned());
         for (name, callable) in &self.callables {
@@ -349,13 +356,19 @@ impl Graph {
         if allocations.is_empty() {
             return false;
         }
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
+        let global_roots = self
+            .globals
+            .values()
+            .flat_map(|node| self.points[*node].iter());
         let escaped = self.reachable(global_roots.chain(self.escaped.iter().copied()));
         if !allocations.is_disjoint(&escaped) {
             return false;
         }
         let callable = &self.callables[name];
-        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter());
+        let incoming = callable
+            .params
+            .iter()
+            .flat_map(|param| self.points[*param].iter());
         let roots = incoming.chain(self.points[callable.result].iter());
         self.reachable(roots).is_disjoint(&allocations)
     }
@@ -375,14 +388,19 @@ impl Graph {
 
     fn site_is_safe(&self, owner: &str, local: Option<Node>) -> bool {
         let Some(local) = local else { return false };
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
+        let global_roots = self
+            .globals
+            .values()
+            .flat_map(|node| self.points[*node].iter());
         if self
             .reachable(global_roots.chain(self.escaped.iter().copied()))
             .contains(&local)
         {
             return false;
         }
-        let Some(callable) = self.callables.get(owner) else { return false };
+        let Some(callable) = self.callables.get(owner) else {
+            return false;
+        };
         !self
             .reachable(self.points[callable.result].iter())
             .contains(&local)
@@ -404,8 +422,10 @@ impl Graph {
             return;
         }
         if self.handle_returns.contains(name) {
-            plan.reasons
-                .insert(name.into(), "result image or payload can be caller-owned".into());
+            plan.reasons.insert(
+                name.into(),
+                "result image or payload can be caller-owned".into(),
+            );
             return;
         }
         if !self
@@ -475,7 +495,9 @@ impl Graph {
             return true;
         }
         table.conditional_borrowing.iter().any(|rule| {
-            let Some(argument) = args.get(rule.argument) else { return false };
+            let Some(argument) = args.get(rule.argument) else {
+                return false;
+            };
             rule.number == number
                 && !self.inexact_constants.contains(argument)
                 && !self.constants[*argument].is_empty()
@@ -575,7 +597,10 @@ fn bitwise(operator: BinaryOpKind, lhs: i64, rhs: i64) -> i64 {
     }
 }
 
-pub(super) fn extend<T: Ord>(target: &mut BTreeSet<T>, values: impl IntoIterator<Item = T>) -> bool {
+pub(super) fn extend<T: Ord>(
+    target: &mut BTreeSet<T>,
+    values: impl IntoIterator<Item = T>,
+) -> bool {
     let before = target.len();
     target.extend(values);
     target.len() != before
@@ -617,9 +642,10 @@ impl NodeSet {
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        self.words
-            .iter()
-            .flat_map(|(&index, &bits)| WordNodes { base: index * 64, bits })
+        self.words.iter().flat_map(|(&index, &bits)| WordNodes {
+            base: index * 64,
+            bits,
+        })
     }
 }
 

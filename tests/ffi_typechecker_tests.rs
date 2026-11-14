@@ -12,8 +12,8 @@
 use briev_compiler::errors::TypeError;
 use briev_compiler::lexer::tokenize;
 use briev_compiler::parser::Parser;
-use briev_compiler::typechecker::check_program;
 use briev_compiler::type_universe::TypeUniverse;
+use briev_compiler::typechecker::check_program;
 
 fn check(src: &str) -> Result<(), Vec<TypeError>> {
     let tokens = tokenize(src).unwrap();
@@ -31,7 +31,10 @@ fn test_frgn_return_type_resolves() {
 frgn strlen(s: String) -> Int from #System;
 defn call_strlen(s: String) -> Int { term strlen(s); };
 "#;
-    assert!(check(src).is_ok(), "frgn return type must be visible to callers");
+    assert!(
+        check(src).is_ok(),
+        "frgn return type must be visible to callers"
+    );
 }
 
 #[test]
@@ -39,10 +42,7 @@ fn test_frgn_void_return() {
     let src = r#"
 frgn panic(msg: String) from #System;
 "#;
-    assert!(
-        check(src).is_ok(),
-        "void-returning frgn must typecheck"
-    );
+    assert!(check(src).is_ok(), "void-returning frgn must typecheck");
 }
 
 // ── frgn return type mismatch in defn ───────────────────────────────
@@ -69,10 +69,7 @@ fn test_frgn_colon_alias_resolves() {
 frgn local_add(a: Int, b: Int) -> Int: external_add from #System;
 defn use_add(a: Int, b: Int) -> Int { term local_add(a, b); };
 "#;
-    assert!(
-        check(src).is_ok(),
-        "colon alias must resolve to briev_name"
-    );
+    assert!(check(src).is_ok(), "colon alias must resolve to briev_name");
 }
 
 // ── optional frgn + ^^Available ─────────────────────────────────────
@@ -107,7 +104,8 @@ node go [fired == 0][fired == 1] {
 "#;
     let err = check(src).unwrap_err();
     assert!(
-        err.iter().any(|e| format!("{}", e).contains("only on an `optional frgn`")),
+        err.iter()
+            .any(|e| format!("{}", e).contains("only on an `optional frgn`")),
         "^^Available on non-optional must error, got {:?}",
         err
     );
@@ -122,8 +120,5 @@ frgn strlen(s: String) -> Int from #System;
 frgn panic(msg: String) from #System;
 defn safe_strlen(s: String) -> Int { term strlen(s); };
 "#;
-    assert!(
-        check(src).is_ok(),
-        "multiple frgn + defn must coexist"
-    );
+    assert!(check(src).is_ok(), "multiple frgn + defn must coexist");
 }

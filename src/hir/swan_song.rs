@@ -45,21 +45,26 @@ pub fn hoist_swan_song(
 /// Body statements minus trailing terminators (`endprogram`/bare `term`).
 fn without_terminators(body: &[HirStmt]) -> Vec<&HirStmt> {
     body.iter()
-        .filter(|s| !matches!(s.kind, HirStmtKind::EndProgram(..) | HirStmtKind::Term(None)))
+        .filter(|s| {
+            !matches!(
+                s.kind,
+                HirStmtKind::EndProgram(..) | HirStmtKind::Term(None)
+            )
+        })
         .collect()
 }
 
 /// `let x = state_field;` bindings at body scope, mapped to the field name.
-fn let_to_field_map(
-    body: &[HirStmt],
-    state_fields: &HashSet<String>,
-) -> HashMap<String, String> {
+fn let_to_field_map(body: &[HirStmt], state_fields: &HashSet<String>) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for s in body {
-        let HirStmtKind::Assign(lhs, HirExpr {
-            kind: HirExprKind::Identifier(let_name),
-            ..
-        }) = &s.kind
+        let HirStmtKind::Assign(
+            lhs,
+            HirExpr {
+                kind: HirExprKind::Identifier(let_name),
+                ..
+            },
+        ) = &s.kind
         else {
             continue;
         };
@@ -160,7 +165,11 @@ fn remap_expr_into(e: &mut HirExpr, map: &HashMap<String, String>) {
                 remap_stmt_identifiers(s, map);
             }
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             remap_expr_into(condition, map);
             remap_expr_into(then_branch, map);
             if let Some(eb) = else_branch {

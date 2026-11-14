@@ -79,20 +79,18 @@ pub fn analyze(program: &HirProgram) -> Vec<Block> {
 fn is_top_item(c: &HirCallable) -> bool {
     c.owner.is_none()
         && !c.is_isr
-        && matches!(
-            c.kind,
-            HirCallableKind::Defn | HirCallableKind::Transaction
-        )
+        && matches!(c.kind, HirCallableKind::Defn | HirCallableKind::Transaction)
 }
 
-fn collect_callables<'a>(
-    program: &'a HirProgram,
-) -> HashMap<String, (bool, &'a [HirStmt])> {
+fn collect_callables<'a>(program: &'a HirProgram) -> HashMap<String, (bool, &'a [HirStmt])> {
     let mut map = HashMap::new();
     for callable in program.callables.iter().filter(|c| is_top_item(c)) {
         map.insert(
             callable.name.clone(),
-            (is_effective_void(callable), callable.body.statements.as_slice()),
+            (
+                is_effective_void(callable),
+                callable.body.statements.as_slice(),
+            ),
         );
     }
     map

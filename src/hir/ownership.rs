@@ -5,10 +5,10 @@
 //! parameter, local, foreach item, and pattern binding gets one stable key.
 //! Unknown ownership stays boxed. No backend consumes these facts yet.
 
+use super::expr::HirExprKind;
 use super::ids::{DefId, NodeId};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::HirProgram;
-use super::expr::HirExprKind;
 use super::stmt::{HirStmt, HirStmtKind};
 use super::walk::walk_stmt;
 use crate::ast::Type;
@@ -96,7 +96,8 @@ fn collect_stmt(facts: &mut HirValueFacts, stmt: &HirStmt) {
             insert(
                 facts,
                 HirValueKey::Let { statement: stmt.id },
-                ty.clone().or_else(|| expr.as_ref().and_then(|expr| expr.ty.clone())),
+                ty.clone()
+                    .or_else(|| expr.as_ref().and_then(|expr| expr.ty.clone())),
             );
         }
         HirStmtKind::Foreach { body, .. } => {

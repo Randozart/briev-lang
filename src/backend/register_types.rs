@@ -8,8 +8,8 @@
 // Backends that derive a richer native type (LLVM IR types) do that
 // separately in their own normalizer AFTER calling register_typedefs.
 
-use crate::ast::*;
 use crate::ast::PropertyValue;
+use crate::ast::*;
 use crate::type_universe::ResolvedType;
 use crate::type_universe::TypeUniverse;
 
@@ -21,7 +21,10 @@ use crate::type_universe::TypeUniverse;
 /// 2026-08-13 (layout-keywords plan Phase 6): a union's storage layout — the
 /// largest aligned field storage (bytes) and the maximum field alignment.
 /// All fields overlay at offset 0.
-fn union_field_storage(fields: &[(String, crate::ast::Type)], universe: &TypeUniverse) -> (u64, u64) {
+fn union_field_storage(
+    fields: &[(String, crate::ast::Type)],
+    universe: &TypeUniverse,
+) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut align = 1u64;
     for (_, ty) in fields {
@@ -36,7 +39,9 @@ pub fn static_struct_resolved_ty(
     def: &crate::ast::top::StructDef,
     universe: &TypeUniverse,
 ) -> ResolvedType {
-    let fields: Vec<(String, Type)> = def.fields.iter()
+    let fields: Vec<(String, Type)> = def
+        .fields
+        .iter()
         .map(|(n, t)| (n.clone(), t.clone()))
         .collect();
     let int_md = |key: &str| -> Option<u64> {
@@ -51,7 +56,10 @@ pub fn static_struct_resolved_ty(
     // Bytes` still wins (§2.1 precedence), otherwise the packed volume rounds
     // up (div_ceil) to storage bytes.
     let packed_bits = if def.pack {
-        Some(crate::type_universe::packed_total_bits(&fields, Some(universe)))
+        Some(crate::type_universe::packed_total_bits(
+            &fields,
+            Some(universe),
+        ))
     } else {
         None
     };
@@ -63,9 +71,10 @@ pub fn static_struct_resolved_ty(
     } else {
         None
     };
-    let slot_sum: u64 = fields.iter().map(|(_, ty)| {
-        crate::backend::llvm::types::type_size(ty, Some(universe))
-    }).sum();
+    let slot_sum: u64 = fields
+        .iter()
+        .map(|(_, ty)| crate::backend::llvm::types::type_size(ty, Some(universe)))
+        .sum();
     // §2.1 precedence: spec Bytes > (pack volume | declared Bits) > union
     // storage > slot sum.
     let declared_bytes = if def.pack {
@@ -109,7 +118,11 @@ pub fn static_struct_resolved_ty(
 /// 2026-08-10: Extracted from llvm/normalizer.rs — shared by all backends.
 /// int_bits is the TARGET default width used when a type has no width metadata
 /// and no primordial entry (Phase 3, §8.6).
-pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bits: u64) -> Result<(), String> {
+pub fn register_typedefs(
+    items: &[TopLevel],
+    universe: &mut TypeUniverse,
+    int_bits: u64,
+) -> Result<(), String> {
     for item in items {
         let td = match item {
             TopLevel::TypeDef(td) => td,
@@ -127,7 +140,11 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         // (they emitted invalid `{ i64, void }` aggregates and wrong
         // by-value layouts). To undo: remove this branch.
         if !td.body.slots.is_empty()
-            && td.body.slots.iter().all(|s| s.name.starts_with("__variant_"))
+            && td
+                .body
+                .slots
+                .iter()
+                .all(|s| s.name.starts_with("__variant_"))
         {
             let word = std::mem::size_of::<usize>() as u64;
             let rt = crate::type_universe::ResolvedType {
@@ -152,7 +169,11 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         // minbits <~ N → floor (min=N, max=primordial). Fallback: primordial values.
         let iv = |key: &str| -> Option<u64> {
             td.body.metadata.get(key).and_then(|pv| {
-                if let PropertyValue::Int(n) = pv { Some(*n as u64) } else { None }
+                if let PropertyValue::Int(n) = pv {
+                    Some(*n as u64)
+                } else {
+                    None
+                }
             })
         };
         let exact_bits = iv("bits");
@@ -215,7 +236,9 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
             .or_else(|| ceiling.map(|b| b.div_ceil(8)))
             .or_else(|| exact_bits.map(|b| b.div_ceil(8)))
             .or_else(|| {
-                if td.body.slots.is_empty() { return None; }
+                if td.body.slots.is_empty() {
+                    return None;
+                }
                 // 2026-08-04 (compiler-in-Briev): sum slot sizes via
                 // type_size (NOT raw rt.bytes). Flexible primordials (Int,
                 // String, ...) register bytes=0 ("not yet resolved"); reading
@@ -226,46 +249,63 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
                 // fixes Ptr at one word.
                 // 2026-08-15 (coll plan §3.3): a `coll obj` adds two hidden
                 // slots (`cap` + `len`); the total includes them.
-                let mut total: u64 = td.body.slots.iter().map(|slot| {
-                    crate::backend::llvm::types::type_size(&slot.ty, Some(universe))
-                }).sum();
+                let mut total: u64 = td
+                    .body
+                    .slots
+                    .iter()
+                    .map(|slot| crate::backend::llvm::types::type_size(&slot.ty, Some(universe)))
+                    .sum();
                 if td.coll {
-                    total += 2 * crate::backend::llvm::types::type_size(&Type::int(), Some(universe));
+                    total +=
+                        2 * crate::backend::llvm::types::type_size(&Type::int(), Some(universe));
                 }
                 Some(total)
             })
-            .unwrap_or_else(|| primordial.as_ref().map(|p| p.bytes).unwrap_or_else(|| {
-                // 2026-07-31: Phase 3 (§8.6) — no metadata-derived size and no
-                // primordial: assume 8 bytes (conservative max scalar) and record
-                // the fallback so it is not silent.
-                universe.warnings.push(format!(
-                    "normalizer: type '{}' has no size metadata and no primordial \
+            .unwrap_or_else(|| {
+                primordial.as_ref().map(|p| p.bytes).unwrap_or_else(|| {
+                    // 2026-07-31: Phase 3 (§8.6) — no metadata-derived size and no
+                    // primordial: assume 8 bytes (conservative max scalar) and record
+                    // the fallback so it is not silent.
+                    universe.warnings.push(format!(
+                        "normalizer: type '{}' has no size metadata and no primordial \
                      entry — assuming 8 bytes; declare `spec Bytes: N;` or \
                      `spec Bits: N;` if the size matters",
-                    td.name
-                ));
-                size_fallback = true;
-                8
-            }));
-        let alignment = td.body.metadata.get("alignment")
-            .and_then(|pv| {
-                if let PropertyValue::Int(n) = pv { Some(*n as u64) } else { None }
-            })
-            .unwrap_or_else(|| primordial.as_ref().map(|p| p.alignment).unwrap_or_else(|| {
-                // 2026-07-31: Phase 3 (§8.6) — conservative alignment fallback
-                // (min(bytes, 8)). Gated 2026-10-06: only reported when the size
-                // itself was guessed, otherwise it duplicated the size warning on
-                // every slot-bearing type.
-                if size_fallback {
-                    universe.warnings.push(format!(
-                        "normalizer: type '{}' has no alignment metadata and no \
-                         primordial entry — assuming alignment {}",
-                        td.name, bytes.min(8)
+                        td.name
                     ));
+                    size_fallback = true;
+                    8
+                })
+            });
+        let alignment = td
+            .body
+            .metadata
+            .get("alignment")
+            .and_then(|pv| {
+                if let PropertyValue::Int(n) = pv {
+                    Some(*n as u64)
+                } else {
+                    None
                 }
-                bytes.min(8)
-            }));
-        let mut properties: std::collections::HashMap<String, PropertyValue> = td.body.metadata.clone();
+            })
+            .unwrap_or_else(|| {
+                primordial.as_ref().map(|p| p.alignment).unwrap_or_else(|| {
+                    // 2026-07-31: Phase 3 (§8.6) — conservative alignment fallback
+                    // (min(bytes, 8)). Gated 2026-10-06: only reported when the size
+                    // itself was guessed, otherwise it duplicated the size warning on
+                    // every slot-bearing type.
+                    if size_fallback {
+                        universe.warnings.push(format!(
+                            "normalizer: type '{}' has no alignment metadata and no \
+                         primordial entry — assuming alignment {}",
+                            td.name,
+                            bytes.min(8)
+                        ));
+                    }
+                    bytes.min(8)
+                })
+            });
+        let mut properties: std::collections::HashMap<String, PropertyValue> =
+            td.body.metadata.clone();
         // 2026-08-13 (layout-keywords plan): `spec` keys — including
         // `endian` (Big/Little/Target) — share the metadata map with `attr`,
         // so they surface on `ResolvedType.properties` verbatim and are
@@ -295,11 +335,19 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         // category); the old `Bit` default silently classified every plain
         // struct as a bit type. Consumers comparing bases use the walk, which
         // now treats a self-base as the root.
-        let base = td.parent.as_ref()
-            .and_then(|e| match e.as_ref() { Expr::Identifier(n) => Some(n.clone()), _ => None })
+        let base = td
+            .parent
+            .as_ref()
+            .and_then(|e| match e.as_ref() {
+                Expr::Identifier(n) => Some(n.clone()),
+                _ => None,
+            })
             .or_else(|| td.protocol.clone())
             .unwrap_or_else(|| td.name.clone());
-        let mut fields: Vec<(String, Type)> = td.body.slots.iter()
+        let mut fields: Vec<(String, Type)> = td
+            .body
+            .slots
+            .iter()
             .map(|s| (s.name.clone(), s.ty.clone()))
             .collect();
         // 2026-08-15 (coll plan §3.3): a `coll obj` appends two hidden trailing
@@ -355,10 +403,10 @@ pub fn record_structural_layout(
     base: &str,
     fields: &[(String, Type)],
 ) -> ResolvedType {
-
-    let bytes: u64 = fields.iter().map(|(_, ty)| {
-        crate::backend::llvm::types::type_size(ty, Some(universe))
-    }).sum();
+    let bytes: u64 = fields
+        .iter()
+        .map(|(_, ty)| crate::backend::llvm::types::type_size(ty, Some(universe)))
+        .sum();
     let marker = format!("structural layout fallback for '{name}'");
     if !universe.warnings.iter().any(|w| w.contains(&marker)) {
         universe.warnings.push(format!(
@@ -382,9 +430,9 @@ pub fn record_structural_layout(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::ast::top::{TypeDef, TypeDefBody, TypeDefSlot};
     use std::collections::HashMap;
-    use super::*;
 
     fn make_type_def(name: &str, slots: Vec<(&str, Type)>) -> TopLevel {
         make_type_def_full(name, slots, vec![])
@@ -413,9 +461,14 @@ mod tests {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                slots: slots.into_iter().map(|(n, ty)| TypeDefSlot {
-                    name: n.to_string(), ty, bit_range: None,
-                }).collect(),
+                slots: slots
+                    .into_iter()
+                    .map(|(n, ty)| TypeDefSlot {
+                        name: n.to_string(),
+                        ty,
+                        bit_range: None,
+                    })
+                    .collect(),
                 metadata,
                 projections: vec![],
                 bindings: vec![],
@@ -478,7 +531,10 @@ mod tests {
     fn test_register_typedefs_spec_bytes_is_authoritative() {
         // §2.1 precedence: Bytes > Bits. `spec Bytes: 4` overrides bits.
         let mut u = TypeUniverse::new();
-        let items = vec![make_type_def_meta("Frame", vec![("bytes", 4), ("bits", 12)])];
+        let items = vec![make_type_def_meta(
+            "Frame",
+            vec![("bytes", 4), ("bits", 12)],
+        )];
         register_typedefs(&items, &mut u, 64).unwrap();
         let rt = u.get("Frame").expect("registered");
         assert_eq!(rt.bytes, 4);
@@ -507,7 +563,11 @@ mod tests {
 
     // ── StaticStruct: spec sizing via static_struct_resolved_ty ───────
 
-    fn make_struct_def(name: &str, fields: Vec<(&str, Type)>, meta: Vec<(&str, i64)>) -> crate::ast::top::StructDef {
+    fn make_struct_def(
+        name: &str,
+        fields: Vec<(&str, Type)>,
+        meta: Vec<(&str, i64)>,
+    ) -> crate::ast::top::StructDef {
         let mut metadata = HashMap::new();
         for (k, v) in meta {
             metadata.insert(k.to_string(), crate::ast::PropertyValue::Int(v));
@@ -515,7 +575,10 @@ mod tests {
         crate::ast::top::StructDef {
             name: name.to_string(),
             type_params: vec![],
-            fields: fields.into_iter().map(|(n, t)| (n.to_string(), t)).collect(),
+            fields: fields
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t))
+                .collect(),
             metadata,
             span: None,
             seq: false,
@@ -554,12 +617,14 @@ mod tests {
         assert_eq!(rt.bytes, 16);
         assert_eq!(rt.alignment, 8);
         assert_eq!(
-            u.warnings.iter().filter(|w| w.contains("'S'")).count(), 1,
+            u.warnings.iter().filter(|w| w.contains("'S'")).count(),
+            1,
             "one recorded fallback per type name"
         );
         let _ = record_structural_layout(&mut u, "S", "Data", &fields);
         assert_eq!(
-            u.warnings.iter().filter(|w| w.contains("'S'")).count(), 1,
+            u.warnings.iter().filter(|w| w.contains("'S'")).count(),
+            1,
             "re-registration dedupes"
         );
     }

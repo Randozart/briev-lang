@@ -16,7 +16,9 @@ const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
 fn build_link_run(name: &str, src: &str) -> (String, i32) {
     let brievc = env!("CARGO_BIN_EXE_brievc");
-    let out_dir = Path::new(PROJECT_ROOT).join("target/briev_tier2").join(name);
+    let out_dir = Path::new(PROJECT_ROOT)
+        .join("target/briev_tier2")
+        .join(name);
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
     let bv = out_dir.join(format!("{name}.bv"));

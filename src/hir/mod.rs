@@ -7,82 +7,91 @@
 //! callable surface. No consumer uses it yet.
 
 pub mod accel;
-pub mod boundary_ownership;
-pub mod cast_paths;
-pub mod constructors;
-pub mod coll_length;
-pub mod defn_liveness;
 pub mod batch_shape;
+pub mod boundary_ownership;
 pub mod casing;
-pub mod dependency_graph;
-pub mod destination_ownership;
-pub mod destination_model;
-pub mod inline_cost;
-pub mod purity;
-pub mod reclamation;
-pub mod region;
+pub mod cast_paths;
+pub mod coalescing;
+pub mod coll_length;
+pub mod constructors;
+pub mod defn_liveness;
 pub mod density;
+pub mod dependency_graph;
+pub mod destination_model;
+pub mod destination_ownership;
 pub mod dyn_concrete_sets;
+pub mod electronics;
+pub mod electronics_laws;
 pub mod enum_repr;
 pub mod expr;
-pub mod coalescing;
-pub mod gpu_schedule;
-pub mod image_storage;
-pub mod global_lifetime;
+pub mod expr_walk;
 pub mod facts;
+pub mod free_vars;
 pub mod frontend;
+pub mod global_lifetime;
+pub mod gpu_schedule;
 pub mod ids;
-pub mod owned_storage;
+pub mod image_storage;
+pub mod inline_cost;
+pub mod loop_carried;
+pub mod loop_shape;
 pub mod lower;
+pub mod modulo_partition;
 pub mod needs_state;
+pub mod owned_storage;
 pub mod ownership;
 pub mod pattern;
 pub mod program;
+pub mod purity;
+pub mod reclamation;
+pub mod region;
 pub mod sinks;
-pub mod storage_class;
-pub mod stats;
-pub mod tail_calls;
-pub mod type_facts;
 pub mod slp_isomorphism;
 pub mod spawn_pool;
 pub mod specialize;
-pub mod electronics;
-pub mod electronics_laws;
-pub mod expr_walk;
-pub mod free_vars;
+pub mod stats;
 pub mod stmt;
+pub mod storage_class;
 pub mod swan_song;
-pub mod loop_carried;
-pub mod loop_shape;
-pub mod modulo_partition;
+pub mod tail_calls;
 pub mod tail_carrier;
+pub mod tail_recursion;
 pub mod task_linear;
 pub mod task_segments;
-pub mod tail_recursion;
 pub mod termination;
 pub mod to_ast;
 pub mod transition_graph;
+pub mod type_facts;
 pub mod verify;
-pub mod watchdog;
 pub mod walk;
+pub mod watchdog;
 pub mod web_commits;
 
 pub mod render;
 pub mod typing;
 pub use cast_paths::resolve_cast_paths;
-pub use render::{render_callable, render_program};
-pub use typing::annotate_types;
-pub use constructors::{build_constructor_facts, HirConstructorFacts, HirVariantFact, HirVariantRef};
-pub use facts::{build_facts, HirFacts};
+pub use constructors::{
+    HirConstructorFacts, HirVariantFact, HirVariantRef, build_constructor_facts,
+};
+pub use facts::{HirFacts, build_facts};
 pub use frontend::lower_program_after_frontend;
-pub use lower::{lower_body_statements, lower_program, lower_standalone_expr, lower_program_checked, HirLowerIssue};
-pub use needs_state::{compute_defn_needs_plain, compute_defn_needs_state, compute_export_needs_state};
-pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
-pub use sinks::{build_sink_facts, HirAggregateKind, HirSinkFacts, HirSinkKey};
+pub use lower::{
+    HirLowerIssue, lower_body_statements, lower_program, lower_program_checked,
+    lower_standalone_expr,
+};
+pub use needs_state::{
+    compute_defn_needs_plain, compute_defn_needs_state, compute_export_needs_state,
+};
+pub use ownership::{
+    HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey, build_value_facts,
+};
 pub use program::{HirCallable, HirCallableKind, HirOutput, HirProgram};
-pub use stats::{unsupported_counts, UnsupportedCounts};
-pub use tail_calls::{build_tail_call_facts, HirCallableTailCalls, HirTailCall, HirTailCallFacts};
-pub use type_facts::{build_type_facts, HirEnumFacts, HirObjectFacts, HirTypeFacts};
+pub use render::{render_callable, render_program};
+pub use sinks::{HirAggregateKind, HirSinkFacts, HirSinkKey, build_sink_facts};
+pub use stats::{UnsupportedCounts, unsupported_counts};
+pub use tail_calls::{HirCallableTailCalls, HirTailCall, HirTailCallFacts, build_tail_call_facts};
+pub use type_facts::{HirEnumFacts, HirObjectFacts, HirTypeFacts, build_type_facts};
+pub use typing::annotate_types;
 pub use verify::{verify, verify_law_markers, verify_single_callable, verify_typed};
 
 #[cfg(test)]
@@ -96,8 +105,12 @@ mod tests {
     struct DemoPlugin;
 
     impl Plugin for DemoPlugin {
-        fn name(&self) -> &str { "hir-demo" }
-        fn stages(&self) -> Vec<StageKind> { vec![StageKind::Parsed] }
+        fn name(&self) -> &str {
+            "hir-demo"
+        }
+        fn stages(&self) -> Vec<StageKind> {
+            vec![StageKind::Parsed]
+        }
         fn on_ast(
             &self,
             program: &mut Vec<TopLevel>,
@@ -252,7 +265,10 @@ defn f() -> Int { term 1; };
         let body = &program.callables[0].body.statements;
         assert_eq!(body.len(), 2);
         assert!(matches!(body[0].kind, super::stmt::HirStmtKind::Let { .. }));
-        assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Term(Some(_))));
+        assert!(matches!(
+            body[1].kind,
+            super::stmt::HirStmtKind::Term(Some(_))
+        ));
     }
 
     #[test]
@@ -263,8 +279,14 @@ defn f() -> Int { term 1; };
         ));
         verify(&program).expect("valid HIR");
         let body = &program.callables[0].body.statements;
-        assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
-        assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+        assert!(matches!(
+            body[1].kind,
+            super::stmt::HirStmtKind::Foreach { .. }
+        ));
+        assert!(matches!(
+            body[2].kind,
+            super::stmt::HirStmtKind::Term(Some(_))
+        ));
     }
 
     #[test]
@@ -327,9 +349,17 @@ defn f() -> Int { term 1; };
         assert_eq!(fields, 2);
         assert!(facts.sinks.keys().any(|key| matches!(
             key,
-            HirSinkKey::Aggregate { kind: HirAggregateKind::Collection, .. }
+            HirSinkKey::Aggregate {
+                kind: HirAggregateKind::Collection,
+                ..
+            }
         )));
-        assert!(facts.sinks.keys().any(|key| matches!(key, HirSinkKey::Return { .. })));
+        assert!(
+            facts
+                .sinks
+                .keys()
+                .any(|key| matches!(key, HirSinkKey::Return { .. }))
+        );
     }
 
     #[test]
@@ -355,9 +385,7 @@ defn f() -> Int { term 1; };
 
     #[test]
     fn cast_paths_are_explicit_when_endpoints_are_typed() {
-        let mut program = lower_program(&parse(
-            "defn f(x: Int) -> Float { term 1 as Float; };\n",
-        ));
+        let mut program = lower_program(&parse("defn f(x: Int) -> Float { term 1 as Float; };\n"));
         let graph = crate::casting::graph::CastingGraph::new();
         let universe = TypeUniverse::new();
         let resolved = resolve_cast_paths(&mut program, &graph, &universe);
@@ -408,9 +436,7 @@ defn f() -> Int { term 1; };
 
     #[test]
     fn object_members_are_indexed_as_callables() {
-        let program = lower_program(&parse(
-            "obj Box { defn get(self) -> Int { term 1; }; };\n",
-        ));
+        let program = lower_program(&parse("obj Box { defn get(self) -> Int { term 1; }; };\n"));
         verify(&program).expect("valid HIR");
         assert_eq!(program.callables.len(), 1);
         assert_eq!(program.callables[0].kind, HirCallableKind::MemberDefn);

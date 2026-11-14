@@ -101,10 +101,13 @@ fn openvino_lib_present() -> bool {
             return true;
         }
     }
-    ["/usr/lib/libopenvino_c.so", "/usr/lib64/libopenvino_c.so",
-     "/usr/local/lib/libopenvino_c.so"]
-        .iter()
-        .any(|p| Path::new(p).exists())
+    [
+        "/usr/lib/libopenvino_c.so",
+        "/usr/lib64/libopenvino_c.so",
+        "/usr/local/lib/libopenvino_c.so",
+    ]
+    .iter()
+    .any(|p| Path::new(p).exists())
 }
 
 #[test]

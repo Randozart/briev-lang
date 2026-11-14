@@ -7,7 +7,6 @@
 //!
 //! UNSAFE boundary: all FFI lives here; callers use the safe `run_program`.
 
-pub use crate::backend::spirv::runner::{RunDispatch, RunProgram};
 /// Single source of truth for the C descriptor ABI: the canonical
 /// `#[repr(C)]` mirrors in `accel_rt` (pinned against
 /// `lib/runtime/briev_accel_rt.h` by `test_briev_kernel_desc_abi_pinned`).
@@ -17,17 +16,13 @@ pub use crate::backend::spirv::runner::{RunDispatch, RunProgram};
 /// tail, so the runtime read past the Rust allocation and
 /// `briev_dev_cuda_create_kernel` segfaulted on a garbage blob pointer.
 use crate::accel_rt::{BrievField as FfiField, BrievKernelDesc as FfiKernelDesc};
+pub use crate::backend::spirv::runner::{RunDispatch, RunProgram};
 
 unsafe extern "C" {
     fn briev_accel_init(descs: *const FfiKernelDesc, n: u32) -> i32;
     fn briev_accel_available() -> i32;
     fn briev_accel_device_name() -> *const std::os::raw::c_char;
-    fn briev_accel_launch_resident_2d(
-        idx: u32,
-        state: *mut u8,
-        nx: u64,
-        ny: u64,
-    ) -> i32;
+    fn briev_accel_launch_resident_2d(idx: u32, state: *mut u8, nx: u64, ny: u64) -> i32;
     fn briev_accel_launch_resident_batch(
         idx: u32,
         state: *mut u8,
@@ -50,14 +45,13 @@ pub fn run_program(prog: &RunProgram) -> Result<Vec<i64>, String> {
 const RUN_GUARD: i64 = 2_000_000_000;
 
 mod ffi {
-    use crate::backend::spirv::runner::{RunDispatch, RunProgram};
     use super::RUN_GUARD;
     use super::{FfiField, FfiKernelDesc};
     use super::{
-        briev_accel_available, briev_accel_device_name, briev_accel_download,
-        briev_accel_init, briev_accel_launch_resident_2d,
-        briev_accel_launch_resident_batch, briev_accel_shutdown,
+        briev_accel_available, briev_accel_device_name, briev_accel_download, briev_accel_init,
+        briev_accel_launch_resident_2d, briev_accel_launch_resident_batch, briev_accel_shutdown,
     };
+    use crate::backend::spirv::runner::{RunDispatch, RunProgram};
 
     /// Build an `FfiField` table over the fields whose name passes `keep`.
     /// Used for the global table (all), the seed table (inputs only), and
@@ -102,10 +96,8 @@ mod ffi {
         // The seed table — input arrays only (Phase 3): the one-time
         // resident seed uploads these; kernel-written arrays are
         // device-produced. Reuse targets are write-first and disjoint.
-        let seed_names: std::collections::HashSet<&String> =
-            prog.seed_fields.iter().collect();
-        let seed_ffi =
-            ffi_table(&prog.fields, &c_names, |f| seed_names.contains(&f.name));
+        let seed_names: std::collections::HashSet<&String> = prog.seed_fields.iter().collect();
+        let seed_ffi = ffi_table(&prog.fields, &c_names, |f| seed_names.contains(&f.name));
 
         // Kernel descs: one per node, each with its OWN touched-field table
         // (Phase 3 — no kernel packs a field it does not touch).
@@ -113,8 +105,10 @@ mod ffi {
         let mut ffi_descs: Vec<FfiKernelDesc> = Vec::new();
         let mut k_tables: Vec<Vec<FfiField>> = Vec::new();
         for k in &prog.kernels {
-            k_names.push(std::ffi::CString::new(k.name.clone())
-                .map_err(|e| format!("node '{}': name has NUL byte", k.name))?);
+            k_names.push(
+                std::ffi::CString::new(k.name.clone())
+                    .map_err(|e| format!("node '{}': name has NUL byte", k.name))?,
+            );
             let table = ffi_table(&prog.fields, &c_names, |f| {
                 k.touched_fields.iter().any(|n| n == &f.name)
             });
@@ -269,4 +263,3 @@ mod ffi {
         Ok(counters)
     }
 }
-

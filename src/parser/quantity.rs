@@ -11,7 +11,10 @@
 #[derive(Debug)]
 pub(crate) enum UnitSuffix {
     /// `[prefix][base]` — explicit dimension (`2mA`, `3.3Volt`, `4.7kOhm`).
-    Explicit { scale: f64, dim: crate::ast::QuantityDim },
+    Explicit {
+        scale: f64,
+        dim: crate::ast::QuantityDim,
+    },
     /// `[prefix]` bare — dimension from the key (`100n` on a Farad key).
     BarePrefix { scale: f64 },
     /// `[prefix][digits]` E-series fraction — `4k7` → 4.7k.
@@ -108,19 +111,19 @@ pub(crate) fn parse_unit_suffix(s: &str) -> Option<UnitSuffix> {
             return Some(UnitSuffix::Explicit {
                 scale: 1.0,
                 dim: crate::ast::QuantityDim::Length,
-            })
+            });
         }
         "mm" => {
             return Some(UnitSuffix::Explicit {
                 scale: 1e-3,
                 dim: crate::ast::QuantityDim::Length,
-            })
+            });
         }
         "cm" => {
             return Some(UnitSuffix::Explicit {
                 scale: 1e-2,
                 dim: crate::ast::QuantityDim::Length,
-            })
+            });
         }
         _ => {}
     }
@@ -172,9 +175,7 @@ pub(crate) fn quantity_si(
     expected: crate::ast::QuantityDim,
 ) -> Option<(f64, crate::ast::QuantityDim)> {
     match parse_unit_suffix(unit) {
-        Some(UnitSuffix::Explicit { scale, dim }) if dim == expected => {
-            Some((value * scale, dim))
-        }
+        Some(UnitSuffix::Explicit { scale, dim }) if dim == expected => Some((value * scale, dim)),
         _ => None,
     }
 }
@@ -208,21 +209,22 @@ pub(crate) fn is_resistance_suffix(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_unit_suffix, UnitSuffix};
+    use super::{UnitSuffix, parse_unit_suffix};
 
     /// Canonical full-word units parse to SI with the correct dimension —
     /// compact and full-word forms are equally valid; the rule is ASCII,
     /// not verbosity.
     #[test]
     fn ascii_unit_forms_resolve_to_si() {
-        let expect = |suffix: &str, scale: f64, dim| {
-            match parse_unit_suffix(suffix) {
-                Some(UnitSuffix::Explicit { scale: got, dim: got_dim }) => {
-                    assert_eq!(got_dim, dim, "suffix {suffix}");
-                    assert!((got - scale).abs() < 1e-12, "suffix {suffix}: {got}");
-                }
-                other => panic!("suffix {suffix}: expected Explicit, got {other:?}"),
+        let expect = |suffix: &str, scale: f64, dim| match parse_unit_suffix(suffix) {
+            Some(UnitSuffix::Explicit {
+                scale: got,
+                dim: got_dim,
+            }) => {
+                assert_eq!(got_dim, dim, "suffix {suffix}");
+                assert!((got - scale).abs() < 1e-12, "suffix {suffix}: {got}");
             }
+            other => panic!("suffix {suffix}: expected Explicit, got {other:?}"),
         };
         expect("Ohm", 1.0, crate::ast::QuantityDim::Ohm);
         expect("kOhm", 1e3, crate::ast::QuantityDim::Ohm);
@@ -241,13 +243,14 @@ mod tests {
     /// milli/metre-style collision.
     #[test]
     fn time_units_resolve_to_si() {
-        let expect = |suffix: &str, scale: f64| {
-            match parse_unit_suffix(suffix) {
-                Some(UnitSuffix::Explicit { scale: got, dim: crate::ast::QuantityDim::Time }) => {
-                    assert!((got - scale).abs() < 1e-12, "suffix {suffix}: {got}");
-                }
-                other => panic!("suffix {suffix}: expected Explicit Time, got {other:?}"),
+        let expect = |suffix: &str, scale: f64| match parse_unit_suffix(suffix) {
+            Some(UnitSuffix::Explicit {
+                scale: got,
+                dim: crate::ast::QuantityDim::Time,
+            }) => {
+                assert!((got - scale).abs() < 1e-12, "suffix {suffix}: {got}");
             }
+            other => panic!("suffix {suffix}: expected Explicit Time, got {other:?}"),
         };
         expect("s", 1.0);
         expect("ms", 1e-3);
@@ -261,7 +264,10 @@ mod tests {
         // The metre spellings keep their own dimension — `m`/`mm` must not
         // have been disturbed by the `s` addition.
         match parse_unit_suffix("m") {
-            Some(UnitSuffix::Explicit { scale, dim: crate::ast::QuantityDim::Length }) => {
+            Some(UnitSuffix::Explicit {
+                scale,
+                dim: crate::ast::QuantityDim::Length,
+            }) => {
                 assert!((scale - 1.0).abs() < 1e-12);
             }
             other => panic!("suffix m: expected Explicit Length, got {other:?}"),
@@ -276,7 +282,9 @@ mod tests {
     #[test]
     fn literal_si_applies_suffix_scale() {
         use super::literal_si;
-        let close = |a: f64, b: f64, s: &str| assert!((a - b).abs() < 1e-12 * b.abs().max(1.0), "{s}: {a} != {b}");
+        let close = |a: f64, b: f64, s: &str| {
+            assert!((a - b).abs() < 1e-12 * b.abs().max(1.0), "{s}: {a} != {b}")
+        };
         close(literal_si(10.0, "ms"), 0.01, "10ms");
         close(literal_si(3.3, "Volt"), 3.3, "3.3Volt");
         close(literal_si(5.0, "s"), 5.0, "5s");

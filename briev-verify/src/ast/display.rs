@@ -42,7 +42,11 @@ impl fmt::Display for Expr {
             }
             // 2026-08-07 (object instance pools): `spawn Obj(args)`.
             // 2026-08-09 (Phase 5): `box`/`spill` storage-class prefixes.
-            Expr::Spawn { type_name, args, storage } => {
+            Expr::Spawn {
+                type_name,
+                args,
+                storage,
+            } => {
                 let kw = storage.keyword();
                 if kw.is_empty() {
                     write!(f, "spawn {}(", type_name)?;
@@ -67,22 +71,31 @@ impl fmt::Display for Expr {
             Expr::Index(obj, index) => write!(f, "{}[{}]", obj, index),
             // 2026-09-28 (E3): `[*]` wildcard selector renders as `*`.
             Expr::Wildcard => write!(f, "*"),
-            Expr::Slice { array, start, end, stride } => {
+            Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 write!(f, "{}[", array)?;
-                if let Some(s) = start { write!(f, "{}", s)?; }
+                if let Some(s) = start {
+                    write!(f, "{}", s)?;
+                }
                 write!(f, ":")?;
-                if let Some(e) = end { write!(f, "{}", e)?; }
-                if let Some(s) = stride { write!(f, ":{}", s)?; }
+                if let Some(e) = end {
+                    write!(f, "{}", e)?;
+                }
+                if let Some(s) = stride {
+                    write!(f, ":{}", s)?;
+                }
                 write!(f, "]")
             }
             // 2026-08-07 (Phase 7): `start..end` / `start..=end` ranges.
-            Expr::Range { start, end, inclusive } => write!(
-                f,
-                "{}..{}{}",
+            Expr::Range {
                 start,
-                if *inclusive { "=" } else { "" },
-                end
-            ),
+                end,
+                inclusive,
+            } => write!(f, "{}..{}{}", start, if *inclusive { "=" } else { "" }, end),
             Expr::Exists(name) => write!(f, "{}?", name),
             Expr::Block(stmts) => {
                 write!(f, "{{ ")?;
@@ -146,10 +159,17 @@ impl fmt::Display for Expr {
             Expr::AddrOf(inner) => write!(f, "&{}", inner),
             Expr::Consume(inner) => write!(f, "~{}", inner),
             Expr::Await(inner) => write!(f, "await {}", inner),
-            Expr::PluginIntercept { name, args, type_args: _, receiver: _ } => {
+            Expr::PluginIntercept {
+                name,
+                args,
+                type_args: _,
+                receiver: _,
+            } => {
                 write!(f, "{}!(", name)?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", arg)?;
                 }
                 write!(f, ")")
@@ -161,7 +181,9 @@ impl fmt::Display for Expr {
             Expr::MethodCall(recv, name, args, _) => {
                 write!(f, "{}.{}(", recv, name)?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", arg)?;
                 }
                 write!(f, ")")
@@ -408,12 +430,14 @@ impl fmt::Display for Statement {
             Statement::Assign(lhs, rhs) => write!(f, "{} = {};", lhs, rhs),
             Statement::FreeHint(name) => write!(f, "free {};", name),
             Statement::KeepHint(name) => write!(f, "keep {};", name),
-            Statement::ArrowAssign { target, value, consume } => {
-                match target {
-                    Some(t) => write!(f, "{} {} {}", t, if *consume { "~<-" } else { "<-" }, value),
-                    None => write!(f, "{} {}", if *consume { "~<-" } else { "<-" }, value),
-                }
-            }
+            Statement::ArrowAssign {
+                target,
+                value,
+                consume,
+            } => match target {
+                Some(t) => write!(f, "{} {} {}", t, if *consume { "~<-" } else { "<-" }, value),
+                None => write!(f, "{} {}", if *consume { "~<-" } else { "<-" }, value),
+            },
             Statement::Term(val) => {
                 if let Some(val) = val {
                     write!(f, "term {};", val)
@@ -443,13 +467,12 @@ impl fmt::Display for Statement {
                     }
                     _ => None,
                 });
-                let is_hold = strategy.is_some()
-                    || body.iter().any(|s| {
-                        matches!(
-                            s,
-                            Statement::MetadataAssignment(k, PropertyValue::Bool(true)) if k == "hold"
-                        )
-                    });
+                let is_hold = strategy.is_some() || body.iter().any(|s| {
+                    matches!(
+                        s,
+                        Statement::MetadataAssignment(k, PropertyValue::Bool(true)) if k == "hold"
+                    )
+                });
                 let keyword = if is_hold { "hold" } else { "when" };
                 write!(f, "{} {} {{ ", keyword, cond)?;
                 for stmt in body {
@@ -492,7 +515,13 @@ impl fmt::Display for Statement {
                     write!(f, "escape;")
                 }
             }
-            Statement::Foreach { item, list, body, modifiers, .. } => {
+            Statement::Foreach {
+                item,
+                list,
+                body,
+                modifiers,
+                ..
+            } => {
                 // 2026-11-08: statement modifiers print in declared order
                 // (`seq foreach`); dropping them would lose the semantics.
                 for m in modifiers {
@@ -542,12 +571,19 @@ impl fmt::Display for Statement {
 fn import_symbols(symbols: &[(String, String)]) -> String {
     symbols
         .iter()
-        .map(|(l, e)| if l == e { l.clone() } else { format!("{}: {}", l, e) })
+        .map(|(l, e)| {
+            if l == e {
+                l.clone()
+            } else {
+                format!("{}: {}", l, e)
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-impl fmt::Display for TopLevel {    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl fmt::Display for TopLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TopLevel::Definition(defn) => {
                 write!(f, "defn {}(", defn.name)?;
@@ -594,24 +630,32 @@ impl fmt::Display for TopLevel {    fn fmt(&self, f: &mut fmt::Formatter<'_>) ->
             TopLevel::Cell(cell) => {
                 write!(f, "cell {} {{ ... }};", cell.name)
             }
-            TopLevel::Import(import) => {
-                match &import.kind {
-                    ImportKind::Literal(path) => {
-                        if import.symbols.is_empty() {
-                            write!(f, "import \"{}\";", path)
-                        } else {
-                            write!(f, "import {{ {} }} from \"{}\";", import_symbols(&import.symbols), path)
-                        }
-                    }
-                    ImportKind::Registry(name) => {
-                        if import.symbols.is_empty() {
-                            write!(f, "import <{}>;", name)
-                        } else {
-                            write!(f, "import {{ {} }} from <{}>;", import_symbols(&import.symbols), name)
-                        }
+            TopLevel::Import(import) => match &import.kind {
+                ImportKind::Literal(path) => {
+                    if import.symbols.is_empty() {
+                        write!(f, "import \"{}\";", path)
+                    } else {
+                        write!(
+                            f,
+                            "import {{ {} }} from \"{}\";",
+                            import_symbols(&import.symbols),
+                            path
+                        )
                     }
                 }
-            }
+                ImportKind::Registry(name) => {
+                    if import.symbols.is_empty() {
+                        write!(f, "import <{}>;", name)
+                    } else {
+                        write!(
+                            f,
+                            "import {{ {} }} from <{}>;",
+                            import_symbols(&import.symbols),
+                            name
+                        )
+                    }
+                }
+            },
             TopLevel::Export(export) => {
                 write!(f, "export {}", export.inner)
             }
@@ -682,7 +726,6 @@ impl fmt::Display for Contract {
     }
 }
 
-
 impl fmt::Display for Pattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -720,7 +763,9 @@ impl fmt::Display for Pattern {
             Pattern::RangeInclusive(start, end) => write!(f, "{}..={}", start, end),
             Pattern::Multi(ps) => {
                 for (i, p) in ps.iter().enumerate() {
-                    if i > 0 { write!(f, " | ")?; }
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
                     write!(f, "{}", p)?;
                 }
                 Ok(())
@@ -771,25 +816,67 @@ mod tests {
         assert_eq!(format!("{}", Type::Void), "void");
         assert_eq!(format!("{}", Type::Custom("Int".into())), "Int");
         assert_eq!(
-            format!("{}", Type::Generic("List".into(), vec![Type::Custom("Int".into())])),
+            format!(
+                "{}",
+                Type::Generic("List".into(), vec![Type::Custom("Int".into())])
+            ),
             "List<Int>"
         );
         assert_eq!(
-            format!("{}", Type::Applied("Result".into(), vec![Type::Custom("Int".into()), Type::Custom("Error".into())])),
+            format!(
+                "{}",
+                Type::Applied(
+                    "Result".into(),
+                    vec![Type::Custom("Int".into()), Type::Custom("Error".into())]
+                )
+            ),
             "Result<Int, Error>"
         );
-        assert_eq!(format!("{}", Type::Union(vec![Type::Custom("A".into()), Type::Custom("B".into())])), "A | B");
-        assert_eq!(format!("{}", Type::Tuple(vec![Type::Custom("Int".into()), Type::Custom("Bool".into())])), "(Int, Bool)");
-        assert_eq!(format!("{}", Type::TypeVar("T".into())), "T");
-        assert_eq!(format!("{}", Type::Ptr(Box::new(Type::Custom("Int".into())))), "Ptr<Int>");
-        assert_eq!(format!("{}", Type::PtrConst(Box::new(Type::Custom("Int".into())))), "Ptr<const Int>");
         assert_eq!(
-            format!("{}", Type::Function(vec![Type::Custom("Int".into())], Box::new(Type::Custom("Bool".into())))),
+            format!(
+                "{}",
+                Type::Union(vec![Type::Custom("A".into()), Type::Custom("B".into())])
+            ),
+            "A | B"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                Type::Tuple(vec![
+                    Type::Custom("Int".into()),
+                    Type::Custom("Bool".into())
+                ])
+            ),
+            "(Int, Bool)"
+        );
+        assert_eq!(format!("{}", Type::TypeVar("T".into())), "T");
+        assert_eq!(
+            format!("{}", Type::Ptr(Box::new(Type::Custom("Int".into())))),
+            "Ptr<Int>"
+        );
+        assert_eq!(
+            format!("{}", Type::PtrConst(Box::new(Type::Custom("Int".into())))),
+            "Ptr<const Int>"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                Type::Function(
+                    vec![Type::Custom("Int".into())],
+                    Box::new(Type::Custom("Bool".into()))
+                )
+            ),
             "(Int) -> Bool"
         );
         assert_eq!(format!("{}", Type::Width(64)), "64");
         assert_eq!(
-            format!("{}", Type::Vector(Box::new(Type::Custom("Float".into())), vec![Dimension::Anonymous(4)])),
+            format!(
+                "{}",
+                Type::Vector(
+                    Box::new(Type::Custom("Float".into())),
+                    vec![Dimension::Anonymous(4)]
+                )
+            ),
             "Float[4]"
         );
     }

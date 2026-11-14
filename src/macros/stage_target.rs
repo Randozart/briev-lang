@@ -32,7 +32,8 @@ pub fn insert_plugin_from_file(
         .map_err(|e| format!("Stage$.Insert$: tokenize error in '{}': {}", path, e))?;
 
     let mut parser = crate::parser::Parser::new(tokens, &source);
-    let items = parser.parse_program()
+    let items = parser
+        .parse_program()
         .map_err(|e| format!("Stage$.Insert$: parse error in '{}': {}", path, e))?;
 
     let file_stem = std::path::Path::new(path)
@@ -62,7 +63,10 @@ pub fn insert_plugin_from_file(
         }
     }
     if count == 0 {
-        eprintln!("warning: Stage$.Insert$: no valid $(Stage) blocks found in '{}'", path);
+        eprintln!(
+            "warning: Stage$.Insert$: no valid $(Stage) blocks found in '{}'",
+            path
+        );
     }
     Ok(())
 }

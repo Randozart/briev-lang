@@ -35,14 +35,13 @@
 //! emitter arm with tests.
 
 use crate::ast::{Expr, Statement, TopLevel, Type};
+use crate::backend::gpu_lowering::{GemmNodeCtx, GeneralNodeCtx, GpuLowering};
 use crate::backend::spirv::gemm::GemmPlan;
-use crate::backend::gpu_lowering::{GeneralNodeCtx, GemmNodeCtx, GpuLowering};
 use crate::backend::spirv::runner::RunnerKernel;
 use crate::type_universe::TypeUniverse;
 
 pub mod pipeline;
 pub mod tensor;
-
 
 /// 2026-09-14 (gpu_schedule S5-lite): the general elementwise PTX kernel
 /// emitter — non-GEMM eligible nodes (the row-ops between GEMMs in an
@@ -58,13 +57,23 @@ const ENTRY: &str = "main";
 /// — the runner's `dispatch_geometry_stmt` flat form. `a_off`/`b_off`/`y_off`
 /// are the DEVICE projection offsets (from `ssbo_layout`); `elem_bytes` is
 /// the array element size (4 = f32 — the only S2a operand).
-fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
-                  a_off: u64, b_off: u64, y_off: u64,
-                  epilogue_scale: Option<f64>) -> String {
+fn naive_gemm_ptx(
+    m: i64,
+    n: i64,
+    k: i64,
+    elem_bytes: u32,
+    a_off: u64,
+    b_off: u64,
+    y_off: u64,
+    epilogue_scale: Option<f64>,
+) -> String {
     let items = m * n;
     let mut out = String::new();
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
-    out.push_str(&format!(".visible .entry {} (.param .b64 proj_param)\n{{\n", ENTRY));
+    out.push_str(&format!(
+        ".visible .entry {} (.param .b64 proj_param)\n{{\n",
+        ENTRY
+    ));
     out.push_str("    .reg .u64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6;\n");
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7;\n");
     out.push_str("    .reg .f32  %f1, %f2, %f3, %f4;\n");
@@ -73,13 +82,13 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
     out.push_str("    mov.u32 %r1, %ctaid.x;\n");
     out.push_str("    mov.u32 %r2, %tid.x;\n");
     out.push_str("    mul.lo.u32 %r3, %r1, 64;\n");
-    out.push_str("    add.u32 %r3, %r3, %r2;\n");           // i
+    out.push_str("    add.u32 %r3, %r3, %r2;\n"); // i
     out.push_str(&format!("    setp.ge.u32 %p1, %r3, {};\n", items));
     out.push_str("    @%p1 ret;\n");
     out.push_str(&format!("    div.u32 %r4, %r3, {};\n", n)); // m
     out.push_str(&format!("    rem.u32 %r5, %r3, {};\n", n)); // n
-    out.push_str("    mov.f32 %f1, 0f00000000;\n");            // acc = 0
-    out.push_str("    mov.u32 %r6, 0;\n");                     // k
+    out.push_str("    mov.f32 %f1, 0f00000000;\n"); // acc = 0
+    out.push_str("    mov.u32 %r6, 0;\n"); // k
     out.push_str(&format!("    add.u64 %rd2, %rd1, {};\n", a_off));
     out.push_str(&format!("    add.u64 %rd3, %rd1, {};\n", b_off));
     out.push_str(&format!("    add.u64 %rd4, %rd1, {};\n", y_off));
@@ -137,11 +146,7 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
 /// (+2.9 TF at 4096^3, 4/4 rounds). f32 keeps the 32x64 warp its serial
 /// schedule was tuned at (mh4 A/B pending).
 pub(crate) fn ptx_warp_mh(f16_acc: bool) -> usize {
-    if f16_acc {
-        4
-    } else {
-        2
-    }
+    if f16_acc { 4 } else { 2 }
 }
 
 /// E4c (2026-09-13) growth-order policy: at mhr>=4 the A-sharing warp
@@ -300,9 +305,9 @@ pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
         // ptxas — 12.8 validated alongside 13.3).
         if let Ok(entries) = std::fs::read_dir(format!("{home}/.local/lib")) {
             for e in entries.flatten() {
-                let c = e.path().join(
-                    "site-packages/triton/backends/nvidia/bin/ptxas",
-                );
+                let c = e
+                    .path()
+                    .join("site-packages/triton/backends/nvidia/bin/ptxas");
                 if c.exists() {
                     candidates.push(c);
                 }
@@ -370,9 +375,7 @@ fn field_type_map(program: &[TopLevel]) -> std::collections::HashMap<String, Typ
         .filter_map(|tl| {
             if let TopLevel::Statement(stmt) = tl {
                 if let Statement::Let {
-                    name,
-                    ty: Some(ty),
-                    ..
+                    name, ty: Some(ty), ..
                 } = stmt.as_ref()
                 {
                     return Some((name.clone(), ty.clone()));
@@ -390,7 +393,10 @@ fn fold_side(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Resu
             Some(Expr::Decimal(n)) => Ok(*n),
             _ => Err(format!("ptx general: count operand '{}' not a constant", s)),
         },
-        other => Err(format!("ptx general: count operand {:?} not foldable", other)),
+        other => Err(format!(
+            "ptx general: count operand {:?} not foldable",
+            other
+        )),
     }
 }
 
@@ -474,7 +480,8 @@ fn deferred_split_for(
     // up unapplied is returned as a bare why-string — the call site names
     // the node, and `irr` silences site-locally.
     let declared = factors.declared.filter(|n| *n > 1);
-    if declared.is_none() && !(deferred && crate::config_tuning::ir_lowering().ptx_deferred_split == 1)
+    if declared.is_none()
+        && !(deferred && crate::config_tuning::ir_lowering().ptx_deferred_split == 1)
     {
         return (1, None, None);
     }
@@ -489,10 +496,8 @@ fn deferred_split_for(
         });
         return (1, None, w);
     };
-    let (Some(kv), Some(dim)) = (
-        expr_const_i64(&kve, consts),
-        expr_const_i64(&dime, consts),
-    ) else {
+    let (Some(kv), Some(dim)) = (expr_const_i64(&kve, consts), expr_const_i64(&dime, consts))
+    else {
         let w = declared.map(|n| {
             format!(
                 "split<{}> not applied — the reduction bounds are not compile-time constants. Fix: constant bounds, or `irr`.",
@@ -511,9 +516,7 @@ fn deferred_split_for(
         Some(p) => p,
         None => match declared {
             Some(n) => n as u64,
-            None => {
-                crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64)
-            }
+            None => crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64),
         },
     };
     if crate::analysis::kernel_plan::split_eligible(kv, dim, s) {
@@ -591,10 +594,7 @@ struct CombinePush<'a> {
 
 /// 2026-09-30 (general reduction-split): emit + push the `<node>__combine`
 /// companion RunnerKernel (dispatched after the partial by the runner).
-fn push_deferred_combine(
-    out: &mut Vec<RunnerKernel>,
-    cp: CombinePush<'_>,
-) -> Result<(), String> {
+fn push_deferred_combine(out: &mut Vec<RunnerKernel>, cp: CombinePush<'_>) -> Result<(), String> {
     let (dim, acc_buf, out_buf) = cp.info;
     let combine = general::emit_deferred_combine_ptx(
         cp.layout,
@@ -786,9 +786,7 @@ fn general_node_geometry(deferred: bool, warp_sliced: bool) -> (u32, u32) {
     let block_threads = if deferred {
         1024
     } else if warp_sliced {
-        general::warp_slice_block_threads(
-            crate::config_tuning::ir_lowering().ptx_warp_slice_warps,
-        )
+        general::warp_slice_block_threads(crate::config_tuning::ir_lowering().ptx_warp_slice_warps)
     } else {
         64
     };
@@ -848,7 +846,9 @@ fn general_kernel(ctx: &GeneralNodeCtx<'_>, p: GeneralKernelParts) -> RunnerKern
         ptx: Vec::new(),
         block_per_workitem: p.block_per_workitem,
         geometry: if p.def_split > 1 {
-            crate::backend::spirv::runner::DispatchGeometry::Split { factor: p.def_split }
+            crate::backend::spirv::runner::DispatchGeometry::Split {
+                factor: p.def_split,
+            }
         } else {
             crate::backend::spirv::runner::DispatchGeometry::Plain
         },
@@ -891,7 +891,14 @@ pub(crate) fn emit_general_node(
 ) -> Result<(Vec<RunnerKernel>, Vec<String>), String> {
     let int_bits = ctx.int_bits;
     let irr_free = ctx.irr_free;
-    let GeneralNodeCtx { name, shape, program, layout, universe, .. } = ctx;
+    let GeneralNodeCtx {
+        name,
+        shape,
+        program,
+        layout,
+        universe,
+        ..
+    } = ctx;
     crate::backend::gpu_lowering::admission_gates(name, plan)?;
     let mut out = Vec::new();
     let mut size_warnings = Vec::new();
@@ -907,8 +914,16 @@ pub(crate) fn emit_general_node(
              {} x {} -> {}) but the tensor path follows the declaration - \
              call matmul!({}, {}, {}, M, N, K, {}, <elem type>) from \
              std/numeric.bv to specialize",
-            g.m, g.n, g.k, g.a_field, g.b_field, g.y_field,
-            g.a_field, g.b_field, g.y_field, shape.index_var,
+            g.m,
+            g.n,
+            g.k,
+            g.a_field,
+            g.b_field,
+            g.y_field,
+            g.a_field,
+            g.b_field,
+            g.y_field,
+            shape.index_var,
         ));
     }
     // 2026-10-03 (M3, plan `2026-10-03-m3-row-form-lowering.md`): the
@@ -923,7 +938,10 @@ pub(crate) fn emit_general_node(
     let shape_owned;
     let shape = if cooperative {
         let consts = module_expr_consts(program);
-        let red = shape.reduction.as_ref().expect("cooperative shape carries its reduction");
+        let red = shape
+            .reduction
+            .as_ref()
+            .expect("cooperative shape carries its reduction");
         let inner = match &red.inner {
             Expr::Identifier(n) => match consts.get(n) {
                 Some(Expr::Decimal(v)) => *v as u64,
@@ -931,14 +949,14 @@ pub(crate) fn emit_general_node(
                     return Err(format!(
                         "row-form lowering: reduction length '{}' is not a literal const",
                         n
-                    ))
+                    ));
                 }
             },
             Expr::Decimal(v) => *v as u64,
             other => {
                 return Err(format!(
                     "row-form lowering: reduction length {other:?} must be a literal const"
-                ))
+                ));
             }
         };
         use crate::analysis::accel::ReductionKind;
@@ -946,9 +964,7 @@ pub(crate) fn emit_general_node(
         // `ctaid.y` (the global id is the ROW there, not the linearized
         // lane), so both syntheses are PTX-local.
         shape_owned = match red.kind {
-            ReductionKind::Softmax => {
-                general::synthesize_row_softmax(shape, red, inner)
-            }
+            ReductionKind::Softmax => general::synthesize_row_softmax(shape, red, inner),
             ReductionKind::Dot => general::synthesize_row_dot(shape, red, inner),
             // 2026-11-06 (§12 W3): the Sum idiom lane is SPIR-V-owned (the
             // flat-1D `row = gid>>5` synthesis needs no PTX row form), and
@@ -1031,7 +1047,7 @@ pub(crate) fn emit_general_node(
             int_bits,
             deferred_split: def_split as u64,
             unroll_override: declared_unroll_override(program, name),
-            online_override: None,          // overrides = test seam only
+            online_override: None, // overrides = test seam only
             deferred_region_override: None,
             row_form: cooperative,
             row_index_var: shape.index_var.clone(),
@@ -1086,7 +1102,15 @@ pub(crate) fn emit_gemm_node(
     kplan: Option<&crate::analysis::kernel_plan::KernelPlan>,
 ) -> Result<(RunnerKernel, Vec<String>), String> {
     let irr_free = ctx.irr_free;
-    let GemmNodeCtx { name, shape, program, layout, universe, schedule, .. } = ctx;
+    let GemmNodeCtx {
+        name,
+        shape,
+        program,
+        layout,
+        universe,
+        schedule,
+        ..
+    } = ctx;
     crate::backend::gpu_lowering::admission_gates(name, kplan)?;
     let plan = gemm;
     let mut size_warnings = Vec::new();
@@ -1138,10 +1162,7 @@ pub(crate) fn emit_gemm_node(
         .find(|f| f.name == plan.y_field)
         .map(|f| f.elem_bytes)
         .unwrap_or(4);
-    let tensor = a_elem == 2
-        && plan.m % 32 == 0
-        && plan.n % 16 == 0
-        && plan.k % 16 == 0;
+    let tensor = a_elem == 2 && plan.m % 32 == 0 && plan.n % 16 == 0 && plan.k % 16 == 0;
 
     let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
     let (stages, stages_cfg, stage_warn) = gemm_stage_plan(program, name, f16_acc);
@@ -1172,7 +1193,13 @@ pub(crate) fn emit_gemm_node(
     let kernel = gemm_runner_kernel(
         name,
         shape,
-        GemmKernelOut { blob, count_expr, ptx_tensor, block_threads, shared_bytes },
+        GemmKernelOut {
+            blob,
+            count_expr,
+            ptx_tensor,
+            block_threads,
+            shared_bytes,
+        },
     );
     Ok((kernel, size_warnings))
 }
@@ -1238,8 +1265,7 @@ fn gemm_stage_plan(
     // so `resolve_eff_stages` lets it win over the strategy model
     // exactly as an explicit `ptx_tensor_stages` does.
     let stage_source = node_stage_modifier(program, name).map(|n| n as u32);
-    let stages_cfg = stage_source
-        .unwrap_or(crate::config_tuning::ir_lowering().ptx_tensor_stages);
+    let stages_cfg = stage_source.unwrap_or(crate::config_tuning::ir_lowering().ptx_tensor_stages);
     let stages = match stages_cfg {
         0 => {
             if f16_acc {
@@ -1370,19 +1396,16 @@ fn gemm_select_grid(
             None => match strategy.and_then(|s| {
                 strategy_to_mwnw(&s, warp_mh, tin.plan.m, tin.plan.n, strategy_thread_cap)
             }) {
-                Some((mw, nw, st)) => {
-                    (mw, nw, resolve_eff_stages(tin.stages_cfg, st, tin.stages))
-                }
+                Some((mw, nw, st)) => (mw, nw, resolve_eff_stages(tin.stages_cfg, st, tin.stages)),
                 None => {
-                    let (mw, nw) =
-                        select_mw_nw(tin.plan.m, tin.plan.n, thread_cap, warp_mh);
+                    let (mw, nw) = select_mw_nw(tin.plan.m, tin.plan.n, thread_cap, warp_mh);
                     (mw, nw, tin.stages)
                 }
             },
         }
     };
-    let mw_ok = tin.plan.m % ((16 * warp_mh * mw) as i64) == 0
-        && tin.plan.n % ((8 * gr * nw) as i64) == 0;
+    let mw_ok =
+        tin.plan.m % ((16 * warp_mh * mw) as i64) == 0 && tin.plan.n % ((8 * gr * nw) as i64) == 0;
     // 2026-09-30 (D28/D29): both declared-tile warnings — the atom
     // check and the grid-divisibility fallback — collected here.
     let warnings = tile_size_warnings(
@@ -1416,8 +1439,14 @@ fn gemm_codegen(
             ));
         }
         let ptx = naive_gemm_ptx(
-            tin.plan.m, tin.plan.n, tin.plan.k, tin.a_elem,
-            tin.a_off, tin.b_off, tin.y_off, tin.epilogue_scale,
+            tin.plan.m,
+            tin.plan.n,
+            tin.plan.k,
+            tin.a_elem,
+            tin.a_off,
+            tin.b_off,
+            tin.y_off,
+            tin.epilogue_scale,
         );
         return Ok((ptx, false, 64, 0));
     }
@@ -1430,12 +1459,33 @@ fn gemm_codegen(
         // fused scale applies (the f16 packed-f16x2 mul path).
         let ptx = match tin.epilogue_scale {
             Some(s) => tensor::tensor_gemm_ptx_smem_mw_epilogue(
-                tin.plan.m, tin.plan.n, tin.plan.k, tin.a_off, tin.b_off,
-                tin.y_off, tin.y_elem, mw, nw, tin.f16_acc, eff_stages, warp_mh, s,
+                tin.plan.m,
+                tin.plan.n,
+                tin.plan.k,
+                tin.a_off,
+                tin.b_off,
+                tin.y_off,
+                tin.y_elem,
+                mw,
+                nw,
+                tin.f16_acc,
+                eff_stages,
+                warp_mh,
+                s,
             ),
             None => tensor::tensor_gemm_ptx_smem_mw(
-                tin.plan.m, tin.plan.n, tin.plan.k, tin.a_off, tin.b_off,
-                tin.y_off, tin.y_elem, mw, nw, tin.f16_acc, eff_stages, warp_mh,
+                tin.plan.m,
+                tin.plan.n,
+                tin.plan.k,
+                tin.a_off,
+                tin.b_off,
+                tin.y_off,
+                tin.y_elem,
+                mw,
+                nw,
+                tin.f16_acc,
+                eff_stages,
+                warp_mh,
             ),
         };
         return Ok((
@@ -1538,7 +1588,11 @@ pub fn build_ptx_kernels(
     // writes s2@131120 while the runner reads s2@98352 (its aliased slot).
     let reuse = crate::backend::spirv::runner::gated_reuse_map(Some(schedule));
     let layout = crate::backend::spirv::runner::ssbo_layout(
-        program, universe, int_bits, &std::collections::HashMap::new(), reuse.as_ref(),
+        program,
+        universe,
+        int_bits,
+        &std::collections::HashMap::new(),
+        reuse.as_ref(),
     )?;
 
     let mut out = Vec::new();
@@ -1653,9 +1707,10 @@ pub fn build_ptx_kernels(
                 &kp,
                 &crate::analysis::kernel_plan::TargetProfile::ptx_sm86(),
             )?;
-            let k = node.kernels.into_iter().next().ok_or_else(|| {
-                format!("node '{}': the tensor lowering emitted no kernel", name)
-            })?;
+            let k =
+                node.kernels.into_iter().next().ok_or_else(|| {
+                    format!("node '{}': the tensor lowering emitted no kernel", name)
+                })?;
             (k, node.warnings)
         } else {
             emit_gemm_node(&gctx, gemm_plan, None)?
@@ -1687,7 +1742,10 @@ mod tests {
         );
         match node_shape_annotation(&program, "gemm", "fragment") {
             Some(Expr::Tuple(v)) => {
-                assert!(matches!(&v[..], [Expr::Decimal(16), Expr::Decimal(8), Expr::Decimal(16)]));
+                assert!(matches!(
+                    &v[..],
+                    [Expr::Decimal(16), Expr::Decimal(8), Expr::Decimal(16)]
+                ));
             }
             other => panic!("fragment payload: {other:?}"),
         }
@@ -1700,7 +1758,10 @@ mod tests {
         let program_bad = pb.parse_program().expect("parse");
         let note = validate_swizzle_fragment_recipes(&program_bad, "gemm")
             .expect("a foreign swizzle notes");
-        assert!(note.contains("XOR-8") && note.contains("swizzle<8>"), "{note}");
+        assert!(
+            note.contains("XOR-8") && note.contains("swizzle<8>"),
+            "{note}"
+        );
         let src_frag = "fragment<32,8,16> node gemm [i < 1][i == 1] { i = i + 1; term; };";
         let tokens_frag = crate::lexer::tokenize(src_frag).expect("tokenize");
         let mut pf = crate::parser::Parser::new(tokens_frag, src_frag);
@@ -1751,13 +1812,19 @@ mod tests {
 
         // f32 quanta: rows 16, cols 16. tile<100,100> misses both.
         let w = tile_atom_warning("g", 100, 100, 16, 16).expect("misaligned tile warns");
-        assert!(w.contains("tile<100,100>") && w.contains("multiple of 16"), "{w}");
+        assert!(
+            w.contains("tile<100,100>") && w.contains("multiple of 16"),
+            "{w}"
+        );
         // Aligned tiles are silent.
         assert!(tile_atom_warning("g", 128, 128, 16, 16).is_none());
 
         // Shape fallback warning names the actual shape.
         let w2 = tile_shape_warning("g", (128, 128), (192, 256), (16, 16));
-        assert!(w2.contains("(192x256)") && w2.contains("single-warp"), "{w2}");
+        assert!(
+            w2.contains("(192x256)") && w2.contains("single-warp"),
+            "{w2}"
+        );
 
         // stage<1> defeats the pipeline; stage<2> does not.
         let w3 = stage_pipeline_warning("g", 1).expect("stage<1> warns");
@@ -1774,9 +1841,21 @@ mod tests {
         assert_eq!(select_mw_nw(4096, 4096, 256, 2), (4, 2), "f32 256-cap");
         // E4c (2026-09-13): mhr>=4 walks nw-first — (2,4)@256T beats both
         // (4,4)@512T (+2.3% at 4096^3) and (4,2)@256T (+14%) on-device.
-        assert_eq!(select_mw_nw(4096, 4096, 256, 4), (2, 4), "f16acc E4c 4096^3");
-        assert_eq!(select_mw_nw(2048, 2048, 256, 4), (2, 4), "f16acc E4c 2048^3");
-        assert_eq!(select_mw_nw(8192, 8192, 256, 4), (2, 4), "f16acc E4c 8192^3");
+        assert_eq!(
+            select_mw_nw(4096, 4096, 256, 4),
+            (2, 4),
+            "f16acc E4c 4096^3"
+        );
+        assert_eq!(
+            select_mw_nw(2048, 2048, 256, 4),
+            (2, 4),
+            "f16acc E4c 2048^3"
+        );
+        assert_eq!(
+            select_mw_nw(8192, 8192, 256, 4),
+            (2, 4),
+            "f16acc E4c 8192^3"
+        );
         // 96 rows cannot tile a 64-row warp block (mhr=4): every growth
         // candidate fails the M%(16*mhr*mw) guard, so the selector returns
         // (1,1) and the dispatch falls back to the single-warp kernel.
@@ -1792,15 +1871,26 @@ mod tests {
         // at 4096³ before this). Auto (0) defers to the model.
         assert_eq!(resolve_eff_stages(0, 3, 3), 3, "auto defers to strategy");
         assert_eq!(resolve_eff_stages(0, 2, 3), 2, "auto defers to strategy=2");
-        assert_eq!(resolve_eff_stages(2, 3, 2), 2, "explicit 2 wins over model 3");
-        assert_eq!(resolve_eff_stages(3, 2, 3), 3, "explicit 3 wins over model 2");
+        assert_eq!(
+            resolve_eff_stages(2, 3, 2),
+            2,
+            "explicit 2 wins over model 3"
+        );
+        assert_eq!(
+            resolve_eff_stages(3, 2, 3),
+            3,
+            "explicit 3 wins over model 2"
+        );
     }
 
     #[test]
     fn naive_gemm_ptx_has_flat_grid_and_guards() {
         let ptx = naive_gemm_ptx(64, 64, 16, 4, 0, 65536, 131072, None);
         assert!(ptx.contains(".entry main"), "entry: {ptx}");
-        assert!(ptx.contains("setp.ge.u32 %p1, %r3, 4096;"), "items guard: {ptx}");
+        assert!(
+            ptx.contains("setp.ge.u32 %p1, %r3, 4096;"),
+            "items guard: {ptx}"
+        );
         assert!(ptx.contains("div.u32 %r4, %r3, 64;"), "m = i/N: {ptx}");
         assert!(ptx.contains("rem.u32 %r5, %r3, 64;"), "n = i%N: {ptx}");
         assert!(ptx.contains("add.u64 %rd2, %rd1, 0;"), "a base: {ptx}");
@@ -1884,15 +1974,23 @@ let a_out: Float[1024];
             .expect("normalize");
         // 2026-11-08 (attr plan): policy is the compiler mode, not metadata.
         let accel = crate::analysis::accel::analyze(
-            &items, Some(&universe),
+            &items,
+            Some(&universe),
             Some(crate::analysis::accel::AccelMode::TryAll),
         );
         assert!(
-            accel.get("sfused").map(|e| e.shape.eligible).unwrap_or(false),
+            accel
+                .get("sfused")
+                .map(|e| e.shape.eligible)
+                .unwrap_or(false),
             "sfused is an eligible kernel"
         );
-        let schedule =
-            crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
+        let schedule = crate::analysis::gpu_schedule::build_schedule(
+            &items,
+            &accel,
+            &Default::default(),
+            false,
+        );
         (items, universe, accel, schedule)
     }
 
@@ -1912,7 +2010,10 @@ let a_out: Float[1024];
     #[test]
     fn naive_gemm_ptx_small_shape() {
         let ptx = naive_gemm_ptx(8, 16, 4, 4, 0, 1024, 2048, None);
-        assert!(ptx.contains("setp.ge.u32 %p1, %r3, 128;"), "8*16 items: {ptx}");
+        assert!(
+            ptx.contains("setp.ge.u32 %p1, %r3, 128;"),
+            "8*16 items: {ptx}"
+        );
         assert!(ptx.contains("div.u32 %r4, %r3, 16;"), "N: {ptx}");
         assert!(ptx.contains("setp.ge.u32 %p2, %r6, 4;"), "K: {ptx}");
     }
@@ -1930,26 +2031,20 @@ let a_out: Float[1024];
             .find(|w| w.contains("not applied"))
             .unwrap_or_else(|| panic!("refusal warned: {warns:?}"));
         assert!(
-            refusal.contains("workspace needs 8320 floats")
-                && refusal.contains("'acc' has 1024"),
+            refusal.contains("workspace needs 8320 floats") && refusal.contains("'acc' has 1024"),
             "refusal names the shortfall: {refusal}"
         );
         // 2026-10-01 (item 4): the plan arm refuses identically — the
         // workspace gate is a lowering materialization fact on BOTH
         // arms, never invented by the plan.
-        let _f = crate::config_tuning::SettingsGuard::install_with(|s| {
-            s.ptx_plan_lowering = 1
-        });
+        let _f = crate::config_tuning::SettingsGuard::install_with(|s| s.ptx_plan_lowering = 1);
         let (kernels2, warns2) = build_sfused("1024");
         assert!(
             !kernels2.iter().any(|k| k.name.ends_with("__partial")),
             "plan arm refuses too: {:?}",
             kernels2.iter().map(|k| &k.name).collect::<Vec<_>>()
         );
-        assert_eq!(
-            warns, warns2,
-            "flag 0 / flag 1 refusal warnings identical"
-        );
+        assert_eq!(warns, warns2, "flag 0 / flag 1 refusal warnings identical");
     }
 
     /// 2026-10-01 (split device-validation): Float[16384] >= 8320 — the
@@ -1995,7 +2090,10 @@ let a_out: Float[1024];
             }
         }
         assert!(checked >= 2, "partial + combine blobs checked: {checked}");
-        let partial = &kernels.iter().find(|k| k.name == "sfused__partial").unwrap();
+        let partial = &kernels
+            .iter()
+            .find(|k| k.name == "sfused__partial")
+            .unwrap();
         assert_eq!(
             partial.geometry,
             crate::backend::spirv::runner::DispatchGeometry::Split { factor: 8 },
@@ -2047,9 +2145,7 @@ let a_out: Float[1024];
     #[test]
     fn plan_lowering_parity_with_legacy() {
         let legacy = build_sfused("16384");
-        let _g = crate::config_tuning::SettingsGuard::install_with(|s| {
-            s.ptx_plan_lowering = 1
-        });
+        let _g = crate::config_tuning::SettingsGuard::install_with(|s| s.ptx_plan_lowering = 1);
         let planned = build_sfused("16384");
         assert_parity(legacy, planned);
     }
@@ -2071,9 +2167,7 @@ let a_out: Float[1024];
             "model path engages the split: {:?}",
             legacy.0.iter().map(|k| &k.name).collect::<Vec<_>>()
         );
-        let _f = crate::config_tuning::SettingsGuard::install_with(|s| {
-            s.ptx_plan_lowering = 1
-        });
+        let _f = crate::config_tuning::SettingsGuard::install_with(|s| s.ptx_plan_lowering = 1);
         let planned = build_sfused_decl("16384", "");
         assert_parity(legacy, planned);
     }
@@ -2090,9 +2184,7 @@ let a_out: Float[1024];
             "ineligible declaration must not split: {:?}",
             legacy.0.iter().map(|k| &k.name).collect::<Vec<_>>()
         );
-        let _f = crate::config_tuning::SettingsGuard::install_with(|s| {
-            s.ptx_plan_lowering = 1
-        });
+        let _f = crate::config_tuning::SettingsGuard::install_with(|s| s.ptx_plan_lowering = 1);
         let planned = build_sfused_decl("16384", "split<7> ");
         assert_parity(legacy, planned);
     }
@@ -2141,9 +2233,7 @@ let a_out: Float[1024];
             "gemm fixture emits its node: {:?}",
             legacy.0.iter().map(|k| &k.name).collect::<Vec<_>>()
         );
-        let _g = crate::config_tuning::SettingsGuard::install_with(|s| {
-            s.ptx_plan_lowering = 1
-        });
+        let _g = crate::config_tuning::SettingsGuard::install_with(|s| s.ptx_plan_lowering = 1);
         let planned =
             build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("plan gemm lane");
         assert_parity(legacy, planned);
@@ -2194,7 +2284,8 @@ async node g [i < M * N][i == M * N] {
             .expect("normalize");
         // 2026-11-08 (attr plan): policy is the compiler mode, not metadata.
         let accel = crate::analysis::accel::analyze(
-            &items, Some(&universe),
+            &items,
+            Some(&universe),
             Some(crate::analysis::accel::AccelMode::TryAll),
         );
         assert!(
@@ -2206,8 +2297,12 @@ async node g [i < M * N][i == M * N] {
             crate::backend::spirv::gemm::GemmPlan::match_stmts(&accel["g"].shape, &items).is_some(),
             "g matches the GEMM structure"
         );
-        let schedule =
-            crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
+        let schedule = crate::analysis::gpu_schedule::build_schedule(
+            &items,
+            &accel,
+            &Default::default(),
+            false,
+        );
         (items, universe, accel, schedule)
     }
 
@@ -2243,7 +2338,8 @@ unroll<2> async node u [i < M][i == M] {
             .expect("normalize");
         // 2026-11-08 (attr plan): policy is the compiler mode, not metadata.
         let accel = crate::analysis::accel::analyze(
-            &items, Some(&universe),
+            &items,
+            Some(&universe),
             Some(crate::analysis::accel::AccelMode::TryAll),
         );
         assert!(
@@ -2251,8 +2347,12 @@ unroll<2> async node u [i < M][i == M] {
             "u is an eligible kernel: {:?}",
             accel.get("u").map(|e| &e.shape.reasons)
         );
-        let schedule =
-            crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
+        let schedule = crate::analysis::gpu_schedule::build_schedule(
+            &items,
+            &accel,
+            &Default::default(),
+            false,
+        );
         let (kernels, warnings) =
             build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("ptx lane");
         assert!(
@@ -2318,7 +2418,10 @@ unroll<2> async node u [i < M][i == M] {
         let Err(e) = emit_general_node(&ctx, Some(&unproved)) else {
             panic!("a plan without the disjoint-work-item proof must refuse emission");
         };
-        assert!(e.contains("disjoint-work-item") && e.contains("Fix:"), "{e}");
+        assert!(
+            e.contains("disjoint-work-item") && e.contains("Fix:"),
+            "{e}"
+        );
     }
 
     /// 2026-10-01 (BUGS.md): every concurrent `compile_cubin` call gets
@@ -2329,7 +2432,10 @@ unroll<2> async node u [i < M][i == M] {
     fn compile_cubin_workdirs_are_unique_per_call() {
         let mut seen = std::collections::HashSet::new();
         for seq in 0..128u64 {
-            assert!(seen.insert(cubin_workdir(42, seq)), "seq {seq} reused a workdir");
+            assert!(
+                seen.insert(cubin_workdir(42, seq)),
+                "seq {seq} reused a workdir"
+            );
         }
         assert_ne!(cubin_workdir(42, 0), cubin_workdir(43, 0), "pid separates");
     }

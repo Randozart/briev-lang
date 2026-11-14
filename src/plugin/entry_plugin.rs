@@ -74,11 +74,21 @@ fn collect_existing(program: &[TopLevel]) -> HashSet<String> {
     let mut names = HashSet::new();
     for item in program {
         match item {
-            TopLevel::StateDecl(s) => { names.insert(s.name.clone()); }
-            TopLevel::Definition(d) => { names.insert(d.name.clone()); }
-            TopLevel::Transaction(t) => { names.insert(t.name.clone()); }
-            TopLevel::Constant(c) => { names.insert(c.name.clone()); }
-            TopLevel::Init(i) => { names.insert(i.name.clone()); }
+            TopLevel::StateDecl(s) => {
+                names.insert(s.name.clone());
+            }
+            TopLevel::Definition(d) => {
+                names.insert(d.name.clone());
+            }
+            TopLevel::Transaction(t) => {
+                names.insert(t.name.clone());
+            }
+            TopLevel::Constant(c) => {
+                names.insert(c.name.clone());
+            }
+            TopLevel::Init(i) => {
+                names.insert(i.name.clone());
+            }
             TopLevel::Statement(stmt) => {
                 if let Statement::Let { name, .. } = stmt.as_ref() {
                     names.insert(name.clone());
@@ -113,7 +123,10 @@ fn resolve_entries(program: &mut Vec<TopLevel>) -> Result<(), String> {
     // header: string.bv via cli.bv collided count_char_loop/len/to_string/
     // ends_with across the stdlib), so the anchor drags in nothing else.
     if !has_cli_import(program) {
-        program.insert(0, TopLevel::Import(crate::ast::Import::literal("std/cli.bv", vec![])));
+        program.insert(
+            0,
+            TopLevel::Import(crate::ast::Import::literal("std/cli.bv", vec![])),
+        );
     }
 
     // First pass: collect entry!/args! intercepts per node so we can
@@ -135,11 +148,7 @@ fn resolve_entries(program: &mut Vec<TopLevel>) -> Result<(), String> {
                 field
             ));
         }
-        extra_state.push(top_level_let(
-            field,
-            Type::bool_(),
-            Expr::Bool(false),
-        ));
+        extra_state.push(top_level_let(field, Type::bool_(), Expr::Bool(false)));
     }
     for (flag, ty) in &arg_flags {
         let field = format!("arg_{}", sanitize_flag(flag));
@@ -155,11 +164,13 @@ fn resolve_entries(program: &mut Vec<TopLevel>) -> Result<(), String> {
         // (arg_int/arg_float — the plugin targets stdlib, never Rust string
         // matches; Rule 3).
         let call = |name: &str| {
-            Expr::Call(name.into(), vec![Expr::Quoted(flag.as_bytes().to_vec())], None)
+            Expr::Call(
+                name.into(),
+                vec![Expr::Quoted(flag.as_bytes().to_vec())],
+                None,
+            )
         };
-        let wrap1 = |name: &str, inner: Expr| {
-            Expr::Call(name.into(), vec![inner], None)
-        };
+        let wrap1 = |name: &str, inner: Expr| Expr::Call(name.into(), vec![inner], None);
         let field_ty = match ty.as_deref() {
             Some("Int") => Type::int(),
             Some("Float") => Type::float(),
@@ -267,7 +278,12 @@ fn collect_from_expr(
     arg_flags: &mut Vec<(String, Option<String>)>,
 ) {
     match expr {
-        Expr::PluginIntercept { name, args, receiver, .. } => {
+        Expr::PluginIntercept {
+            name,
+            args,
+            receiver,
+            ..
+        } => {
             collect_intercept(name, args, receiver.as_deref(), entry_commands, arg_flags);
         }
         Expr::Block(stmts) => {
@@ -330,20 +346,24 @@ fn collect_intercept(
 fn expr_child_refs(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::BinaryOp(_, l, r) => vec![l, r],
-        Expr::UnaryOp(_, e) | Expr::Cast(e, _) | Expr::Deref(e) | Expr::AddrOf(e)
-        | Expr::Consume(e) | Expr::Await(e) | Expr::Field(e, _) | Expr::IsType(e, _)
-        | Expr::Reflect(e, _, _) | Expr::Lambda(_, e) => vec![e],
+        Expr::UnaryOp(_, e)
+        | Expr::Cast(e, _)
+        | Expr::Deref(e)
+        | Expr::AddrOf(e)
+        | Expr::Consume(e)
+        | Expr::Await(e)
+        | Expr::Field(e, _)
+        | Expr::IsType(e, _)
+        | Expr::Reflect(e, _, _)
+        | Expr::Lambda(_, e) => vec![e],
         Expr::Call(_, args, _) | Expr::Spawn { args, .. } => args.iter().collect(),
-        Expr::MethodCall(recv, _, args, _) => {
-            args.iter().chain(std::iter::once(&**recv)).collect()
-        }
-        Expr::If(c, t, e) => {
-            e.iter()
-                .map(|b| &**b)
-                .chain(std::iter::once(&**t))
-                .chain(std::iter::once(&**c))
-                .collect()
-        }
+        Expr::MethodCall(recv, _, args, _) => args.iter().chain(std::iter::once(&**recv)).collect(),
+        Expr::If(c, t, e) => e
+            .iter()
+            .map(|b| &**b)
+            .chain(std::iter::once(&**t))
+            .chain(std::iter::once(&**c))
+            .collect(),
         Expr::Match(scrutinee, arms) => {
             let mut out: Vec<&Expr> = vec![scrutinee];
             for arm in arms {
@@ -359,12 +379,20 @@ fn expr_child_refs(expr: &Expr) -> Vec<&Expr> {
             fields.iter().chain(specs.iter()).map(|(_, e)| e).collect()
         }
         Expr::Index(obj, idx) => vec![obj, idx],
-        Expr::Slice { array, start, end, stride } => {
-            [Some(&**array), start.as_deref(), end.as_deref(), stride.as_deref()]
-                .into_iter()
-                .flatten()
-                .collect()
-        }
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => [
+            Some(&**array),
+            start.as_deref(),
+            end.as_deref(),
+            stride.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         Expr::Range { start, end, .. } => vec![start, end],
         Expr::Within(a, b) => vec![a, b],
         _ => Vec::new(),
@@ -453,9 +481,11 @@ fn rewrite_transaction(
 /// sees convergence (one-shot).
 fn make_wrapper(d: &crate::ast::Definition, entries: &[String]) -> TopLevel {
     let wrapper_name = format!("__entry_{}", sanitize_flag(&entries[0]));
-    let mut wrapper_body = vec![
-        Statement::Expression(Expr::Call(d.name.clone(), vec![], None)),
-    ];
+    let mut wrapper_body = vec![Statement::Expression(Expr::Call(
+        d.name.clone(),
+        vec![],
+        None,
+    ))];
     for cmd in entries {
         let field = format!("__entry_{}_done", sanitize_flag(cmd));
         wrapper_body.push(Statement::Assign(
@@ -463,9 +493,7 @@ fn make_wrapper(d: &crate::ast::Definition, entries: &[String]) -> TopLevel {
             Expr::Bool(true),
         ));
     }
-    let done_field = Expr::Identifier(format!(
-        "__entry_{}_done", sanitize_flag(&entries[0])
-    ));
+    let done_field = Expr::Identifier(format!("__entry_{}_done", sanitize_flag(&entries[0])));
     let wrapper_contract = crate::ast::Contract {
         pre_condition: d.contract.pre_condition.clone(),
         post_condition: done_field,
@@ -517,7 +545,13 @@ fn rewrite_stmt(
 ) -> Result<Statement, String> {
     use crate::ast::Statement;
     Ok(match stmt {
-        Statement::Let { name, names, ty, expr, modifiers } => Statement::Let {
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => Statement::Let {
             name,
             names,
             ty,
@@ -526,17 +560,20 @@ fn rewrite_stmt(
                 .transpose()?,
             modifiers,
         },
-        Statement::Assign(l, r) => Statement::Assign(
-            l,
-            rewrite_expr(r, entries, arg_flags)?,
-        ),
+        Statement::Assign(l, r) => Statement::Assign(l, rewrite_expr(r, entries, arg_flags)?),
         Statement::Expression(e) => Statement::Expression(rewrite_expr(e, entries, arg_flags)?),
         Statement::Term(Some(e)) => Statement::Term(Some(rewrite_expr(e, entries, arg_flags)?)),
         Statement::Tail(e) => Statement::Tail(rewrite_expr(e, entries, arg_flags)?),
-        Statement::EndProgram(Some(e)) => Statement::EndProgram(Some(rewrite_expr(e, entries, arg_flags)?)),
+        Statement::EndProgram(Some(e)) => {
+            Statement::EndProgram(Some(rewrite_expr(e, entries, arg_flags)?))
+        }
         // 2026-10-12 (daily-driver quick wins): the arrow-push arm — see
         // the collect-side note.
-        Statement::ArrowAssign { target, value, consume } => Statement::ArrowAssign {
+        Statement::ArrowAssign {
+            target,
+            value,
+            consume,
+        } => Statement::ArrowAssign {
             target: target
                 .map(|t| rewrite_expr(*t, entries, arg_flags).map(Box::new))
                 .transpose()?,
@@ -552,7 +589,6 @@ fn rewrite_stmt(
         other => other,
     })
 }
-
 
 /// Rewrite one expression tree, replacing entry!/args! intercepts.
 fn rewrite_expr(
@@ -599,7 +635,13 @@ fn rewrite_intercept(
     entries: &mut Vec<String>,
     arg_flags: &[(String, Option<String>)],
 ) -> Result<Expr, String> {
-    let Expr::PluginIntercept { name, args, type_args, receiver } = expr else {
+    let Expr::PluginIntercept {
+        name,
+        args,
+        type_args,
+        receiver,
+    } = expr
+    else {
         return Ok(expr);
     };
     let mut full_args = args.clone();
@@ -717,7 +759,11 @@ fn rewrite_expr_compound(
                 .map(|e| rewrite_expr(e, entries, arg_flags))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
-        Expr::StructLiteral { type_name, fields, specs } => Expr::StructLiteral {
+        Expr::StructLiteral {
+            type_name,
+            fields,
+            specs,
+        } => Expr::StructLiteral {
             type_name,
             fields: fields
                 .into_iter()
@@ -732,11 +778,15 @@ fn rewrite_expr_compound(
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        Expr::Lambda(params, body) => Expr::Lambda(
-            params,
-            Box::new(rewrite_expr(*body, entries, arg_flags)?),
-        ),
-        Expr::Slice { array, start, end, stride } => Expr::Slice {
+        Expr::Lambda(params, body) => {
+            Expr::Lambda(params, Box::new(rewrite_expr(*body, entries, arg_flags)?))
+        }
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => Expr::Slice {
             array: Box::new(rewrite_expr(*array, entries, arg_flags)?),
             start: start
                 .map(|s| rewrite_expr(*s, entries, arg_flags).map(Box::new))
@@ -748,12 +798,20 @@ fn rewrite_expr_compound(
                 .map(|s| rewrite_expr(*s, entries, arg_flags).map(Box::new))
                 .transpose()?,
         },
-        Expr::Range { start, end, inclusive } => Expr::Range {
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => Expr::Range {
             start: Box::new(rewrite_expr(*start, entries, arg_flags)?),
             end: Box::new(rewrite_expr(*end, entries, arg_flags)?),
             inclusive,
         },
-        Expr::Spawn { type_name, args, storage } => Expr::Spawn {
+        Expr::Spawn {
+            type_name,
+            args,
+            storage,
+        } => Expr::Spawn {
             type_name,
             args: args
                 .into_iter()
@@ -779,10 +837,7 @@ fn rewrite_expr_simple(
         Expr::UnaryOp(kind, e) => {
             Expr::UnaryOp(kind, Box::new(rewrite_expr(*e, entries, arg_flags)?))
         }
-        Expr::Cast(e, t) => Expr::Cast(
-            Box::new(rewrite_expr(*e, entries, arg_flags)?),
-            t,
-        ),
+        Expr::Cast(e, t) => Expr::Cast(Box::new(rewrite_expr(*e, entries, arg_flags)?), t),
         Expr::Call(name, args, ty) => Expr::Call(
             name,
             args.into_iter()
@@ -798,19 +853,17 @@ fn rewrite_expr_simple(
                 .collect::<Result<Vec<_>, _>>()?,
             aid,
         ),
-        Expr::Field(obj, name) => Expr::Field(
-            Box::new(rewrite_expr(*obj, entries, arg_flags)?),
-            name,
-        ),
+        Expr::Field(obj, name) => {
+            Expr::Field(Box::new(rewrite_expr(*obj, entries, arg_flags)?), name)
+        }
         Expr::Reflect(obj, name, kind) => Expr::Reflect(
             Box::new(rewrite_expr(*obj, entries, arg_flags)?),
             name,
             kind,
         ),
-        Expr::IsType(inner, ty) => Expr::IsType(
-            Box::new(rewrite_expr(*inner, entries, arg_flags)?),
-            ty,
-        ),
+        Expr::IsType(inner, ty) => {
+            Expr::IsType(Box::new(rewrite_expr(*inner, entries, arg_flags)?), ty)
+        }
         Expr::Within(a, b) => Expr::Within(
             Box::new(rewrite_expr(*a, entries, arg_flags)?),
             Box::new(rewrite_expr(*b, entries, arg_flags)?),
@@ -819,18 +872,10 @@ fn rewrite_expr_simple(
             Box::new(rewrite_expr(*obj, entries, arg_flags)?),
             Box::new(rewrite_expr(*idx, entries, arg_flags)?),
         ),
-        Expr::Deref(inner) => {
-            Expr::Deref(Box::new(rewrite_expr(*inner, entries, arg_flags)?))
-        }
-        Expr::AddrOf(inner) => {
-            Expr::AddrOf(Box::new(rewrite_expr(*inner, entries, arg_flags)?))
-        }
-        Expr::Consume(inner) => {
-            Expr::Consume(Box::new(rewrite_expr(*inner, entries, arg_flags)?))
-        }
-        Expr::Await(inner) => {
-            Expr::Await(Box::new(rewrite_expr(*inner, entries, arg_flags)?))
-        }
+        Expr::Deref(inner) => Expr::Deref(Box::new(rewrite_expr(*inner, entries, arg_flags)?)),
+        Expr::AddrOf(inner) => Expr::AddrOf(Box::new(rewrite_expr(*inner, entries, arg_flags)?)),
+        Expr::Consume(inner) => Expr::Consume(Box::new(rewrite_expr(*inner, entries, arg_flags)?)),
+        Expr::Await(inner) => Expr::Await(Box::new(rewrite_expr(*inner, entries, arg_flags)?)),
         other => other,
     })
 }
@@ -956,4 +1001,3 @@ mod tests {
         );
     }
 }
-

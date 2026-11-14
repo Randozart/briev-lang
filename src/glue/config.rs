@@ -160,7 +160,10 @@ pub fn load_glue_config(path: Option<&Path>) -> Result<HashMap<String, GlueTarge
 /// invocation resolves the language folder.
 pub fn load_glue_language(lang: &str) -> Result<GlueTarget, String> {
     let glue_root = resolve_glue_root().ok_or_else(|| {
-        format!("lib/glue/ not found — cannot load glue config for '{}'", lang)
+        format!(
+            "lib/glue/ not found — cannot load glue config for '{}'",
+            lang
+        )
     })?;
     let cfg = glue_root.join(lang).join("glue.dbv");
     if !cfg.exists() {
@@ -172,17 +175,17 @@ pub fn load_glue_language(lang: &str) -> Result<GlueTarget, String> {
     let source = std::fs::read_to_string(&cfg)
         .map_err(|e| format!("Failed to read '{}': {}", cfg.display(), e))?;
     let parsed = parse_glue_dbvl(&source)?;
-    parsed.get(lang).cloned().ok_or_else(|| {
-        format!("'{}' has no '{}' target entry", cfg.display(), lang)
-    })
+    parsed
+        .get(lang)
+        .cloned()
+        .ok_or_else(|| format!("'{}' has no '{}' target entry", cfg.display(), lang))
 }
 
 /// Scan lib/glue/*/glue.dbv and merge every language into the registry,
 /// keyed by folder name.
 fn load_glue_folders() -> Result<HashMap<String, GlueTarget>, String> {
-    let glue_root = resolve_glue_root().ok_or_else(|| {
-        "lib/glue/ not found — per-language glue configs unavailable".to_string()
-    })?;
+    let glue_root = resolve_glue_root()
+        .ok_or_else(|| "lib/glue/ not found — per-language glue configs unavailable".to_string())?;
     let mut targets: HashMap<String, GlueTarget> = HashMap::new();
     let mut found = false;
     let entries = std::fs::read_dir(&glue_root)
@@ -250,8 +253,12 @@ fn parse_glue_dbvl(source: &str) -> Result<HashMap<String, GlueTarget>, String> 
         if key.contains(".templates.") || key.contains(".bindings.") {
             continue;
         }
-        let Some(DataValue::Map(entry)) = db.field(&key, 0) else { continue };
-        let Some(target) = glue_target_from_entry(&key, entry, &templates_by_lang) else { continue };
+        let Some(DataValue::Map(entry)) = db.field(&key, 0) else {
+            continue;
+        };
+        let Some(target) = glue_target_from_entry(&key, entry, &templates_by_lang) else {
+            continue;
+        };
         targets.insert(key, target);
     }
     Ok(targets)
@@ -265,7 +272,10 @@ fn collect_templates(db: &ConfigDb) -> HashMap<String, HashMap<String, String>> 
     let mut templates_by_lang: HashMap<String, HashMap<String, String>> = HashMap::new();
     for key in db.keys() {
         if let Some((lang, path, content)) = template_line(db, &key) {
-            templates_by_lang.entry(lang).or_default().insert(path, content);
+            templates_by_lang
+                .entry(lang)
+                .or_default()
+                .insert(path, content);
         }
     }
     templates_by_lang
@@ -305,7 +315,8 @@ fn glue_target_from_entry(
     };
     let string_map = |name: &str| -> HashMap<String, String> {
         match entry.get(name) {
-            Some(DataValue::Map(map)) => map.iter()
+            Some(DataValue::Map(map)) => map
+                .iter()
                 .filter_map(|(k, v)| match v {
                     DataValue::String(s) => Some((k.clone(), s.clone())),
                     _ => None,
@@ -320,7 +331,8 @@ fn glue_target_from_entry(
     let calling_convention = str_field("calling_convention")?;
     let module_init = matches!(entry.get("module_init"), Some(DataValue::Bool(true)));
     let protocols = match entry.get("protocols") {
-        Some(DataValue::Map(map)) => map.iter()
+        Some(DataValue::Map(map)) => map
+            .iter()
             .map(|(proto, v)| {
                 let proto_entry = match v {
                     DataValue::Map(fields) => ProtocolEntry {
@@ -328,7 +340,11 @@ fn glue_target_from_entry(
                         c_abi: str_from(fields.get("c_abi")),
                         wasm_abi: str_from(fields.get("wasm_abi")),
                     },
-                    _ => ProtocolEntry { native: String::new(), c_abi: None, wasm_abi: None },
+                    _ => ProtocolEntry {
+                        native: String::new(),
+                        c_abi: None,
+                        wasm_abi: None,
+                    },
                 };
                 (proto.clone(), proto_entry)
             })
@@ -384,7 +400,8 @@ fn str_from(v: Option<&DataValue>) -> Option<String> {
 
 fn string_map_from(v: Option<&DataValue>) -> HashMap<String, String> {
     match v {
-        Some(DataValue::Map(map)) => map.iter()
+        Some(DataValue::Map(map)) => map
+            .iter()
             .filter_map(|(k, v)| match v {
                 DataValue::String(s) => Some((k.clone(), s.clone())),
                 _ => None,
@@ -420,7 +437,10 @@ pub fn find_language_by_extension<'a>(
 
 /// Map a file extension to a language identifier using the loaded targets.
 /// Returns Some(language_name) if the extension is recognized, None otherwise.
-pub fn extension_to_language<'a>(ext: &str, targets: &'a HashMap<String, GlueTarget>) -> Option<&'a str> {
+pub fn extension_to_language<'a>(
+    ext: &str,
+    targets: &'a HashMap<String, GlueTarget>,
+) -> Option<&'a str> {
     find_language_by_extension(targets, ext).map(|t| t.language.as_str())
 }
 
@@ -431,64 +451,89 @@ mod tests {
     #[test]
     fn test_extension_to_language_via_targets() {
         let mut targets = HashMap::new();
-        targets.insert("python".to_string(), GlueTarget {
-            language: "python".to_string(),
-            types_module: PathBuf::from("glue/python/types.bv"),
-            extension: "py".to_string(),
-            bridge_kind: "native_module".to_string(),
-            calling_convention: "c_abi".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
-        targets.insert("rust".to_string(), GlueTarget {
-            language: "rust".to_string(),
-            types_module: PathBuf::from("glue/rust/types.bv"),
-            extension: "rs".to_string(),
-            bridge_kind: "extern_c_crate".to_string(),
-            calling_convention: "lto".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
+        targets.insert(
+            "python".to_string(),
+            GlueTarget {
+                language: "python".to_string(),
+                types_module: PathBuf::from("glue/python/types.bv"),
+                extension: "py".to_string(),
+                bridge_kind: "native_module".to_string(),
+                calling_convention: "c_abi".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
+        targets.insert(
+            "rust".to_string(),
+            GlueTarget {
+                language: "rust".to_string(),
+                types_module: PathBuf::from("glue/rust/types.bv"),
+                extension: "rs".to_string(),
+                bridge_kind: "extern_c_crate".to_string(),
+                calling_convention: "lto".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
 
         // Should work with or without leading dot
-        assert_eq!(find_language_by_extension(&targets, ".py").unwrap().language, "python");
-        assert_eq!(find_language_by_extension(&targets, "py").unwrap().language, "python");
+        assert_eq!(
+            find_language_by_extension(&targets, ".py")
+                .unwrap()
+                .language,
+            "python"
+        );
+        assert_eq!(
+            find_language_by_extension(&targets, "py").unwrap().language,
+            "python"
+        );
     }
 
     #[test]
     fn test_find_language_by_extension() {
         let mut targets = HashMap::new();
-        targets.insert("python".to_string(), GlueTarget {
-            language: "python".to_string(),
-            types_module: PathBuf::from("glue/python/types.bv"),
-            extension: "py".to_string(),
-            bridge_kind: "native_module".to_string(),
-            calling_convention: "c_abi".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
+        targets.insert(
+            "python".to_string(),
+            GlueTarget {
+                language: "python".to_string(),
+                types_module: PathBuf::from("glue/python/types.bv"),
+                extension: "py".to_string(),
+                bridge_kind: "native_module".to_string(),
+                calling_convention: "c_abi".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
 
         // Should work with or without leading dot
-        assert_eq!(find_language_by_extension(&targets, ".py").unwrap().language, "python");
-        assert_eq!(find_language_by_extension(&targets, "py").unwrap().language, "python");
+        assert_eq!(
+            find_language_by_extension(&targets, ".py")
+                .unwrap()
+                .language,
+            "python"
+        );
+        assert_eq!(
+            find_language_by_extension(&targets, "py").unwrap().language,
+            "python"
+        );
     }
 
     #[test]
@@ -500,15 +545,20 @@ mod tests {
         // iteration order.
         let mut targets = HashMap::new();
         for (name, bridge_kind) in [("web", "wasm_runtime"), ("node", "esm_module")] {
-            targets.insert(name.to_string(), GlueTarget {
-                language: name.to_string(),
-                extension: "mjs".to_string(),
-                bridge_kind: bridge_kind.to_string(),
-                ..Default::default()
-            });
+            targets.insert(
+                name.to_string(),
+                GlueTarget {
+                    language: name.to_string(),
+                    extension: "mjs".to_string(),
+                    bridge_kind: bridge_kind.to_string(),
+                    ..Default::default()
+                },
+            );
         }
         assert_eq!(
-            find_language_by_extension(&targets, ".mjs").unwrap().language,
+            find_language_by_extension(&targets, ".mjs")
+                .unwrap()
+                .language,
             "node",
             "the host runtime (wasm_runtime) must not be reachable by extension"
         );
@@ -518,25 +568,36 @@ mod tests {
     #[test]
     fn test_find_language_by_extension_with_dot() {
         let mut targets = HashMap::new();
-        targets.insert("python".to_string(), GlueTarget {
-            language: "python".to_string(),
-            types_module: PathBuf::from("glue/python/types.bv"),
-            extension: "py".to_string(),
-            bridge_kind: "native_module".to_string(),
-            calling_convention: "c_abi".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
+        targets.insert(
+            "python".to_string(),
+            GlueTarget {
+                language: "python".to_string(),
+                types_module: PathBuf::from("glue/python/types.bv"),
+                extension: "py".to_string(),
+                bridge_kind: "native_module".to_string(),
+                calling_convention: "c_abi".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
 
         // Should work with or without leading dot
-        assert_eq!(find_language_by_extension(&targets, ".py").unwrap().language, "python");
-        assert_eq!(find_language_by_extension(&targets, "py").unwrap().language, "python");
+        assert_eq!(
+            find_language_by_extension(&targets, ".py")
+                .unwrap()
+                .language,
+            "python"
+        );
+        assert_eq!(
+            find_language_by_extension(&targets, "py").unwrap().language,
+            "python"
+        );
     }
 
     #[test]
@@ -549,7 +610,11 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
         std::fs::write(&config_path, content).unwrap();
 
         let result = load_glue_config(Some(&config_path));
-        assert!(result.is_ok(), "load_glue_config failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "load_glue_config failed: {:?}",
+            result.err()
+        );
         let targets = result.unwrap();
 
         assert!(targets.contains_key("python"));
@@ -560,8 +625,14 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
         assert_eq!(py.calling_convention, "c_abi");
         assert!(py.protocols.contains_key("String"));
         assert_eq!(py.protocols.get("String").unwrap().native, "str");
-        assert_eq!(py.protocols.get("String").unwrap().c_abi.as_deref(), Some("ctypes.c_void_p"));
-        assert_eq!(py.templates.get("fn_template").unwrap(), "def {{name}}({{params}}):\n    return {{name}};\n");
+        assert_eq!(
+            py.protocols.get("String").unwrap().c_abi.as_deref(),
+            Some("ctypes.c_void_p")
+        );
+        assert_eq!(
+            py.templates.get("fn_template").unwrap(),
+            "def {{name}}({{params}}):\n    return {{name}};\n"
+        );
 
         assert!(targets.contains_key("rust"));
         let rust = &targets["rust"];
@@ -585,7 +656,11 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
     fn test_load_glue_config_default_path_exists() {
         // The compiler-shipped default (config/glue.dbv) should exist.
         let result = load_glue_config(None);
-        assert!(result.is_ok(), "Default config/glue.dbv not found: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Default config/glue.dbv not found: {:?}",
+            result.err()
+        );
     }
 
     /// Baked config golden: the compiler-shipped config/glue.dbv loads with
@@ -609,12 +684,24 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
             python.protocols.get("String").unwrap().c_abi.as_deref(),
             Some("ctypes.c_void_p")
         );
-        assert!(python.templates.contains_key("__init__.py"), "python __init__.py template");
-        assert!(python.templates.contains_key("fn_template"), "python fn_template template");
+        assert!(
+            python.templates.contains_key("__init__.py"),
+            "python __init__.py template"
+        );
+        assert!(
+            python.templates.contains_key("fn_template"),
+            "python fn_template template"
+        );
         let rust = &config["rust"];
         assert_eq!(rust.calling_convention, "lto");
-        assert!(rust.templates.contains_key("src/lib.rs"), "rust src/lib.rs template");
+        assert!(
+            rust.templates.contains_key("src/lib.rs"),
+            "rust src/lib.rs template"
+        );
         let node = &config["node"];
-        assert!(node.templates.contains_key("index.mjs"), "node index.mjs template");
+        assert!(
+            node.templates.contains_key("index.mjs"),
+            "node index.mjs template"
+        );
     }
 }

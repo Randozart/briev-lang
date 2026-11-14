@@ -19,7 +19,6 @@
 use super::registry::{BadRegisters, RegProp};
 use crate::ast::bad::*;
 
-
 /// Shared checking context — keeps every check function at ≤5 params.
 struct Ctx<'a> {
     regs: &'a BadRegisters,
@@ -37,26 +36,34 @@ pub fn check_label_contracts(
     errors: &mut Vec<String>,
 ) -> Vec<String> {
     let mut proven = Vec::new();
-    let ctx = Ctx { regs, family, label: &label.name };
+    let ctx = Ctx {
+        regs,
+        family,
+        label: &label.name,
+    };
     let preds = label.contracts.iter().flat_map(|c| &c.preds);
-    let instrs: Vec<&BadInstr> = label.body.iter().filter_map(|item| match item {
-        BadBodyItem::Instr(i) => Some(i),
-        BadBodyItem::Local(_) => None,
-        // 2026-10-01 (bad-site-blocks plan): site rows carry no
-        // contracts (the parser rejects `[` lines inside sites); the
-        // default row's instructions are checked in emit_instr.
-        BadBodyItem::Site(_) => None,
-        BadBodyItem::Let(_)
-        | BadBodyItem::Assign(_)
-        | BadBodyItem::When(_)
-        | BadBodyItem::Loop(_)
-        | BadBodyItem::While(_)
-        | BadBodyItem::Break(_)
-        | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => None,
-    }).collect();
+    let instrs: Vec<&BadInstr> = label
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            BadBodyItem::Instr(i) => Some(i),
+            BadBodyItem::Local(_) => None,
+            // 2026-10-01 (bad-site-blocks plan): site rows carry no
+            // contracts (the parser rejects `[` lines inside sites); the
+            // default row's instructions are checked in emit_instr.
+            BadBodyItem::Site(_) => None,
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_)
+            | BadBodyItem::CallStmt { .. }
+            | BadBodyItem::Return { .. }
+            | BadBodyItem::RawRegion { .. } => None,
+        })
+        .collect();
     for pred in preds {
         check_pred(pred, &instrs, &ctx, errors, &mut proven);
     }
@@ -70,8 +77,14 @@ pub fn check_inline_contract(
     family: &str,
     errors: &mut Vec<String>,
 ) {
-    let Some(contract) = &instr.contract else { return };
-    let ctx = Ctx { regs, family, label: "" };
+    let Some(contract) = &instr.contract else {
+        return;
+    };
+    let ctx = Ctx {
+        regs,
+        family,
+        label: "",
+    };
     let mut proven = Vec::new();
     for pred in &contract.preds {
         check_pred(pred, &[], &ctx, errors, &mut proven);
@@ -101,10 +114,17 @@ fn check_pred(
                 errors.push(format!(
                     "contract `[{} valid]` on `{}` fails: register `{}` does not exist on \
                      `{}` (it maps only to [{}]) - use a register this target has",
-                    reg, where_str(label), reg, family, targets
+                    reg,
+                    where_str(label),
+                    reg,
+                    family,
+                    targets
                 ));
             } else {
-                proven.push(format!("[{} valid] proven: register is mapped on {}", reg, family));
+                proven.push(format!(
+                    "[{} valid] proven: register is mapped on {}",
+                    reg, family
+                ));
             }
         }
         BadContractPred::Frame(bound) => {
@@ -159,7 +179,14 @@ fn check_preserved(
                     "contract `[{} preserved]` on `{}` is unproven: `{}` is caller-saved \
                      on `{}` and the body has {} push / {} pop for it - wrap the clobbering \
                      code in `push {}` ... `pop {}`, or drop the contract",
-                    reg, where_str(label), reg, family, pushes, pops, reg, reg
+                    reg,
+                    where_str(label),
+                    reg,
+                    family,
+                    pushes,
+                    pops,
+                    reg,
+                    reg
                 ));
             }
         }
@@ -167,7 +194,10 @@ fn check_preserved(
             errors.push(format!(
                 "contract `[{} preserved]` on `{}` is meaningless: `{}` is read-only on \
                  `{}` - a value cannot be preserved through code that cannot write it",
-                reg, where_str(label), reg, family
+                reg,
+                where_str(label),
+                reg,
+                family
             ));
         }
         None => {
@@ -175,7 +205,11 @@ fn check_preserved(
             errors.push(format!(
                 "contract `[{} preserved]` on `{}` fails: register `{}` does not exist on \
                  `{}` (it maps only to [{}]) - use a register this target has",
-                reg, where_str(label), reg, family, targets
+                reg,
+                where_str(label),
+                reg,
+                family,
+                targets
             ));
         }
     }
@@ -282,4 +316,3 @@ fn where_str(label: &str) -> String {
         format!("label `{}`", label)
     }
 }
-

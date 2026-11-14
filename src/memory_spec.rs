@@ -136,8 +136,7 @@ impl MemorySpec {
         );
     }
 
-    fn add_transaction(&mut self, txn: &Transaction) {
-    }
+    fn add_transaction(&mut self, txn: &Transaction) {}
 
     /// Serialize to JSON string
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -191,10 +190,13 @@ fn format_type(ty: &Type) -> String {
             format!("{}<{}>", name, inner.join(", "))
         }
         Type::Vector(elem, dims) => {
-            let total_size: usize = dims.iter().map(|d| match d {
-                crate::ast::Dimension::Anonymous(s) => *s,
-                crate::ast::Dimension::Named(_, s) => *s,
-            }).product();
+            let total_size: usize = dims
+                .iter()
+                .map(|d| match d {
+                    crate::ast::Dimension::Anonymous(s) => *s,
+                    crate::ast::Dimension::Named(_, s) => *s,
+                })
+                .product();
             format!("Vec<{}; {}>", format_type(elem), total_size)
         }
         Type::Constrained(inner, bit_range) => {
@@ -207,7 +209,7 @@ fn format_type(ty: &Type) -> String {
         Type::Function(params, ret) => {
             let inner: Vec<_> = params.iter().map(format_type).collect();
             format!("({}) -> {}", inner.join(", "), format_type(ret))
-        },
+        }
     }
 }
 
@@ -246,10 +248,13 @@ fn estimate_type_size(ty: &Type) -> usize {
         Type::Generic(_, _) => 8,
         Type::Applied(_, _) => 8,
         Type::Vector(elem, dims) => {
-            let total_size: usize = dims.iter().map(|d| match d {
-                crate::ast::Dimension::Anonymous(s) => *s,
-                crate::ast::Dimension::Named(_, s) => *s,
-            }).product();
+            let total_size: usize = dims
+                .iter()
+                .map(|d| match d {
+                    crate::ast::Dimension::Anonymous(s) => *s,
+                    crate::ast::Dimension::Named(_, s) => *s,
+                })
+                .product();
             estimate_type_size(elem) * total_size
         }
         Type::Constrained(_, BitRange::Single(_)) => 1,

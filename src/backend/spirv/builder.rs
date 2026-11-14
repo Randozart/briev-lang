@@ -145,11 +145,7 @@ impl SpirvBuilder {
     /// Vulkan flavor (it is an SSBO variable). For OpenCL it is a function
     /// parameter and must NOT be listed.
     pub fn state_interface(&self, ssbo: Option<Word>) -> Option<Word> {
-        if self.is_opencl() {
-            None
-        } else {
-            ssbo
-        }
+        if self.is_opencl() { None } else { ssbo }
     }
 
     /// 2026-08-26 (§2.4): pipeline injects the NORMALIZED universe so user
@@ -451,7 +447,9 @@ impl SpirvBuilder {
             }
             Type::Ptr(elem) => {
                 let elem_id = self.lower_type(elem)?;
-                Ok(self.builder.type_pointer(None, spirv::StorageClass::Function, elem_id))
+                Ok(self
+                    .builder
+                    .type_pointer(None, spirv::StorageClass::Function, elem_id))
             }
             Type::Vector(inner, dims) => {
                 // Fixed-size array (indexed state). Innermost-out so each
@@ -490,9 +488,9 @@ impl SpirvBuilder {
             // `Float64`, stdlib subtypes, and user typedefs all derive from
             // their Cast.* protocol properties + bits metadata alike.
             Type::Custom(_) | Type::Applied(_, _) => {
-                let shape = self
-                    .casting_graph
-                    .resolve_spirv_shape(&self.universe, ty, self.int_bits)?;
+                let shape =
+                    self.casting_graph
+                        .resolve_spirv_shape(&self.universe, ty, self.int_bits)?;
                 match shape {
                     SpirvShape::Int { bits, signed } => {
                         Ok(self.builder.type_int(bits, if signed { 1 } else { 0 }))

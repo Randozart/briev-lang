@@ -110,7 +110,10 @@ pub fn tensor_gemm_ptx(
     out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
     out.push_str("    mov.u32 %r9, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 16 * (y_elem as i64)));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r9, %r9, {};\n",
+        16 * (y_elem as i64)
+    ));
     out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
@@ -130,20 +133,18 @@ pub fn tensor_gemm_ptx(
     for mh in 0..2 {
         // A fragment for half mh. Tile-relative row = mh*16 + row_off + g.
         // Byte = (mh*16+row_off)*a_row + g*a_row + kstep*32 + 2t + col*2
-        for (reg, row_off, col) in [
-            ("a0", 0i64, 0i64),
-            ("a1", 8, 0),
-            ("a2", 0, 8),
-            ("a3", 8, 8),
-        ] {
-            out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh + row_off) * a_row));
+        for (reg, row_off, col) in [("a0", 0i64, 0i64), ("a1", 8, 0), ("a2", 0, 8), ("a3", 8, 8)] {
+            out.push_str(&format!(
+                "    mov.u32 %r13, {};\n",
+                (16 * mh + row_off) * a_row
+            ));
             out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", a_row));
             out.push_str("    add.u32 %r13, %r13, %r14;\n"); // row bytes
             out.push_str("    mov.u32 %r14, %r8;\n");
-            out.push_str("    shl.b32 %r14, %r14, 1;\n");      // 2t*2
-            out.push_str("    add.u32 %r14, %r14, %r11;\n");  // + kstep*32
+            out.push_str("    shl.b32 %r14, %r14, 1;\n"); // 2t*2
+            out.push_str("    add.u32 %r14, %r14, %r11;\n"); // + kstep*32
             out.push_str(&format!("    add.u32 %r14, %r14, {};\n", col * 2));
-            out.push_str("    add.u32 %r13, %r13, %r14;\n");  // + col bytes
+            out.push_str("    add.u32 %r13, %r13, %r14;\n"); // + col bytes
             out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
             out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
             out.push_str("    add.u64 %rd5, %rd2, %rd4;\n");
@@ -164,9 +165,9 @@ pub fn tensor_gemm_ptx(
                 out.push_str(&format!("    mul.lo.u32 %r14, %r8, {};\n", b_row));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n"); // row bytes
                 out.push_str("    mov.u32 %r14, %r6;\n");
-                out.push_str("    shl.b32 %r14, %r14, 1;\n");      // g*2
+                out.push_str("    shl.b32 %r14, %r14, 1;\n"); // g*2
                 out.push_str(&format!("    add.u32 %r14, %r14, {};\n", ng * 16)); // + ng*8 cols * 2 bytes
-                out.push_str("    add.u32 %r13, %r13, %r14;\n");  // + col bytes
+                out.push_str("    add.u32 %r13, %r13, %r14;\n"); // + col bytes
                 out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
                 out.push_str("    add.u64 %rd5, %rd3, %rd4;\n");
                 out.push_str("    ld.global.u16 %u0, [%rd5];\n");
@@ -191,21 +192,25 @@ pub fn tensor_gemm_ptx(
     for mh in 0..2 {
         for ng in 0..2 {
             let cb = 4 * (mh * 2 + ng);
-            for (coff, row_off, col_off) in [
-                (0i64, 0i64, 0i64),
-                (1, 0, 1),
-                (2, 8, 0),
-                (3, 8, 1),
-            ] {
+            for (coff, row_off, col_off) in [(0i64, 0i64, 0i64), (1, 0, 1), (2, 8, 0), (3, 8, 1)] {
                 let cname = format!("c{}", cb + coff);
-                out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh + row_off) * y_row));
+                out.push_str(&format!(
+                    "    mov.u32 %r13, {};\n",
+                    (16 * mh + row_off) * y_row
+                ));
                 out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", ng * 8 * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    ng * 8 * (y_elem as i64)
+                ));
                 out.push_str("    mov.u32 %r14, %r8;\n"); // 2t (elements)
                 out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", y_elem));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", col_off * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    col_off * (y_elem as i64)
+                ));
                 out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
                 out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
                 if y_elem == 4 {
@@ -249,12 +254,14 @@ pub fn tensor_gemm_ptx_smem(
     out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd5b, %rd5c;\n");
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
     out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19;\n");
-    out.push_str("    .reg .b32  %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7, %b0, %b1, %b2, %b3, %t0;\n");
+    out.push_str(
+        "    .reg .b32  %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7, %b0, %b1, %b2, %b3, %t0;\n",
+    );
     out.push_str("    .reg .f32  %c0, %c1, %c2, %c3, %c4, %c5, %c6, %c7, %c8, %c9;\n");
     out.push_str("    .reg .f32  %c10, %c11, %c12, %c13, %c14, %c15;\n");
     out.push_str("    .reg .pred %p1;\n");
     out.push_str("    .shared .align 16 .b8 asmem[1024];\n"); // 32x16 f16 A tile
-    out.push_str("    .shared .align 16 .b8 bsmem[512];\n");  // 16x16 f16 B tile
+    out.push_str("    .shared .align 16 .b8 bsmem[512];\n"); // 16x16 f16 B tile
     out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
 
     // Block decode from ctaid.y.
@@ -291,7 +298,10 @@ pub fn tensor_gemm_ptx_smem(
     out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
     out.push_str("    mov.u32 %r9, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 16 * (y_elem as i64)));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r9, %r9, {};\n",
+        16 * (y_elem as i64)
+    ));
     out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
@@ -405,9 +415,13 @@ pub fn tensor_gemm_ptx_smem(
         out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
         out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
         if ng == 0 {
-            out.push_str("    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b0, %b1}, [%rd5];\n");
+            out.push_str(
+                "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b0, %b1}, [%rd5];\n",
+            );
         } else {
-            out.push_str("    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b2, %b3}, [%rd5];\n");
+            out.push_str(
+                "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b2, %b3}, [%rd5];\n",
+            );
         }
     }
 
@@ -415,7 +429,11 @@ pub fn tensor_gemm_ptx_smem(
     for mh in 0..2 {
         for ng in 0..2 {
             let cb = 4 * (mh * 2 + ng);
-            let (a0, a1, a2, a3) = if mh == 0 { ("a0", "a1", "a2", "a3") } else { ("a4", "a5", "a6", "a7") };
+            let (a0, a1, a2, a3) = if mh == 0 {
+                ("a0", "a1", "a2", "a3")
+            } else {
+                ("a4", "a5", "a6", "a7")
+            };
             let (b0, b1) = if ng == 0 { ("b0", "b1") } else { ("b2", "b3") };
             out.push_str(&format!(
                 "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{%{}, %{}, %{}, %{}}}, {{%{}, %{}}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
@@ -432,21 +450,25 @@ pub fn tensor_gemm_ptx_smem(
     for mh in 0..2 {
         for ng in 0..2 {
             let cb = 4 * (mh * 2 + ng);
-            for (coff, row_off, col_off) in [
-                (0i64, 0i64, 0i64),
-                (1, 0, 1),
-                (2, 8, 0),
-                (3, 8, 1),
-            ] {
+            for (coff, row_off, col_off) in [(0i64, 0i64, 0i64), (1, 0, 1), (2, 8, 0), (3, 8, 1)] {
                 let cname = format!("c{}", cb + coff);
-                out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh + row_off) * y_row));
+                out.push_str(&format!(
+                    "    mov.u32 %r13, {};\n",
+                    (16 * mh + row_off) * y_row
+                ));
                 out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", ng * 8 * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    ng * 8 * (y_elem as i64)
+                ));
                 out.push_str("    mov.u32 %r14, %r8;\n");
                 out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", y_elem));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", col_off * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    col_off * (y_elem as i64)
+                ));
                 out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
                 out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
                 if y_elem == 4 {
@@ -543,7 +565,10 @@ pub fn tensor_gemm_ptx_smem_r16(
     out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
     out.push_str("    mov.u32 %r9, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 64 * (y_elem as i64)));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r9, %r9, {};\n",
+        64 * (y_elem as i64)
+    ));
     out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
@@ -665,7 +690,11 @@ pub fn tensor_gemm_ptx_smem_r16(
     for mh in 0..2 {
         for g in 0..ng {
             let cb = 4 * (mh * 8 + g);
-            let (a0, a1, a2, a3) = if mh == 0 { ("%a0", "%a1", "%a2", "%a3") } else { ("%a4", "%a5", "%a6", "%a7") };
+            let (a0, a1, a2, a3) = if mh == 0 {
+                ("%a0", "%a1", "%a2", "%a3")
+            } else {
+                ("%a4", "%a5", "%a6", "%a7")
+            };
             let (b0, b1) = (&bregs[2 * g], &bregs[2 * g + 1]);
             out.push_str(&format!(
                 "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{{}, {}, {}, {}}}, {{{}, {}}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
@@ -683,21 +712,25 @@ pub fn tensor_gemm_ptx_smem_r16(
     for mh in 0..2 {
         for g in 0..ng {
             let cb = 4 * (mh * 8 + g);
-            for (coff, row_off, col_off) in [
-                (0i64, 0i64, 0i64),
-                (1, 0, 1),
-                (2, 8, 0),
-                (3, 8, 1),
-            ] {
+            for (coff, row_off, col_off) in [(0i64, 0i64, 0i64), (1, 0, 1), (2, 8, 0), (3, 8, 1)] {
                 let cname = format!("c{}", cb + coff as usize);
-                out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh as i64 + row_off) * y_row));
+                out.push_str(&format!(
+                    "    mov.u32 %r13, {};\n",
+                    (16 * mh as i64 + row_off) * y_row
+                ));
                 out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", (g as i64) * 8 * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    (g as i64) * 8 * (y_elem as i64)
+                ));
                 out.push_str("    mov.u32 %r14, %r8;\n");
                 out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", y_elem));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", col_off * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    col_off * (y_elem as i64)
+                ));
                 out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
                 out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
                 if y_elem == 4 {
@@ -722,7 +755,11 @@ mod tests {
         let ptx = tensor_gemm_ptx(64, 32, 32, 0, 4096, 16384, 4);
         assert!(ptx.contains(".entry main"), "entry");
         // 2 M-halves x 2 N-groups = 4 mma
-        assert_eq!(ptx.matches("mma.sync.aligned.m16n8k16").count(), 4, "mma count");
+        assert_eq!(
+            ptx.matches("mma.sync.aligned.m16n8k16").count(),
+            4,
+            "mma count"
+        );
         assert!(ptx.contains("div.u32 %r3, %r1, %r2;"), "m_cta decode");
         assert!(ptx.contains("KLOOP:"), "k loop");
         assert!(ptx.contains("setp.ge.u32 %p1, %r10, 32;"), "K bound");
@@ -769,8 +806,11 @@ mod tests {
         // hardcoded c0..c3 for every tile (the S3b wrong-store bug).
         let ptx = tensor_gemm_ptx(32, 32, 16, 0, 2048, 8192, 4);
         for cb in [0, 4, 8, 12] {
-            assert!(ptx.contains(&format!("st.global.f32 [%rd5], %c{};", cb)),
-                "tile store c{}", cb);
+            assert!(
+                ptx.contains(&format!("st.global.f32 [%rd5], %c{};", cb)),
+                "tile store c{}",
+                cb
+            );
         }
     }
 
@@ -779,11 +819,17 @@ mod tests {
         // f16 y: row stride must be N*2 (not N*4 — the f32 stride). The
         // S3b f16-store OOB bug used N*4 for a 2-byte y.
         let ptx = tensor_gemm_ptx(32, 16, 16, 0, 1024, 4096, 2);
-        assert!(ptx.contains("mul.lo.u32 %r14, %r6, 32;"), "y_row=N*2=32: {ptx}");
+        assert!(
+            ptx.contains("mul.lo.u32 %r14, %r6, 32;"),
+            "y_row=N*2=32: {ptx}"
+        );
         assert!(ptx.contains("cvt.rn.f16.f32 %t0, %c0;"), "f16 cvt");
         assert!(ptx.contains("st.global.u16 [%rd5], %t0;"), "f16 store");
         // n_cta*16*y_elem = n_cta*32 for f16 (NOT *64)
-        assert!(ptx.contains("mul.lo.u32 %r9, %r9, 32;"), "n_cta col = 16*2: {ptx}");
+        assert!(
+            ptx.contains("mul.lo.u32 %r9, %r9, 32;"),
+            "n_cta col = 16*2: {ptx}"
+        );
     }
 }
 
@@ -824,12 +870,7 @@ fn emit_e5a_b_set(out: &mut String, gr: usize, set_off: usize) {
 
 /// E5a shared emitter: the B-slab base (%rd5c = %rd9 + stage·bsmem_buf +
 /// ng_warp·gr·256) from a stage held in PTX reg `stage_reg`.
-fn emit_e5a_b_base(
-    out: &mut String,
-    stage_reg: &str,
-    bsmem_buf: usize,
-    gr: usize,
-) {
+fn emit_e5a_b_base(out: &mut String, stage_reg: &str, bsmem_buf: usize, gr: usize) {
     out.push_str("    mov.u64 %rd5c, %rd9;\n");
     out.push_str(&format!(
         "    mul.lo.u32 %r12, {}, {};\n",
@@ -942,19 +983,16 @@ fn emit_fill_stage(out: &mut String, stages: usize) {
         out.push_str(&format!("    and.b32 %r17, %r17, {};\n", stages - 1));
     } else {
         out.push_str(&format!("    setp.ge.u32 %p1, %r17, {};\n", stages as u32));
-        out.push_str(&format!("    @%p1 sub.u32 %r17, %r17, {};\n", stages as u32));
+        out.push_str(&format!(
+            "    @%p1 sub.u32 %r17, %r17, {};\n",
+            stages as u32
+        ));
     }
 }
 
 /// Tail (after the iteration barrier): load the NEXT stage's B into the
 /// set opposite to %r27, then flip the parity. Skipped on the final kstep.
-fn emit_e5a_tail_prefetch(
-    out: &mut String,
-    k: i64,
-    stages: usize,
-    gr: usize,
-    bsmem_buf: usize,
-) {
+fn emit_e5a_tail_prefetch(out: &mut String, k: i64, stages: usize, gr: usize, bsmem_buf: usize) {
     out.push_str("    add.u32 %r28, %r2, 16;\n");
     out.push_str(&format!("    setp.ge.u32 %p2, %r28, {};\n", k));
     out.push_str("    @%p2 bra BSKIP;\n");
@@ -1009,7 +1047,19 @@ pub fn tensor_gemm_ptx_smem_mw(
         stages
     };
     tensor_gemm_ptx_smem_mw_opt(
-        m, n, k, a_off, b_off, y_off, y_elem, mw, nw, f16_acc, stages, warp_mh, b_lookahead,
+        m,
+        n,
+        k,
+        a_off,
+        b_off,
+        y_off,
+        y_elem,
+        mw,
+        nw,
+        f16_acc,
+        stages,
+        warp_mh,
+        b_lookahead,
         bsmem_pad,
         kps,
         lowering.ptx_tensor_warp_spec,
@@ -1049,8 +1099,22 @@ pub fn tensor_gemm_ptx_smem_mw_epilogue(
         stages
     };
     tensor_gemm_ptx_smem_mw_opt(
-        m, n, k, a_off, b_off, y_off, y_elem, mw, nw, f16_acc, stages, warp_mh, b_lookahead,
-        bsmem_pad, kps, lowering.ptx_tensor_warp_spec,
+        m,
+        n,
+        k,
+        a_off,
+        b_off,
+        y_off,
+        y_elem,
+        mw,
+        nw,
+        f16_acc,
+        stages,
+        warp_mh,
+        b_lookahead,
+        bsmem_pad,
+        kps,
+        lowering.ptx_tensor_warp_spec,
         std::env::var("BRIEV_WS_DEBUG").is_ok(),
         Some(scale),
     )
@@ -1102,7 +1166,12 @@ fn tensor_gemm_ptx_smem_mw_opt(
     debug_assert!(!b_lookahead || (f16_acc && stages.is_power_of_two()));
     // E8a: the warp-specialized protocol is derived for exactly this shape.
     debug_assert!(!warp_spec || (f16_acc && stages == 2 && ksteps_per_stage == 1 && !b_lookahead));
-    debug_assert!(mhr * gr == 16 && m % (16 * mhr as i64 * mw as i64) == 0 && n % (8 * gr as i64 * nw as i64) == 0 && k % 16 == 0);
+    debug_assert!(
+        mhr * gr == 16
+            && m % (16 * mhr as i64 * mw as i64) == 0
+            && n % (8 * gr as i64 * nw as i64) == 0
+            && k % 16 == 0
+    );
     let a_row = k * 2;
     let b_row = n * 2;
     let y_row = n * (y_elem as i64);
@@ -1171,7 +1240,11 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // k_global*b_row (const stripe add in the prologue, dynamic kstep
     // block in the K loop). The last tuple element is the within-chunk
     // byte mask (0 at the 16B rung = swizzle-unit copies, no offset add).
-    let mut emit_b_fill = |out: &mut String, r18_prelude: &str, dst_off: usize, lanes: usize, sync_stores: bool| {
+    let mut emit_b_fill = |out: &mut String,
+                           r18_prelude: &str,
+                           dst_off: usize,
+                           lanes: usize,
+                           sync_stores: bool| {
         // E8a: per-lane scaling mirrors the A fill (see there).
         let per_b_l = per_b as usize * threads as usize / lanes;
         let (copies, width, modifier, chunk_mask) = if per_b_l % 4 == 0 {
@@ -1237,7 +1310,11 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // and passes the per-site source-offset adjustment (`src_off`) — the
     // constant stripe add in the prologue, the dynamic kstep block in the
     // K loop.
-    let mut emit_a_fill = |out: &mut String, src_off: &str, dst_off: usize, lanes: usize, sync_stores: bool| {
+    let mut emit_a_fill = |out: &mut String,
+                           src_off: &str,
+                           dst_off: usize,
+                           lanes: usize,
+                           sync_stores: bool| {
         // E8a: per-lane work scales with the issuing lane count — the
         // producer path (64 lanes) covers the same stage bytes as the
         // cooperative fill (256 lanes) with 4x the copies per lane.
@@ -1266,10 +1343,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
                     out.push_str("    mul.wide.u32 %rd5, %r15, 1;\n");
                     out.push_str("    add.u64 %rd5, %rd2, %rd5;\n");
                     if dst_off > 0 {
-                        out.push_str(&format!(
-                            "    add.u32 %r16, %r12, {};\n",
-                            dst_off
-                        ));
+                        out.push_str(&format!("    add.u32 %r16, %r12, {};\n", dst_off));
                     } else {
                         out.push_str("    mov.u32 %r16, %r12;\n");
                     }
@@ -1300,16 +1374,15 @@ fn tensor_gemm_ptx_smem_mw_opt(
                     out.push_str("    mul.wide.u32 %rd5, %r15, 1;\n");
                     out.push_str("    add.u64 %rd5, %rd2, %rd5;\n");
                     if dst_off > 0 {
-                        out.push_str(&format!(
-                            "    add.u32 %r16, %r12, {};\n",
-                            dst_off
-                        ));
+                        out.push_str(&format!("    add.u32 %r16, %r12, {};\n", dst_off));
                     } else {
                         out.push_str("    mov.u32 %r16, %r12;\n");
                     }
                     out.push_str("    add.u32 %r16, %r16, %r14;\n");
                     if sync_stores {
-                        out.push_str("    ld.global.u32 %r29, [%rd5];\n    st.shared.u32 [%r16], %r29;\n");
+                        out.push_str(
+                            "    ld.global.u32 %r29, [%rd5];\n    st.shared.u32 [%r16], %r29;\n",
+                        );
                     } else {
                         out.push_str("    cp.async.ca.shared.global [%r16], [%rd5], 4;\n");
                     }
@@ -1334,7 +1407,9 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // not supported by any local ptxas).
     out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
     out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");
-    out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7, %rd8, %rd9, %rd5b, %rd5c;\n");
+    out.push_str(
+        "    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7, %rd8, %rd9, %rd5b, %rd5c;\n",
+    );
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
     out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
     out.push_str("    .reg .u32  %r21, %r22, %r23, %r24, %r25, %r26;\n");
@@ -1389,7 +1464,12 @@ fn tensor_gemm_ptx_smem_mw_opt(
         )
     } else {
         (
-            vec!["%a0".to_string(), "%a1".to_string(), "%a2".to_string(), "%a3".to_string()],
+            vec![
+                "%a0".to_string(),
+                "%a1".to_string(),
+                "%a2".to_string(),
+                "%a3".to_string(),
+            ],
             vec!["%b0".to_string(), "%b1".to_string()],
         )
     };
@@ -1441,15 +1521,24 @@ fn tensor_gemm_ptx_smem_mw_opt(
     let mut emit_ws_debug_store = |out: &mut String| {
         // rd6 is already state + slab_base (caller sets it with proj_param added)
         out.push_str("    mov.u32 %r12, %r10;\n");
-        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
+        out.push_str(&format!(
+            "    mul.lo.u32 %r12, %r12, {};\n",
+            16 * mhr as i64 * y_row
+        ));
         out.push_str("    mov.u32 %r13, %r11;\n");
-        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
+        out.push_str(&format!(
+            "    mul.lo.u32 %r13, %r13, {};\n",
+            8 * gr as i64 * (y_elem as i64)
+        ));
         out.push_str("    mov.u32 %r9, %r12;\n");
         out.push_str("    add.u32 %r9, %r9, %r13;\n");
         for mh in 0..mhr {
             for g in 0..gr {
                 let cb = 2 * (mh * gr + g);
-                out.push_str(&format!("    mov.u32 %r12, {};\n", (16 * mh as i64) * y_row));
+                out.push_str(&format!(
+                    "    mov.u32 %r12, {};\n",
+                    (16 * mh as i64) * y_row
+                ));
                 out.push_str(&format!("    mul.lo.u32 %r13, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r12, %r12, %r13;\n");
                 out.push_str(&format!(
@@ -1462,10 +1551,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
                 out.push_str("    add.u32 %r12, %r12, %r13;\n");
                 out.push_str("    mul.wide.u32 %rd4, %r12, 1;\n");
                 out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
-                for (pair, addr_step) in [
-                    (0i64, None::<i64>),
-                    (1, Some(8 * y_row)),
-                ] {
+                for (pair, addr_step) in [(0i64, None::<i64>), (1, Some(8 * y_row))] {
                     if let Some(d) = addr_step {
                         out.push_str(&format!("    add.u64 %rd5, %rd5, {};\n", d));
                     }
@@ -1492,9 +1578,15 @@ fn tensor_gemm_ptx_smem_mw_opt(
             out.push_str(&format!("    mov.b32 %t1, 0x{:08x};\n", pair_bits));
         }
         out.push_str("    mov.u32 %r12, %r10;\n");
-        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
+        out.push_str(&format!(
+            "    mul.lo.u32 %r12, %r12, {};\n",
+            16 * mhr as i64 * y_row
+        ));
         out.push_str("    mov.u32 %r13, %r11;\n");
-        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
+        out.push_str(&format!(
+            "    mul.lo.u32 %r13, %r13, {};\n",
+            8 * gr as i64 * (y_elem as i64)
+        ));
         out.push_str("    mov.u32 %r9, %r12;\n");
         out.push_str("    add.u32 %r9, %r9, %r13;\n");
         if mode == 0 {
@@ -1503,7 +1595,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
         for mh in 0..mhr {
             for g in 0..gr {
                 let cb = 2 * (mh * gr + g);
-                out.push_str(&format!("    mov.u32 %r12, {};\n", (16 * mh as i64) * y_row));
+                out.push_str(&format!(
+                    "    mov.u32 %r12, {};\n",
+                    (16 * mh as i64) * y_row
+                ));
                 out.push_str(&format!("    mul.lo.u32 %r13, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r12, %r12, %r13;\n");
                 out.push_str(&format!(
@@ -1531,10 +1626,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
                     // scale multiplies the packed f16x2 acc before the store.
                     // (mul.rn.f16x2 needs a REGISTER operand, not an immediate.)
                     if let Some(_) = epilogue_scale.and_then(f16x2_pair) {
-                        out.push_str(&format!(
-                            "    mul.rn.f16x2 {}, {}, %t1;\n",
-                            reg, reg
-                        ));
+                        out.push_str(&format!("    mul.rn.f16x2 {}, {}, %t1;\n", reg, reg));
                     }
                     if store_only {
                         out.push_str(&format!("    st.global.b32 [%rd5], {};\n", reg));
@@ -1639,31 +1731,46 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("    rem.u32 %r3, %r1, %r2;  // m_cta\n");
         out.push_str("    div.u32 %r4, %r1, %r2;  // n_cta\n");
     } else {
-        out.push_str(&format!("    mov.u32 %r2, {};\n", n / (8 * gr as i64 * nw as i64)));
+        out.push_str(&format!(
+            "    mov.u32 %r2, {};\n",
+            n / (8 * gr as i64 * nw as i64)
+        ));
         out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
         out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
     }
 
     out.push_str("    mov.u32 %r2, %r3;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * a_row));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r2, %r2, {};\n",
+        16 * mhr as i64 * mw as i64 * a_row
+    ));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd2, {};\n", a_off));
     out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
     out.push_str("    add.u64 %rd2, %rd2, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * gr as i64 * nw as i64));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r2, %r2, {};\n",
+        16 * gr as i64 * nw as i64
+    ));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd3, {};\n", b_off));
     out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
     out.push_str("    add.u64 %rd3, %rd3, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r3;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * y_row));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r2, %r2, {};\n",
+        16 * mhr as i64 * mw as i64 * y_row
+    ));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off));
     out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 8 * gr as i64 * nw as i64 * (y_elem as i64)));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r2, %r2, {};\n",
+        8 * gr as i64 * nw as i64 * (y_elem as i64)
+    ));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
@@ -1715,7 +1822,13 @@ fn tensor_gemm_ptx_smem_mw_opt(
             } else {
                 String::new()
             };
-            emit_a_fill(&mut out, &src_off, strip * asmem_buf, threads as usize, false);
+            emit_a_fill(
+                &mut out,
+                &src_off,
+                strip * asmem_buf,
+                threads as usize,
+                false,
+            );
         }
         // B fill into stage s. Layout contract (must mirror the B ldmatrix
         // reader below): the slab is K-MAJOR — smem byte D = slab*2048 +
@@ -1745,7 +1858,13 @@ fn tensor_gemm_ptx_smem_mw_opt(
                 }
                 s
             };
-            emit_b_fill(&mut out, &r18_prelude, strip * bsmem_buf, threads as usize, false);
+            emit_b_fill(
+                &mut out,
+                &r18_prelude,
+                strip * bsmem_buf,
+                threads as usize,
+                false,
+            );
         }
         if warp_spec {
             out.push_str(&format!("PS{}:\n", s));
@@ -1759,7 +1878,11 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // TF @1024²×64) and fixes it. Deep K keeps `stages-2` (the
     // 2048³/4096³ overlap — wait_group 0 costs 8% at 2048³: 24.74 vs
     // 26.90 TF).
-    let wait_depth = if k <= 128 { 0 } else { stages.saturating_sub(2) };
+    let wait_depth = if k <= 128 {
+        0
+    } else {
+        stages.saturating_sub(2)
+    };
     out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
     // Async-write visibility (2026-09-10, driver 580.178 / sm_86): the
     // documented wait_group + bar.sync pattern alone let ldmatrix read
@@ -1800,7 +1923,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
         out.push_str("    mov.u32 %r13, %r7;\n");
         out.push_str("    and.b32 %r12, %r13, 15;\n");
-        out.push_str(&format!("    shl.b32 %r12, %r12, {};\n", 4 + gr.trailing_zeros()));
+        out.push_str(&format!(
+            "    shl.b32 %r12, %r12, {};\n",
+            4 + gr.trailing_zeros()
+        ));
         out.push_str(&format!("    and.b32 %r14, %r13, {};\n", gr - 1));
         out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
         out.push_str("    shl.b32 %r14, %r14, 4;\n");
@@ -1814,160 +1940,147 @@ fn tensor_gemm_ptx_smem_mw_opt(
     };
 
     let mut emit_f16_compute = move |mut out: &mut String| {
-    out.push_str("    mov.u64 %rd7, %rd8;\n");
-    out.push_str(&format!(
-        "    mul.lo.u32 %r18, %r9, {};\n",
-        asmem_buf * kps
-    ));
-    out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
-    out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
-    if kps > 1 {
-        // Sub-strip offset: %r17 (fill stage, dead) := ((kstep/16)%kps)·asmem_buf.
-        out.push_str(&format!("    and.b32 %r17, %r2, {};\n", 16 * kps - 1));
-        out.push_str("    shr.u32 %r17, %r17, 4;\n");
-        out.push_str(&format!(
-            "    mul.lo.u32 %r17, %r17, {};\n",
-            asmem_buf
-        ));
-        out.push_str("    mul.wide.u32 %rd5b, %r17, 1;\n");
+        out.push_str("    mov.u64 %rd7, %rd8;\n");
+        out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", asmem_buf * kps));
+        out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
         out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
-    }
-    out.push_str("    mov.u32 %r12, %r10;\n");
-    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", mhr * 512));
-    out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
-    out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
-    // B-fragment address+ldmatrix emitter (shared by both schedules).
-    // Per col-group g (8 cols): lane 0-15 addresses k-rows k=lane of 16
-    // bytes at byte g*16, XOR-swizzled by k&7 — matching the fill's
-    // ((n>>3)^(k&7))*16 chunk remap. x2.trans: lanes 0-7 -> b-lo (k 0-7),
-    // lanes 8-15 -> b-hi (k 8-15), both n 0-7.
-    if f16_acc {
-        // E4b precomputed-lane schedule (2026-09-13): lane→row/k-block
-        // decomposition done once at kernel entry (%r23=a_rf, %r24=a_cf,
-        // %r25=b_l15, %r26=b_l3). Per-mh A load: 5 ALU + ldmatrix + swap
-        // = 8 instr (was 13+1+2=16). Per-g B load: 6 ALU + ldmatrix = 7
-        // instr (was 17). B base (stage+n_warp) computed once per kstep
-        // before the g loop. Total savings ~80 ALU per kstep per warp.
-        for mh in 0..mhr {
-            out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
-            out.push_str("    shl.b32 %r16, %r23, 5;\n");
-            out.push_str("    add.u32 %r16, %r16, %r24;\n");
-            out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
-            out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
-            out.push_str(&format!(
+        if kps > 1 {
+            // Sub-strip offset: %r17 (fill stage, dead) := ((kstep/16)%kps)·asmem_buf.
+            out.push_str(&format!("    and.b32 %r17, %r2, {};\n", 16 * kps - 1));
+            out.push_str("    shr.u32 %r17, %r17, 4;\n");
+            out.push_str(&format!("    mul.lo.u32 %r17, %r17, {};\n", asmem_buf));
+            out.push_str("    mul.wide.u32 %rd5b, %r17, 1;\n");
+            out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
+        }
+        out.push_str("    mov.u32 %r12, %r10;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", mhr * 512));
+        out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+        out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
+        // B-fragment address+ldmatrix emitter (shared by both schedules).
+        // Per col-group g (8 cols): lane 0-15 addresses k-rows k=lane of 16
+        // bytes at byte g*16, XOR-swizzled by k&7 — matching the fill's
+        // ((n>>3)^(k&7))*16 chunk remap. x2.trans: lanes 0-7 -> b-lo (k 0-7),
+        // lanes 8-15 -> b-hi (k 8-15), both n 0-7.
+        if f16_acc {
+            // E4b precomputed-lane schedule (2026-09-13): lane→row/k-block
+            // decomposition done once at kernel entry (%r23=a_rf, %r24=a_cf,
+            // %r25=b_l15, %r26=b_l3). Per-mh A load: 5 ALU + ldmatrix + swap
+            // = 8 instr (was 13+1+2=16). Per-g B load: 6 ALU + ldmatrix = 7
+            // instr (was 17). B base (stage+n_warp) computed once per kstep
+            // before the g loop. Total savings ~80 ALU per kstep per warp.
+            for mh in 0..mhr {
+                out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
+                out.push_str("    shl.b32 %r16, %r23, 5;\n");
+                out.push_str("    add.u32 %r16, %r16, %r24;\n");
+                out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+                out.push_str(&format!(
                 "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {{%a{}, %a{}, %a{}, %a{}}}, [%rd5];\n",
                 4 * mh, 4 * mh + 1, 4 * mh + 2, 4 * mh + 3
             ));
-            out.push_str(&format!(
-                "    mov.b32 %t0, %a{}; mov.b32 %a{}, %a{}; mov.b32 %a{}, %t0;\n",
-                4 * mh + 1, 4 * mh + 1, 4 * mh + 2, 4 * mh + 2
-            ));
-        }
-        // E5a lookahead: the mma consumes the B set prefetched across the
-        // previous iteration's barrier (%r27 = 0 → set0, 1 → set1); the
-        // in-kstep B loads and B-base math move to the tail prefetch. No
-        // smem B reads happen in the compute phase at all — ldmatrix
-        // latency hides entirely behind the previous kstep's mma stream.
-        if b_lookahead {
-            emit_e5a_mma_branch(&mut out, mhr, gr);
-        } else {
-            // B base (stage + sub-strip + n_warp offset) — invariant across
-            // g, computed once. %r17 (dead after the A-base sub add) holds
-            // sub·asmem_buf; recompute for the B strip scale.
-            out.push_str("    mov.u64 %rd5c, %rd9;\n");
-            out.push_str(&format!(
-                "    mul.lo.u32 %r18, %r9, {};\n",
-                bsmem_buf * kps
-            ));
-            out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
-            out.push_str("    add.u64 %rd5c, %rd5c, %rd5b;\n");
-            if kps > 1 {
-                out.push_str(&format!("    and.b32 %r17, %r2, {};\n", 16 * kps - 1));
-                out.push_str("    shr.u32 %r17, %r17, 4;\n");
                 out.push_str(&format!(
-                    "    mul.lo.u32 %r17, %r17, {};\n",
-                    bsmem_buf
+                    "    mov.b32 %t0, %a{}; mov.b32 %a{}, %a{}; mov.b32 %a{}, %t0;\n",
+                    4 * mh + 1,
+                    4 * mh + 1,
+                    4 * mh + 2,
+                    4 * mh + 2
                 ));
-                out.push_str("    mul.wide.u32 %rd5b, %r17, 1;\n");
+            }
+            // E5a lookahead: the mma consumes the B set prefetched across the
+            // previous iteration's barrier (%r27 = 0 → set0, 1 → set1); the
+            // in-kstep B loads and B-base math move to the tail prefetch. No
+            // smem B reads happen in the compute phase at all — ldmatrix
+            // latency hides entirely behind the previous kstep's mma stream.
+            if b_lookahead {
+                emit_e5a_mma_branch(&mut out, mhr, gr);
+            } else {
+                // B base (stage + sub-strip + n_warp offset) — invariant across
+                // g, computed once. %r17 (dead after the A-base sub add) holds
+                // sub·asmem_buf; recompute for the B strip scale.
+                out.push_str("    mov.u64 %rd5c, %rd9;\n");
+                out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf * kps));
+                out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
                 out.push_str("    add.u64 %rd5c, %rd5c, %rd5b;\n");
-            }
-            out.push_str("    mov.u32 %r12, %r11;\n");
-            out.push_str(&format!(
-                "    mul.lo.u32 %r12, %r12, {};\n",
-                gr * 256
-            ));
-            out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
-            out.push_str("    add.u64 %rd5c, %rd5c, %rd5b;\n");
-            // Per-g B loads with precomputed lane terms.
-            for g in 0..gr {
-                let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
-                out.push_str(&format!(
-                    "    xor.b32 %r14, %r26, {};\n",
-                    g
-                ));
-                out.push_str("    shl.b32 %r14, %r14, 4;\n");
-                out.push_str("    add.u32 %r17, %r25, %r14;\n");
-                out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
-                out.push_str("    add.u64 %rd5, %rd5c, %rd5;\n");
-                out.push_str(&format!(
-                    "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
-                    lo, hi
-                ));
-            }
-            for mh in 0..mhr {
+                if kps > 1 {
+                    out.push_str(&format!("    and.b32 %r17, %r2, {};\n", 16 * kps - 1));
+                    out.push_str("    shr.u32 %r17, %r17, 4;\n");
+                    out.push_str(&format!("    mul.lo.u32 %r17, %r17, {};\n", bsmem_buf));
+                    out.push_str("    mul.wide.u32 %rd5b, %r17, 1;\n");
+                    out.push_str("    add.u64 %rd5c, %rd5c, %rd5b;\n");
+                }
+                out.push_str("    mov.u32 %r12, %r11;\n");
+                out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", gr * 256));
+                out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+                out.push_str("    add.u64 %rd5c, %rd5c, %rd5b;\n");
+                // Per-g B loads with precomputed lane terms.
                 for g in 0..gr {
                     let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
-                    let (a0, a1, a2, a3) = (
-                        format!("%a{}", 4 * mh),
-                        format!("%a{}", 4 * mh + 1),
-                        format!("%a{}", 4 * mh + 2),
-                        format!("%a{}", 4 * mh + 3),
-                    );
-                    let cb = 2 * (mh * gr + g);
+                    out.push_str(&format!("    xor.b32 %r14, %r26, {};\n", g));
+                    out.push_str("    shl.b32 %r14, %r14, 4;\n");
+                    out.push_str("    add.u32 %r17, %r25, %r14;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rd5c, %rd5;\n");
                     out.push_str(&format!(
+                        "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
+                        lo, hi
+                    ));
+                }
+                for mh in 0..mhr {
+                    for g in 0..gr {
+                        let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
+                        let (a0, a1, a2, a3) = (
+                            format!("%a{}", 4 * mh),
+                            format!("%a{}", 4 * mh + 1),
+                            format!("%a{}", 4 * mh + 2),
+                            format!("%a{}", 4 * mh + 3),
+                        );
+                        let cb = 2 * (mh * gr + g);
+                        out.push_str(&format!(
                         "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{{}, {}, {}, {}}}, {{{}, {}}}, {{%c{}, %c{}}};\n",
                         cb, cb + 1, a0, a1, a2, a3, lo, hi, cb, cb + 1
                     ));
+                    }
                 }
             }
-        }
-    } else {
-        for mh in 0..mhr {
-            // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
-            // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
-            out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
-            out.push_str("    mov.u32 %r13, %r7;\n");
-            out.push_str("    shr.u32 %r12, %r13, 3;\n");
-            out.push_str("    and.b32 %r13, %r13, 7;\n");
-            out.push_str("    and.b32 %r14, %r12, 1;\n");
-            out.push_str("    shr.u32 %r15, %r12, 1;\n");
-            out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
-            out.push_str("    add.u32 %r15, %r15, %r13;\n");
-            out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
-            out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
-            out.push_str("    add.u32 %r16, %r15, %r14;\n");
-            out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
-            out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
-            out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
-            out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
+        } else {
+            for mh in 0..mhr {
+                // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
+                // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
+                out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
+                out.push_str("    mov.u32 %r13, %r7;\n");
+                out.push_str("    shr.u32 %r12, %r13, 3;\n");
+                out.push_str("    and.b32 %r13, %r13, 7;\n");
+                out.push_str("    and.b32 %r14, %r12, 1;\n");
+                out.push_str("    shr.u32 %r15, %r12, 1;\n");
+                out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+                out.push_str("    add.u32 %r15, %r15, %r13;\n");
+                out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+                out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+                out.push_str("    add.u32 %r16, %r15, %r14;\n");
+                out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+                out.push_str(
+                    "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n",
+                );
+                out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
 
-            // B fragments from the k-major swizzled tile. Per col-group g (8
-            // cols): lane 0-15 addresses k-rows k=lane of 16 bytes at byte g*16,
-            // XOR-swizzled by k&7 — matching the fill's ((n>>3)^(k&7))*16 chunk
-            // remap. x2.trans: lanes 0-7 -> b-lo (k 0-7), lanes 8-15 -> b-hi
-            // (k 8-15), both n 0-7.
-            // f32: serial per-g (the 128-reg 2-CTA budget cannot fund 4 B
-            // regs — the f32 path stays byte-identical through E4a).
-            for g in 0..gr {
-                emit_b_ld(&mut out, g, "%b0", "%b1");
-                let cb = 4 * (mh * gr + g);
-                out.push_str(&format!(
+                // B fragments from the k-major swizzled tile. Per col-group g (8
+                // cols): lane 0-15 addresses k-rows k=lane of 16 bytes at byte g*16,
+                // XOR-swizzled by k&7 — matching the fill's ((n>>3)^(k&7))*16 chunk
+                // remap. x2.trans: lanes 0-7 -> b-lo (k 0-7), lanes 8-15 -> b-hi
+                // (k 8-15), both n 0-7.
+                // f32: serial per-g (the 128-reg 2-CTA budget cannot fund 4 B
+                // regs — the f32 path stays byte-identical through E4a).
+                for g in 0..gr {
+                    emit_b_ld(&mut out, g, "%b0", "%b1");
+                    let cb = 4 * (mh * gr + g);
+                    out.push_str(&format!(
                     "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
                     cb, cb + 1, cb + 2, cb + 3, cb, cb + 1, cb + 2, cb + 3
                 ));
+                }
             }
         }
-    }
     };
     if warp_spec {
         // E8a warp-specialized K loop (f16acc, stages=2, kps=1 - asserted).
@@ -1991,7 +2104,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
             emit_ws_debug_store(&mut out);
             // Initialize %rd6 for WCLOOP slab 1 (advanced each iteration)
             let slab_stride = m * n * 2;
-            out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off + slab_stride as u64));
+            out.push_str(&format!(
+                "    mov.u64 %rd6, {};\n",
+                y_off + slab_stride as u64
+            ));
             out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
         }
         out.push_str("    bar.arrive 2, 320;\n");
@@ -2043,20 +2159,14 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("    and.b32 %r18, %r18, 1;\n");
         // A fill into stage %r18, stripe %r2+16 - 64 producer lanes.
         out.push_str("    mov.u32 %r12, %r21;\n");
-        out.push_str(&format!(
-            "    mul.lo.u32 %r17, %r18, {};\n",
-            asmem_buf
-        ));
+        out.push_str(&format!("    mul.lo.u32 %r17, %r18, {};\n", asmem_buf));
         out.push_str("    add.u32 %r12, %r12, %r17;\n");
         let koff_src_off = "    mov.u32 %r16, %r2;\n    add.u32 %r16, %r16, 16;\n    mul.lo.u32 %r16, %r16, 2;\n    add.u32 %r15, %r15, %r16;\n";
         emit_a_fill(&mut out, koff_src_off, 0, 64, true);
         // B fill into the same stage; %r17 is re-derived as the emitter's
         // k-row before the prelude consumes it (same contract as KLOOP).
         out.push_str("    mov.u32 %r12, %r22;\n");
-        out.push_str(&format!(
-            "    mul.lo.u32 %r17, %r18, {};\n",
-            bsmem_buf
-        ));
+        out.push_str(&format!("    mul.lo.u32 %r17, %r18, {};\n", bsmem_buf));
         out.push_str("    add.u32 %r12, %r12, %r17;\n");
         let koff_r18_prelude = format!(
             "    mov.u32 %r18, %r2;\n    add.u32 %r18, %r18, 16;\n    add.u32 %r18, %r18, %r17;\n    mul.lo.u32 %r18, %r18, {};\n",
@@ -2073,186 +2183,201 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("WPDONE:\n");
         out.push_str("    bra.uni KEND;\n");
     } else {
-    out.push_str("    mov.u32 %r2, 0;  // kstep\n");
-    out.push_str("KLOOP:\n");
-    out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
-    out.push_str("    @%p1 bra KEND;\n");
+        out.push_str("    mov.u32 %r2, 0;  // kstep\n");
+        out.push_str("KLOOP:\n");
+        out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
+        out.push_str("    @%p1 bra KEND;\n");
 
-    // Compute stage = ((kstep/16)/kps) % stages; fill stage = (stage + stages-1) % stages.
-    // kps>1 divides the strip index first (the fill+bar cadence is per-stage).
-    // Power-of-2 wraps with `& (stages-1)`; stages=3 uses the constant modulo
-    // (the 2026-09-14 parity probe — see emit_stage_modulo/emit_fill_stage).
-    out.push_str("    shr.u32 %r9, %r2, 4;\n");
-    if kps > 1 {
-        out.push_str(&format!("    shr.u32 %r9, %r9, {};\n", kps.trailing_zeros()));
-    }
-    emit_stage_modulo(&mut out, stages);
-    emit_fill_stage(&mut out, stages);
+        // Compute stage = ((kstep/16)/kps) % stages; fill stage = (stage + stages-1) % stages.
+        // kps>1 divides the strip index first (the fill+bar cadence is per-stage).
+        // Power-of-2 wraps with `& (stages-1)`; stages=3 uses the constant modulo
+        // (the 2026-09-14 parity probe — see emit_stage_modulo/emit_fill_stage).
+        out.push_str("    shr.u32 %r9, %r2, 4;\n");
+        if kps > 1 {
+            out.push_str(&format!(
+                "    shr.u32 %r9, %r9, {};\n",
+                kps.trailing_zeros()
+            ));
+        }
+        emit_stage_modulo(&mut out, stages);
+        emit_fill_stage(&mut out, stages);
 
-    // Compute smem base for the FILL stage: asmem + stage * stage_bytes
-    out.push_str("    mov.u32 %r12, %r21;\n");
-    out.push_str(&format!(
-        "    mul.lo.u32 %r18, %r17, {};\n",
-        asmem_buf * kps
-    ));
-    out.push_str("    add.u32 %r12, %r12, %r18;\n");
+        // Compute smem base for the FILL stage: asmem + stage * stage_bytes
+        out.push_str("    mov.u32 %r12, %r21;\n");
+        out.push_str(&format!(
+            "    mul.lo.u32 %r18, %r17, {};\n",
+            asmem_buf * kps
+        ));
+        out.push_str("    add.u32 %r12, %r12, %r18;\n");
 
-    // The fill prefetches stripe kstep+16*kps*(stages-1) (consumed stages
-    // later — an off-by-one here would reuse stripe kstep and silently skip
-    // the last stripes; the seeded-data error 3.2e-3 slipped under the 5e-3
-    // gate once). On the final iterations the prefetch would read past K, so
-    // it is skipped. kps>1 adds the cadence guard: fills fire only on the
-    // first strip of each stage (kstep % 16·kps == 0).
-    let fill_guard = (k - (16 * kps as i64) * (stages as i64 - 1)).max(0);
-    out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
-    out.push_str("    @%p1 bra FILL_DONE;\n");
-    if kps > 1 {
-        out.push_str(&format!("    and.b32 %r18, %r2, {};\n", 16 * kps - 1));
-        out.push_str("    setp.ne.u32 %p1, %r18, 0;\n");
+        // The fill prefetches stripe kstep+16*kps*(stages-1) (consumed stages
+        // later — an off-by-one here would reuse stripe kstep and silently skip
+        // the last stripes; the seeded-data error 3.2e-3 slipped under the 5e-3
+        // gate once). On the final iterations the prefetch would read past K, so
+        // it is skipped. kps>1 adds the cadence guard: fills fire only on the
+        // first strip of each stage (kstep % 16·kps == 0).
+        let fill_guard = (k - (16 * kps as i64) * (stages as i64 - 1)).max(0);
+        out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
         out.push_str("    @%p1 bra FILL_DONE;\n");
-    }
+        if kps > 1 {
+            out.push_str(&format!("    and.b32 %r18, %r2, {};\n", 16 * kps - 1));
+            out.push_str("    setp.ne.u32 %p1, %r18, 0;\n");
+            out.push_str("    @%p1 bra FILL_DONE;\n");
+        }
 
-    // Cooperative A fill into the fill stage (coalesced D mapping; widened
-    // rung per a_fill_rung above — identical address decomposition, fewer
-    // copies). Source offset advances by the prefetch distance
-    // kstep + 16*kps*(stages-1); the strip loop walks the kps 16-k blocks.
-    let a_strips = if no_fill_a { 0usize } else { kps };
-    for strip in 0..a_strips {
-        let koff_src_off = {
-            let mut s = String::from("    mov.u32 %r16, %r2;\n");
-            s.push_str(&format!(
-                "    add.u32 %r16, %r16, {};\n",
-                (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
-            ));
-            s.push_str("    mul.lo.u32 %r16, %r16, 2;\n");
-            s.push_str("    add.u32 %r15, %r15, %r16;\n");
-            s
-        };
-        emit_a_fill(&mut out, &koff_src_off, strip * asmem_buf, threads as usize, false);
-    }
+        // Cooperative A fill into the fill stage (coalesced D mapping; widened
+        // rung per a_fill_rung above — identical address decomposition, fewer
+        // copies). Source offset advances by the prefetch distance
+        // kstep + 16*kps*(stages-1); the strip loop walks the kps 16-k blocks.
+        let a_strips = if no_fill_a { 0usize } else { kps };
+        for strip in 0..a_strips {
+            let koff_src_off = {
+                let mut s = String::from("    mov.u32 %r16, %r2;\n");
+                s.push_str(&format!(
+                    "    add.u32 %r16, %r16, {};\n",
+                    (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
+                ));
+                s.push_str("    mul.lo.u32 %r16, %r16, 2;\n");
+                s.push_str("    add.u32 %r15, %r15, %r16;\n");
+                s
+            };
+            emit_a_fill(
+                &mut out,
+                &koff_src_off,
+                strip * asmem_buf,
+                threads as usize,
+                false,
+            );
+        }
 
-    // Cooperative B fill into the fill stage. Same k-major swizzled contract
-    // as the prologue fill (see there); row advance is (kstep+dist+k)*b_row.
-    // Widened rung per b_fill_rung above; %r12 consumes %r17 (stage) before
-    // the emitter clobbers it.
-    out.push_str("    mov.u32 %r12, %r22;\n");
-    out.push_str(&format!(
-        "    mul.lo.u32 %r18, %r17, {};\n",
-        bsmem_buf * kps
-    ));
-    out.push_str("    add.u32 %r12, %r12, %r18;\n");
-    // global: (kstep+16*kps*(S-1)+k)*b_row
-    let b_strips = if no_fill_b { 0usize } else { kps };
-    for strip in 0..b_strips {
-        let koff_r18_prelude = {
-            let mut s = String::from("    mov.u32 %r18, %r2;\n");
-            s.push_str(&format!(
-                "    add.u32 %r18, %r18, {};\n",
-                (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
-            ));
-            s.push_str("    add.u32 %r18, %r18, %r17;\n");
-            s.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
-            s
-        };
-        emit_b_fill(&mut out, &koff_r18_prelude, strip * bsmem_buf, threads as usize, false);
-    }
-    // The commit lives INSIDE the fill path (before FILL_DONE): skipped
-    // fills must not commit. An EMPTY mid-loop commit_group + the tail
-    // `wait_group 0` broke the prologue-data visibility chain — at K=16
-    // (fill-skip guard `r2 >= 0` always true) the kernel returned all-zero
-    // y; with the commit inside, kstep-0 commits nothing and the prologue
-    // drain suffices (measured exact 2026-09-13, hand-patch + generator).
-    // At K > 16·(stages-1) the guard only fires on the final ksteps, whose
-    // empty commits were harmless — the emission for those ksteps is
-    // instruction-identical, only the label moved after the commit.
-    if !no_wait {
-        out.push_str("    cp.async.commit_group;\n");
-    }
-    out.push_str("FILL_DONE:\n");
+        // Cooperative B fill into the fill stage. Same k-major swizzled contract
+        // as the prologue fill (see there); row advance is (kstep+dist+k)*b_row.
+        // Widened rung per b_fill_rung above; %r12 consumes %r17 (stage) before
+        // the emitter clobbers it.
+        out.push_str("    mov.u32 %r12, %r22;\n");
+        out.push_str(&format!(
+            "    mul.lo.u32 %r18, %r17, {};\n",
+            bsmem_buf * kps
+        ));
+        out.push_str("    add.u32 %r12, %r12, %r18;\n");
+        // global: (kstep+16*kps*(S-1)+k)*b_row
+        let b_strips = if no_fill_b { 0usize } else { kps };
+        for strip in 0..b_strips {
+            let koff_r18_prelude = {
+                let mut s = String::from("    mov.u32 %r18, %r2;\n");
+                s.push_str(&format!(
+                    "    add.u32 %r18, %r18, {};\n",
+                    (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
+                ));
+                s.push_str("    add.u32 %r18, %r18, %r17;\n");
+                s.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
+                s
+            };
+            emit_b_fill(
+                &mut out,
+                &koff_r18_prelude,
+                strip * bsmem_buf,
+                threads as usize,
+                false,
+            );
+        }
+        // The commit lives INSIDE the fill path (before FILL_DONE): skipped
+        // fills must not commit. An EMPTY mid-loop commit_group + the tail
+        // `wait_group 0` broke the prologue-data visibility chain — at K=16
+        // (fill-skip guard `r2 >= 0` always true) the kernel returned all-zero
+        // y; with the commit inside, kstep-0 commits nothing and the prologue
+        // drain suffices (measured exact 2026-09-13, hand-patch + generator).
+        // At K > 16·(stages-1) the guard only fires on the final ksteps, whose
+        // empty commits were harmless — the emission for those ksteps is
+        // instruction-identical, only the label moved after the commit.
+        if !no_wait {
+            out.push_str("    cp.async.commit_group;\n");
+        }
+        out.push_str("FILL_DONE:\n");
 
-    // === Compute on CURRENT buffer (overlaps with async fill above) ===
-    // Register-trimmed scheduling (2026-09-10): A fragments load per-mh
-    // (4 live, was 8) and each B fragment loads immediately before its mma
-    // (2 live, was 16). 136 -> 128 regs natural, which is what lets
-    // select_mw_nw fund 512-thread CTAs.
-    // (An evening-2026-09-10 experiment hoisted the loop-invariant B base
-    // and lane terms — instruction count halved, perf DROPPED 11%: the
-    // redundant uniform math was soaking up issue slots that now stall on
-    // ldmatrix/mma dependencies. Reverted; measured before removed.)
+        // === Compute on CURRENT buffer (overlaps with async fill above) ===
+        // Register-trimmed scheduling (2026-09-10): A fragments load per-mh
+        // (4 live, was 8) and each B fragment loads immediately before its mma
+        // (2 live, was 16). 136 -> 128 regs natural, which is what lets
+        // select_mw_nw fund 512-thread CTAs.
+        // (An evening-2026-09-10 experiment hoisted the loop-invariant B base
+        // and lane terms — instruction count halved, perf DROPPED 11%: the
+        // redundant uniform math was soaking up issue slots that now stall on
+        // ldmatrix/mma dependencies. Reverted; measured before removed.)
         emit_f16_compute(&mut out);
 
-    // f16-acc promotion: FULL-K register accumulation (2026-09-11, the
-    // night's decisive probe) — the every-512-k y-RMV round cost 24 TFLOP/s
-    // at 4096^3 (21.4 with vs 45.8 stripped, three reps): 138 pipeline
-    // drains of 128 global-RMV instructions each. cuBLAS's structure is
-    // full-K f16 accumulation with ONE epilogue; the f16x2 chain's random-
-    // walk rounding at K=4096 measures ~5e-3 — inside the 1e-2 contract.
-    // The chunk predicate therefore fires only on the final iteration
-    // (chunk covers the whole K loop); the KEND remainder-promo handles
-    // K not divisible by 16. Tier boundary: like the coopmat f16acc tier,
-    // the f16 chain breaks the 1e-2 gate around K≈12288 (the documented
-    // K-budget) — larger K belongs on the f32-acc tier.
-    // (The final y store lives AFTER KEND — 2026-09-11: the in-loop
-    // predicated promo structure, even firing once, measured 28 vs 45 TF
-    // with the identical body made unconditional; the loop tail must stay
-    // clean for ptxas's scheduling. The store-only pass overwrites every
-    // element the fragments cover.)
+        // f16-acc promotion: FULL-K register accumulation (2026-09-11, the
+        // night's decisive probe) — the every-512-k y-RMV round cost 24 TFLOP/s
+        // at 4096^3 (21.4 with vs 45.8 stripped, three reps): 138 pipeline
+        // drains of 128 global-RMV instructions each. cuBLAS's structure is
+        // full-K f16 accumulation with ONE epilogue; the f16x2 chain's random-
+        // walk rounding at K=4096 measures ~5e-3 — inside the 1e-2 contract.
+        // The chunk predicate therefore fires only on the final iteration
+        // (chunk covers the whole K loop); the KEND remainder-promo handles
+        // K not divisible by 16. Tier boundary: like the coopmat f16acc tier,
+        // the f16 chain breaks the 1e-2 gate around K≈12288 (the documented
+        // K-budget) — larger K belongs on the f32-acc tier.
+        // (The final y store lives AFTER KEND — 2026-09-11: the in-loop
+        // predicated promo structure, even firing once, measured 28 vs 45 TF
+        // with the identical body made unconditional; the loop tail must stay
+        // clean for ptxas's scheduling. The store-only pass overwrites every
+        // element the fragments cover.)
 
         // Wait until this iteration's stage is complete (stages-2 groups remain
         // in flight) + async-write visibility (see the prologue note). kps>1:
         // only stage-boundary iterations wait — mid-stage ksteps consume the
         // same, already-visible stage.
-    if !no_wait {
-        if kps > 1 {
-            out.push_str("    add.u32 %r19, %r2, 16;\n");
-            out.push_str(&format!("    and.b32 %r19, %r19, {};\n", 16 * kps - 1));
-            out.push_str("    setp.ne.u32 %p1, %r19, 0;\n");
-            out.push_str("    @%p1 bra WAIT_DONE;\n");
+        if !no_wait {
+            if kps > 1 {
+                out.push_str("    add.u32 %r19, %r2, 16;\n");
+                out.push_str(&format!("    and.b32 %r19, %r19, {};\n", 16 * kps - 1));
+                out.push_str("    setp.ne.u32 %p1, %r19, 0;\n");
+                out.push_str("    @%p1 bra WAIT_DONE;\n");
+            }
+            // 2026-10-05 tail drain — the deep-K sibling of the 2026-09-16
+            // shallow-K drain above (same family: wait_depth leaves a group in
+            // flight that a later read consumes). Once the fill guard fires, no
+            // new group is committed, so the pending count settles at
+            // `wait_depth` and `cp.async.wait_group wait_depth` returns WITHOUT
+            // waiting: the final stripe's cp.async races the last reads.
+            // Observed on the g1024 patterned gate: 0..60 stale cells per run,
+            // +3.9..+4.9 deltas (partial k-slice), all-ones immune (stale slice
+            // == correct slice for ones), step-5 columns = b's period-5 seed
+            // pattern, run-varying, zero atomics. The guard fires only on the
+            // final 16·kps·(stages-1) k, so the full drain costs 1-2 tail
+            // iterations. wait_depth == 0 configs (k ≤ 128 or stages ≤ 2)
+            // already drain every iteration — branchless, byte-identical to the
+            // pre-fix emission. Undo: drop the WAIT_DRAIN branch.
+            if wait_depth > 0 {
+                out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
+                out.push_str("    @%p1 bra WAIT_DRAIN;\n");
+                out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
+                out.push_str("    bra.uni WAIT_JOIN;\n");
+                out.push_str("WAIT_DRAIN:\n");
+                out.push_str("    cp.async.wait_group 0;\n");
+                out.push_str("WAIT_JOIN:\n");
+            } else {
+                out.push_str("    cp.async.wait_group 0;\n");
+            }
+            out.push_str("    membar.cta;\n");
+            out.push_str("    bar.sync 0;\n");
+            if kps > 1 {
+                out.push_str("WAIT_DONE:\n");
+            }
         }
-        // 2026-10-05 tail drain — the deep-K sibling of the 2026-09-16
-        // shallow-K drain above (same family: wait_depth leaves a group in
-        // flight that a later read consumes). Once the fill guard fires, no
-        // new group is committed, so the pending count settles at
-        // `wait_depth` and `cp.async.wait_group wait_depth` returns WITHOUT
-        // waiting: the final stripe's cp.async races the last reads.
-        // Observed on the g1024 patterned gate: 0..60 stale cells per run,
-        // +3.9..+4.9 deltas (partial k-slice), all-ones immune (stale slice
-        // == correct slice for ones), step-5 columns = b's period-5 seed
-        // pattern, run-varying, zero atomics. The guard fires only on the
-        // final 16·kps·(stages-1) k, so the full drain costs 1-2 tail
-        // iterations. wait_depth == 0 configs (k ≤ 128 or stages ≤ 2)
-        // already drain every iteration — branchless, byte-identical to the
-        // pre-fix emission. Undo: drop the WAIT_DRAIN branch.
-        if wait_depth > 0 {
-            out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
-            out.push_str("    @%p1 bra WAIT_DRAIN;\n");
-            out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
-            out.push_str("    bra.uni WAIT_JOIN;\n");
-            out.push_str("WAIT_DRAIN:\n");
-            out.push_str("    cp.async.wait_group 0;\n");
-            out.push_str("WAIT_JOIN:\n");
-        } else {
-            out.push_str("    cp.async.wait_group 0;\n");
-        }
-        out.push_str("    membar.cta;\n");
-        out.push_str("    bar.sync 0;\n");
-        if kps > 1 {
-            out.push_str("WAIT_DONE:\n");
-        }
-    }
 
-    // E5a tail prefetch: the barrier above makes the NEXT stage's smem
-    // visible — load its B fragments into the set the next iteration's mma
-    // will consume, then flip the parity. Skipped on the final kstep (no
-    // next B exists). The fill issued this iteration targets exactly this
-    // stage (fill stage = (compute stage + stages-1) & mask = compute+1 at
-    // stages=2), so the data is the kstep+16 stripe.
-    if b_lookahead {
-        emit_e5a_tail_prefetch(&mut out, k, stages, gr, bsmem_buf);
-    }
+        // E5a tail prefetch: the barrier above makes the NEXT stage's smem
+        // visible — load its B fragments into the set the next iteration's mma
+        // will consume, then flip the parity. Skipped on the final kstep (no
+        // next B exists). The fill issued this iteration targets exactly this
+        // stage (fill stage = (compute stage + stages-1) & mask = compute+1 at
+        // stages=2), so the data is the kstep+16 stripe.
+        if b_lookahead {
+            emit_e5a_tail_prefetch(&mut out, k, stages, gr, bsmem_buf);
+        }
 
-    out.push_str("    add.u32 %r2, %r2, 16;\n");
-    out.push_str("    bra.uni KLOOP;\n");
+        out.push_str("    add.u32 %r2, %r2, 16;\n");
+        out.push_str("    bra.uni KLOOP;\n");
     }
     out.push_str("KEND:\n");
     if warp_spec {
@@ -2281,29 +2406,39 @@ fn tensor_gemm_ptx_smem_mw_opt(
         return out;
     }
     out.push_str("    mov.u32 %r12, %r10;\n");
-    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r12, %r12, {};\n",
+        16 * mhr as i64 * y_row
+    ));
     out.push_str("    mov.u32 %r13, %r11;\n");
-    out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
+    out.push_str(&format!(
+        "    mul.lo.u32 %r13, %r13, {};\n",
+        8 * gr as i64 * (y_elem as i64)
+    ));
     out.push_str("    mov.u32 %r9, %r12;\n");
     out.push_str("    add.u32 %r9, %r9, %r13;\n");
     for mh in 0..mhr {
         for g in 0..gr {
             let cb = 4 * (mh * gr + g);
-            for (coff, row_off, col_off) in [
-                (0i64, 0i64, 0i64),
-                (1, 0, 1),
-                (2, 8, 0),
-                (3, 8, 1),
-            ] {
+            for (coff, row_off, col_off) in [(0i64, 0i64, 0i64), (1, 0, 1), (2, 8, 0), (3, 8, 1)] {
                 let cname = format!("c{}", cb + coff as usize);
-                out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh as i64 + row_off) * y_row));
+                out.push_str(&format!(
+                    "    mov.u32 %r13, {};\n",
+                    (16 * mh as i64 + row_off) * y_row
+                ));
                 out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", (g as i64) * 8 * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    (g as i64) * 8 * (y_elem as i64)
+                ));
                 out.push_str("    mov.u32 %r14, %r8;\n");
                 out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", y_elem));
                 out.push_str("    add.u32 %r13, %r13, %r14;\n");
-                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", col_off * (y_elem as i64)));
+                out.push_str(&format!(
+                    "    add.u32 %r13, %r13, {};\n",
+                    col_off * (y_elem as i64)
+                ));
                 out.push_str("    add.u32 %r13, %r13, %r9;\n");
                 out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
                 out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
@@ -2352,7 +2487,7 @@ mod r16_dump {
     #[test]
     fn dump_mw_256x128() {
         /* M=256,N=128,K=64, CTA 256x128 (mw=8,nw=2). a@0,b=256*64*2=32768,
-           y@32768+128*64*2+8=49160 */
+        y@32768+128*64*2+8=49160 */
         let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_256x128.ptx", &ptx).unwrap();
     }
@@ -2386,20 +2521,24 @@ mod r16_dump {
     #[test]
     fn dump_mw_2048() {
         /* M=N=K=2048, select_mw_nw=(4,4) block=512 (128-reg budget).
-           a@0, b=2048*2048*2=8388608, y=2*8388608+8=16777224 */
-        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4, 2);
+        a@0, b=2048*2048*2=8388608, y=2*8388608+8=16777224 */
+        let ptx =
+            tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_2048.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_2048_f16acc() {
-        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 4, 4, true, 2, 2);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_2048_f16acc.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_8192_f16acc() {
-        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(
+            8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2, 2,
+        );
         std::fs::write("/tmp/opencode/tgemm_mw_8192_f16acc.ptx", &ptx).unwrap();
     }
 
@@ -2413,7 +2552,8 @@ mod r16_dump {
         // 0..60 stale cells/run, +3.9..4.9 deltas, all-ones immune). The
         // WAIT_DRAIN branch must drain from the guard iteration on, and
         // the fill guard and drain guard must share the same bound.
-        let ptx = tensor_gemm_ptx_smem_mw(1024, 1024, 1024, 0, 2097152, 4194328, 2, 2, 4, true, 3, 2);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(1024, 1024, 1024, 0, 2097152, 4194328, 2, 2, 4, true, 3, 2);
         assert!(ptx.contains("WAIT_DRAIN:"), "drain label emitted");
         assert!(ptx.contains("cp.async.wait_group 0;"), "drain depth");
         assert!(
@@ -2432,8 +2572,12 @@ mod r16_dump {
         // branchless (byte-identical to the pre-fix output).
         let shallow = tensor_gemm_ptx_smem_mw(128, 128, 128, 0, 32768, 65544, 2, 1, 2, true, 3, 2);
         assert!(!shallow.contains("WAIT_DRAIN"), "k≤128 depth-0 branchless");
-        let two_stage = tensor_gemm_ptx_smem_mw(1024, 1024, 1024, 0, 2097152, 4194328, 2, 2, 4, true, 2, 2);
-        assert!(!two_stage.contains("WAIT_DRAIN"), "stages=2 depth-0 branchless");
+        let two_stage =
+            tensor_gemm_ptx_smem_mw(1024, 1024, 1024, 0, 2097152, 4194328, 2, 2, 4, true, 2, 2);
+        assert!(
+            !two_stage.contains("WAIT_DRAIN"),
+            "stages=2 depth-0 branchless"
+        );
     }
 
     /// f32-tier warp_mh A/B artifacts (2026-09-12): the dispatch-true
@@ -2464,11 +2608,26 @@ mod r16_dump {
     /// for on-device correctness at the production warp shape.
     #[test]
     fn dump_mh4_f16acc_portfolio() {
-        for (m, k, tag) in [(2048i64, 2048i64, "2048"), (4096, 4096, "4096"), (8192, 8192, "8192")] {
+        for (m, k, tag) in [
+            (2048i64, 2048i64, "2048"),
+            (4096, 4096, "4096"),
+            (8192, 8192, "8192"),
+        ] {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2, 4,
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                4,
+                4,
+                true,
+                2,
+                4,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_mh4_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2482,9 +2641,24 @@ mod r16_dump {
             let b_off = 4096 * k * 2;
             let y_off = ((b_off + 4096 * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw(
-                4096, 4096, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2, 2,
+                4096,
+                4096,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                4,
+                4,
+                true,
+                2,
+                2,
             );
-            std::fs::write(&format!("/tmp/opencode/tgemm_mw_4096_k{k}_f16acc.ptx"), &ptx).unwrap();
+            std::fs::write(
+                &format!("/tmp/opencode/tgemm_mw_4096_k{k}_f16acc.ptx"),
+                &ptx,
+            )
+            .unwrap();
         }
         let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16_f16acc.ptx", &ptx).unwrap();
@@ -2506,10 +2680,24 @@ mod r16_dump {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, true, 0, 1, false,
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                4,
+                true,
+                2,
+                4,
+                true,
+                0,
+                1,
                 false,
-            None,
-
+                false,
+                None,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5a_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2529,10 +2717,24 @@ mod r16_dump {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, false, 32, 1, false,
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                4,
+                true,
+                2,
+                4,
                 false,
-            None,
-
+                32,
+                1,
+                false,
+                false,
+                None,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5b_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2549,7 +2751,18 @@ mod r16_dump {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 8, true, 2, 4,
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                8,
+                true,
+                2,
+                4,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5d_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2584,11 +2797,24 @@ mod r16_dump {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4,
-                false, 0, 1, true,
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                4,
+                true,
+                2,
+                4,
                 false,
-            None,
-
+                0,
+                1,
+                true,
+                false,
+                None,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e8a_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2603,9 +2829,23 @@ mod r16_dump {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4,
-                false, 0, 1, true,
-                true,  // ws_debug = true
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                4,
+                true,
+                2,
+                4,
+                false,
+                0,
+                1,
+                true,
+                true, // ws_debug = true
                 None,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_ws_debug_{tag}.ptx"), &ptx).unwrap();
@@ -2622,11 +2862,24 @@ mod r16_dump {
                 let b_off = m * k * 2;
                 let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
                 let ptx = tensor_gemm_ptx_smem_mw_opt(
-                    m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, stages, 4,
-                    false, 0, 2, false,
+                    m,
+                    m,
+                    k,
+                    0,
+                    b_off as u64,
+                    y_off as u64,
+                    2,
+                    2,
+                    4,
+                    true,
+                    stages,
+                    4,
                     false,
-                None,
-
+                    0,
+                    2,
+                    false,
+                    false,
+                    None,
                 );
                 std::fs::write(
                     &format!("/tmp/opencode/tgemm_e6_{stagetag}_{mtag}.ptx"),
@@ -2655,7 +2908,20 @@ mod r16_dump {
         ] {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
-            let ptx = tensor_gemm_ptx_smem_mw(m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 4, 4);
+            let ptx = tensor_gemm_ptx_smem_mw(
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                4,
+                true,
+                4,
+                4,
+            );
             std::fs::write(&format!("/tmp/opencode/tgemm_e6_s4_{mtag}.ptx"), &ptx).unwrap();
         }
     }
@@ -2663,29 +2929,37 @@ mod r16_dump {
     #[test]
     fn dump_mw_4096_f16acc() {
         /* f16-acc contract variant (ptx_tensor_f16acc=1): f16x2 chunk accs,
-           8-kstep... 16-iteration promotion into the f16 y tile. Gate 1e-2. */
+        8-kstep... 16-iteration promotion into the f16 y tile. Gate 1e-2. */
         /* production pairing: f16acc funds (4,4)@512T; 2 stages keep smem
-           at 40KB so TWO CTAs co-reside (16 warps + 2 fill streams). */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 2);
+        at 40KB so TWO CTAs co-reside (16 warps + 2 fill streams). */
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4, 2);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_c24.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 4, 2);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_s4.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8, true, 2, 2);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_28.ptx", &ptx).unwrap();
         // Double-pump variant C (plan 2026-09-11-ptx-double-pump-warp-tile):
         // 64x32 warp (warp_mh=4) — A fragments shared across 4 mh-blocks,
         // B loaded 4x per kstep instead of 16x. (8,2) and (4,4) CTAs.
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 4);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_dp82.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 4);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_dp44.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 2);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_82.ptx", &ptx).unwrap();
         // (2,4)@256T stages-2: the post-pipeline-fix occupancy candidate —
         // 64 regs x 256T fits 4 CTAs/SM (plan 2026-09-11 probe round 2).
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 2, 2);
+        let ptx =
+            tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_24s2.ptx", &ptx).unwrap();
         // E4c (2026-09-13): the new f16acc pairing — (2,4)@256T warp_mh=4
         // (128x128 tile, 16KB smem, 4 CTAs/SM). select_mw_nw lands here for
@@ -2709,7 +2983,20 @@ mod r16_dump {
         ] {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
-            let ptx = tensor_gemm_ptx_smem_mw(m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4);
+            let ptx = tensor_gemm_ptx_smem_mw(
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                4,
+                true,
+                2,
+                4,
+            );
             std::fs::write(&format!("/tmp/opencode/tgemm_mw2_mh4_{tag}.ptx"), &ptx).unwrap();
         }
     }
@@ -2733,7 +3020,20 @@ mod r16_dump {
         ] {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
-            let ptx = tensor_gemm_ptx_smem_mw(m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 3, 4);
+            let ptx = tensor_gemm_ptx_smem_mw(
+                m,
+                m,
+                k,
+                0,
+                b_off as u64,
+                y_off as u64,
+                2,
+                2,
+                4,
+                true,
+                3,
+                4,
+            );
             std::fs::write(&format!("/tmp/opencode/tgemm_s3_{tag}.ptx"), &ptx).unwrap();
         }
     }
@@ -2741,23 +3041,27 @@ mod r16_dump {
     #[test]
     fn dump_mw_4096() {
         /* M=N=K=4096, select_mw_nw=(2,8), block=512.
-           a@0, b=4096*4096*2=33554432, y=2*33554432+8=67108872 */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, false, 4, 2);
+        a@0, b=4096*4096*2=33554432, y=2*33554432+8=67108872 */
+        let ptx = tensor_gemm_ptx_smem_mw(
+            4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, false, 4, 2,
+        );
         std::fs::write("/tmp/opencode/tgemm_mw_4096.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_8192() {
         /* M=N=K=8192, select_mw_nw=(2,8), block=512.
-           a@0, b=8192*8192*2=134217728, y=2*134217728+8=268435464 */
-        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4, false, 4, 2);
+        a@0, b=8192*8192*2=134217728, y=2*134217728+8=268435464 */
+        let ptx = tensor_gemm_ptx_smem_mw(
+            8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4, false, 4, 2,
+        );
         std::fs::write("/tmp/opencode/tgemm_mw_8192.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_4096_k16() {
         /* M=N=4096,K=16 (skinny-K), select_mw_nw=(2,8), block=512.
-           a@0, b=4096*16*2=131072, y=2*131072+8=262152 */
+        a@0, b=4096*16*2=131072, y=2*131072+8=262152 */
         let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16.ptx", &ptx).unwrap();
     }
@@ -2783,7 +3087,7 @@ mod r16_dump {
             out.push_str("    mov.u32 %r2, %ctaid.x;\n");
             out.push_str("    add.u32 %r2, %r2, 1;\n");
             out.push_str("    and.b32 %r3, %r1, 31;\n");
-            out.push_str("    add.u32 %a0, %r3, %r2;\n");     // a0: lane+cta+1
+            out.push_str("    add.u32 %a0, %r3, %r2;\n"); // a0: lane+cta+1
             out.push_str("    add.u32 %a1, %a0, 17;\n");
             out.push_str("    add.u32 %a2, %a0, 34;\n");
             out.push_str("    add.u32 %a3, %a0, 51;\n");
@@ -2796,7 +3100,8 @@ mod r16_dump {
             // loop: R iterations of the chain block. R chosen so total
             // FLOP ≈ 130 GFLOP: R = 130e9 / (chains*4096*warps), warps=448.
             let warps = 448u64;
-            let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+            let iters =
+                (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
             let iters = (iters / 8 * 8).max(64); // multiple of 8, sane floor
             out.push_str("    mov.u32 %r4, %ntid.x;\n");
             out.push_str("    mul.lo.u32 %r4, %r4, %r2;\n");
@@ -2863,10 +3168,10 @@ mod r16_dump {
             out.push_str("    cvt.u64.u32 %rdS0, %sas0;\n");
             // A slab lane addressing (conflict-free, matches the kernel):
             // row r = (l>>4)*8 + (l&7), addr = r*32 + ((l>>3)&1)*16
-            out.push_str("    shr.u32 %r4, %r3, 4;\n");          // l>>4
+            out.push_str("    shr.u32 %r4, %r3, 4;\n"); // l>>4
             out.push_str("    mul.lo.u32 %r4, %r4, 8;\n");
             out.push_str("    and.b32 %r5, %r3, 7;\n");
-            out.push_str("    add.u32 %r4, %r4, %r5;\n");        // r
+            out.push_str("    add.u32 %r4, %r4, %r5;\n"); // r
             out.push_str("    mul.lo.u32 %r4, %r4, 32;\n");
             out.push_str("    shr.u32 %r5, %r3, 3;\n    and.b32 %r5, %r5, 1;\n");
             out.push_str("    mul.lo.u32 %r5, %r5, 16;\n");
@@ -2883,7 +3188,12 @@ mod r16_dump {
             for g in 0..8 {
                 out.push_str(&format!("    mul.wide.u32 %rd6, %r6, 1;\n"));
                 out.push_str(&format!("    add.u64 %rdB{}, %rdS0, %rd6;\n", g));
-                out.push_str(&format!("    add.u64 %rdB{}, %rdB{}, {};\n", g, g, 512 + g * 256));
+                out.push_str(&format!(
+                    "    add.u64 %rdB{}, %rdB{}, {};\n",
+                    g,
+                    g,
+                    512 + g * 256
+                ));
             }
             // zero the 16 acc chains
             for i in 0..chains * 2 {
@@ -2893,12 +3203,15 @@ mod r16_dump {
             out.push_str("    add.u32 %a0, %r3, %r2;\n");
             out.push_str("    mov.u32 %b0, 7;\n    mov.u32 %b1, 13;\n");
             let warps = 448u64;
-            let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+            let iters =
+                (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
             let iters = (iters / 8 * 8).max(64);
             out.push_str(&format!("    mov.u32 %r8, {};\n", iters));
             out.push_str("LOOP:\n");
             // A fragment (x4) + fragment swap, then 8 B fragments (x2.trans)
-            out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+            out.push_str(
+                "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n",
+            );
             out.push_str("    mov.b32 %r9, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %r9;\n");
             for g in 0..8 {
                 out.push_str(&format!(
@@ -3009,7 +3322,9 @@ mod r16_dump {
         let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
         let iters = (iters / 8 * 8).max(64);
 
-        for &variant in &["e", "s", "f", "m", "d", "p", "a", "w", "i", "t", "c", "8", "sp"] {
+        for &variant in &[
+            "e", "s", "f", "m", "d", "p", "a", "w", "i", "t", "c", "8", "sp",
+        ] {
             let mut out = String::new();
             let label = match variant {
                 "e" => "E1f baseline (clean fill + ldmatrix + mma)",
@@ -3173,7 +3488,12 @@ mod r16_dump {
                     out.push_str("    st.shared.v4.b32 [%rd5], {%r11, %r13, %r14, %r15};\n");
                 }
                 out.push_str("FILLDONE_SP:\n");
-            } else if variant == "a" || variant == "w" || variant == "i" || variant == "c" || variant == "8" {
+            } else if variant == "a"
+                || variant == "w"
+                || variant == "i"
+                || variant == "c"
+                || variant == "8"
+            {
                 // A fill
                 if variant == "c" || variant == "8" {
                     // Widened A fill: 16-byte (c) or 8-byte (8) ld+st. The
@@ -3191,8 +3511,12 @@ mod r16_dump {
                         out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
                         out.push_str("    add.u64 %rd5, %rdA, %rd5;\n");
                         if reg_v == "v4" {
-                            out.push_str("    ld.global.v4.b32 {%r11, %r13, %r14, %r15}, [%rd1];\n");
-                            out.push_str("    st.shared.v4.b32 [%rd5], {%r11, %r13, %r14, %r15};\n");
+                            out.push_str(
+                                "    ld.global.v4.b32 {%r11, %r13, %r14, %r15}, [%rd1];\n",
+                            );
+                            out.push_str(
+                                "    st.shared.v4.b32 [%rd5], {%r11, %r13, %r14, %r15};\n",
+                            );
                         } else {
                             out.push_str("    ld.global.v2.b32 {%r11, %r13}, [%rd1];\n");
                             out.push_str("    st.shared.v2.b32 [%rd5], {%r11, %r13};\n");
@@ -3246,7 +3570,9 @@ mod r16_dump {
                 // Pipeline: mma reads from buffer (parity) * 2048
                 out.push_str("    and.b32 %r12, %r10, 1;\n");
                 out.push_str("    shl.b32 %r12, %r12, 11;\n"); // r12 = parity * 2048
-                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+                out.push_str(
+                    "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n",
+                );
                 out.push_str("    mov.b32 %r11, %a1;\n");
                 out.push_str("    mov.b32 %a1, %a2;\n");
                 out.push_str("    mov.b32 %a2, %r11;\n");
@@ -3272,7 +3598,9 @@ mod r16_dump {
                 // 3-stage: mma reads from buffer (r10 % 3) * 2048
                 out.push_str("    rem.u32 %r12, %r10, 3;\n");
                 out.push_str("    shl.b32 %r12, %r12, 11;\n"); // r12 = (r10%3) * 2048
-                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+                out.push_str(
+                    "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n",
+                );
                 out.push_str("    mov.b32 %r11, %a1;\n");
                 out.push_str("    mov.b32 %a1, %a2;\n");
                 out.push_str("    mov.b32 %a2, %r11;\n");
@@ -3295,7 +3623,9 @@ mod r16_dump {
                     ));
                 }
             } else if variant != "f" {
-                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+                out.push_str(
+                    "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n",
+                );
                 out.push_str("    mov.b32 %r11, %a1;\n");
                 out.push_str("    mov.b32 %a1, %a2;\n");
                 out.push_str("    mov.b32 %a2, %r11;\n");
@@ -3513,7 +3843,9 @@ mod r16_dump {
                 out.push_str("    shl.b32 %r12, %r20, 13;\n");
                 out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
                 out.push_str("    add.u64 %rd5, %rdA, %rd5;\n");
-                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
+                out.push_str(
+                    "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n",
+                );
                 out.push_str("    xor.b32 %c0, %a0, %a1;\n");
                 out.push_str("    xor.b32 %c0, %c0, %a2;\n");
                 out.push_str("    xor.b32 %c0, %c0, %a3;\n");
@@ -3526,7 +3858,9 @@ mod r16_dump {
                     out.push_str("    add.u32 %r13, %r13, %r12;\n");
                     out.push_str("    mul.wide.u32 %rd5, %r13, 1;\n");
                     out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
-                    out.push_str("    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b0, %b1}, [%rd5];\n");
+                    out.push_str(
+                        "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b0, %b1}, [%rd5];\n",
+                    );
                     out.push_str("    xor.b32 %c1, %c1, %b0;\n");
                     out.push_str("    xor.b32 %c1, %c1, %b1;\n");
                 }
@@ -3554,7 +3888,7 @@ mod r16_dump {
             std::fs::write(&path, &out).unwrap();
         }
     }
-    }
+}
 
 #[cfg(test)]
 mod smem_tests {
@@ -3564,12 +3898,34 @@ mod smem_tests {
     fn smem_geometry_and_mma() {
         let ptx = tensor_gemm_ptx_smem(64, 32, 32, 0, 8192, 32768, 4);
         assert!(ptx.contains(".entry main"), "entry");
-        assert!(ptx.contains(".shared .align 16 .b8 asmem[1024];"), "asmem decl");
-        assert!(ptx.contains(".shared .align 16 .b8 bsmem[512];"), "bsmem decl");
-        assert_eq!(ptx.matches("mma.sync.aligned.m16n8k16").count(), 4, "mma count");
-        assert_eq!(ptx.matches("ldmatrix.sync.aligned.m8n8.x4").count(), 2, "A ldmatrix x4 x2");
-        assert_eq!(ptx.matches("ldmatrix.sync.aligned.m8n8.x2.trans").count(), 2, "B ldmatrix x2.trans x2");
-        assert_eq!(ptx.matches("bar.sync 0").count(), 2, "barrier per kstep (fill + MMA)");
+        assert!(
+            ptx.contains(".shared .align 16 .b8 asmem[1024];"),
+            "asmem decl"
+        );
+        assert!(
+            ptx.contains(".shared .align 16 .b8 bsmem[512];"),
+            "bsmem decl"
+        );
+        assert_eq!(
+            ptx.matches("mma.sync.aligned.m16n8k16").count(),
+            4,
+            "mma count"
+        );
+        assert_eq!(
+            ptx.matches("ldmatrix.sync.aligned.m8n8.x4").count(),
+            2,
+            "A ldmatrix x4 x2"
+        );
+        assert_eq!(
+            ptx.matches("ldmatrix.sync.aligned.m8n8.x2.trans").count(),
+            2,
+            "B ldmatrix x2.trans x2"
+        );
+        assert_eq!(
+            ptx.matches("bar.sync 0").count(),
+            2,
+            "barrier per kstep (fill + MMA)"
+        );
         assert!(ptx.contains("KLOOP:"), "k loop");
         assert!(ptx.contains("setp.ge.u32 %p1, %r10, 32;"), "K=32 bound");
     }
@@ -3580,11 +3936,21 @@ mod smem_tests {
         // B fill b_row bytes (one K row) per kstep — NOT k_elem-scaled strides
         // that read OOB for K > 16.
         let ptx = tensor_gemm_ptx_smem(32, 16, 32, 0, 2048, 3072, 4);
-        assert!(ptx.contains("    mul.lo.u32 %r13, %r13, 2;\n"), "A fill kstep*2: {ptx}");
-        assert!(ptx.contains("    mul.lo.u32 %r14, %r14, 32;\n"), "B fill kstep*b_row(N=16): {ptx}");
+        assert!(
+            ptx.contains("    mul.lo.u32 %r13, %r13, 2;\n"),
+            "A fill kstep*2: {ptx}"
+        );
+        assert!(
+            ptx.contains("    mul.lo.u32 %r14, %r14, 32;\n"),
+            "B fill kstep*b_row(N=16): {ptx}"
+        );
         // Each thread copies 8 b32 (32 B = 16 f16) for A and 4 b32 (16 B) for B.
-        assert_eq!(ptx.matches("ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;").count(), 12,
-            "A(8) + B(4) smem fill stores: {ptx}");
+        assert_eq!(
+            ptx.matches("ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;")
+                .count(),
+            12,
+            "A(8) + B(4) smem fill stores: {ptx}"
+        );
     }
 
     #[test]
@@ -3597,13 +3963,27 @@ mod smem_tests {
         // row>=8 (the ng=1 column block); the ldmatrix bases are bsmem (ng=0)
         // and bsmem+256 (ng=1).
         let ptx = tensor_gemm_ptx_smem(64, 32, 16, 0, 2048, 8192, 2);
-        assert!(ptx.contains("    and.b32 %r15, %r12, 7;    // row%8\n"), "row%8: {ptx}");
-        assert!(ptx.contains("    shr.u32 %r15, %r12, 3;    // row>=8 ? 1 : 0\n"), "row/8: {ptx}");
-        assert!(ptx.contains("    add.u64 %rd4, %rd4, 0;\n") ||
-                ptx.contains("    add.u64 %rd4, %rd4, 256;\n"),
-            "B ldmatrix bases 0/256: {ptx}");
-        assert!(ptx.contains("add.u64 %rd4, %rd4, 256;\n"), "ng=1 base bsmem+256: {ptx}");
-        assert!(!ptx.contains("add.u64 %rd4, %rd4, 16;\n"), "old ng*16 base removed: {ptx}");
+        assert!(
+            ptx.contains("    and.b32 %r15, %r12, 7;    // row%8\n"),
+            "row%8: {ptx}"
+        );
+        assert!(
+            ptx.contains("    shr.u32 %r15, %r12, 3;    // row>=8 ? 1 : 0\n"),
+            "row/8: {ptx}"
+        );
+        assert!(
+            ptx.contains("    add.u64 %rd4, %rd4, 0;\n")
+                || ptx.contains("    add.u64 %rd4, %rd4, 256;\n"),
+            "B ldmatrix bases 0/256: {ptx}"
+        );
+        assert!(
+            ptx.contains("add.u64 %rd4, %rd4, 256;\n"),
+            "ng=1 base bsmem+256: {ptx}"
+        );
+        assert!(
+            !ptx.contains("add.u64 %rd4, %rd4, 16;\n"),
+            "old ng*16 base removed: {ptx}"
+        );
     }
 
     #[test]
@@ -3631,16 +4011,25 @@ mod smem_tests {
     #[test]
     fn smem_f16_y_stride_is_n_elem_not_n4() {
         let ptx = tensor_gemm_ptx_smem(32, 16, 16, 0, 1024, 4096, 2);
-        assert!(ptx.contains("mul.lo.u32 %r14, %r6, 32;"), "y_row=N*2=32: {ptx}");
-        assert!(ptx.contains("mul.lo.u32 %r9, %r9, 32;"), "n_cta col = 16*2: {ptx}");
+        assert!(
+            ptx.contains("mul.lo.u32 %r14, %r6, 32;"),
+            "y_row=N*2=32: {ptx}"
+        );
+        assert!(
+            ptx.contains("mul.lo.u32 %r9, %r9, 32;"),
+            "n_cta col = 16*2: {ptx}"
+        );
     }
 
     #[test]
     fn smem_cstore_uses_tile_accs() {
         let ptx = tensor_gemm_ptx_smem(32, 32, 16, 0, 2048, 8192, 4);
         for cb in [0, 4, 8, 12] {
-            assert!(ptx.contains(&format!("st.global.f32 [%rd5], %c{};", cb)),
-                "tile store c{}", cb);
+            assert!(
+                ptx.contains(&format!("st.global.f32 [%rd5], %c{};", cb)),
+                "tile store c{}",
+                cb
+            );
         }
     }
 }

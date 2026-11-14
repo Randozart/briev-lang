@@ -11,58 +11,58 @@ use std::collections::HashMap;
 
 // ── Opcodes (match interp.h values) ─────────────────────────────────────
 
-pub const OP_NOP: u8       = 0x00;
-pub const OP_DROP: u8      = 0x01;
-pub const OP_DUP: u8       = 0x02;
-pub const OP_SWAP: u8      = 0x03;
-pub const OP_OVER: u8      = 0x04;
-pub const OP_ROT: u8       = 0x05;
-pub const OP_ADD: u8       = 0x06;
-pub const OP_SUB: u8       = 0x07;
-pub const OP_MUL: u8       = 0x08;
-pub const OP_DIV_S: u8     = 0x09;
-pub const OP_REM_S: u8     = 0x0A;
-pub const OP_AND: u8       = 0x0B;
-pub const OP_OR: u8        = 0x0C;
-pub const OP_XOR: u8       = 0x0D;
-pub const OP_NOT: u8       = 0x0E;
-pub const OP_BNOT: u8      = 0x1C;
-pub const OP_SHL: u8       = 0x0F;
-pub const OP_SHR_S: u8     = 0x10;
-pub const OP_EQ: u8        = 0x11;
-pub const OP_NE: u8        = 0x12;
-pub const OP_LT_S: u8      = 0x13;
-pub const OP_LE_S: u8      = 0x14;
-pub const OP_GT_S: u8      = 0x15;
-pub const OP_GE_S: u8      = 0x16;
-pub const OP_LOAD: u8      = 0x17;
-pub const OP_STORE: u8     = 0x18;
-pub const OP_RET: u8       = 0x19;
-pub const OP_TRACE: u8     = 0x1A;
-pub const OP_TRAP: u8      = 0x1B;
+pub const OP_NOP: u8 = 0x00;
+pub const OP_DROP: u8 = 0x01;
+pub const OP_DUP: u8 = 0x02;
+pub const OP_SWAP: u8 = 0x03;
+pub const OP_OVER: u8 = 0x04;
+pub const OP_ROT: u8 = 0x05;
+pub const OP_ADD: u8 = 0x06;
+pub const OP_SUB: u8 = 0x07;
+pub const OP_MUL: u8 = 0x08;
+pub const OP_DIV_S: u8 = 0x09;
+pub const OP_REM_S: u8 = 0x0A;
+pub const OP_AND: u8 = 0x0B;
+pub const OP_OR: u8 = 0x0C;
+pub const OP_XOR: u8 = 0x0D;
+pub const OP_NOT: u8 = 0x0E;
+pub const OP_BNOT: u8 = 0x1C;
+pub const OP_SHL: u8 = 0x0F;
+pub const OP_SHR_S: u8 = 0x10;
+pub const OP_EQ: u8 = 0x11;
+pub const OP_NE: u8 = 0x12;
+pub const OP_LT_S: u8 = 0x13;
+pub const OP_LE_S: u8 = 0x14;
+pub const OP_GT_S: u8 = 0x15;
+pub const OP_GE_S: u8 = 0x16;
+pub const OP_LOAD: u8 = 0x17;
+pub const OP_STORE: u8 = 0x18;
+pub const OP_RET: u8 = 0x19;
+pub const OP_TRACE: u8 = 0x1A;
+pub const OP_TRAP: u8 = 0x1B;
 
-pub const OP_PUSH_I8: u8      = 0x30;
-pub const OP_LOAD_LOCAL: u8   = 0x31;
-pub const OP_STORE_LOCAL: u8  = 0x32;
-pub const OP_PUSH_FRAME: u8   = 0x33;
-pub const OP_POP_FRAME: u8    = 0x34;
+pub const OP_PUSH_I8: u8 = 0x30;
+pub const OP_LOAD_LOCAL: u8 = 0x31;
+pub const OP_STORE_LOCAL: u8 = 0x32;
+pub const OP_PUSH_FRAME: u8 = 0x33;
+pub const OP_POP_FRAME: u8 = 0x34;
 
-pub const OP_PUSH_I16: u8  = 0x50;
-pub const OP_JMP: u8       = 0x51;
-pub const OP_JZ: u8        = 0x52;
-pub const OP_JNZ: u8       = 0x53;
-pub const OP_CALL: u8      = 0x54;
+pub const OP_PUSH_I16: u8 = 0x50;
+pub const OP_JMP: u8 = 0x51;
+pub const OP_JZ: u8 = 0x52;
+pub const OP_JNZ: u8 = 0x53;
+pub const OP_CALL: u8 = 0x54;
 
-pub const OP_PUSH_I32: u8  = 0x70;
-pub const OP_HCALL: u8     = 0x71;
-pub const OP_CALL_PTR: u8  = 0x72;
+pub const OP_PUSH_I32: u8 = 0x70;
+pub const OP_HCALL: u8 = 0x71;
+pub const OP_CALL_PTR: u8 = 0x72;
 
-pub const OP_PUSH_I64: u8  = 0x90;
-pub const OP_ALLOC: u8     = 0x91;
-pub const OP_LOAD_OFF: u8  = 0x92;
+pub const OP_PUSH_I64: u8 = 0x90;
+pub const OP_ALLOC: u8 = 0x91;
+pub const OP_LOAD_OFF: u8 = 0x92;
 pub const OP_STORE_OFF: u8 = 0x93;
 
-pub const OP_PUSH_STR: u8  = 0xB0;
+pub const OP_PUSH_STR: u8 = 0xB0;
 
 // ── .lair constants ─────────────────────────────────────────────────────
 
@@ -215,36 +215,96 @@ impl Assembler {
         self.bytes.push(op);
     }
 
-    pub fn emit_nop(&mut self)    { self.emit_op(OP_NOP); }
-    pub fn emit_drop(&mut self)   { self.emit_op(OP_DROP); }
-    pub fn emit_dup(&mut self)    { self.emit_op(OP_DUP); }
-    pub fn emit_swap(&mut self)   { self.emit_op(OP_SWAP); }
-    pub fn emit_over(&mut self)   { self.emit_op(OP_OVER); }
-    pub fn emit_rot(&mut self)    { self.emit_op(OP_ROT); }
-    pub fn emit_add(&mut self)    { self.emit_op(OP_ADD); }
-    pub fn emit_sub(&mut self)    { self.emit_op(OP_SUB); }
-    pub fn emit_mul(&mut self)    { self.emit_op(OP_MUL); }
-    pub fn emit_div_s(&mut self)  { self.emit_op(OP_DIV_S); }
-    pub fn emit_rem_s(&mut self)  { self.emit_op(OP_REM_S); }
-    pub fn emit_and(&mut self)    { self.emit_op(OP_AND); }
-    pub fn emit_or(&mut self)     { self.emit_op(OP_OR); }
-    pub fn emit_xor(&mut self)    { self.emit_op(OP_XOR); }
-    pub fn emit_not(&mut self)    { self.emit_op(OP_NOT); }
-    pub fn emit_bnot(&mut self)   { self.emit_op(OP_BNOT); }
-    pub fn emit_shl(&mut self)    { self.emit_op(OP_SHL); }
-    pub fn emit_shr_s(&mut self)  { self.emit_op(OP_SHR_S); }
-    pub fn emit_eq(&mut self)     { self.emit_op(OP_EQ); }
-    pub fn emit_ne(&mut self)     { self.emit_op(OP_NE); }
-    pub fn emit_lt_s(&mut self)   { self.emit_op(OP_LT_S); }
-    pub fn emit_le_s(&mut self)   { self.emit_op(OP_LE_S); }
-    pub fn emit_gt_s(&mut self)   { self.emit_op(OP_GT_S); }
-    pub fn emit_ge_s(&mut self)   { self.emit_op(OP_GE_S); }
-    pub fn emit_load(&mut self)   { self.emit_op(OP_LOAD); }
-    pub fn emit_store(&mut self)  { self.emit_op(OP_STORE); }
-    pub fn emit_ret(&mut self)    { self.emit_op(OP_RET); }
-    pub fn emit_trace(&mut self)  { self.emit_op(OP_TRACE); }
-    pub fn emit_trap(&mut self)   { self.emit_op(OP_TRAP); }
-    pub fn emit_pop_frame(&mut self) { self.emit_op(OP_POP_FRAME); }
+    pub fn emit_nop(&mut self) {
+        self.emit_op(OP_NOP);
+    }
+    pub fn emit_drop(&mut self) {
+        self.emit_op(OP_DROP);
+    }
+    pub fn emit_dup(&mut self) {
+        self.emit_op(OP_DUP);
+    }
+    pub fn emit_swap(&mut self) {
+        self.emit_op(OP_SWAP);
+    }
+    pub fn emit_over(&mut self) {
+        self.emit_op(OP_OVER);
+    }
+    pub fn emit_rot(&mut self) {
+        self.emit_op(OP_ROT);
+    }
+    pub fn emit_add(&mut self) {
+        self.emit_op(OP_ADD);
+    }
+    pub fn emit_sub(&mut self) {
+        self.emit_op(OP_SUB);
+    }
+    pub fn emit_mul(&mut self) {
+        self.emit_op(OP_MUL);
+    }
+    pub fn emit_div_s(&mut self) {
+        self.emit_op(OP_DIV_S);
+    }
+    pub fn emit_rem_s(&mut self) {
+        self.emit_op(OP_REM_S);
+    }
+    pub fn emit_and(&mut self) {
+        self.emit_op(OP_AND);
+    }
+    pub fn emit_or(&mut self) {
+        self.emit_op(OP_OR);
+    }
+    pub fn emit_xor(&mut self) {
+        self.emit_op(OP_XOR);
+    }
+    pub fn emit_not(&mut self) {
+        self.emit_op(OP_NOT);
+    }
+    pub fn emit_bnot(&mut self) {
+        self.emit_op(OP_BNOT);
+    }
+    pub fn emit_shl(&mut self) {
+        self.emit_op(OP_SHL);
+    }
+    pub fn emit_shr_s(&mut self) {
+        self.emit_op(OP_SHR_S);
+    }
+    pub fn emit_eq(&mut self) {
+        self.emit_op(OP_EQ);
+    }
+    pub fn emit_ne(&mut self) {
+        self.emit_op(OP_NE);
+    }
+    pub fn emit_lt_s(&mut self) {
+        self.emit_op(OP_LT_S);
+    }
+    pub fn emit_le_s(&mut self) {
+        self.emit_op(OP_LE_S);
+    }
+    pub fn emit_gt_s(&mut self) {
+        self.emit_op(OP_GT_S);
+    }
+    pub fn emit_ge_s(&mut self) {
+        self.emit_op(OP_GE_S);
+    }
+    pub fn emit_load(&mut self) {
+        self.emit_op(OP_LOAD);
+    }
+    pub fn emit_store(&mut self) {
+        self.emit_op(OP_STORE);
+    }
+    pub fn emit_ret(&mut self) {
+        self.emit_op(OP_RET);
+    }
+    pub fn emit_trace(&mut self) {
+        self.emit_op(OP_TRACE);
+    }
+    pub fn emit_trap(&mut self) {
+        self.emit_op(OP_TRAP);
+    }
+    pub fn emit_pop_frame(&mut self) {
+        self.emit_op(OP_POP_FRAME);
+    }
 
     // ── Opcodes with immediates ──────────────────────────────────────────
 
@@ -385,11 +445,11 @@ impl Assembler {
             // 2026-07-30: name_idx is the string table INDEX; convert to byte OFFSET
             // for the .lair format which expects offset into null-terminated string block.
             let name_offset = *str_offsets.get(f.name_idx as usize).unwrap_or(&0);
-            fn_data.extend_from_slice(&name_offset.to_le_bytes());                   // name_idx (u32)
-            fn_data.extend_from_slice(&(f.bytecode_offset as u64).to_le_bytes());   // bc_off (u64)
-            fn_data.extend_from_slice(&(f.bytecode_len as u32).to_le_bytes());      // bc_len (u32)
-            fn_data.extend_from_slice(&f.local_count.to_le_bytes());                // local_count (u16)
-            fn_data.extend_from_slice(&f.arg_count.to_le_bytes());                  // arg_count (u16)
+            fn_data.extend_from_slice(&name_offset.to_le_bytes()); // name_idx (u32)
+            fn_data.extend_from_slice(&(f.bytecode_offset as u64).to_le_bytes()); // bc_off (u64)
+            fn_data.extend_from_slice(&(f.bytecode_len as u32).to_le_bytes()); // bc_len (u32)
+            fn_data.extend_from_slice(&f.local_count.to_le_bytes()); // local_count (u16)
+            fn_data.extend_from_slice(&f.arg_count.to_le_bytes()); // arg_count (u16)
         }
         let fn_size = fn_data.len();
 
@@ -398,10 +458,10 @@ impl Assembler {
         for h in &self.host_functions {
             let name_offset = *str_offsets.get(h.name_idx as usize).unwrap_or(&0);
             host_data.extend_from_slice(&name_offset.to_le_bytes()); // name_idx (u32)
-            host_data.extend_from_slice(&h.id.to_le_bytes());       // host_fn_id (u32)
+            host_data.extend_from_slice(&h.id.to_le_bytes()); // host_fn_id (u32)
             // 2026-08-23 (Plan 1 HCALL slice): arity rides in the table so
             // the tamer knows how many slots to pop. 12-byte stride.
-            host_data.extend_from_slice(&h.arity.to_le_bytes());    // arity (u32)
+            host_data.extend_from_slice(&h.arity.to_le_bytes()); // arity (u32)
         }
         let host_size = host_data.len();
 
@@ -458,13 +518,24 @@ mod tests {
     }
 
     fn read_u32(buf: &[u8], offset: usize) -> u32 {
-        u32::from_le_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+        u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ])
     }
 
     fn read_u64(buf: &[u8], offset: usize) -> u64 {
         u64::from_le_bytes([
-            buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3],
-            buf[offset + 4], buf[offset + 5], buf[offset + 6], buf[offset + 7],
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+            buf[offset + 4],
+            buf[offset + 5],
+            buf[offset + 6],
+            buf[offset + 7],
         ])
     }
 
@@ -490,7 +561,7 @@ mod tests {
         let mut asm = Assembler::new();
         asm.define_function("test", 1, 0);
         // if (false) { 1 } else { 2 }
-        asm.emit_push_i8(0);   // false
+        asm.emit_push_i8(0); // false
         asm.emit_jz("else");
         asm.emit_push_i64(1);
         asm.emit_jmp("end");
@@ -539,7 +610,7 @@ mod tests {
         asm.define_function("main", 0, 0);
         asm.emit_push_i64(3);
         asm.emit_push_i64(4);
-        asm.emit_call(0);  // call add
+        asm.emit_call(0); // call add
         asm.emit_ret();
 
         let lair = asm.assemble();

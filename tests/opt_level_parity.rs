@@ -24,7 +24,10 @@ const QUICK_SET: &[&str] = &[
 const SKIP: &[(&str, &str)] = &[
     // Idle-reactor fixtures never terminate without an external bound; the
     // gate compares stdio of a completed run, so they cannot participate.
-    ("mixed_effect_shape", "idle equilibrium: no self-terminating exit"),
+    (
+        "mixed_effect_shape",
+        "idle equilibrium: no self-terminating exit",
+    ),
 ];
 
 fn project_root() -> PathBuf {
@@ -110,8 +113,7 @@ fn link(ll: &Path, bin: &Path, level: &str, lto: bool) -> Result<(), String> {
 fn run(bin: &Path) -> (String, i32) {
     let mut cmd = Command::new(bin);
     cmd.env("BOUND", "1000");
-    let out = run_with_timeout(cmd, 10)
-        .unwrap_or_else(|e| panic!("run {}: {e}", bin.display()));
+    let out = run_with_timeout(cmd, 10).unwrap_or_else(|e| panic!("run {}: {e}", bin.display()));
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         out.status.code().unwrap_or(-1),
@@ -160,8 +162,7 @@ fn program_fixtures() -> Vec<String> {
 #[test]
 fn optimization_levels_agree() {
     let brievc = PathBuf::from(env!("CARGO_BIN_EXE_brievc"));
-    let scratch =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join("opt_level_parity");
+    let scratch = Path::new(env!("CARGO_TARGET_TMPDIR")).join("opt_level_parity");
     let full = std::env::var("OPT_MATRIX_FULL").is_ok();
     let names: Vec<String> = if full {
         program_fixtures()

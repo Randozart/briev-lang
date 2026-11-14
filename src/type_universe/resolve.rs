@@ -29,7 +29,7 @@ pub fn resolve_type(universe: &TypeUniverse, ty: &crate::ast::Type) -> Option<Re
                 fields: vec![],
                 type_params: vec![],
             })
-        },
+        }
         crate::ast::Type::Ptr(_) => Some(ResolvedType {
             name: "Ptr".into(),
             base: "Ptr".into(),

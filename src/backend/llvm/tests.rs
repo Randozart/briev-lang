@@ -971,8 +971,10 @@ fn test_foreach_assigned_inside_mutex_gets_alloca() {
     let body_load = pre_allocas
         .iter()
         .any(|r| after_body.contains(&format!("load i64, ptr %{r}")));
-    assert!(body_load,
-        "loop body must LOAD from a pre-header alloca (accumulation, not stale-read); got:\n{output}");
+    assert!(
+        body_load,
+        "loop body must LOAD from a pre-header alloca (accumulation, not stale-read); got:\n{output}"
+    );
 }
 
 /// A program with `foreach(i in 0..=5) { if i == 3 { acc = 42; break; } }` —
@@ -4450,8 +4452,10 @@ fn test_binop_no_nuw_nsw() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(!output.contains("nuw nsw"),
-        "add on bounded variables should NOT emit nuw nsw (LLVM infers from !range; nuw nsw causes urem→128bit mul)");
+    assert!(
+        !output.contains("nuw nsw"),
+        "add on bounded variables should NOT emit nuw nsw (LLVM infers from !range; nuw nsw causes urem→128bit mul)"
+    );
 }
 
 #[test]
@@ -8764,9 +8768,11 @@ fn parse_bv_source(src: &str) -> Vec<TopLevel> {
 #[test]
 fn fixture_gate_accepts_before_after_transition() {
     let items = parse_bv_source("let done: Bool = false; node run [!done][done] { done = true; };");
-    assert!(items
-        .iter()
-        .any(|item| matches!(item, TopLevel::Transaction(_))));
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, TopLevel::Transaction(_)))
+    );
 }
 
 #[test]
@@ -10019,7 +10025,7 @@ fn test_hashmap_capacity_seed_and_break_probe() {
         .find(|l| l.contains("add i64 0, 40"))
         .and_then(|l| l.split('=').next().map(|s| s.trim().to_string()));
     let seed_reg = seed_reg.expect("the capacity seed (40) must be emitted; got:\n{ir}"); // 2. `match capacity { 0 => 256, _ => capacity }` → the seed and the 256
-                                                                                          //    fallback must meet in a phi (the fallback feeds the table size).
+    //    fallback must meet in a phi (the fallback feeds the table size).
     let phi_lines: Vec<&str> = ir
         .lines()
         .filter(|l| l.contains("phi") && l.contains(&seed_reg))
@@ -15151,10 +15157,7 @@ fn test_arithmetic_const_expr_folds_into_global() {
             name: "lo".to_string(),
             names: vec![],
             ty: Some(Type::int()),
-            expr: Some(Expr::UnaryOp(
-                UnaryOpKind::Neg,
-                Box::new(Expr::Decimal(1)),
-            )),
+            expr: Some(Expr::UnaryOp(UnaryOpKind::Neg, Box::new(Expr::Decimal(1)))),
             modifiers: vec![],
         })),
     ];

@@ -135,8 +135,7 @@ node main [n == 0][n == 1] {
     term;
 };
 "#;
-    let scratch = Path::new(PROJECT_ROOT)
-        .join("target/briev_fs_smoke/scratch_roundtrip.txt");
+    let scratch = Path::new(PROJECT_ROOT).join("target/briev_fs_smoke/scratch_roundtrip.txt");
     let _ = std::fs::remove_file(&scratch);
     let (out, code) = build_link_run("roundtrip", src, &scratch.to_string_lossy());
     assert_eq!(code, 0, "round-trip program exit code");
@@ -178,14 +177,12 @@ node main [n == 0][n == 1] {
     term;
 };
 "#;
-    let scratch = Path::new(PROJECT_ROOT)
-        .join("target/briev_fs_smoke/scratch_trunc.txt");
+    let scratch = Path::new(PROJECT_ROOT).join("target/briev_fs_smoke/scratch_trunc.txt");
     let _ = std::fs::remove_file(&scratch);
     let (out, code) = build_link_run("trunc", src, &scratch.to_string_lossy());
     assert_eq!(code, 0, "truncate program exit code");
     assert_eq!(
-        out,
-        "5\nshort\n",
+        out, "5\nshort\n",
         "O_TRUNC: second write replaces content; read returns only it"
     );
 }

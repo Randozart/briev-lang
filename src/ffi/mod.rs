@@ -27,8 +27,8 @@
 //! - **Metropipe** (runtime shared memory IPC): `src/ffi/metropipe.rs`
 
 pub mod error;
-pub mod metropipe;         // Metropipe — shared memory IPC runtime
-pub mod metropipe_cli;     // `briev metrod connect` CLI
+pub mod metropipe; // Metropipe — shared memory IPC runtime
+pub mod metropipe_cli; // `briev metrod connect` CLI
 
-pub use error::{ErrorConventions, ErrVariant, generate_bounds_check, generate_null_check};
-pub use metropipe::{MetropolitanChannel, MetropolitanHub, MetroStatus, SharedRegion};
+pub use error::{ErrVariant, ErrorConventions, generate_bounds_check, generate_null_check};
+pub use metropipe::{MetroStatus, MetropolitanChannel, MetropolitanHub, SharedRegion};

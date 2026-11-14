@@ -54,9 +54,7 @@ fn has_ffi_or_trigger_stmt(stmt: &HirStmt) -> bool {
         | HirStmtKind::Mutex(body)
         | HirStmtKind::Defer(body)
         | HirStmtKind::Foreach { body, .. } => has_ffi_or_trigger(body),
-        HirStmtKind::Match { arms, .. } => {
-            arms.iter().any(|arm| has_ffi_or_trigger(&arm.body))
-        }
+        HirStmtKind::Match { arms, .. } => arms.iter().any(|arm| has_ffi_or_trigger(&arm.body)),
         _ => false,
     }
 }
@@ -100,9 +98,7 @@ fn weight_of_stmt(stmt: &HirStmt) -> u32 {
 fn weight_of_expr(expr: &HirExpr) -> u32 {
     match &expr.kind {
         HirExprKind::Call { args, .. } => 10 + args.iter().map(weight_of_expr).sum::<u32>(),
-        HirExprKind::Binary { left, right, .. } => {
-            1 + weight_of_expr(left) + weight_of_expr(right)
-        }
+        HirExprKind::Binary { left, right, .. } => 1 + weight_of_expr(left) + weight_of_expr(right),
         HirExprKind::Unary { inner, .. } => 1 + weight_of_expr(inner),
         HirExprKind::Identifier(_) => 1,
         HirExprKind::Index(a, b) => 1 + weight_of_expr(a) + weight_of_expr(b),
@@ -125,7 +121,11 @@ fn weight_of_expr(expr: &HirExpr) -> u32 {
             1 + ts.iter().map(weight_of_expr).sum::<u32>()
         }
         HirExprKind::Block(stmts) => weight_of_body(stmts),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             1 + weight_of_expr(condition)
                 + weight_of_expr(then_branch)
                 + else_branch.as_ref().map_or(0, |v| weight_of_expr(v))
@@ -139,8 +139,8 @@ mod tests {
     use super::*;
     use crate::analysis::inline_cost::InlineDecision as AstDecision;
     use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral};
-    use crate::hir::stmt::{HirStmt, HirStmtKind};
     use crate::hir::program::HirBody;
+    use crate::hir::stmt::{HirStmt, HirStmtKind};
 
     fn parse(src: &str) -> Vec<crate::ast::TopLevel> {
         let tokens = crate::lexer::tokenize(src).expect("tokenize");
@@ -153,33 +153,59 @@ mod tests {
             .callables
             .first()
             .map(|c| HirCallable {
-                body: HirBody { node: c.body.node, span: c.body.span, statements: body },
+                body: HirBody {
+                    node: c.body.node,
+                    span: c.body.span,
+                    statements: body,
+                },
                 ..c.clone()
             })
             .unwrap()
     }
 
     fn id(name: &str) -> HirExpr {
-        HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None,
-                  kind: HirExprKind::Identifier(name.into()) }
+        HirExpr {
+            id: crate::hir::ids::NodeId(0),
+            span: None,
+            ty: None,
+            kind: HirExprKind::Identifier(name.into()),
+        }
     }
 
     fn int(v: i64) -> HirExpr {
-        HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None,
-                  kind: HirExprKind::Literal(HirLiteral::Int(v)) }
+        HirExpr {
+            id: crate::hir::ids::NodeId(0),
+            span: None,
+            ty: None,
+            kind: HirExprKind::Literal(HirLiteral::Int(v)),
+        }
     }
 
     fn let_stmt(name: &str, e: HirExpr) -> HirStmt {
-        HirStmt { id: crate::hir::ids::NodeId(0), span: None,
-                  kind: HirStmtKind::Let { name: name.into(), names: vec![], ty: None,
-                                           expr: Some(e), modifiers: vec![] } }
+        HirStmt {
+            id: crate::hir::ids::NodeId(0),
+            span: None,
+            kind: HirStmtKind::Let {
+                name: name.into(),
+                names: vec![],
+                ty: None,
+                expr: Some(e),
+                modifiers: vec![],
+            },
+        }
     }
 
     #[test]
     fn small_body_is_always_inline() {
         let callable = callable_with(vec![let_stmt("v0", id("a")), let_stmt("v1", id("v0"))]);
-        assert_eq!(callable_inline_decision_hir(&callable), AstDecision::AlwaysInline);
-        assert_eq!(node_inline_decision_hir(&callable), AstDecision::AlwaysInline);
+        assert_eq!(
+            callable_inline_decision_hir(&callable),
+            AstDecision::AlwaysInline
+        );
+        assert_eq!(
+            node_inline_decision_hir(&callable),
+            AstDecision::AlwaysInline
+        );
     }
 
     #[test]
@@ -189,7 +215,10 @@ mod tests {
             .collect();
         let callable = callable_with(body);
         assert_eq!(callable_inline_decision_hir(&callable), AstDecision::No);
-        assert_eq!(node_inline_decision_hir(&callable), AstDecision::AlwaysInline);
+        assert_eq!(
+            node_inline_decision_hir(&callable),
+            AstDecision::AlwaysInline
+        );
     }
 
     #[test]
@@ -203,11 +232,15 @@ mod tests {
 
     #[test]
     fn term_counts_as_ffi_for_callable_inline() {
-        let callable = callable_with(vec![
-            HirStmt { id: crate::hir::ids::NodeId(0), span: None,
-                      kind: HirStmtKind::Term(Some(int(1))) },
-        ]);
+        let callable = callable_with(vec![HirStmt {
+            id: crate::hir::ids::NodeId(0),
+            span: None,
+            kind: HirStmtKind::Term(Some(int(1))),
+        }]);
         assert_eq!(callable_inline_decision_hir(&callable), AstDecision::No);
-        assert_eq!(node_inline_decision_hir(&callable), AstDecision::AlwaysInline);
+        assert_eq!(
+            node_inline_decision_hir(&callable),
+            AstDecision::AlwaysInline
+        );
     }
 }

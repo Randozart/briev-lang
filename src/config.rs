@@ -41,13 +41,22 @@ impl AllocConfig {
         let path = crate::resource_root().join("config/alloc-strategies.dbvl");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
-            Err(_) => return AllocConfig { strategies: HashMap::new() },
+            Err(_) => {
+                return AllocConfig {
+                    strategies: HashMap::new(),
+                };
+            }
         };
         let db = match crate::dbriev::config_db::ConfigDb::from_quoted_str(&content) {
             Ok(db) => db,
             Err(e) => {
-                eprintln!("warning: config/alloc-strategies.dbvl parse error: {} — using empty set", e);
-                return AllocConfig { strategies: HashMap::new() };
+                eprintln!(
+                    "warning: config/alloc-strategies.dbvl parse error: {} — using empty set",
+                    e
+                );
+                return AllocConfig {
+                    strategies: HashMap::new(),
+                };
             }
         };
         let mut strategies = HashMap::new();
@@ -108,18 +117,33 @@ free = "free_dma_pinned"
     #[test]
     fn alloc_config_loads_strategies() {
         let config = AllocConfig::load();
-        assert!(config.lookup("pool_serial").is_some(), "should have pool_serial");
-        assert!(config.lookup("mmap_shared").is_some(), "should have mmap_shared");
-        assert!(config.lookup("pinned_dma").is_some(), "should have pinned_dma");
+        assert!(
+            config.lookup("pool_serial").is_some(),
+            "should have pool_serial"
+        );
+        assert!(
+            config.lookup("mmap_shared").is_some(),
+            "should have mmap_shared"
+        );
+        assert!(
+            config.lookup("pinned_dma").is_some(),
+            "should have pinned_dma"
+        );
     }
 
     #[test]
     fn alloc_config_preserves_templates_and_free() {
         let config = AllocConfig::load();
         let template = config.lookup("pool_serial").unwrap();
-        assert!(template.contains("call ptr @pool_alloc(i64 {size})"),
-            "template must keep the {{size}} placeholder (got: '{}')", template);
-        assert!(template.contains('\n'), "multi-line template must keep its newline");
+        assert!(
+            template.contains("call ptr @pool_alloc(i64 {size})"),
+            "template must keep the {{size}} placeholder (got: '{}')",
+            template
+        );
+        assert!(
+            template.contains('\n'),
+            "multi-line template must keep its newline"
+        );
         assert_eq!(config.lookup_free("pool_serial"), Some("none"));
         assert_eq!(config.lookup_free("mmap_shared"), Some("munmap_shared"));
         assert_eq!(config.lookup_free("pinned_dma"), Some("free_dma_pinned"));
@@ -146,22 +170,32 @@ free = "free_dma_pinned"
             let table = value.as_table().unwrap();
             let template = table.get("template").and_then(toml::Value::as_str).unwrap();
             let free = table.get("free").and_then(toml::Value::as_str);
-            toml_strategies.insert(name.clone(), (template.to_string(), free.map(|s| s.to_string())));
+            toml_strategies.insert(
+                name.clone(),
+                (template.to_string(), free.map(|s| s.to_string())),
+            );
         }
 
-        assert_eq!(config.strategies.len(), toml_strategies.len(),
-            "strategy count diverges between .dbvl and .toml");
+        assert_eq!(
+            config.strategies.len(),
+            toml_strategies.len(),
+            "strategy count diverges between .dbvl and .toml"
+        );
         for (name, (toml_template, toml_free)) in &toml_strategies {
-            let entry = config.strategies.get(name)
-                .unwrap_or_else(|| panic!("strategy '{}' missing from alloc-strategies.dbvl", name));
+            let entry = config.strategies.get(name).unwrap_or_else(|| {
+                panic!("strategy '{}' missing from alloc-strategies.dbvl", name)
+            });
             // Compare templates with trailing whitespace trimmed: the TOML
             // multi-line `"""` string carries a trailing newline that the
             // emitter's writeln! makes cosmetic (an extra blank line in valid
             // LLVM IR), so a trailing-newline-only divergence is not semantic.
-            assert_eq!(entry.template.trim_end(), toml_template.trim_end(),
-                "template for '{}' diverges", name);
-            assert_eq!(&entry.free, toml_free,
-                "free for '{}' diverges", name);
+            assert_eq!(
+                entry.template.trim_end(),
+                toml_template.trim_end(),
+                "template for '{}' diverges",
+                name
+            );
+            assert_eq!(&entry.free, toml_free, "free for '{}' diverges", name);
         }
     }
 }
@@ -192,18 +226,28 @@ impl AsmLowering {
         let path = crate::resource_root().join("config/asm-lowering.dbvl");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
-            Err(_) => return AsmLowering { ops: HashMap::new() },
+            Err(_) => {
+                return AsmLowering {
+                    ops: HashMap::new(),
+                };
+            }
         };
         let db = match crate::dbriev::config_db::ConfigDb::from_quoted_str(&content) {
             Ok(db) => db,
             Err(e) => {
-                eprintln!("warning: config/asm-lowering.dbvl parse error: {} - using empty set", e);
-                return AsmLowering { ops: HashMap::new() };
+                eprintln!(
+                    "warning: config/asm-lowering.dbvl parse error: {} - using empty set",
+                    e
+                );
+                return AsmLowering {
+                    ops: HashMap::new(),
+                };
             }
         };
         let mut ops = HashMap::new();
         for key in db.keys() {
-            let arity = db.field_string(&key, 0)
+            let arity = db
+                .field_string(&key, 0)
                 .and_then(|s| s.parse::<usize>().ok());
             let Some(arity) = arity else { continue };
             let mut lowerings = Vec::new();
@@ -222,7 +266,10 @@ impl AsmLowering {
 
     /// The lowering template for `op` on `target`'s family prefix, or None.
     pub fn lookup(&self, op: &str, target_family: &str) -> Option<&str> {
-        self.ops.get(op)?.lowerings.iter()
+        self.ops
+            .get(op)?
+            .lowerings
+            .iter()
             .find(|(t, _)| target_family.starts_with(t.as_str()))
             .map(|(_, template)| template.as_str())
     }

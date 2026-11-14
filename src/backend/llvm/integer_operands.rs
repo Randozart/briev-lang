@@ -35,11 +35,19 @@ impl LlvmBackend {
         let right_ll = self.llvm_type(&right.ty);
         let left_bits = left_ll.strip_prefix('i')?.parse::<u32>().ok()?;
         let right_bits = right_ll.strip_prefix('i')?.parse::<u32>().ok()?;
-        if left_bits == right_bits { return None; }
-        if left_bits < right_bits {
-            return Some((self.extend_integer_operand(out, indent, left, right), right.clone()));
+        if left_bits == right_bits {
+            return None;
         }
-        Some((left.clone(), self.extend_integer_operand(out, indent, right, left)))
+        if left_bits < right_bits {
+            return Some((
+                self.extend_integer_operand(out, indent, left, right),
+                right.clone(),
+            ));
+        }
+        Some((
+            left.clone(),
+            self.extend_integer_operand(out, indent, right, left),
+        ))
     }
 
     fn extend_integer_operand(
@@ -54,7 +62,15 @@ impl LlvmBackend {
         let signed = self.is_protocol_member(&narrow.ty, "Int");
         let opcode = if signed { "sext" } else { "zext" };
         let name = self.fun.gen_reg();
-        writeln!(out, "{indent}{name} = {opcode} {source} {} to {target}", narrow.name).ok();
-        TypedRegister { name, ty: wide.ty.clone() }
+        writeln!(
+            out,
+            "{indent}{name} = {opcode} {source} {} to {target}",
+            narrow.name
+        )
+        .ok();
+        TypedRegister {
+            name,
+            ty: wide.ty.clone(),
+        }
     }
 }

@@ -32,7 +32,10 @@ pub fn analyze(program: &HirProgram) -> Vec<String> {
             && !c.exported
     }) {
         let mut scope = Scope::default();
-        let ctx = CheckCtx { owner: &c.name, bodies: &bodies };
+        let ctx = CheckCtx {
+            owner: &c.name,
+            bodies: &bodies,
+        };
         check_list(&ctx, &c.body.statements, &mut scope, &mut errors, true);
     }
 
@@ -46,13 +49,32 @@ pub fn analyze(program: &HirProgram) -> Vec<String> {
                 names: vec![g.name.clone()],
                 ty: g.ty.clone(),
                 expr: g.expr.clone(),
-                modifiers: g.modifiers.iter().map(|m| crate::ast::Annotation { name: m.clone(), value: None }).collect(),
+                modifiers: g
+                    .modifiers
+                    .iter()
+                    .map(|m| crate::ast::Annotation {
+                        name: m.clone(),
+                        value: None,
+                    })
+                    .collect(),
             },
         };
-        let ctx = CheckCtx { owner: "top-level", bodies: &bodies };
-        check_list(&ctx, std::slice::from_ref(&stmt), &mut top_scope, &mut errors, false);
+        let ctx = CheckCtx {
+            owner: "top-level",
+            bodies: &bodies,
+        };
+        check_list(
+            &ctx,
+            std::slice::from_ref(&stmt),
+            &mut top_scope,
+            &mut errors,
+            false,
+        );
     }
-    let ctx = CheckCtx { owner: "top-level", bodies: &bodies };
+    let ctx = CheckCtx {
+        owner: "top-level",
+        bodies: &bodies,
+    };
     check_list(&ctx, &[], &mut top_scope, &mut errors, true);
     errors.sort();
     errors.dedup();
@@ -80,20 +102,21 @@ fn check_list(
     }
 }
 
-fn check_stmt(
-    ctx: &CheckCtx<'_>,
-    stmt: &HirStmt,
-    scope: &mut Scope,
-    errors: &mut Vec<String>,
-) {
+fn check_stmt(ctx: &CheckCtx<'_>, stmt: &HirStmt, scope: &mut Scope, errors: &mut Vec<String>) {
     match &stmt.kind {
-        HirStmtKind::Let { name, expr: Some(e), .. } => {
-            check_let(ctx, name, e, scope, errors)
-        }
+        HirStmtKind::Let {
+            name,
+            expr: Some(e),
+            ..
+        } => check_let(ctx, name, e, scope, errors),
         HirStmtKind::Assign(lhs, rhs) => check_assign(ctx, lhs, rhs, scope, errors),
-        HirStmtKind::FreeHint(name) | HirStmtKind::KeepHint(name) => {
-            check_hint(ctx, name, matches!(stmt.kind, HirStmtKind::FreeHint(_)), scope, errors)
-        }
+        HirStmtKind::FreeHint(name) | HirStmtKind::KeepHint(name) => check_hint(
+            ctx,
+            name,
+            matches!(stmt.kind, HirStmtKind::FreeHint(_)),
+            scope,
+            errors,
+        ),
         HirStmtKind::Expression(e) => {
             if let HirExprKind::Await(inner) = &e.kind {
                 consume_await(ctx.owner, inner, scope, errors);

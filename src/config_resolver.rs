@@ -36,11 +36,18 @@ impl ConfigResolver {
         } else {
             match crate::dbriev::config_db::resolve_config_file(&config_dir, "targets") {
                 Some(path) => TargetConfig::load_from(&path).unwrap_or_else(|e| {
-                    eprintln!("warning: cannot load '{}': {} — using baked fallback", path.display(), e);
+                    eprintln!(
+                        "warning: cannot load '{}': {} — using baked fallback",
+                        path.display(),
+                        e
+                    );
                     TargetConfig::load()
                 }),
                 None => {
-                    eprintln!("warning: no targets config found in '{}' — using baked fallback", config_dir.display());
+                    eprintln!(
+                        "warning: no targets config found in '{}' — using baked fallback",
+                        config_dir.display()
+                    );
                     TargetConfig::load()
                 }
             }
@@ -51,7 +58,9 @@ impl ConfigResolver {
         ConfigResolver {
             config_dir,
             target_config,
-            module_registry: ModuleRegistry { modules: module_registry },
+            module_registry: ModuleRegistry {
+                modules: module_registry,
+            },
         }
     }
 
@@ -175,7 +184,11 @@ pub fn show_active_profile() -> Result<(), String> {
     let base = config_base_dir()?;
     let active = base.join("active_profile");
     let profile_dir = if let Ok(target) = std::fs::read_link(&active) {
-        if target.is_absolute() { target } else { base.join(target) }
+        if target.is_absolute() {
+            target
+        } else {
+            base.join(target)
+        }
     } else if let Ok(name) = std::fs::read_to_string(&active) {
         base.join("profiles").join(name.trim())
     } else {
@@ -220,8 +233,12 @@ pub fn init_profile(name: &str) -> Result<(), String> {
     // profile with the .dbvl forms so created profiles load through the DB
     // path. (The pre-migration TOMLs were deleted; nothing consumes them.)
     for file in &[
-        "targets.dbvl", "module-registry.dbvl", "ir-lowering.dbvl",
-        "protocols.dbvl", "encodings.dbvl", "alloc-strategies.dbvl",
+        "targets.dbvl",
+        "module-registry.dbvl",
+        "ir-lowering.dbvl",
+        "protocols.dbvl",
+        "encodings.dbvl",
+        "alloc-strategies.dbvl",
         "address-map.dbvl",
     ] {
         let src = baked_dir.join(file);

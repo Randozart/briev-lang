@@ -180,9 +180,21 @@ mod tests {
 
     #[test]
     fn severity_labels() {
-        assert!(Block::new(Severity::Error, "e").render().starts_with("error: "));
-        assert!(Block::new(Severity::Note, "n").render().starts_with("note: "));
-        assert!(Block::new(Severity::Info, "i").render().starts_with("info: "));
+        assert!(
+            Block::new(Severity::Error, "e")
+                .render()
+                .starts_with("error: ")
+        );
+        assert!(
+            Block::new(Severity::Note, "n")
+                .render()
+                .starts_with("note: ")
+        );
+        assert!(
+            Block::new(Severity::Info, "i")
+                .render()
+                .starts_with("info: ")
+        );
     }
 
     #[test]

@@ -9,14 +9,18 @@
 // are registered as callable built-in functions in the interpreter.
 // Source$, Ir$, Bin$, Stage$ are pre-bound identifiers.
 
-use crate::ast::{Expr, Statement, TopLevel, PropertyValue};
-use crate::ast::top::*;
-use crate::type_universe::TypeUniverse;
-use super::selection::{Selection, NodeRef, Selector, TagSelector, NamedSelector,
-    WithKeySelector, WithAttrSelector, AllSelector, top_level_tag, top_level_name};
-use super::actions::{Position, insert_items, delete_selection, replace_selection,
-    set_metadata, rename_selection, wrap_selection};
+use super::actions::{
+    Position, delete_selection, insert_items, rename_selection, replace_selection, set_metadata,
+    wrap_selection,
+};
+use super::selection::{
+    AllSelector, NamedSelector, NodeRef, Selection, Selector, TagSelector, WithAttrSelector,
+    WithKeySelector, top_level_name, top_level_tag,
+};
 use super::text_ops::TextSelection;
+use crate::ast::top::*;
+use crate::ast::{Expr, PropertyValue, Statement, TopLevel};
+use crate::type_universe::TypeUniverse;
 
 /// Compile-time selection value (wraps a Selection).
 #[derive(Debug, Clone)]
@@ -100,10 +104,7 @@ pub enum NavResult {
 }
 
 /// Evaluate a navigation chain: resolve selector → traverse → position → act.
-pub fn evaluate_chain(
-    _ctx: &mut EvalContext,
-    chain: &[NavStep],
-) -> Result<NavResult, String> {
+pub fn evaluate_chain(_ctx: &mut EvalContext, chain: &[NavStep]) -> Result<NavResult, String> {
     // Placeholder: will interpret the chain and return results
     // Each step dispatches to the appropriate selector/position/action
     Err("navigation chain evaluation not yet implemented — Phase G placeholder".into())
@@ -147,20 +148,14 @@ pub enum NavStep {
 }
 
 /// Evaluate a $(Stage) block body.
-pub fn evaluate_stage_block(
-    body: &[Statement],
-    ctx: &mut EvalContext,
-) -> Result<(), String> {
+pub fn evaluate_stage_block(body: &[Statement], ctx: &mut EvalContext) -> Result<(), String> {
     for stmt in body {
         evaluate_stage_statement(stmt, ctx)?;
     }
     Ok(())
 }
 
-fn evaluate_stage_statement(
-    stmt: &Statement,
-    ctx: &mut EvalContext,
-) -> Result<(), String> {
+fn evaluate_stage_statement(stmt: &Statement, ctx: &mut EvalContext) -> Result<(), String> {
     match stmt {
         // let name = expr;
         Statement::Let { expr: Some(e), .. } => {
@@ -187,10 +182,7 @@ fn evaluate_stage_statement(
     }
 }
 
-fn evaluate_chain_expression(
-    _expr: &Expr,
-    _ctx: &mut EvalContext,
-) -> Result<(), String> {
+fn evaluate_chain_expression(_expr: &Expr, _ctx: &mut EvalContext) -> Result<(), String> {
     // Parse the expression tree to extract navigation chain steps
     // and dispatch each step via evaluate_chain()
     Ok(())

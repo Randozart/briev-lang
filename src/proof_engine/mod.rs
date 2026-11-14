@@ -120,14 +120,17 @@ pub fn extract_bound_from_postcondition(post: &Expr) -> Option<u64> {
 
 /// Check if a sequence of statements is linearly provable (no branching).
 pub fn prove_linear(stmts: &[Statement]) -> bool {
-    stmts.iter().all(|s| matches!(s,
-        Statement::Expression(_) |
-        Statement::Assign(_, _) |
-        Statement::Let { .. } |
-        Statement::Term(_) |
-        Statement::Tail(_) |
-        Statement::EndProgram(_)
-    ))
+    stmts.iter().all(|s| {
+        matches!(
+            s,
+            Statement::Expression(_)
+                | Statement::Assign(_, _)
+                | Statement::Let { .. }
+                | Statement::Term(_)
+                | Statement::Tail(_)
+                | Statement::EndProgram(_)
+        )
+    })
 }
 
 /// Estimate the cost of an expression (for optimization budget).
@@ -156,11 +159,11 @@ pub fn stmt_cost(stmt: &Statement) -> u64 {
         Statement::Expression(expr) => expr_cost(expr),
         Statement::Let { expr, .. } => expr.as_ref().map_or(0, |e| expr_cost(e)),
         Statement::Assign(_, rhs) => expr_cost(rhs),
-        Statement::Term(val) | Statement::EndProgram(val) => val.as_ref().map_or(0, |e| expr_cost(e)),
-        Statement::Tail(e) => expr_cost(e),
-        Statement::Guarded(cond, body) => {
-            expr_cost(cond) + body.iter().map(stmt_cost).sum::<u64>()
+        Statement::Term(val) | Statement::EndProgram(val) => {
+            val.as_ref().map_or(0, |e| expr_cost(e))
         }
+        Statement::Tail(e) => expr_cost(e),
+        Statement::Guarded(cond, body) => expr_cost(cond) + body.iter().map(stmt_cost).sum::<u64>(),
         Statement::Block(stmts) => stmts.iter().map(stmt_cost).sum(),
         _ => 2,
     }
@@ -266,9 +269,7 @@ pub fn check_satisfiable(a: &Expr, b: &Expr) -> bool {
             // subcommand-dispatch pattern (`cmd == "build"` vs `cmd == "run"`
             // can never both hold). This is what makes two entry! nodes with
             // mutually exclusive commands legal WITHOUT classification.
-            if let (Some((l1, r1)), Some((l2, r2))) =
-                (as_const_eq(a), as_const_eq(b))
-            {
+            if let (Some((l1, r1)), Some((l2, r2))) = (as_const_eq(a), as_const_eq(b)) {
                 if expr_eq(l1, l2) && const_ne(r1, r2) {
                     return false;
                 }
@@ -350,8 +351,14 @@ fn const_ne(a: &Expr, b: &Expr) -> bool {
     // on the same pin as mutually exclusive (no false async/sync demand on
     // clock-sensitive electronics boards).
     if let (
-        Expr::UnitLiteral { value: va, unit: ua },
-        Expr::UnitLiteral { value: vb, unit: ub },
+        Expr::UnitLiteral {
+            value: va,
+            unit: ua,
+        },
+        Expr::UnitLiteral {
+            value: vb,
+            unit: ub,
+        },
     ) = (a, b)
     {
         let sa = crate::parser::quantity::literal_si(*va, ua);
@@ -424,9 +431,7 @@ fn expr_eq(l: &Expr, r: &Expr) -> bool {
         // guards and (via const_ne) see `== 3.3V` vs `== 1.8V` as mutually
         // exclusive. This is what makes clock-sensitive electronics nodes
         // free of false async/sync classification demands.
-        (Expr::Field(la, fa), Expr::Field(lb, fb)) => {
-            fa == fb && expr_eq(la, lb)
-        }
+        (Expr::Field(la, fa), Expr::Field(lb, fb)) => fa == fb && expr_eq(la, lb),
         // 2026-08-01 (Phase 3c): Call equality — `entry_cmd()` == `entry_cmd()`.
         // Needed so `entry_cmd() == "a"` vs `entry_cmd() == "b"` shares a lhs.
         (Expr::Call(na, aa, ta), Expr::Call(nb, ab, tb)) => {
@@ -443,10 +448,7 @@ fn expr_eq(l: &Expr, r: &Expr) -> bool {
 }
 
 /// Check if a transaction body converges (loop bound is provable).
-pub fn check_convergence(
-    body: &[Statement],
-    postcondition: &Expr,
-) -> Result<(), String> {
+pub fn check_convergence(body: &[Statement], postcondition: &Expr) -> Result<(), String> {
     // A transaction converges if either:
     // 1. It has no loops (prove_linear)
     // 2. The postcondition provides a numeric bound
@@ -491,7 +493,11 @@ mod tests {
 
     #[test]
     fn test_count_calls() {
-        let expr = Expr::Call("AddI64#".into(), vec![Expr::Decimal(1), Expr::Decimal(2)], None);
+        let expr = Expr::Call(
+            "AddI64#".into(),
+            vec![Expr::Decimal(1), Expr::Decimal(2)],
+            None,
+        );
         let mut intrinsics = 0;
         let mut includes_io = false;
         count_calls(&expr, &mut intrinsics, &mut includes_io);
@@ -508,9 +514,7 @@ mod tests {
 
     #[test]
     fn test_prove_linear() {
-        let stmts = vec![
-            Statement::Expression(Expr::Decimal(1)),
-        ];
+        let stmts = vec![Statement::Expression(Expr::Decimal(1))];
         assert!(prove_linear(&stmts));
     }
 
@@ -581,6 +585,9 @@ mod tests {
             Box::new(Expr::Identifier("total".into())),
         );
         let err = detect_tautology(&pre, &post, true);
-        assert!(err.is_none(), "[count < total][count == total] is a real contract");
+        assert!(
+            err.is_none(),
+            "[count < total][count == total] is a real contract"
+        );
     }
 }

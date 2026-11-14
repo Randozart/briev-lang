@@ -16,10 +16,10 @@
 // symbolic instructions. Raw physical-only labels never enter this pass.
 
 use super::registry::{BadIsa, BadRegisters};
-use crate::ast::bad::{BadBodyItem, BadDefn, BadDefnShape, BadFn, BadInstr, BadLabel, BadOperand, BadTopLevel};
-use crate::ast::bld::{
-    BldConst, BldDefn, BldParam, BldProgram, BldStmt, BldTopLevel,
+use crate::ast::bad::{
+    BadBodyItem, BadDefn, BadDefnShape, BadFn, BadInstr, BadLabel, BadOperand, BadTopLevel,
 };
+use crate::ast::bld::{BldConst, BldDefn, BldParam, BldProgram, BldStmt, BldTopLevel};
 use crate::ast::{BinaryOpKind, Expr, Type, UnaryOpKind};
 use crate::errors::Span;
 use crate::parser::bld::parse_bld_expr;
@@ -64,8 +64,8 @@ const RAW_ZERO: &[&str] = &[
 ];
 
 const SYMBOLIC_OPS: &[&str] = &[
-    "mov", "add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr",
-    "store", "load", "stb", "sth", "addr", "readcr", "writecr",
+    "mov", "add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr", "store", "load",
+    "stb", "sth", "addr", "readcr", "writecr",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,7 +84,8 @@ struct Unit {
 }
 
 pub fn lower_symbolic_labels(
-    items: &mut [BadTopLevel], ctx: &SymCtx<'_>,
+    items: &mut [BadTopLevel],
+    ctx: &SymCtx<'_>,
 ) -> Result<Vec<crate::backend::bad::UnusedValue>, String> {
     let units = collect_units(items, ctx)?;
     if units.is_empty() && ctx.extern_fns.is_empty() {
@@ -109,13 +110,8 @@ pub fn lower_symbolic_labels(
         Vec::new()
     };
 
-    let mut lowerer = crate::backend::bld::lower::BldLowerer::new(
-        ctx.isa,
-        ctx.regs,
-        ctx.family,
-        None,
-        None,
-    );
+    let mut lowerer =
+        crate::backend::bld::lower::BldLowerer::new(ctx.isa, ctx.regs, ctx.family, None, None);
     lowerer.load_program(BldProgram {
         items: program_items,
         span: Span::dummy(),
@@ -439,8 +435,8 @@ impl Builder<'_, '_> {
 
     fn parse_expr(&self, text: &str, line: usize) -> Result<Expr, String> {
         let text = normalize_call(text);
-        let expr = parse_bld_expr(&text)
-            .map_err(|e| format!("line {line}: expression `{text}`: {e}"))?;
+        let expr =
+            parse_bld_expr(&text).map_err(|e| format!("line {line}: expression `{text}`: {e}"))?;
         Ok(rewrite_labels(expr, self.ctx))
     }
 
@@ -476,9 +472,7 @@ impl Builder<'_, '_> {
     /// A call statement: inline symbolic `defn` expands here, engine verbs
     /// inline through `std/bad/engine.bad`, everything else becomes a real
     /// `call` (callable `defn`, or fn).
-    fn emit_call(
-        &mut self, callee: String, args: Vec<Expr>, span: Span,
-    ) -> Result<(), String> {
+    fn emit_call(&mut self, callee: String, args: Vec<Expr>, span: Span) -> Result<(), String> {
         if let Some(d) = self.ctx.symdefs.get(&callee).cloned() {
             if args.len() != d.params.len() {
                 return Err(format!(
@@ -555,9 +549,7 @@ impl Builder<'_, '_> {
     /// core ISA instruction (physical-register destinations write straight
     /// through; no `write_dst`/`Let` indirection, since engine verbs use
     /// the r0 result convention and named physical scratch).
-    fn emit_engine_defn(
-        &mut self, d: &BadDefn, args: &[Expr], span: Span,
-    ) -> Result<(), String> {
+    fn emit_engine_defn(&mut self, d: &BadDefn, args: &[Expr], span: Span) -> Result<(), String> {
         if args.len() != d.params.len() {
             return Err(format!(
                 "engine verb `{}` (line {}) takes {} argument(s), got {}",
@@ -575,12 +567,7 @@ impl Builder<'_, '_> {
                     .find(|r| !r.is_default && self.ctx.family.starts_with(r.target.as_str()))
                     .or_else(|| rows.iter().find(|r| r.is_default));
                 match row {
-                    Some(r) => r
-                        .body
-                        .clone()
-                        .into_iter()
-                        .map(BadBodyItem::Instr)
-                        .collect(),
+                    Some(r) => r.body.clone().into_iter().map(BadBodyItem::Instr).collect(),
                     None => {
                         return Err(format!(
                             "engine verb `{}` (line {}) has no row for target `{}` - \
@@ -712,7 +699,10 @@ impl Builder<'_, '_> {
                     rhs
                 } else {
                     let kind = compound_kind(&x.op).ok_or_else(|| {
-                        format!("unknown compound operator `{}=` at line {}", x.op, x.span.line)
+                        format!(
+                            "unknown compound operator `{}=` at line {}",
+                            x.op, x.span.line
+                        )
                     })?;
                     Expr::BinaryOp(
                         kind,
@@ -817,7 +807,11 @@ impl Builder<'_, '_> {
                 });
             }
             BadBodyItem::Instr(i) => self.emit_instr(i)?,
-            BadBodyItem::RawRegion { text, clobbers, span } => {
+            BadBodyItem::RawRegion {
+                text,
+                clobbers,
+                span,
+            } => {
                 self.stmts.push(BldStmt::RawClobber {
                     text: text.clone(),
                     clobbers: clobbers.clone(),
@@ -829,14 +823,14 @@ impl Builder<'_, '_> {
                     "manual label `{}` inside a symbolic body (line {}) - symbolic bodies use \
                      structured control; put the raw label in its own label",
                     l.name, l.span.line
-                ))
+                ));
             }
             BadBodyItem::Site(_) => {
                 return Err(
                     "`site` inside a symbolic body - put the target-dispatch block in a raw \
                      label, or use structured control"
                         .to_string(),
-                )
+                );
             }
         }
         Ok(())
@@ -893,7 +887,7 @@ impl Builder<'_, '_> {
                         "`{}` (line {}) takes simple value/address operands - \
                          assign expressions to a symbolic value first",
                         i.mnemonic, i.span.line
-                    ))
+                    ));
                 }
             }
         }
@@ -937,8 +931,7 @@ impl Builder<'_, '_> {
                 let value = self.operand_expr(&i.operands[1], i.span.line)?;
                 self.write_dst(&dst, value, i.span.clone())?;
             }
-            ("add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor" | "shl"
-                | "shr", 3) => {
+            ("add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor" | "shl" | "shr", 3) => {
                 let kind = match i.mnemonic.as_str() {
                     "add" => BinaryOpKind::Add,
                     "sub" => BinaryOpKind::Sub,
@@ -969,7 +962,7 @@ impl Builder<'_, '_> {
                         return Err(format!(
                             "`addr` (line {}) needs a bare label operand",
                             i.span.line
-                        ))
+                        ));
                     }
                 };
                 self.write_dst(
@@ -1035,7 +1028,7 @@ impl Builder<'_, '_> {
                      mov/add/sub/mul/div/mod/and/or/xor/shl/shr/store/load/addr/readcr/writecr, \
                      or put the raw instruction in its own label",
                     i.mnemonic, i.span.line
-                ))
+                ));
             }
         }
         Ok(())
@@ -1066,9 +1059,7 @@ impl Builder<'_, '_> {
         Ok(name.clone())
     }
 
-    fn write_dst(
-        &mut self, dst: &str, value: Expr, span: Span,
-    ) -> Result<(), String> {
+    fn write_dst(&mut self, dst: &str, value: Expr, span: Span) -> Result<(), String> {
         if self.bound.contains(dst) {
             self.stmts.push(BldStmt::Assign {
                 target: Expr::Identifier(dst.to_string()),
@@ -1093,11 +1084,9 @@ impl Builder<'_, '_> {
 /// symbolic expression. `addr(label)` keeps its bare argument.
 fn rewrite_labels(expr: Expr, ctx: &SymCtx<'_>) -> Expr {
     match expr {
-        Expr::Identifier(n) if ctx.label_names.contains(&n) => Expr::Call(
-            "addr".to_string(),
-            vec![Expr::Identifier(n)],
-            None,
-        ),
+        Expr::Identifier(n) if ctx.label_names.contains(&n) => {
+            Expr::Call("addr".to_string(), vec![Expr::Identifier(n)], None)
+        }
         Expr::Call(callee, args, id) => {
             let args = if callee == "addr" {
                 args
@@ -1178,12 +1167,14 @@ fn substitute_operand(op: &BadOperand, env: &HashMap<String, BadOperand>) -> Bad
 /// Convert instruction operands into the `Expr` arguments an engine defn
 /// expects, preserving immediate/constant and register names.
 fn bad_operands_to_exprs(ops: &[BadOperand]) -> Result<Vec<Expr>, String> {
-    ops.iter().map(|op| match op {
-        BadOperand::Int(n) => Ok(Expr::Decimal(*n)),
-        BadOperand::Float(t) => Ok(Expr::Float(t.parse::<f64>().unwrap_or(0.0))),
-        BadOperand::Name(n) => Ok(Expr::Identifier(n.clone())),
-        BadOperand::Expr(t) => {
-            parse_bld_expr(t).map_err(|e| format!("engine verb argument `{t}`: {e}"))
-        }
-    }).collect()
+    ops.iter()
+        .map(|op| match op {
+            BadOperand::Int(n) => Ok(Expr::Decimal(*n)),
+            BadOperand::Float(t) => Ok(Expr::Float(t.parse::<f64>().unwrap_or(0.0))),
+            BadOperand::Name(n) => Ok(Expr::Identifier(n.clone())),
+            BadOperand::Expr(t) => {
+                parse_bld_expr(t).map_err(|e| format!("engine verb argument `{t}`: {e}"))
+            }
+        })
+        .collect()
 }

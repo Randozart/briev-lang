@@ -41,7 +41,9 @@ impl CostModel {
     #[allow(dead_code)]
     pub fn cost_of_constant(&self, val: &Value) -> u64 {
         let bits = match val {
-            Value::Atom(Atom::Int(n)) => n.checked_abs().map(|a| 64 - a.leading_zeros()).unwrap_or(0) as u64,
+            Value::Atom(Atom::Int(n)) => {
+                n.checked_abs().map(|a| 64 - a.leading_zeros()).unwrap_or(0) as u64
+            }
             Value::Atom(Atom::Float(_)) => 64,
             Value::Bits(bytes) if bytes.len() <= 1 => 1,
             _ => 8,
@@ -59,7 +61,11 @@ impl CostModel {
                 // 2026-07-28: Equality penalty — Eq/Neq add +2 cost to discourage
                 // table-lookup ite chains (x0 == 5, x0 == -3) in favor of general
                 // formulas using comparison operators (<, >, <=, >=).
-                if matches!(op, BinaryOpKind::Eq | BinaryOpKind::Neq) { base + 2 } else { base }
+                if matches!(op, BinaryOpKind::Eq | BinaryOpKind::Neq) {
+                    base + 2
+                } else {
+                    base
+                }
             }
             Expr::If(cond, then_, else_) => {
                 let else_cost = else_.as_ref().map(|e| self.cost_of_expr(e)).unwrap_or(0);
@@ -137,7 +143,11 @@ pub fn evaluate_synthesized(
                 Value::Bits(ref bytes) => bytes.iter().any(|b| *b != 0),
                 Value::Atom(Atom::Int(n)) => n != 0,
                 Value::Atom(Atom::Float(f)) => f != 0.0,
-                _ => return Err(SynthesisEvalError::TypeMismatch("non-boolean condition".into())),
+                _ => {
+                    return Err(SynthesisEvalError::TypeMismatch(
+                        "non-boolean condition".into(),
+                    ));
+                }
             };
             if cbool {
                 evaluate_synthesized(then_, ctx)
@@ -156,36 +166,48 @@ pub fn evaluate_synthesized(
             for arg in args {
                 values.push(evaluate_synthesized(arg, ctx)?);
             }
-            Ok(Value::Sum { name: name.clone(), payload: values })
+            Ok(Value::Sum {
+                name: name.clone(),
+                payload: values,
+            })
         }
         Expr::Field(inner, field_name) => {
             let val = evaluate_synthesized(inner, ctx)?;
             match val {
-                Value::Sum { payload: fields, .. } => {
+                Value::Sum {
+                    payload: fields, ..
+                } => {
                     if let Ok(idx) = field_name.parse::<usize>() {
-                        fields.get(idx).cloned().ok_or(
-                            SynthesisEvalError::TypeMismatch(
-                                format!("field '{}' not found (index {})", field_name, idx)
-                            )
-                        )
+                        fields
+                            .get(idx)
+                            .cloned()
+                            .ok_or(SynthesisEvalError::TypeMismatch(format!(
+                                "field '{}' not found (index {})",
+                                field_name, idx
+                            )))
                     } else {
-                        Err(SynthesisEvalError::TypeMismatch(
-                            format!("named fields not yet supported in synthesis: '{}'", field_name)
-                        ))
+                        Err(SynthesisEvalError::TypeMismatch(format!(
+                            "named fields not yet supported in synthesis: '{}'",
+                            field_name
+                        )))
                     }
                 }
-                _ => Err(SynthesisEvalError::TypeMismatch(
-                    format!("field access on non-sum: {:?}", val)
-                )),
+                _ => Err(SynthesisEvalError::TypeMismatch(format!(
+                    "field access on non-sum: {:?}",
+                    val
+                ))),
             }
         }
         Expr::Match(expr, arms) => {
             let val = evaluate_synthesized(expr, ctx)?;
             match val {
-                Value::Sum { name, payload: fields } => {
+                Value::Sum {
+                    name,
+                    payload: fields,
+                } => {
                     for arm in arms {
                         if let Pattern::EnumVariant(ref arm_name, ref pat_fields) = arm.pattern {
-                             if *arm_name == name {
+                            if *arm_name == name {
                                 for (i, pat) in pat_fields.iter().enumerate() {
                                     match pat {
                                         Pattern::Binding(binding_name) => {
@@ -202,13 +224,15 @@ pub fn evaluate_synthesized(
                             }
                         }
                     }
-                    Err(SynthesisEvalError::TypeMismatch(
-                        format!("no matching arm for sum variant '{}'", name)
-                    ))
+                    Err(SynthesisEvalError::TypeMismatch(format!(
+                        "no matching arm for sum variant '{}'",
+                        name
+                    )))
                 }
-                _ => Err(SynthesisEvalError::TypeMismatch(
-                    format!("match on non-sum: {:?}", val)
-                )),
+                _ => Err(SynthesisEvalError::TypeMismatch(format!(
+                    "match on non-sum: {:?}",
+                    val
+                ))),
             }
         }
         _ => Err(SynthesisEvalError::TypeMismatch(format!(
@@ -223,16 +247,24 @@ fn eval_unary(kind: &UnaryOpKind, val: Value) -> Result<Value, SynthesisEvalErro
         UnaryOpKind::Neg => match val {
             Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Int(n.wrapping_neg()))),
             Value::Atom(Atom::Float(f)) => Ok(Value::Atom(Atom::Float(-f))),
-            _ => Err(SynthesisEvalError::TypeMismatch("negation requires numeric type".into())),
+            _ => Err(SynthesisEvalError::TypeMismatch(
+                "negation requires numeric type".into(),
+            )),
         },
         UnaryOpKind::Not => match val {
-            Value::Bits(ref bytes) => Ok(Value::Bits(vec![if bytes.iter().all(|b| *b == 0) { 1 } else { 0 }])),
+            Value::Bits(ref bytes) => Ok(Value::Bits(vec![if bytes.iter().all(|b| *b == 0) {
+                1
+            } else {
+                0
+            }])),
             Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Int(if n == 0 { 1 } else { 0 }))),
-            _ => Err(SynthesisEvalError::TypeMismatch("not requires boolean type".into())),
+            _ => Err(SynthesisEvalError::TypeMismatch(
+                "not requires boolean type".into(),
+            )),
         },
-        UnaryOpKind::BitNot => {
-            Err(SynthesisEvalError::TypeMismatch("bitwise not not supported in synthesis".into()))
-        }
+        UnaryOpKind::BitNot => Err(SynthesisEvalError::TypeMismatch(
+            "bitwise not not supported in synthesis".into(),
+        )),
     }
 }
 
@@ -240,12 +272,18 @@ fn eval_binary(kind: &BinaryOpKind, l: Value, r: Value) -> Result<Value, Synthes
     match (l, r) {
         (Value::Atom(Atom::Int(a)), Value::Atom(Atom::Int(b))) => eval_binary_int(kind, a, b),
         (Value::Atom(Atom::Float(a)), Value::Atom(Atom::Float(b))) => eval_binary_float(kind, a, b),
-        (Value::Atom(Atom::Int(a)), Value::Atom(Atom::Float(b))) => eval_binary_float(kind, a as f64, b),
-        (Value::Atom(Atom::Float(a)), Value::Atom(Atom::Int(b))) => eval_binary_float(kind, a, b as f64),
+        (Value::Atom(Atom::Int(a)), Value::Atom(Atom::Float(b))) => {
+            eval_binary_float(kind, a as f64, b)
+        }
+        (Value::Atom(Atom::Float(a)), Value::Atom(Atom::Int(b))) => {
+            eval_binary_float(kind, a, b as f64)
+        }
         _ => match kind {
             BinaryOpKind::Eq => Ok(Value::Bits(vec![0])),
             BinaryOpKind::Neq => Ok(Value::Bits(vec![1])),
-            _ => Err(SynthesisEvalError::TypeMismatch("incompatible types for binary op".into())),
+            _ => Err(SynthesisEvalError::TypeMismatch(
+                "incompatible types for binary op".into(),
+            )),
         },
     }
 }
@@ -280,7 +318,9 @@ fn eval_binary_int(kind: &BinaryOpKind, a: i64, b: i64) -> Result<Value, Synthes
         BinaryOpKind::Shr => Ok(Value::Atom(Atom::Int(a.wrapping_shr(b as u32)))),
         BinaryOpKind::BitAnd => Ok(Value::Atom(Atom::Int(a & b))),
         BinaryOpKind::BitOr => Ok(Value::Atom(Atom::Int(a | b))),
-        BinaryOpKind::Concat => Err(SynthesisEvalError::TypeMismatch("concat not supported on int".into())),
+        BinaryOpKind::Concat => Err(SynthesisEvalError::TypeMismatch(
+            "concat not supported on int".into(),
+        )),
     }
 }
 
@@ -297,11 +337,16 @@ fn eval_binary_float(kind: &BinaryOpKind, a: f64, b: f64) -> Result<Value, Synth
         BinaryOpKind::Gt => Ok(Value::Bits(vec![if a > b { 1 } else { 0 }])),
         BinaryOpKind::Le => Ok(Value::Bits(vec![if a <= b { 1 } else { 0 }])),
         BinaryOpKind::Ge => Ok(Value::Bits(vec![if a >= b { 1 } else { 0 }])),
-        BinaryOpKind::And | BinaryOpKind::Or
-        | BinaryOpKind::BitAnd | BinaryOpKind::BitOr | BinaryOpKind::BitXor
-        | BinaryOpKind::Shl | BinaryOpKind::Shr | BinaryOpKind::Concat => {
-            Err(SynthesisEvalError::TypeMismatch("integer-only binary op on float".into()))
-        }
+        BinaryOpKind::And
+        | BinaryOpKind::Or
+        | BinaryOpKind::BitAnd
+        | BinaryOpKind::BitOr
+        | BinaryOpKind::BitXor
+        | BinaryOpKind::Shl
+        | BinaryOpKind::Shr
+        | BinaryOpKind::Concat => Err(SynthesisEvalError::TypeMismatch(
+            "integer-only binary op on float".into(),
+        )),
     }
 }
 
@@ -314,17 +359,27 @@ fn op_result_type(op: &BinaryOpKind, lhs_ty: &str, rhs_ty: &str) -> Option<&'sta
         return None;
     }
     match op {
-        BinaryOpKind::Add | BinaryOpKind::Sub | BinaryOpKind::Mul
-        | BinaryOpKind::Div | BinaryOpKind::Mod => {
+        BinaryOpKind::Add
+        | BinaryOpKind::Sub
+        | BinaryOpKind::Mul
+        | BinaryOpKind::Div
+        | BinaryOpKind::Mod => {
             if lhs_ty == "Int" || lhs_ty == "Float" {
-                if lhs_ty == "Int" { Some("Int") } else { Some("Float") }
+                if lhs_ty == "Int" {
+                    Some("Int")
+                } else {
+                    Some("Float")
+                }
             } else {
                 None
             }
         }
-        BinaryOpKind::Eq | BinaryOpKind::Neq
-        | BinaryOpKind::Lt | BinaryOpKind::Gt
-        | BinaryOpKind::Le | BinaryOpKind::Ge => Some("Bool"),
+        BinaryOpKind::Eq
+        | BinaryOpKind::Neq
+        | BinaryOpKind::Lt
+        | BinaryOpKind::Gt
+        | BinaryOpKind::Le
+        | BinaryOpKind::Ge => Some("Bool"),
         BinaryOpKind::And | BinaryOpKind::Or => {
             if lhs_ty == "Bool" {
                 Some("Bool")
@@ -410,21 +465,33 @@ fn generate_typed_expressions(
 
     // Binary ops
     for lhs_ty_str in &["Int", "Float", "Bool"] {
-        let lhs_candidates = generate_typed_expressions(param_names, param_types, lhs_ty_str, depth - 1);
+        let lhs_candidates =
+            generate_typed_expressions(param_names, param_types, lhs_ty_str, depth - 1);
         if lhs_candidates.is_empty() {
             continue;
         }
-        let rhs_candidates = generate_typed_expressions(param_names, param_types, lhs_ty_str, depth - 1);
+        let rhs_candidates =
+            generate_typed_expressions(param_names, param_types, lhs_ty_str, depth - 1);
         if rhs_candidates.is_empty() {
             continue;
         }
         for op in &[
-            BinaryOpKind::Add, BinaryOpKind::Sub, BinaryOpKind::Mul,
-            BinaryOpKind::Div, BinaryOpKind::Mod, BinaryOpKind::Eq,
-            BinaryOpKind::Neq, BinaryOpKind::Lt, BinaryOpKind::Gt,
-            BinaryOpKind::Le, BinaryOpKind::Ge,
-            BinaryOpKind::BitAnd, BinaryOpKind::BitOr, BinaryOpKind::BitXor,
-            BinaryOpKind::Shl, BinaryOpKind::Shr,
+            BinaryOpKind::Add,
+            BinaryOpKind::Sub,
+            BinaryOpKind::Mul,
+            BinaryOpKind::Div,
+            BinaryOpKind::Mod,
+            BinaryOpKind::Eq,
+            BinaryOpKind::Neq,
+            BinaryOpKind::Lt,
+            BinaryOpKind::Gt,
+            BinaryOpKind::Le,
+            BinaryOpKind::Ge,
+            BinaryOpKind::BitAnd,
+            BinaryOpKind::BitOr,
+            BinaryOpKind::BitXor,
+            BinaryOpKind::Shl,
+            BinaryOpKind::Shr,
         ] {
             if let Some(ty) = op_result_type(op, lhs_ty_str, lhs_ty_str) {
                 if ty != ret_type {
@@ -432,7 +499,11 @@ fn generate_typed_expressions(
                 }
                 for lhs_expr in &lhs_candidates {
                     for rhs_expr in &rhs_candidates {
-                        result.push(Expr::BinaryOp(*op, Box::new(lhs_expr.clone()), Box::new(rhs_expr.clone())));
+                        result.push(Expr::BinaryOp(
+                            *op,
+                            Box::new(lhs_expr.clone()),
+                            Box::new(rhs_expr.clone()),
+                        ));
                     }
                 }
             }
@@ -441,13 +512,18 @@ fn generate_typed_expressions(
 
     // Bool-specific: logical ops only when ret_type == Bool
     if ret_type == "Bool" {
-        let bool_candidates = generate_typed_expressions(param_names, param_types, "Bool", depth - 1);
+        let bool_candidates =
+            generate_typed_expressions(param_names, param_types, "Bool", depth - 1);
         if !bool_candidates.is_empty() {
             for op in &[BinaryOpKind::And, BinaryOpKind::Or, BinaryOpKind::BitXor] {
                 if op_result_type(op, "Bool", "Bool") == Some("Bool") {
                     for lhs_expr in &bool_candidates {
                         for rhs_expr in &bool_candidates {
-                            result.push(Expr::BinaryOp(*op, Box::new(lhs_expr.clone()), Box::new(rhs_expr.clone())));
+                            result.push(Expr::BinaryOp(
+                                *op,
+                                Box::new(lhs_expr.clone()),
+                                Box::new(rhs_expr.clone()),
+                            ));
                         }
                     }
                 }
@@ -475,13 +551,17 @@ fn generate_typed_expressions_lazy(
     let mut temp = Vec::new();
     push_typed_constants(ret_type, &mut temp);
     for c in &temp {
-        if callback(c) { return; }
+        if callback(c) {
+            return;
+        }
     }
 
     // Variables that match the return type
     for (name, ty) in param_names.iter().zip(param_types.iter()) {
         if ty == ret_type {
-            if callback(&Expr::Identifier(name.clone())) { return; }
+            if callback(&Expr::Identifier(name.clone())) {
+                return;
+            }
         }
     }
 
@@ -514,30 +594,52 @@ fn generate_typed_expressions_lazy(
     // Binary ops
     for lhs_ty_str in &["Int", "Float", "Bool"] {
         let mut lhs_collected = Vec::new();
-        generate_typed_expressions_lazy(param_names, param_types, lhs_ty_str, depth - 1, &mut |e| {
-            lhs_collected.push(e.clone());
-            false
-        });
+        generate_typed_expressions_lazy(
+            param_names,
+            param_types,
+            lhs_ty_str,
+            depth - 1,
+            &mut |e| {
+                lhs_collected.push(e.clone());
+                false
+            },
+        );
         if lhs_collected.is_empty() {
             continue;
         }
         let mut rhs_collected = Vec::new();
-        generate_typed_expressions_lazy(param_names, param_types, lhs_ty_str, depth - 1, &mut |e| {
-            rhs_collected.push(e.clone());
-            false
-        });
+        generate_typed_expressions_lazy(
+            param_names,
+            param_types,
+            lhs_ty_str,
+            depth - 1,
+            &mut |e| {
+                rhs_collected.push(e.clone());
+                false
+            },
+        );
         if rhs_collected.is_empty() {
             continue;
         }
         // 2026-07-28: Collect candidates with div-by-zero pruning.
         // Skip Div/Mod/Shl where RHS is constant zero (always fails evaluation).
         for op in &[
-            BinaryOpKind::Add, BinaryOpKind::Sub, BinaryOpKind::Mul,
-            BinaryOpKind::Div, BinaryOpKind::Mod, BinaryOpKind::Eq,
-            BinaryOpKind::Neq, BinaryOpKind::Lt, BinaryOpKind::Gt,
-            BinaryOpKind::Le, BinaryOpKind::Ge,
-            BinaryOpKind::BitAnd, BinaryOpKind::BitOr, BinaryOpKind::BitXor,
-            BinaryOpKind::Shl, BinaryOpKind::Shr,
+            BinaryOpKind::Add,
+            BinaryOpKind::Sub,
+            BinaryOpKind::Mul,
+            BinaryOpKind::Div,
+            BinaryOpKind::Mod,
+            BinaryOpKind::Eq,
+            BinaryOpKind::Neq,
+            BinaryOpKind::Lt,
+            BinaryOpKind::Gt,
+            BinaryOpKind::Le,
+            BinaryOpKind::Ge,
+            BinaryOpKind::BitAnd,
+            BinaryOpKind::BitOr,
+            BinaryOpKind::BitXor,
+            BinaryOpKind::Shl,
+            BinaryOpKind::Shr,
         ] {
             if let Some(ty) = op_result_type(op, lhs_ty_str, lhs_ty_str) {
                 if ty != ret_type {
@@ -546,12 +648,19 @@ fn generate_typed_expressions_lazy(
                 for lhs_expr in &lhs_collected {
                     for rhs_expr in &rhs_collected {
                         // Div/Mod/Shl with constant-zero RHS always fail evaluation
-                        if matches!(op, BinaryOpKind::Div | BinaryOpKind::Mod | BinaryOpKind::Shl) {
+                        if matches!(
+                            op,
+                            BinaryOpKind::Div | BinaryOpKind::Mod | BinaryOpKind::Shl
+                        ) {
                             if is_constant_zero(rhs_expr) {
                                 continue;
                             }
                         }
-                        if callback(&Expr::BinaryOp(*op, Box::new(lhs_expr.clone()), Box::new(rhs_expr.clone()))) {
+                        if callback(&Expr::BinaryOp(
+                            *op,
+                            Box::new(lhs_expr.clone()),
+                            Box::new(rhs_expr.clone()),
+                        )) {
                             return;
                         }
                     }
@@ -572,7 +681,11 @@ fn generate_typed_expressions_lazy(
                 if op_result_type(op, "Bool", "Bool") == Some("Bool") {
                     for lhs_expr in &bool_candidates {
                         for rhs_expr in &bool_candidates {
-                            if callback(&Expr::BinaryOp(*op, Box::new(lhs_expr.clone()), Box::new(rhs_expr.clone()))) {
+                            if callback(&Expr::BinaryOp(
+                                *op,
+                                Box::new(lhs_expr.clone()),
+                                Box::new(rhs_expr.clone()),
+                            )) {
                                 return;
                             }
                         }
@@ -609,7 +722,9 @@ pub(crate) struct LevelCache {
 impl LevelCache {
     fn empty() -> Self {
         LevelCache {
-            int_exprs: vec![], float_exprs: vec![], bool_exprs: vec![],
+            int_exprs: vec![],
+            float_exprs: vec![],
+            bool_exprs: vec![],
             compound_exprs: std::collections::HashMap::new(),
             helper_names: vec![],
             helper_info: std::collections::HashMap::new(),
@@ -624,7 +739,10 @@ impl LevelCache {
             "Bool" => self.bool_exprs.push(expr),
             // 2026-07-28: Phase 5 — Compound types stored in HashMap
             ty if is_compound_type(ty) => {
-                self.compound_exprs.entry(ty.to_string()).or_default().push(expr);
+                self.compound_exprs
+                    .entry(ty.to_string())
+                    .or_default()
+                    .push(expr);
             }
             _ => {}
         }
@@ -656,7 +774,8 @@ impl EvalCache {
 
     /// Look up cached evaluation results for an expression.
     fn get(&self, expr: &Expr) -> Option<&Vec<crate::interpreter::Value>> {
-        self.results.iter()
+        self.results
+            .iter()
             .find(|(e, _)| std::ptr::eq(e, expr))
             .map(|(_, v)| v)
     }
@@ -701,9 +820,15 @@ pub fn is_compound_type(name: &str) -> bool {
 /// For commutative ops, we only generate lhs ≤ rhs to avoid duplicates.
 /// 2026-07-29: Made pub(crate) for sibling module library.rs (abstraction discovery).
 pub(crate) fn is_commutative_op(op: BinaryOpKind) -> bool {
-    matches!(op, BinaryOpKind::Add | BinaryOpKind::Mul
-        | BinaryOpKind::BitAnd | BinaryOpKind::BitOr
-        | BinaryOpKind::BitXor | BinaryOpKind::Eq)
+    matches!(
+        op,
+        BinaryOpKind::Add
+            | BinaryOpKind::Mul
+            | BinaryOpKind::BitAnd
+            | BinaryOpKind::BitOr
+            | BinaryOpKind::BitXor
+            | BinaryOpKind::Eq
+    )
 }
 
 /// 2026-07-28: Symmetry breaking — check if lhs ≤ rhs in canonical ordering.
@@ -765,9 +890,7 @@ fn generate_next_level(
     for helper_name in &prev.level.helper_names {
         if let Some((params, h_ret_type)) = prev.level.helper_info.get(helper_name) {
             if *h_ret_type == ret_type && !params.is_empty() {
-                let args: Vec<Expr> = params.iter()
-                    .map(|p| Expr::Identifier(p.clone()))
-                    .collect();
+                let args: Vec<Expr> = params.iter().map(|p| Expr::Identifier(p.clone())).collect();
                 result.push(Expr::Call(helper_name.clone(), args, None));
             }
         }
@@ -801,12 +924,22 @@ fn generate_next_level(
             continue;
         }
         for op in &[
-            BinaryOpKind::Add, BinaryOpKind::Sub, BinaryOpKind::Mul,
-            BinaryOpKind::Div, BinaryOpKind::Mod,
-            BinaryOpKind::Lt, BinaryOpKind::Gt, BinaryOpKind::Le, BinaryOpKind::Ge,
-            BinaryOpKind::Eq, BinaryOpKind::Neq,
-            BinaryOpKind::BitAnd, BinaryOpKind::BitOr, BinaryOpKind::BitXor,
-            BinaryOpKind::Shl, BinaryOpKind::Shr,
+            BinaryOpKind::Add,
+            BinaryOpKind::Sub,
+            BinaryOpKind::Mul,
+            BinaryOpKind::Div,
+            BinaryOpKind::Mod,
+            BinaryOpKind::Lt,
+            BinaryOpKind::Gt,
+            BinaryOpKind::Le,
+            BinaryOpKind::Ge,
+            BinaryOpKind::Eq,
+            BinaryOpKind::Neq,
+            BinaryOpKind::BitAnd,
+            BinaryOpKind::BitOr,
+            BinaryOpKind::BitXor,
+            BinaryOpKind::Shl,
+            BinaryOpKind::Shr,
         ] {
             if let Some(ty) = op_result_type(op, ty_str, ty_str) {
                 // 2026-07-28: Keep Bool-returning operators even when ret_type
@@ -817,7 +950,10 @@ fn generate_next_level(
                 }
                 for lhs in *exprs {
                     for rhs in *exprs {
-                        if matches!(op, BinaryOpKind::Div | BinaryOpKind::Mod | BinaryOpKind::Shl) {
+                        if matches!(
+                            op,
+                            BinaryOpKind::Div | BinaryOpKind::Mod | BinaryOpKind::Shl
+                        ) {
                             if is_constant_zero(rhs) {
                                 continue;
                             }
@@ -834,7 +970,11 @@ fn generate_next_level(
                         if is_commutative_op(*op) && !expr_pair_ordered(lhs, rhs, exprs) {
                             continue;
                         }
-                        result.push(Expr::BinaryOp(*op, Box::new(lhs.clone()), Box::new(rhs.clone())));
+                        result.push(Expr::BinaryOp(
+                            *op,
+                            Box::new(lhs.clone()),
+                            Box::new(rhs.clone()),
+                        ));
                     }
                 }
             }
@@ -847,7 +987,11 @@ fn generate_next_level(
             if op_result_type(op, "Bool", "Bool") == Some("Bool") {
                 for lhs in &prev.level.bool_exprs {
                     for rhs in &prev.level.bool_exprs {
-                        result.push(Expr::BinaryOp(*op, Box::new(lhs.clone()), Box::new(rhs.clone())));
+                        result.push(Expr::BinaryOp(
+                            *op,
+                            Box::new(lhs.clone()),
+                            Box::new(rhs.clone()),
+                        ));
                     }
                 }
             }
@@ -860,7 +1004,6 @@ fn generate_next_level(
     let bool_exprs_exist = !prev.level.bool_exprs.is_empty();
     let int_exprs_exist = !prev.level.int_exprs.is_empty() || !prev.level.float_exprs.is_empty();
     if bool_exprs_exist && (ret_type == "Int" || ret_type == "Float" || ret_type == "Bool") {
-
         let then_else_sources: Vec<Expr> = {
             let mut s = Vec::new();
             s.extend(prev.level.int_exprs.iter().cloned());
@@ -897,9 +1040,21 @@ fn generate_next_level(
         if let Some(exprs) = prev.level.compound_exprs.get(&compound_exprs) {
             for lhs in exprs {
                 for rhs in exprs {
-                    result.push(Expr::Call("Add".into(), vec![lhs.clone(), rhs.clone()], None));
-                    result.push(Expr::Call("Sub".into(), vec![lhs.clone(), rhs.clone()], None));
-                    result.push(Expr::Call("Mul".into(), vec![lhs.clone(), rhs.clone()], None));
+                    result.push(Expr::Call(
+                        "Add".into(),
+                        vec![lhs.clone(), rhs.clone()],
+                        None,
+                    ));
+                    result.push(Expr::Call(
+                        "Sub".into(),
+                        vec![lhs.clone(), rhs.clone()],
+                        None,
+                    ));
+                    result.push(Expr::Call(
+                        "Mul".into(),
+                        vec![lhs.clone(), rhs.clone()],
+                        None,
+                    ));
                 }
             }
         }
@@ -916,24 +1071,31 @@ fn generate_next_level(
             for scrutinee in exprs {
                 let arms = vec![
                     crate::ast::MatchArm {
-                        pattern: crate::ast::Pattern::EnumVariant("Const".into(), vec![
-                            crate::ast::Pattern::Binding("_v".into()),
-                        ]),
+                        pattern: crate::ast::Pattern::EnumVariant(
+                            "Const".into(),
+                            vec![crate::ast::Pattern::Binding("_v".into())],
+                        ),
                         guard: None,
-                        body: Box::new(Expr::Call("Const".into(), vec![
-                            Expr::Identifier("_v".into()),
-                        ], None)),
+                        body: Box::new(Expr::Call(
+                            "Const".into(),
+                            vec![Expr::Identifier("_v".into())],
+                            None,
+                        )),
                     },
                     crate::ast::MatchArm {
-                        pattern: crate::ast::Pattern::EnumVariant("Add".into(), vec![
-                            crate::ast::Pattern::Binding("_l".into()),
-                            crate::ast::Pattern::Binding("_r".into()),
-                        ]),
+                        pattern: crate::ast::Pattern::EnumVariant(
+                            "Add".into(),
+                            vec![
+                                crate::ast::Pattern::Binding("_l".into()),
+                                crate::ast::Pattern::Binding("_r".into()),
+                            ],
+                        ),
                         guard: None,
-                        body: Box::new(Expr::Call("Add".into(), vec![
-                            Expr::Identifier("_l".into()),
-                            Expr::Identifier("_r".into()),
-                        ], None)),
+                        body: Box::new(Expr::Call(
+                            "Add".into(),
+                            vec![Expr::Identifier("_l".into()), Expr::Identifier("_r".into())],
+                            None,
+                        )),
                     },
                     crate::ast::MatchArm {
                         pattern: crate::ast::Pattern::Wildcard,
@@ -951,18 +1113,22 @@ fn generate_next_level(
                 let arms = vec![
                     // Const(val) → val (extract Int)
                     crate::ast::MatchArm {
-                        pattern: crate::ast::Pattern::EnumVariant("Const".into(), vec![
-                            crate::ast::Pattern::Binding("_v".into()),
-                        ]),
+                        pattern: crate::ast::Pattern::EnumVariant(
+                            "Const".into(),
+                            vec![crate::ast::Pattern::Binding("_v".into())],
+                        ),
                         guard: None,
                         body: Box::new(Expr::Identifier("_v".into())),
                     },
                     // Add(l, r) → 0 (fallback — first field is Expr, return 0)
                     crate::ast::MatchArm {
-                        pattern: crate::ast::Pattern::EnumVariant("Add".into(), vec![
-                            crate::ast::Pattern::Binding("_l".into()),
-                            crate::ast::Pattern::Binding("_r".into()),
-                        ]),
+                        pattern: crate::ast::Pattern::EnumVariant(
+                            "Add".into(),
+                            vec![
+                                crate::ast::Pattern::Binding("_l".into()),
+                                crate::ast::Pattern::Binding("_r".into()),
+                            ],
+                        ),
                         guard: None,
                         body: Box::new(Expr::Decimal(0)),
                     },
@@ -997,37 +1163,58 @@ fn prune_level(
 
     for expr in &candidates {
         // Evaluate against all examples — store raw results for caching
-        let eval_outputs: Vec<crate::interpreter::Value> = examples.iter().map(|ex| {
-            let input_values = example_inputs_to_values(ex, param_names);
-            let mut ctx = SynthesisEvalContext::new();
-            for (name, val) in param_names.iter().zip(input_values.iter()) {
-                ctx.bind(name, val.clone());
-            }
-            evaluate_synthesized(expr, &mut ctx).unwrap_or(crate::interpreter::Value::Atom(Atom::Int(0)))
-        }).collect();
+        let eval_outputs: Vec<crate::interpreter::Value> = examples
+            .iter()
+            .map(|ex| {
+                let input_values = example_inputs_to_values(ex, param_names);
+                let mut ctx = SynthesisEvalContext::new();
+                for (name, val) in param_names.iter().zip(input_values.iter()) {
+                    ctx.bind(name, val.clone());
+                }
+                evaluate_synthesized(expr, &mut ctx)
+                    .unwrap_or(crate::interpreter::Value::Atom(Atom::Int(0)))
+            })
+            .collect();
         // Compute fingerprint from already-evaluated results
-        let outputs: Vec<(i64, i64)> = eval_outputs.iter().map(|v| {
-            match v {
+        let outputs: Vec<(i64, i64)> = eval_outputs
+            .iter()
+            .map(|v| match v {
                 Value::Atom(Atom::Int(n)) => (*n, 1),
                 Value::Atom(Atom::Float(f)) => (f.to_bits() as i64, 2),
                 Value::Bits(b) => (b.iter().fold(0i64, |acc, &x| (acc << 1) | x as i64), 3),
-                Value::Sum { name, payload: fields } => {
-                    let name_hash = name.bytes().fold(0i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64));
+                Value::Sum {
+                    name,
+                    payload: fields,
+                } => {
+                    let name_hash = name
+                        .bytes()
+                        .fold(0i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64));
                     let fields_hash = fields.iter().fold(0i64, |acc, f| match f {
                         Value::Atom(Atom::Int(n)) => acc.wrapping_mul(31).wrapping_add(*n),
-                        Value::Atom(Atom::Float(fv)) => acc.wrapping_mul(31).wrapping_add(fv.to_bits() as i64),
-                        Value::Bits(b) => acc.wrapping_mul(31).wrapping_add(b.first().copied().unwrap_or(0) as i64),
-                        Value::Sum { name: n, payload: fs } => {
-                            let h = n.bytes().fold(0i64, |a, b| a.wrapping_mul(31).wrapping_add(b as i64));
-                            acc.wrapping_mul(31).wrapping_add(h).wrapping_add(fs.len() as i64)
+                        Value::Atom(Atom::Float(fv)) => {
+                            acc.wrapping_mul(31).wrapping_add(fv.to_bits() as i64)
+                        }
+                        Value::Bits(b) => acc
+                            .wrapping_mul(31)
+                            .wrapping_add(b.first().copied().unwrap_or(0) as i64),
+                        Value::Sum {
+                            name: n,
+                            payload: fs,
+                        } => {
+                            let h = n
+                                .bytes()
+                                .fold(0i64, |a, b| a.wrapping_mul(31).wrapping_add(b as i64));
+                            acc.wrapping_mul(31)
+                                .wrapping_add(h)
+                                .wrapping_add(fs.len() as i64)
                         }
                         _ => acc.wrapping_mul(31),
                     });
                     (name_hash, 10 + fields_hash)
                 }
                 _ => (0, 0),
-            }
-        }).collect();
+            })
+            .collect();
 
         // Prune constant outputs (same value for all inputs) — only if 2+ examples.
         // With a single example, every expression appears constant.
@@ -1063,21 +1250,35 @@ fn prune_level(
 
         let expr_ty = expr_type_hint_with_params(expr, param_names, param_types);
         if is_compound_param {
-            level_cache.compound_exprs.entry("Expr".to_string()).or_default().push(expr.clone());
+            level_cache
+                .compound_exprs
+                .entry("Expr".to_string())
+                .or_default()
+                .push(expr.clone());
         } else if let Some(ty) = expr_ty {
-
             level_cache.push(expr.clone(), ty);
         } else {
-            level_cache.compound_exprs.entry("Expr".to_string()).or_default().push(expr.clone());
+            level_cache
+                .compound_exprs
+                .entry("Expr".to_string())
+                .or_default()
+                .push(expr.clone());
         }
     }
 
-    EvalCache { level: level_cache, results: eval_results }
+    EvalCache {
+        level: level_cache,
+        results: eval_results,
+    }
 }
 
 /// 2026-07-28: Infer the return type of an expression (best-effort for pruning).
 /// Uses param_types to resolve identifier types at depth 1 (bare variables).
-fn expr_type_hint_with_params(expr: &Expr, param_names: &[String], param_types: &[String]) -> Option<&'static str> {
+fn expr_type_hint_with_params(
+    expr: &Expr,
+    param_names: &[String],
+    param_types: &[String],
+) -> Option<&'static str> {
     match expr {
         Expr::Decimal(_) => Some("Int"),
         Expr::Float(_) => Some("Float"),
@@ -1216,11 +1417,13 @@ pub fn synthesize_enumerative(
             continue;
         }
 
-
         // 2026-07-28: Evaluate in cost order — cheapest first.
         // Sorting by cost ensures general formulas (e.g., If(x0<0, -x0, x0)
         // at cost ~14) are evaluated before table-lookup ite chains (cost ~56).
-        let mut sorted: Vec<(u64, &Expr)> = candidates.iter().map(|c| (cost_model.cost_of_expr(c), c)).collect();
+        let mut sorted: Vec<(u64, &Expr)> = candidates
+            .iter()
+            .map(|c| (cost_model.cost_of_expr(c), c))
+            .collect();
         sorted.sort_by_key(|(cost, _)| *cost);
 
         // 2026-07-28: Adaptive beam — scales with depth.
@@ -1234,16 +1437,24 @@ pub fn synthesize_enumerative(
         // 2026-07-28: Ensure at least 200 IF expressions are in the beam.
         // IF expressions enable conditional logic (abs, min, max) but start at
         // cost 14+, so they may be excluded by cheaper binary ops.
-        let if_count = sorted.iter().filter(|(_, c)| matches!(c, Expr::If(_, _, _))).count();
+        let if_count = sorted
+            .iter()
+            .filter(|(_, c)| matches!(c, Expr::If(_, _, _)))
+            .count();
         if if_count < 200 {
             // Find position of 200th IF in the full sorted list and expand beam
             let mut if_seen = 0;
             for (idx, (_, c)) in sorted.iter().enumerate() {
-                if matches!(c, Expr::If(_, _, _)) { if_seen += 1; }
+                if matches!(c, Expr::If(_, _, _)) {
+                    if_seen += 1;
+                }
             }
             if if_seen < 200 {
                 // Need wider beam — re-sort and expand from scratch
-                sorted = candidates.iter().map(|c| (cost_model.cost_of_expr(c), c)).collect();
+                sorted = candidates
+                    .iter()
+                    .map(|c| (cost_model.cost_of_expr(c), c))
+                    .collect();
                 sorted.sort_by_key(|(cost, _)| *cost);
                 // Find position of 200th IF
                 let mut pos = sorted.len();
@@ -1271,7 +1482,6 @@ pub fn synthesize_enumerative(
             }
 
             if candidate_matches_all_examples(*candidate, param_names, examples, &prev_cache) {
-
                 best = Some(SynthesizedProgram {
                     body: vec![(*candidate).clone()],
                     cost: *cost,
@@ -1304,8 +1514,11 @@ pub fn synthesize_enumerative(
                 &mut helper_name_counter,
             );
             if !helpers.is_empty() {
-                eprintln!("  anti-unify: discovered {} helper(s) at depth {}",
-                    helpers.len(), depth);
+                eprintln!(
+                    "  anti-unify: discovered {} helper(s) at depth {}",
+                    helpers.len(),
+                    depth
+                );
                 helper_registry.extend(helpers);
             }
         }
@@ -1335,19 +1548,25 @@ fn candidate_matches_all_examples(
     // 2026-07-28: Check eval cache first — avoids re-evaluating expressions
     // that were already evaluated during pruning.
     if let Some(cached) = eval_cache.get(candidate) {
-        return cached.iter().enumerate().all(|(i, val): (usize, &crate::interpreter::Value)| {
-            let expected_input_ctx = || -> SynthesisEvalContext {
-                let mut c = SynthesisEvalContext::new();
-                c
-            };
-            let expected = evaluate_synthesized(&examples[i].output, &mut expected_input_ctx());
-            let tol = examples[i].tolerance.unwrap_or(0.0);
-            let ok_val: Result<crate::interpreter::Value, crate::derive::engine::SynthesisEvalError> = Ok(val.clone());
-            match (ok_val, expected) {
-                (Ok(ref actual), Ok(ref exp)) => values_within_tolerance(actual, exp, tol),
-                _ => false,
-            }
-        });
+        return cached
+            .iter()
+            .enumerate()
+            .all(|(i, val): (usize, &crate::interpreter::Value)| {
+                let expected_input_ctx = || -> SynthesisEvalContext {
+                    let mut c = SynthesisEvalContext::new();
+                    c
+                };
+                let expected = evaluate_synthesized(&examples[i].output, &mut expected_input_ctx());
+                let tol = examples[i].tolerance.unwrap_or(0.0);
+                let ok_val: Result<
+                    crate::interpreter::Value,
+                    crate::derive::engine::SynthesisEvalError,
+                > = Ok(val.clone());
+                match (ok_val, expected) {
+                    (Ok(ref actual), Ok(ref exp)) => values_within_tolerance(actual, exp, tol),
+                    _ => false,
+                }
+            });
     }
     // 2026-07-28: Pre-screen — check first example first, short-circuit on failure.
     // Most candidates (~90%) fail on the first example alone, so this avoids 3-5
@@ -1409,14 +1628,17 @@ fn example_inputs_to_values(ex: &DerivationExample, param_names: &[String]) -> V
     // The old expr_to_value only handles constants (Decimal, Float, Bool)
     // and returns Value::Atom(Atom::Int(0)) for constructors like Call("Const", ...).
     // evaluate_synthesized handles all expression types including constructors.
-    ex.inputs.iter().map(|e| {
-        if matches!(e, Expr::Call(_, _, _)) {
-            let mut ctx = SynthesisEvalContext::new();
-            evaluate_synthesized(e, &mut ctx).unwrap_or(Value::Atom(Atom::Int(0)))
-        } else {
-            expr_to_value(e)
-        }
-    }).collect()
+    ex.inputs
+        .iter()
+        .map(|e| {
+            if matches!(e, Expr::Call(_, _, _)) {
+                let mut ctx = SynthesisEvalContext::new();
+                evaluate_synthesized(e, &mut ctx).unwrap_or(Value::Atom(Atom::Int(0)))
+            } else {
+                expr_to_value(e)
+            }
+        })
+        .collect()
 }
 
 /// Convert an expression to a Value (for constant inputs from examples).
@@ -1456,8 +1678,14 @@ pub fn enumerative_search(
     if examples.is_empty() {
         return Err(SynthesizeError::NoExamples(name.to_string()));
     }
-    let param_names: Vec<String> = params.iter().map(|(n, _): &(String, Type)| n.clone()).collect();
-    let param_types: Vec<String> = params.iter().map(|(_, t): &(String, Type)| t.to_string()).collect();
+    let param_names: Vec<String> = params
+        .iter()
+        .map(|(n, _): &(String, Type)| n.clone())
+        .collect();
+    let param_types: Vec<String> = params
+        .iter()
+        .map(|(_, t): &(String, Type)| t.to_string())
+        .collect();
     let ret_type_str = if ret_type == &Type::int() {
         "Int".to_string()
     } else {
@@ -1468,9 +1696,21 @@ pub fn enumerative_search(
     // 2026-07-28: Use proportional beam for multi-param functions.
     // Each additional param multiplies the candidate space at depth 3.
     // 5000 keeps depth 3 completion under 30s for 2-param functions.
-    let beam = if params.len() >= 2 { 5000 } else { DEFAULT_BEAM_WIDTH };
+    let beam = if params.len() >= 2 {
+        5000
+    } else {
+        DEFAULT_BEAM_WIDTH
+    };
 
-    match synthesize_enumerative(&param_types, &ret_type_str, &param_names, examples, &cost_model, max_depth_u8, beam) {
+    match synthesize_enumerative(
+        &param_types,
+        &ret_type_str,
+        &param_names,
+        examples,
+        &cost_model,
+        max_depth_u8,
+        beam,
+    ) {
         Ok(prog) => Ok(prog.body.into_iter().next()),
         Err(SynthesizeError::NoSolution(_)) => Ok(None),
         Err(e) => Err(e),
@@ -1506,7 +1746,11 @@ mod tests {
         let exprs = generate_typed_expressions(&names, &types, "Int", 2);
         assert!(!exprs.is_empty(), "should generate Int expressions");
         // Should include x, y, 0, 1, -1
-        assert!(exprs.iter().any(|e| matches!(e, Expr::Identifier(n) if n == "x")));
+        assert!(
+            exprs
+                .iter()
+                .any(|e| matches!(e, Expr::Identifier(n) if n == "x"))
+        );
         assert!(exprs.iter().any(|e| matches!(e, Expr::Decimal(0))));
         assert!(exprs.iter().any(|e| matches!(e, Expr::Decimal(1))));
         assert!(exprs.iter().any(|e| matches!(e, Expr::Decimal(-1))));
@@ -1529,8 +1773,16 @@ mod tests {
         let types: Vec<String> = vec!["Float".into()];
         let exprs = generate_typed_expressions(&names, &types, "Float", 2);
         assert!(!exprs.is_empty(), "should generate Float expressions");
-        assert!(exprs.iter().any(|e| matches!(e, Expr::Float(f) if (*f - 0.0).abs() < 1e-10)));
-        assert!(exprs.iter().any(|e| matches!(e, Expr::Float(f) if (*f - 1.0).abs() < 1e-10)));
+        assert!(
+            exprs
+                .iter()
+                .any(|e| matches!(e, Expr::Float(f) if (*f - 0.0).abs() < 1e-10))
+        );
+        assert!(
+            exprs
+                .iter()
+                .any(|e| matches!(e, Expr::Float(f) if (*f - 1.0).abs() < 1e-10))
+        );
     }
 
     #[test]
@@ -1541,9 +1793,19 @@ mod tests {
         let exprs = generate_typed_expressions(&names, &types, "Int", 3);
         for e in &exprs {
             if let Expr::BinaryOp(_, lhs, rhs) = e {
-                let lhs_is_bool = matches!(lhs.as_ref(), Expr::Bool(_) | Expr::UnaryOp(UnaryOpKind::Not, _));
-                let rhs_is_bool = matches!(rhs.as_ref(), Expr::Bool(_) | Expr::UnaryOp(UnaryOpKind::Not, _));
-                assert!(!(lhs_is_bool || rhs_is_bool), "Int-typed expression should not contain Bool operands: {:?}", e);
+                let lhs_is_bool = matches!(
+                    lhs.as_ref(),
+                    Expr::Bool(_) | Expr::UnaryOp(UnaryOpKind::Not, _)
+                );
+                let rhs_is_bool = matches!(
+                    rhs.as_ref(),
+                    Expr::Bool(_) | Expr::UnaryOp(UnaryOpKind::Not, _)
+                );
+                assert!(
+                    !(lhs_is_bool || rhs_is_bool),
+                    "Int-typed expression should not contain Bool operands: {:?}",
+                    e
+                );
             }
         }
     }
@@ -1581,7 +1843,10 @@ mod tests {
                 Box::new(Expr::Decimal(0)),
             )),
             Box::new(Expr::Identifier("x".into())),
-            Some(Box::new(Expr::UnaryOp(UnaryOpKind::Neg, Box::new(Expr::Identifier("x".into()))))),
+            Some(Box::new(Expr::UnaryOp(
+                UnaryOpKind::Neg,
+                Box::new(Expr::Identifier("x".into())),
+            ))),
         );
         let mut ctx = SynthesisEvalContext::new();
         ctx.bind("x", Value::Atom(Atom::Int(-3)));
@@ -1613,7 +1878,10 @@ mod tests {
         let expr = Expr::Identifier("undefined".into());
         let mut ctx = SynthesisEvalContext::new();
         let result = evaluate_synthesized(&expr, &mut ctx);
-        assert!(matches!(result, Err(SynthesisEvalError::UndefinedVariable(_))));
+        assert!(matches!(
+            result,
+            Err(SynthesisEvalError::UndefinedVariable(_))
+        ));
     }
 
     // ── C.2 — Cost Model ───────────────────────────────────────────
@@ -1623,7 +1891,10 @@ mod tests {
         let model = CostModel::default();
         let small = model.cost_of_expr(&Expr::Decimal(0));
         let large = model.cost_of_expr(&Expr::Decimal(65536));
-        assert!(small <= large, "small constant should cost <= large constant");
+        assert!(
+            small <= large,
+            "small constant should cost <= large constant"
+        );
     }
 
     #[test]
@@ -1668,18 +1939,30 @@ mod tests {
     #[test]
     fn test_enumerative_simple_add() {
         let examples = vec![
-            example(vec![Expr::Decimal(2), Expr::Decimal(3)], Expr::Decimal(5), None),
-            example(vec![Expr::Decimal(0), Expr::Decimal(5)], Expr::Decimal(5), None),
+            example(
+                vec![Expr::Decimal(2), Expr::Decimal(3)],
+                Expr::Decimal(5),
+                None,
+            ),
+            example(
+                vec![Expr::Decimal(0), Expr::Decimal(5)],
+                Expr::Decimal(5),
+                None,
+            ),
         ];
         let names: Vec<String> = vec!["x".into(), "y".into()];
         let types: Vec<String> = vec!["Int".into(), "Int".into()];
         let model = CostModel::default();
-        let result = synthesize_enumerative(&types, "Int", &names, &examples, &model, 3, 2000).unwrap();
-        assert_eq!(result.cost, model.cost_of_expr(&Expr::BinaryOp(
-            BinaryOpKind::Add,
-            Box::new(Expr::Identifier("x".into())),
-            Box::new(Expr::Identifier("y".into())),
-        )));
+        let result =
+            synthesize_enumerative(&types, "Int", &names, &examples, &model, 3, 2000).unwrap();
+        assert_eq!(
+            result.cost,
+            model.cost_of_expr(&Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(Expr::Identifier("x".into())),
+                Box::new(Expr::Identifier("y".into())),
+            ))
+        );
     }
 
     #[test]
@@ -1691,7 +1974,8 @@ mod tests {
         let names: Vec<String> = vec!["x".into()];
         let types: Vec<String> = vec!["Int".into()];
         let model = CostModel::default();
-        let result = synthesize_enumerative(&types, "Int", &names, &examples, &model, 2, 2000).unwrap();
+        let result =
+            synthesize_enumerative(&types, "Int", &names, &examples, &model, 2, 2000).unwrap();
         assert_eq!(
             result.cost,
             model.cost_of_expr(&Expr::Identifier("x".into())),
@@ -1715,9 +1999,7 @@ mod tests {
 
     #[test]
     fn test_enumerative_no_solution() {
-        let examples = vec![
-            example(vec![Expr::Decimal(1)], Expr::Decimal(999), None),
-        ];
+        let examples = vec![example(vec![Expr::Decimal(1)], Expr::Decimal(999), None)];
         let names: Vec<String> = vec!["x".into()];
         let types: Vec<String> = vec!["Int".into()];
         let model = CostModel::default();
@@ -1727,18 +2009,20 @@ mod tests {
 
     #[test]
     fn test_enumerative_with_tolerance() {
-        let examples = vec![
-            example(
-                vec![Expr::Float(1.0), Expr::Float(2.0)],
-                Expr::Float(3.0),
-                Some(0.01),
-            ),
-        ];
+        let examples = vec![example(
+            vec![Expr::Float(1.0), Expr::Float(2.0)],
+            Expr::Float(3.0),
+            Some(0.01),
+        )];
         let names: Vec<String> = vec!["x".into(), "y".into()];
         let types: Vec<String> = vec!["Float".into(), "Float".into()];
         let model = CostModel::default();
         let result = synthesize_enumerative(&types, "Float", &names, &examples, &model, 3, 2000);
-        assert!(result.is_ok(), "should find x + y with tolerance: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "should find x + y with tolerance: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1762,7 +2046,8 @@ mod tests {
         let types: Vec<String> = vec!["Int".into()];
         let model = CostModel::default();
         // identity (x) should be found before x + 0
-        let result = synthesize_enumerative(&types, "Int", &names, &examples, &model, 3, 2000).unwrap();
+        let result =
+            synthesize_enumerative(&types, "Int", &names, &examples, &model, 3, 2000).unwrap();
         assert!(
             result.body.iter().any(|e| matches!(e, Expr::Identifier(_))),
             "should prefer identity over x + 0: {:?}",
@@ -1774,9 +2059,7 @@ mod tests {
 
     #[test]
     fn test_enumerative_search_identity() {
-        let examples = vec![
-            example(vec![Expr::Decimal(42)], Expr::Decimal(42), None),
-        ];
+        let examples = vec![example(vec![Expr::Decimal(42)], Expr::Decimal(42), None)];
         let params = vec![("x0".into(), Type::int())];
         let result = enumerative_search("id", &params, &Type::int(), &examples, 3).unwrap();
         assert!(result.is_some());
@@ -1791,9 +2074,7 @@ mod tests {
 
     #[test]
     fn test_no_solution() {
-        let examples = vec![
-            example(vec![Expr::Decimal(1)], Expr::Decimal(999), None),
-        ];
+        let examples = vec![example(vec![Expr::Decimal(1)], Expr::Decimal(999), None)];
         let params = vec![("x0".into(), Type::int())];
         let result = enumerative_search("f", &params, &Type::int(), &examples, 2).unwrap();
         assert!(result.is_none());
@@ -1808,7 +2089,10 @@ mod tests {
         let const42 = Expr::Call("Const".into(), vec![Expr::Decimal(42)], None);
         fn make_ex(inputs: Vec<Expr>, output: Expr) -> DerivationExample {
             DerivationExample {
-                inputs, output: Box::new(output), tolerance: None, span: crate::errors::Span::dummy()
+                inputs,
+                output: Box::new(output),
+                tolerance: None,
+                span: crate::errors::Span::dummy(),
             }
         }
         let examples = vec![
@@ -1823,7 +2107,11 @@ mod tests {
             Ok(None) => eprintln!("  DIAG: no solution found at depth 3"),
             Err(e) => eprintln!("  DIAG: error: {:?}", e),
         }
-        assert!(result.is_ok(), "compound type search should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "compound type search should succeed: {:?}",
+            result
+        );
         assert!(result.unwrap().is_some(), "should find a solution");
     }
 
@@ -1841,7 +2129,13 @@ mod tests {
         match &val {
             crate::interpreter::Value::Sum { name, payload } => {
                 assert_eq!(name, "Pair");
-                assert_eq!(payload, &vec![crate::interpreter::Value::int(3), crate::interpreter::Value::int(9)]);
+                assert_eq!(
+                    payload,
+                    &vec![
+                        crate::interpreter::Value::int(3),
+                        crate::interpreter::Value::int(9)
+                    ]
+                );
             }
             other => panic!("expected Sum, got {other:?}"),
         }

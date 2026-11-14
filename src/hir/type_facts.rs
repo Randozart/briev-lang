@@ -39,7 +39,10 @@ pub fn build_type_facts(program: &HirProgram) -> HirTypeFacts {
                 facts.objects.insert(
                     def.name.clone(),
                     HirObjectFacts {
-                        fields: fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
+                        fields: fields
+                            .iter()
+                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .collect(),
                     },
                 );
             }
@@ -47,7 +50,10 @@ pub fn build_type_facts(program: &HirProgram) -> HirTypeFacts {
                 facts.structs.insert(
                     def.name.clone(),
                     HirObjectFacts {
-                        fields: fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
+                        fields: fields
+                            .iter()
+                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .collect(),
                     },
                 );
             }

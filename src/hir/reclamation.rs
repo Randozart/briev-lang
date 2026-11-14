@@ -76,9 +76,7 @@ pub(crate) fn constraints_for_test(
 }
 
 #[cfg(test)]
-fn dump_constraints(
-    index: &graph::Graph,
-) -> std::collections::BTreeMap<String, Vec<String>> {
+fn dump_constraints(index: &graph::Graph) -> std::collections::BTreeMap<String, Vec<String>> {
     let owners: Vec<_> = index.bodies.keys().cloned().collect();
     let mut dumped = std::collections::BTreeMap::new();
     for owner in &owners {
@@ -147,15 +145,23 @@ pub fn analyze(
         accumulator.absorb(&owner, &graph, &plan, &mut result);
     }
     accumulator.reclassify_safe_publishers(&mut result);
-    result.regions.retain(|owner| !result.barriers.contains(owner));
+    result
+        .regions
+        .retain(|owner| !result.barriers.contains(owner));
     result.closed_regions = std::mem::take(&mut accumulator.closed_regions);
-    result.closed_regions.retain(|owner| result.regions.contains(owner));
+    result
+        .closed_regions
+        .retain(|owner| result.regions.contains(owner));
     if index.entry_nodes.len() == 1 && closed_initializers(program) {
         let owner = index.entry_nodes.iter().next().unwrap();
         result.entry_region = result.regions.contains(owner);
     }
-    result.regions.retain(|owner| !index.entry_nodes.contains(owner));
-    result.closed_regions.retain(|owner| result.regions.contains(owner));
+    result
+        .regions
+        .retain(|owner| !index.entry_nodes.contains(owner));
+    result
+        .closed_regions
+        .retain(|owner| result.regions.contains(owner));
     accumulator.finish_mutating(&mut result);
     result
 }
@@ -265,7 +271,11 @@ mod tests {
     }
 
     fn parity(src: &str) {
-        assert_eq!(closed_initializers(&hir(src)), ast(src), "drift for:\n{src}");
+        assert_eq!(
+            closed_initializers(&hir(src)),
+            ast(src),
+            "drift for:\n{src}"
+        );
     }
 
     #[test]
@@ -361,8 +371,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let expected =
-            crate::analysis::reclamation::analyze(&items, &live, None);
+        let expected = crate::analysis::reclamation::analyze(&items, &live, None);
         let actual = analyze(&crate::hir::lower_program(&items), &items, None);
         assert_eq!(actual, expected, "plan drift:\n{src}");
     }
@@ -746,12 +755,10 @@ fn synthetic_method(
         .is_some_and(|first| first.ty.universe_key() == Some(def.name.as_str()))
 }
 
-fn register_callable_fact(
-    callable: &super::program::HirCallable,
-    facts: &mut RegistrationFacts,
-) {
+fn register_callable_fact(callable: &super::program::HirCallable, facts: &mut RegistrationFacts) {
     use super::program::HirCallableKind;
-    if callable.owner.is_some() || callable.is_isr || callable.trait_default || callable.is_impl_fn {
+    if callable.owner.is_some() || callable.is_isr || callable.trait_default || callable.is_impl_fn
+    {
         return;
     }
     if callable.kind == HirCallableKind::Defn && !callable.type_params.is_empty() {
@@ -818,7 +825,11 @@ mod tmp_drift {
         for (label, a, h) in [
             ("regions", &ast.regions, &hir.regions),
             ("barriers", &ast.barriers, &hir.barriers),
-            ("escape_barriers", &ast.escape_barriers, &hir.escape_barriers),
+            (
+                "escape_barriers",
+                &ast.escape_barriers,
+                &hir.escape_barriers,
+            ),
             ("publish_only", &ast.publish_only, &hir.publish_only),
         ] {
             let only_ast: Vec<&String> = a.difference(h).collect();
@@ -836,7 +847,7 @@ mod tmp_drift {
             }
         }
         // Plans may be equal here — the diag is for the backend-pipeline-only
-    // drift (see BUGS.md 2026-11-12). Use --nocapture to see the output.
-    println!("tmp_boundary_drift_diff: plans compared; see BUGS.md");
+        // drift (see BUGS.md 2026-11-12). Use --nocapture to see the output.
+        println!("tmp_boundary_drift_diff: plans compared; see BUGS.md");
     }
 }

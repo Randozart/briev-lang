@@ -124,7 +124,11 @@ fn pure_briev_xxhash_matches_vendored_c() {
     for (i, (label, expected_hex, bits)) in VECTORS.iter().enumerate() {
         let got: i64 = lines[i].trim().parse().expect("line is an integer");
         let mask: u64 = if *bits == 32 { 0xFFFF_FFFF } else { u64::MAX };
-        let got_hex = format!("{:0width$X}", (got as u64) & mask, width = (*bits / 4) as usize);
+        let got_hex = format!(
+            "{:0width$X}",
+            (got as u64) & mask,
+            width = (*bits / 4) as usize
+        );
         assert_eq!(
             got_hex, *expected_hex,
             "{label}: pure-Briev xxhash drifted from the C reference"

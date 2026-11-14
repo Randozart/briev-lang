@@ -476,13 +476,15 @@ fn elaborate_guard(guard: &Expr, site: &ExpressionSite<'_>) -> Result<LawGuard, 
 fn build_expression(expr: &Expr, site: &ExpressionSite<'_>) -> Result<BuiltExpression, String> {
     let (instance, ctx, source) = (site.instance, site.ctx, site.source);
     match expr {
-        Expr::Float(value) => Ok(BuiltExpression::constant(*value, LawDimension::DIMENSIONLESS)),
-        Expr::Decimal(value) => {
-            Ok(BuiltExpression::constant(*value as f64, LawDimension::DIMENSIONLESS))
-        }
-        Expr::UnitLiteral { value, unit } => {
-            constant_quantity(*value, unit, source)
-        }
+        Expr::Float(value) => Ok(BuiltExpression::constant(
+            *value,
+            LawDimension::DIMENSIONLESS,
+        )),
+        Expr::Decimal(value) => Ok(BuiltExpression::constant(
+            *value as f64,
+            LawDimension::DIMENSIONLESS,
+        )),
+        Expr::UnitLiteral { value, unit } => constant_quantity(*value, unit, source),
         Expr::UnaryOp(UnaryOpKind::Neg, inner) => {
             let mut value = build_expression(inner, site)?;
             value.constant = -value.constant;
@@ -564,7 +566,7 @@ fn pin_variable(
         other => {
             return Err(format!(
                 "{source} accesses `{other}` — component laws read only `.voltage` and `.current`"
-            ))
+            ));
         }
     };
     // Bare type-body pin references were qualified per instance before this
@@ -837,10 +839,12 @@ mod tests {
         let ohmic = &component.laws[0].equations[0].expression;
         assert_eq!(ohmic.dimension, LawDimension::VOLT);
         assert_eq!(ohmic.terms.len(), 3);
-        assert!(ohmic
-            .terms
-            .iter()
-            .any(|(v, c)| matches!(v, LawVariable::Current(_)) && (c + 330.0).abs() < 1e-9));
+        assert!(
+            ohmic
+                .terms
+                .iter()
+                .any(|(v, c)| matches!(v, LawVariable::Current(_)) && (c + 330.0).abs() < 1e-9)
+        );
 
         let conservation = &component.laws[0].equations[1].expression;
         assert_eq!(conservation.dimension, LawDimension::AMP);

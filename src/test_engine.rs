@@ -9,7 +9,7 @@
 
 use crate::ast::{Statement, TopLevel};
 use crate::interpreter::Interpreter;
-use crate::pipeline::{compile_to_typed, BuildOptions};
+use crate::pipeline::{BuildOptions, compile_to_typed};
 
 /// Result of compiling a file for tests: `None` means the file declares no
 /// test blocks; `Some` may have an empty report list when `--domain` matched
@@ -33,7 +33,11 @@ pub struct TestReport {
 /// a typed compile in the runner.
 pub fn source_has_tests(source: &str) -> bool {
     crate::lexer::tokenize(source)
-        .map(|tokens| tokens.iter().any(|(t, _)| matches!(t, crate::lexer::Token::Test)))
+        .map(|tokens| {
+            tokens
+                .iter()
+                .any(|(t, _)| matches!(t, crate::lexer::Token::Test))
+        })
         .unwrap_or(false)
 }
 
@@ -76,8 +80,7 @@ pub fn run_tests(
         .collect();
 
     let mut reports = Vec::with_capacity(tests.len());
-    let mut per_domain: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut per_domain: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (domain_name, body) in tests {
         let ordinal = per_domain.entry(domain_name.clone()).or_insert(0);
         *ordinal += 1;
@@ -86,7 +89,11 @@ pub fn run_tests(
             Ok(()) => String::new(),
             Err(err) => err,
         };
-        reports.push(TestReport { label, passed: detail.is_empty(), detail });
+        reports.push(TestReport {
+            label,
+            passed: detail.is_empty(),
+            detail,
+        });
     }
     Ok(Some(TestRun { reports, domains }))
 }
@@ -99,9 +106,7 @@ fn run_one(program: &mut [TopLevel], body: &[Statement]) -> Result<(), String> {
         .map_err(|e| format!("seed inits: {e:?}"))?;
     for item in program.iter() {
         if let TopLevel::Statement(stmt) = item {
-            interp
-                .exec_stmt(stmt)
-                .map_err(|e| format!("setup: {e}"))?;
+            interp.exec_stmt(stmt).map_err(|e| format!("setup: {e}"))?;
         }
     }
     for stmt in body {

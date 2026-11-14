@@ -26,27 +26,34 @@ impl TextSelection {
 
     /// Line numbers (1-indexed) for each matched range.
     pub fn lines(&self, text: &str) -> Vec<usize> {
-        self.ranges.iter().map(|(start, _)| {
-            text[..*start].chars().filter(|&c| c == '\n').count() + 1
-        }).collect()
+        self.ranges
+            .iter()
+            .map(|(start, _)| text[..*start].chars().filter(|&c| c == '\n').count() + 1)
+            .collect()
     }
 
     /// Take the first N matches.
     pub fn first(&self, n: usize) -> TextSelection {
         let limit = n.min(self.ranges.len());
-        TextSelection { ranges: self.ranges[..limit].to_vec() }
+        TextSelection {
+            ranges: self.ranges[..limit].to_vec(),
+        }
     }
 
     /// Take the last N matches.
     pub fn last(&self, n: usize) -> TextSelection {
         let start = self.ranges.len().saturating_sub(n);
-        TextSelection { ranges: self.ranges[start..].to_vec() }
+        TextSelection {
+            ranges: self.ranges[start..].to_vec(),
+        }
     }
 
     /// Take the Nth match (0-indexed).
     pub fn nth(&self, n: usize) -> TextSelection {
         if n < self.ranges.len() {
-            TextSelection { ranges: vec![self.ranges[n]] }
+            TextSelection {
+                ranges: vec![self.ranges[n]],
+            }
         } else {
             TextSelection::empty()
         }
@@ -57,7 +64,9 @@ impl TextSelection {
         let mut ranges = Vec::new();
         let mut search_start = 0;
         loop {
-            let Some(pos) = text[search_start..].find(pattern) else { break };
+            let Some(pos) = text[search_start..].find(pattern) else {
+                break;
+            };
             let start = search_start + pos;
             let end = start + pattern.len();
             ranges.push((start, end));
@@ -124,7 +133,8 @@ pub fn binary_path(bin_path: &Path) -> String {
 
 /// Get the file size of the binary.
 pub fn binary_size(bin_path: &Path) -> Result<u64, String> {
-    bin_path.metadata()
+    bin_path
+        .metadata()
         .map_err(|e| format!("cannot stat binary: {}", e))
         .map(|m| m.len())
 }
@@ -133,13 +143,13 @@ pub fn binary_size(bin_path: &Path) -> Result<u64, String> {
 pub fn binary_read_bytes(bin_path: &Path, offset: u64, len: usize) -> Result<Vec<u8>, String> {
     use std::fs::File;
     use std::io::Read;
-    let mut file = File::open(bin_path)
-        .map_err(|e| format!("cannot open binary: {}", e))?;
+    let mut file = File::open(bin_path).map_err(|e| format!("cannot open binary: {}", e))?;
     use std::io::Seek;
     file.seek(std::io::SeekFrom::Start(offset))
         .map_err(|e| format!("cannot seek binary: {}", e))?;
     let mut buf = vec![0u8; len];
-    let n = file.read(&mut buf)
+    let n = file
+        .read(&mut buf)
         .map_err(|e| format!("cannot read binary: {}", e))?;
     buf.truncate(n);
     Ok(buf)

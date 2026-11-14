@@ -267,10 +267,7 @@ impl<'a> Lowerer<'a> {
         // the friendly alias sheet): its defns are the engine verbs, inlined
         // at call sites. Its aliases (e.g. `WaitForInterrupt = wfi`) join
         // the alias table so bare verb mnemonics canonicalize too.
-        let engine_src = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/std/bad/engine.bad"
-        ));
+        let engine_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/std/bad/engine.bad"));
         let engine_program = parse_bad(engine_src)
             .map_err(|e| format!("engine.bad prelude: line {}: {}", e.line, e.message))?;
         let mut engine_defns: std::collections::HashMap<String, BadDefn> =
@@ -395,7 +392,6 @@ impl<'a> Lowerer<'a> {
         self.push_line(".section .text");
     }
 
-
     /// 2026-09-22: raw <target> ... end — verbatim for the active
     /// family, skipped otherwise. A named block emits its callable label
     /// AFTER any leading `.section` lines (a label before `.section`
@@ -416,7 +412,10 @@ impl<'a> Lowerer<'a> {
         // wrong address, splitting the symbol from its code. The thumb
         // uart_init opens `.isr_vector` (data), then `.text` (code): the
         // label must land after the final `.section .text`.
-        let last_sec = b.lines.iter().rposition(|l| l.trim_start().starts_with(".section"));
+        let last_sec = b
+            .lines
+            .iter()
+            .rposition(|l| l.trim_start().starts_with(".section"));
         match last_sec {
             Some(i) => {
                 for line in b.lines.iter().take(i + 1) {
@@ -447,25 +446,24 @@ impl<'a> Lowerer<'a> {
                     self.notices.extend(n);
                 }
                 BadTopLevel::Declarations(d) => {
-                let mut seen = std::collections::HashSet::new();
-                for (name, _) in &d.pins {
-                    if !seen.insert(name.clone()) {
+                    let mut seen = std::collections::HashSet::new();
+                    for (name, _) in &d.pins {
+                        if !seen.insert(name.clone()) {
+                            self.errors
+                                .push(format!("declaration `{name}` is pinned twice - remove one"));
+                        }
+                    }
+                }
+                BadTopLevel::Fn(f) | BadTopLevel::SymDefn(f) => {
+                    if !self.label_names.insert(f.name.clone()) {
                         self.errors.push(format!(
-                            "declaration `{name}` is pinned twice - remove one"
+                            "fn `{}` is declared twice - functions share one symbol namespace \
+                         with labels; rename one",
+                            f.name
                         ));
                     }
                 }
-            }
-            BadTopLevel::Fn(f) | BadTopLevel::SymDefn(f) => {
-                if !self.label_names.insert(f.name.clone()) {
-                    self.errors.push(format!(
-                        "fn `{}` is declared twice - functions share one symbol namespace \
-                         with labels; rename one",
-                        f.name
-                    ));
-                }
-            }
-            BadTopLevel::Defn(d) => {
+                BadTopLevel::Defn(d) => {
                     let n = crate::backend::bad::notices::check_defn(d);
                     self.notices.extend(n);
                 }
@@ -514,7 +512,10 @@ impl<'a> Lowerer<'a> {
             BadTopLevel::Alias(a) => {
                 // Sheet defaults are silently overridable; user-vs-user
                 // duplicates remain a loud error.
-                if self.aliases.insert(a.name.clone(), a.register.clone()).is_some()
+                if self
+                    .aliases
+                    .insert(a.name.clone(), a.register.clone())
+                    .is_some()
                     && !self.sheet_aliases.contains(&a.name)
                 {
                     self.errors.push(format!(
@@ -758,7 +759,11 @@ impl<'a> Lowerer<'a> {
                     ));
                     return;
                 }
-                if self.consts.insert(name.to_string(), expr.to_string()).is_some() {
+                if self
+                    .consts
+                    .insert(name.to_string(), expr.to_string())
+                    .is_some()
+                {
                     self.errors.push(format!(
                         "const `{}` is declared twice (line {}) - remove one declaration",
                         name, d.span.line
@@ -771,10 +776,8 @@ impl<'a> Lowerer<'a> {
             "struct" => {
                 let (name, _) = split_ws(&d.args);
                 if name.is_empty() {
-                    self.errors.push(format!(
-                        ".struct needs a name (line {})",
-                        d.span.line
-                    ));
+                    self.errors
+                        .push(format!(".struct needs a name (line {})", d.span.line));
                     return;
                 }
                 self.current_struct = Some(name.to_string());
@@ -800,7 +803,12 @@ impl<'a> Lowerer<'a> {
                     ));
                     return;
                 }
-                self.structs.push(StructField { struct_name, field, size_expr, align_expr });
+                self.structs.push(StructField {
+                    struct_name,
+                    field,
+                    size_expr,
+                    align_expr,
+                });
             }
             "end" => {
                 self.current_struct = None;
@@ -820,7 +828,8 @@ impl<'a> Lowerer<'a> {
             if f.struct_name != current {
                 // New struct: close the previous one, reset the offset.
                 if !current.is_empty() {
-                    self.consts.insert(format!("{current}.size"), offset.to_string());
+                    self.consts
+                        .insert(format!("{current}.size"), offset.to_string());
                 }
                 current = f.struct_name.clone();
                 offset = 0;
@@ -840,11 +849,13 @@ impl<'a> Lowerer<'a> {
             };
             let align = align.unwrap_or(natural).max(1);
             offset = (offset + align - 1) / align * align;
-            self.consts.insert(format!("{current}.{}", f.field), offset.to_string());
+            self.consts
+                .insert(format!("{current}.{}", f.field), offset.to_string());
             offset += size;
         }
         if !current.is_empty() {
-            self.consts.insert(format!("{current}.size"), offset.to_string());
+            self.consts
+                .insert(format!("{current}.size"), offset.to_string());
         }
     }
 
@@ -880,7 +891,10 @@ impl<'a> Lowerer<'a> {
 
     /// Evaluate an operand expression: consts + defn-param immediates.
     fn eval_operand_expr(
-        &self, expr: &str, env: &HashMap<String, Bound>, instr: &BadInstr,
+        &self,
+        expr: &str,
+        env: &HashMap<String, Bound>,
+        instr: &BadInstr,
     ) -> Result<i64, String> {
         comptime::eval(expr, &|n: &str| {
             if let Some(v) = self.const_value(n, &[]).ok() {
@@ -919,7 +933,11 @@ impl<'a> Lowerer<'a> {
         self.push_line(&format!("{}:", self.canonical_label(&l.name)));
         let proven = contracts::check_label_contracts(l, self.regs, &self.family, &mut self.errors);
         for note in &proven {
-            self.push_line(&format!("{} {}", self.regs.comment_prefix(&self.family), note));
+            self.push_line(&format!(
+                "{} {}",
+                self.regs.comment_prefix(&self.family),
+                note
+            ));
         }
         for item in &l.body {
             match item {
@@ -943,9 +961,9 @@ impl<'a> Lowerer<'a> {
                 | BadBodyItem::While(_)
                 | BadBodyItem::Break(_)
                 | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => self.errors.push(
+                | BadBodyItem::CallStmt { .. }
+                | BadBodyItem::Return { .. }
+                | BadBodyItem::RawRegion { .. } => self.errors.push(
                     "symbolic statement reached emission - the symbolic lowering pass did not run"
                         .to_string(),
                 ),
@@ -966,14 +984,16 @@ impl<'a> Lowerer<'a> {
             .find(|r| r.target == self.family)
             .or_else(|| site.rows.iter().find(|r| r.is_default));
         let Some(row) = row else {
-            let mut targets: Vec<String> =
-                site.rows.iter().map(|r| r.target.clone()).collect();
+            let mut targets: Vec<String> = site.rows.iter().map(|r| r.target.clone()).collect();
             targets.sort();
             targets.dedup();
             return Err(format!(
                 "site (line {}) has no `{} =>` row and no default - the site lowers only \
                  on: {} - add a `{} =>` row or a default row",
-                site.span.line, self.family, targets.join(", "), self.family
+                site.span.line,
+                self.family,
+                targets.join(", "),
+                self.family
             ));
         };
         let env = HashMap::new();
@@ -1032,7 +1052,11 @@ impl<'a> Lowerer<'a> {
         let reg_args = self.regs.abi_reg_args(&self.family);
         let route = if (n as usize) <= reg_args {
             // Register window: a move from the mapped arg register.
-            let src = self.regs.abi_args(&self.family).get(n as usize - 1).cloned();
+            let src = self
+                .regs
+                .abi_args(&self.family)
+                .get(n as usize - 1)
+                .cloned();
             match src {
                 Some(src) => BadInstr {
                     mnemonic: "mov".to_string(),
@@ -1047,8 +1071,8 @@ impl<'a> Lowerer<'a> {
             }
         } else {
             // Stack window: base + (n - reg_args - 1) * 8.
-            let off = self.regs.abi_stack_arg_base(&self.family)
-                + (n as i64 - reg_args as i64 - 1) * 8;
+            let off =
+                self.regs.abi_stack_arg_base(&self.family) + (n as i64 - reg_args as i64 - 1) * 8;
             BadInstr {
                 mnemonic: "loadoff".to_string(),
                 operands: vec![
@@ -1073,7 +1097,10 @@ impl<'a> Lowerer<'a> {
 
     /// Step 1 of the dispatch: non-core mnemonics are defn calls.
     fn route_non_core(
-        &mut self, instr: &BadInstr, env: &HashMap<String, Bound>, depth: usize,
+        &mut self,
+        instr: &BadInstr,
+        env: &HashMap<String, Bound>,
+        depth: usize,
     ) -> Result<(), String> {
         if self.defns.contains_key(&instr.mnemonic) {
             let d = self.defns.get(&instr.mnemonic).cloned().unwrap();
@@ -1097,7 +1124,10 @@ impl<'a> Lowerer<'a> {
         // A sym op's LAST operand is the label/symbol — an immediate
         // there is always a mistake (`addr r5, 1` wants `mov r5, 1`).
         if self.isa.is_sym(&instr.mnemonic)
-            && instr.operands.last().is_some_and(|o| matches!(o, BadOperand::Int(_)))
+            && instr
+                .operands
+                .last()
+                .is_some_and(|o| matches!(o, BadOperand::Int(_)))
         {
             return Err(format!(
                 "`{mn}` (line {ln}) takes a label or symbol as its last operand - an \
@@ -1122,13 +1152,15 @@ impl<'a> Lowerer<'a> {
 
     /// Is this operand an immediate for form selection/materialization?
     fn operand_is_immediate(
-        &self, op: &BadOperand, env: &HashMap<String, Bound>, instr: &BadInstr,
+        &self,
+        op: &BadOperand,
+        env: &HashMap<String, Bound>,
+        instr: &BadInstr,
     ) -> bool {
         match op {
             BadOperand::Int(_) | BadOperand::Float(_) => true,
             BadOperand::Name(name) => {
-                self.consts.contains_key(name)
-                    || matches!(env.get(name), Some(Bound::Imm(_)))
+                self.consts.contains_key(name) || matches!(env.get(name), Some(Bound::Imm(_)))
             }
             BadOperand::Expr(e) => self.eval_operand_expr(e, env, instr).is_ok(),
         }
@@ -1136,9 +1168,14 @@ impl<'a> Lowerer<'a> {
 
     /// Would materializing into `scratch` clobber a register operand?
     fn scratch_conflicts(
-        &self, scratch: &str, instr: &BadInstr, env: &HashMap<String, Bound>,
+        &self,
+        scratch: &str,
+        instr: &BadInstr,
+        env: &HashMap<String, Bound>,
     ) -> bool {
-        let Some(token) = self.resolve_register(scratch) else { return false };
+        let Some(token) = self.resolve_register(scratch) else {
+            return false;
+        };
         for op in &instr.operands {
             let BadOperand::Name(name) = op else { continue };
             if let Some(Bound::Token(t)) = env.get(name) {
@@ -1154,7 +1191,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn pick_scratch(
-        &mut self, instr: &BadInstr, env: &HashMap<String, Bound>, used: &[String],
+        &mut self,
+        instr: &BadInstr,
+        env: &HashMap<String, Bound>,
+        used: &[String],
     ) -> Result<String, String> {
         let mut candidates = Vec::new();
         if let Some(s) = self.regs.scratch_int(&self.family) {
@@ -1184,7 +1224,10 @@ impl<'a> Lowerer<'a> {
     /// The scratch names are canonical portable registers, so the normal
     /// register map resolves them. Disclosed clobber.
     fn materialize_illegal_imms(
-        &mut self, instr: &mut BadInstr, env: &HashMap<String, Bound>, depth: usize,
+        &mut self,
+        instr: &mut BadInstr,
+        env: &HashMap<String, Bound>,
+        depth: usize,
     ) -> Result<(), String> {
         let indices: Vec<usize> = instr
             .operands
@@ -1233,7 +1276,10 @@ impl<'a> Lowerer<'a> {
     /// Emit one instruction under `env` (defn param bindings). `depth`
     /// guards defn recursion.
     fn emit_instr(
-        &mut self, instr: &BadInstr, env: &HashMap<String, Bound>, depth: usize,
+        &mut self,
+        instr: &BadInstr,
+        env: &HashMap<String, Bound>,
+        depth: usize,
     ) -> Result<(), String> {
         contracts::check_inline_contract(instr, self.regs, &self.family, &mut self.errors);
 
@@ -1284,8 +1330,7 @@ impl<'a> Lowerer<'a> {
             // to immediates at substitution — they must pick the imm
             // form too (aarch64 mul takes no #imm).
             BadOperand::Name(name) => {
-                self.consts.contains_key(name)
-                    || matches!(env.get(name), Some(Bound::Imm(_)))
+                self.consts.contains_key(name) || matches!(env.get(name), Some(Bound::Imm(_)))
             }
             // An Expr that EVALUATES to a constant (a bare hex literal
             // `0x40004008`) is an immediate; one that resolves to a label
@@ -1322,7 +1367,11 @@ impl<'a> Lowerer<'a> {
 
     /// Expand a defn call: bind params positionally, emit its body/rows.
     fn expand_defn(
-        &mut self, d: &BadDefn, call: &BadInstr, outer: &HashMap<String, Bound>, depth: usize,
+        &mut self,
+        d: &BadDefn,
+        call: &BadInstr,
+        outer: &HashMap<String, Bound>,
+        depth: usize,
     ) -> Result<(), String> {
         if depth >= MAX_EXPANSION_DEPTH {
             return Err(format!(
@@ -1363,7 +1412,10 @@ impl<'a> Lowerer<'a> {
                     // An operand that names an outer param inherits its
                     // binding; anything else is a token resolved at
                     // emission (register, label, or symbol).
-                    outer.get(name).cloned().unwrap_or(Bound::Token(name.to_string()))
+                    outer
+                        .get(name)
+                        .cloned()
+                        .unwrap_or(Bound::Token(name.to_string()))
                 }
             };
             env.insert(param.clone(), bound);
@@ -1383,7 +1435,9 @@ impl<'a> Lowerer<'a> {
                 self.emit_sequence_body(items, &env, depth)?;
             }
             BadDefnShape::Branch(rows) => {
-                let row = rows.iter().find(|r| r.target == self.family)
+                let row = rows
+                    .iter()
+                    .find(|r| r.target == self.family)
                     .or_else(|| rows.iter().find(|r| r.is_default));
                 let Some(row) = row else {
                     return Err(format!(
@@ -1411,7 +1465,10 @@ impl<'a> Lowerer<'a> {
     /// sites). Defn-param bindings flow through — site rows substitute
     /// params like any other body line.
     fn emit_sequence_body(
-        &mut self, items: &[BadBodyItem], env: &HashMap<String, Bound>, depth: usize,
+        &mut self,
+        items: &[BadBodyItem],
+        env: &HashMap<String, Bound>,
+        depth: usize,
     ) -> Result<(), String> {
         let saved_locals = std::mem::take(&mut self.current_locals);
         self.current_locals = items
@@ -1458,7 +1515,9 @@ impl<'a> Lowerer<'a> {
     /// `emit_site`, with the defn's param `env` and expansion `depth`
     /// (default rows re-enter `emit_instr` at depth+1).
     fn emit_site_in_defn(
-        &mut self, site: &crate::ast::bad::BadSite, env: &HashMap<String, Bound>,
+        &mut self,
+        site: &crate::ast::bad::BadSite,
+        env: &HashMap<String, Bound>,
         depth: usize,
     ) -> Result<(), String> {
         let row = site
@@ -1467,14 +1526,16 @@ impl<'a> Lowerer<'a> {
             .find(|r| r.target == self.family)
             .or_else(|| site.rows.iter().find(|r| r.is_default));
         let Some(row) = row else {
-            let mut targets: Vec<String> =
-                site.rows.iter().map(|r| r.target.clone()).collect();
+            let mut targets: Vec<String> = site.rows.iter().map(|r| r.target.clone()).collect();
             targets.sort();
             targets.dedup();
             return Err(format!(
                 "site (line {}) has no `{} =>` row and no default - the site lowers only \
                  on: {} - add a `{} =>` row or a default row",
-                site.span.line, self.family, targets.join(", "), self.family
+                site.span.line,
+                self.family,
+                targets.join(", "),
+                self.family
             ));
         };
         if row.is_default {
@@ -1522,7 +1583,10 @@ impl<'a> Lowerer<'a> {
     /// Resolve one raw-instruction operand: env bindings first, then the
     /// register table, then boundary-replaced composite text.
     fn resolve_raw_operand(
-        &mut self, op: &BadOperand, env: &HashMap<String, Bound>, line: usize,
+        &mut self,
+        op: &BadOperand,
+        env: &HashMap<String, Bound>,
+        line: usize,
         instr: &BadInstr,
     ) -> String {
         match op {
@@ -1536,7 +1600,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn resolve_raw_name(
-        &mut self, name: &str, env: &HashMap<String, Bound>, line: usize,
+        &mut self,
+        name: &str,
+        env: &HashMap<String, Bound>,
+        line: usize,
     ) -> String {
         let imm = self.regs.imm_prefix(&self.family);
         match env.get(name) {
@@ -1564,7 +1631,10 @@ impl<'a> Lowerer<'a> {
     /// (branch ops) lets the last operand be a verbatim label/symbol;
     /// elsewhere an unresolvable name is a loud error.
     fn substitute(
-        &self, template: &str, instr: &BadInstr, env: &HashMap<String, Bound>,
+        &self,
+        template: &str,
+        instr: &BadInstr,
+        env: &HashMap<String, Bound>,
         allow_symbols: bool,
     ) -> Result<String, String> {
         let mut out = String::with_capacity(template.len());
@@ -1585,7 +1655,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn operand_text(
-        &self, instr: &BadInstr, r: Ref, env: &HashMap<String, Bound>,
+        &self,
+        instr: &BadInstr,
+        r: Ref,
+        env: &HashMap<String, Bound>,
         allow_symbols: bool,
     ) -> Result<String, String> {
         if r.n == 0 || r.n > instr.operands.len() {
@@ -1614,7 +1687,11 @@ impl<'a> Lowerer<'a> {
                 // — opcode-encoded slots (`%cr$2!`, `csrw $1!`) splice it
                 // into the mnemonic/CSR text.
                 if let Some(Bound::Imm(v)) = env.get(name).or_else(|| self.param_env.get(name)) {
-                    return Ok(if r.bare { v.to_string() } else { format!("{imm}{v}") });
+                    return Ok(if r.bare {
+                        v.to_string()
+                    } else {
+                        format!("{imm}{v}")
+                    });
                 }
                 let (bound_name, param) = match env.get(name).or_else(|| self.param_env.get(name)) {
                     Some(Bound::Token(t)) => (t.as_str(), Some(name.as_str())),
@@ -1648,17 +1725,20 @@ impl<'a> Lowerer<'a> {
                     "syscall `{}` (line {}) names `{}`, which is not in the \
                      syscall_nums row for `{}` - add it to config/bad-registers.dbvl \
                      (known: {known})",
-                    instr.mnemonic,
-                    instr.span.line,
-                    name,
-                    self.family
+                    instr.mnemonic, instr.span.line, name, self.family
                 ))
             }
         }
     }
 
     fn token_for(&self, req: &TokReq) -> Result<String, String> {
-        let TokReq { name, width, allow_symbols, instr, param } = req;
+        let TokReq {
+            name,
+            width,
+            allow_symbols,
+            instr,
+            param,
+        } = req;
         let name = *name;
         let width = *width;
         let allow_symbols = *allow_symbols;
@@ -1805,10 +1885,13 @@ impl<'a> Lowerer<'a> {
     /// Portable register SYNTAX check for raw operands: `r14` on x86_64
     /// must be a loud error, not a silent symbol pass-through.
     fn check_portable(&mut self, name: &str, line: usize) {
-        let is_portable_shape = name == "sp" || name == "pc"
-            || (name.len() >= 2 && name.starts_with('r')
+        let is_portable_shape = name == "sp"
+            || name == "pc"
+            || (name.len() >= 2
+                && name.starts_with('r')
                 && name[1..].chars().all(|c| c.is_ascii_digit()));
-        if is_portable_shape && !self.regs.exists(name, &self.family)
+        if is_portable_shape
+            && !self.regs.exists(name, &self.family)
             && !self.aliases.contains_key(name)
         {
             let targets = self.regs.known_targets(name).join(", ");
@@ -1898,7 +1981,12 @@ fn take_operand_ref(s: &str, i: usize) -> Option<(Ref, usize)> {
     if j == i + 1 {
         return None;
     }
-    let r = Ref { n: s[i + 1..j].parse().unwrap_or(0), width: None, bare: false, named: false };
+    let r = Ref {
+        n: s[i + 1..j].parse().unwrap_or(0),
+        width: None,
+        bare: false,
+        named: false,
+    };
     let (r, j) = take_width_suffix(s, j, r);
     if bytes.get(j) == Some(&b'!') {
         return Some((Ref { bare: true, ..r }, j + 1));
@@ -1923,10 +2011,22 @@ fn take_width_suffix(s: &str, j: usize, r: Ref) -> (Ref, usize) {
     }
     // A bare `.w` (no digits) = the target's 32-bit-name register.
     if k == j + 2 {
-        return (Ref { width: Some(255), ..r }, k);
+        return (
+            Ref {
+                width: Some(255),
+                ..r
+            },
+            k,
+        );
     }
     match s[j + 2..k].parse::<u8>() {
-        Ok(w) if matches!(w, 8 | 16 | 32) => (Ref { width: Some(w), ..r }, k),
+        Ok(w) if matches!(w, 8 | 16 | 32) => (
+            Ref {
+                width: Some(w),
+                ..r
+            },
+            k,
+        ),
         _ => (r, j),
     }
 }

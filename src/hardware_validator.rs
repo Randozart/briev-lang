@@ -56,11 +56,7 @@ impl HardwareValidator {
             &trigger_graph,
             is_embedded,
         ));
-        diagnostics.extend(Self::check_unused_variables(
-            items,
-            hw_config,
-            &read_graph,
-        ));
+        diagnostics.extend(Self::check_unused_variables(items, hw_config, &read_graph));
 
         if let Some(spec) = target_spec {
             diagnostics.extend(Self::check_memory_overlaps(items, hw_config, spec));
@@ -125,7 +121,10 @@ impl HardwareValidator {
         if errs.is_empty() {
             Ok(())
         } else {
-            Err(format!(".sbv synthesizability errors:\n{}", errs.join("\n")))
+            Err(format!(
+                ".sbv synthesizability errors:\n{}",
+                errs.join("\n")
+            ))
         }
     }
 
@@ -162,14 +161,20 @@ impl HardwareValidator {
                         diagnostics.push(Diagnostic::new(
                             "B5004",
                             Severity::Error,
-                            &format!(".sbv transaction '{}' has [true] precondition — must be total", txn.name),
+                            &format!(
+                                ".sbv transaction '{}' has [true] precondition — must be total",
+                                txn.name
+                            ),
                         ));
                     }
                     if matches!(txn.contract.post_condition, Expr::Bool(true)) {
                         diagnostics.push(Diagnostic::new(
                             "B5005",
                             Severity::Error,
-                            &format!(".sbv transaction '{}' has [true] postcondition — must be total", txn.name),
+                            &format!(
+                                ".sbv transaction '{}' has [true] postcondition — must be total",
+                                txn.name
+                            ),
                         ));
                     }
                     // Check for dynamic heap usage
@@ -188,7 +193,10 @@ impl HardwareValidator {
                 // `.sbv` state field (which is written exactly this way, e.g.
                 // examples/silicon/sensor_die.sbv) escapes the gate.
                 TopLevel::Statement(stmt) => {
-                    if let Statement::Let { name, ty: Some(ty), .. } = stmt.as_ref() {
+                    if let Statement::Let {
+                        name, ty: Some(ty), ..
+                    } = stmt.as_ref()
+                    {
                         Self::check_type_synthesizable(ty, &mut diagnostics, name);
                     }
                 }
@@ -198,7 +206,11 @@ impl HardwareValidator {
         diagnostics
     }
 
-    fn check_synthesizable_types(params: &[(String, Type)], diagnostics: &mut Vec<Diagnostic>, txn_name: &str) {
+    fn check_synthesizable_types(
+        params: &[(String, Type)],
+        diagnostics: &mut Vec<Diagnostic>,
+        txn_name: &str,
+    ) {
         for (name, ty) in params {
             Self::check_type_synthesizable(ty, diagnostics, &format!("{}.{}", txn_name, name));
         }
@@ -268,10 +280,14 @@ impl HardwareValidator {
         if let Some(memory) = &spec.memory {
             for (name, section) in &memory.sections {
                 if let Some(max_size) = section.max_size {
-                    occupied_regions.push((section.at, section.at + max_size, format!("Section '{}'", name)));
+                    occupied_regions.push((
+                        section.at,
+                        section.at + max_size,
+                        format!("Section '{}'", name),
+                    ));
                 }
             }
-            
+
             // 2. Check memory banks bounds
             for item in items {
                 if let TopLevel::StateDecl(decl) = item {
@@ -287,7 +303,10 @@ impl HardwareValidator {
                             let mut diag = Diagnostic::new(
                                 "B4006",
                                 Severity::Error,
-                                &format!("StateDecl '{}' is outside any defined memory bank", decl.name),
+                                &format!(
+                                    "StateDecl '{}' is outside any defined memory bank",
+                                    decl.name
+                                ),
                             );
                             if let Some(span) = decl.span {
                                 diag = diag.with_span(span);
@@ -304,16 +323,19 @@ impl HardwareValidator {
             for j in i + 1..occupied_regions.len() {
                 let (s1, e1, n1) = &occupied_regions[i];
                 let (s2, e2, n2) = &occupied_regions[j];
-                
+
                 if s1 < e2 && s2 < e1 {
-                    diagnostics.push(Diagnostic::new(
-                        "B4007",
-                        Severity::Error,
-                        &format!("Memory overlap detected between {} and {}", n1, n2),
-                    ).with_explanation(&format!(
-                        "Region 1: 0x{:X}-0x{:X}, Region 2: 0x{:X}-0x{:X}",
-                        s1, e1, s2, e2
-                    )));
+                    diagnostics.push(
+                        Diagnostic::new(
+                            "B4007",
+                            Severity::Error,
+                            &format!("Memory overlap detected between {} and {}", n1, n2),
+                        )
+                        .with_explanation(&format!(
+                            "Region 1: 0x{:X}-0x{:X}, Region 2: 0x{:X}-0x{:X}",
+                            s1, e1, s2, e2
+                        )),
+                    );
                 }
             }
         }
@@ -331,9 +353,7 @@ impl HardwareValidator {
         let mut diagnostics = Vec::new();
         for item in items {
             if let TopLevel::StateDecl(decl) = item {
-                if !write_graph.writes_to(&decl.name)
-                    && !trigger_graph.can_set(&decl.name)
-                {
+                if !write_graph.writes_to(&decl.name) && !trigger_graph.can_set(&decl.name) {
                     let severity = if is_ebv {
                         Severity::Error
                     } else {
@@ -455,9 +475,9 @@ impl HardwareValidator {
         source_file: &std::path::Path,
     ) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
-        
+
         let mut schema_files: Vec<(String, std::path::PathBuf)> = Vec::new();
-        
+
         for item in program {
             if let TopLevel::Import(import) = item {
                 let path_str = import.path().to_string();
@@ -468,13 +488,14 @@ impl HardwareValidator {
                 }
             }
         }
-        
+
         if schema_files.is_empty() {
             return diagnostics;
         }
-        
-        let mut schema_aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        
+
+        let mut schema_aliases: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
         for (schema_path, full_path) in &schema_files {
             match std::fs::read_to_string(full_path) {
                 Ok(content) => {
@@ -488,7 +509,10 @@ impl HardwareValidator {
                             diagnostics.push(Diagnostic {
                                 code: "HW005".to_string(),
                                 title: "Failed to parse schema".to_string(),
-                                explanation: vec![format!("Failed to parse {}: {}", schema_path, e)],
+                                explanation: vec![format!(
+                                    "Failed to parse {}: {}",
+                                    schema_path, e
+                                )],
                                 severity: Severity::Error,
                                 span: None,
                                 source_snippet: None,
@@ -516,20 +540,21 @@ impl HardwareValidator {
                 }
             }
         }
-        
+
         for item in program {
             match item {
                 TopLevel::StateDecl(state) => {
                     let is_internal = false;
-                    if !schema_aliases.contains_key(&state.name) && !state.name.starts_with("_") && !is_internal {
+                    if !schema_aliases.contains_key(&state.name)
+                        && !state.name.starts_with("_")
+                        && !is_internal
+                    {
                         // Check if it's a Definition (pure function) - those don't need to be in schema
-                        let is_definition = program.iter().any(|i| {
-                            match i {
-                                TopLevel::Definition(d) => d.name == state.name,
-                                _ => false,
-                            }
+                        let is_definition = program.iter().any(|i| match i {
+                            TopLevel::Definition(d) => d.name == state.name,
+                            _ => false,
                         });
-                        
+
                         // Only report error if schemas were loaded and state is not a definition
                         if !is_definition && !schema_aliases.is_empty() {
                             diagnostics.push(Diagnostic {
@@ -553,7 +578,7 @@ impl HardwareValidator {
                 _ => {}
             }
         }
-        
+
         diagnostics
     }
 }
@@ -654,7 +679,9 @@ impl ReadGraph {
                     read.extend(condition.collect_vars());
                     Self::collect_reads_stmts(statements, read);
                 }
-                Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) | Statement::Tail(expr) => {
+                Statement::Term(Some(expr))
+                | Statement::EndProgram(Some(expr))
+                | Statement::Tail(expr) => {
                     read.extend(expr.collect_vars());
                 }
                 Statement::Rollback(Some(expr)) => {
@@ -677,8 +704,8 @@ impl ReadGraph {
 mod tests {
     use super::*;
     use crate::ast::*;
-use std::collections::HashMap;
     use crate::errors::Severity;
+    use std::collections::HashMap;
 
     fn make_items(items: Vec<TopLevel>) -> Vec<TopLevel> {
         items
@@ -688,12 +715,20 @@ use std::collections::HashMap;
         TopLevel::Transaction(Transaction {
             variadic_param: None,
             name: name.to_string(),
-            is_reactive: true, is_async: false,
+            is_reactive: true,
+            is_async: false,
             type_params: vec![],
             parameters: vec![],
             outputs: vec![],
             output_type: None,
-            contract: Contract { pre_condition: pre, post_condition: post, watchdog: None, span: None, explicit: false, post_authority: false},
+            contract: Contract {
+                pre_condition: pre,
+                post_condition: post,
+                watchdog: None,
+                span: None,
+                explicit: false,
+                post_authority: false,
+            },
             body,
             span: None,
             metadata: HashMap::new(),
@@ -705,28 +740,50 @@ use std::collections::HashMap;
 
     fn state(name: &str, ty: Type) -> TopLevel {
         TopLevel::StateDecl(StateDecl {
-            name: name.to_string(), ty, span: None,
+            name: name.to_string(),
+            ty,
+            span: None,
         })
     }
 
     #[test]
     fn test_hebv_rejects_true_precondition() {
-        let items = make_items(vec![
-            txn("bad", Expr::Bool(true), Expr::Bool(false), vec![]),
-        ]);
+        let items = make_items(vec![txn(
+            "bad",
+            Expr::Bool(true),
+            Expr::Bool(false),
+            vec![],
+        )]);
         let diags = HardwareValidator::check_hebv_restrictions(&items);
-        let pre_errors: Vec<_> = diags.iter().filter(|d| d.title.contains("precondition")).collect();
-        assert_eq!(pre_errors.len(), 1, "Expected rejection of [true] precondition");
+        let pre_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.title.contains("precondition"))
+            .collect();
+        assert_eq!(
+            pre_errors.len(),
+            1,
+            "Expected rejection of [true] precondition"
+        );
     }
 
     #[test]
     fn test_hebv_rejects_true_postcondition() {
-        let items = make_items(vec![
-            txn("bad", Expr::Bool(false), Expr::Bool(true), vec![]),
-        ]);
+        let items = make_items(vec![txn(
+            "bad",
+            Expr::Bool(false),
+            Expr::Bool(true),
+            vec![],
+        )]);
         let diags = HardwareValidator::check_hebv_restrictions(&items);
-        let post_errors: Vec<_> = diags.iter().filter(|d| d.title.contains("postcondition")).collect();
-        assert_eq!(post_errors.len(), 1, "Expected rejection of [true] postcondition");
+        let post_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.title.contains("postcondition"))
+            .collect();
+        assert_eq!(
+            post_errors.len(),
+            1,
+            "Expected rejection of [true] postcondition"
+        );
     }
 
     #[test]
@@ -749,7 +806,10 @@ use std::collections::HashMap;
     fn test_hebv_rejects_unsized_int() {
         let items = make_items(vec![state("x", Type::int())]);
         let diags = HardwareValidator::check_hebv_restrictions(&items);
-        let int_errors: Vec<_> = diags.iter().filter(|d| d.title.contains("Int/UInt")).collect();
+        let int_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.title.contains("Int/UInt"))
+            .collect();
         assert!(!int_errors.is_empty(), "Expected rejection of unsized Int");
     }
 
@@ -757,13 +817,21 @@ use std::collections::HashMap;
     fn test_hebv_accepts_synthesizable_types() {
         let items = make_items(vec![
             state("a", Type::bool_()),
-            txn("good",
+            txn(
+                "good",
                 Expr::Identifier("a".to_string()),
-                Expr::UnaryOp(UnaryOpKind::Not, Box::new(Expr::Identifier("a".to_string()))),
-                vec![]),
+                Expr::UnaryOp(
+                    UnaryOpKind::Not,
+                    Box::new(Expr::Identifier("a".to_string())),
+                ),
+                vec![],
+            ),
         ]);
         let diags = HardwareValidator::check_hebv_restrictions(&items);
-        let type_errors: Vec<_> = diags.iter().filter(|d| d.code.starts_with("B500")).collect();
+        let type_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.starts_with("B500"))
+            .collect();
         assert_eq!(type_errors.len(), 0, "Bool + bounded txns should be OK");
     }
 }

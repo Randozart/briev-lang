@@ -25,15 +25,15 @@ struct Summaries {
 pub fn analyze(program: &HirProgram) -> HashMap<String, HashSet<String>> {
     let fields: HashSet<String> = program.globals.iter().map(|g| g.name.clone()).collect();
     let mut summaries = Summaries::default();
-    for txn in program.callables.iter().filter(|c| {
-        matches!(c.kind, HirCallableKind::Transaction) && c.owner.is_none()
-    }) {
+    for txn in program
+        .callables
+        .iter()
+        .filter(|c| matches!(c.kind, HirCallableKind::Transaction) && c.owner.is_none())
+    {
         record(txn, &fields, &mut summaries);
     }
     for c in program.callables.iter().filter(|c| {
-        matches!(c.kind, HirCallableKind::Defn)
-            && c.owner.is_none()
-            && c.sync_domains.is_empty()
+        matches!(c.kind, HirCallableKind::Defn) && c.owner.is_none() && c.sync_domains.is_empty()
     }) {
         record(c, &fields, &mut summaries);
     }
@@ -71,7 +71,9 @@ fn record(c: &HirCallable, fields: &HashSet<String>, summaries: &mut Summaries) 
     let mut writes = HashSet::new();
     let mut calls = HashSet::new();
     let mut collect = |target: &HirExpr| {
-        let Some(root) = root_name(target) else { return };
+        let Some(root) = root_name(target) else {
+            return;
+        };
         if fields.contains(root) && !shadowed.contains(root) {
             writes.insert(root.to_string());
         }
@@ -84,11 +86,7 @@ fn record(c: &HirCallable, fields: &HashSet<String>, summaries: &mut Summaries) 
     summaries.calls.insert(c.name.to_string(), calls);
 }
 
-fn record_expr(
-    expr: &HirExpr,
-    calls: &mut HashSet<String>,
-    collect: &mut dyn FnMut(&HirExpr),
-) {
+fn record_expr(expr: &HirExpr, calls: &mut HashSet<String>, collect: &mut dyn FnMut(&HirExpr)) {
     if let HirExprKind::Call { callee, .. } = &expr.kind {
         calls.insert(callee.clone());
     }
@@ -114,7 +112,9 @@ fn walk_assign_targets(body: &[super::stmt::HirStmt], f: &mut dyn FnMut(&HirExpr
 fn walk_one_assign_target(stmt: &super::stmt::HirStmt, f: &mut dyn FnMut(&HirExpr)) {
     match &stmt.kind {
         HirStmtKind::Assign(lhs, _) => f(lhs),
-        HirStmtKind::ArrowAssign { target: Some(t), .. } => f(t),
+        HirStmtKind::ArrowAssign {
+            target: Some(t), ..
+        } => f(t),
         HirStmtKind::Guarded(_, inner)
         | HirStmtKind::Block(inner)
         | HirStmtKind::SyncBlock(inner)
@@ -140,7 +140,9 @@ mod tests {
         // Mirrors the AST analysis unit test (analysis::web_commits).
         let source = "let visible: Bool = false; out defn helper(n: Int) -> Int { when n > 0 { visible = true; term helper(n-1); }; term 0; }; txn click [!visible][visible] { helper(2); term; };";
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
         let hir = lower_program(&items);
         let writes = analyze(&hir);
         assert_eq!(writes["click"], HashSet::from(["visible".to_string()]));

@@ -328,9 +328,9 @@ fn parse_py_single_param(
     }
 
     // Handle default values: "name: Type = default"
-        let (_name, type_str) = if let Some(eq_pos) = param.find('=') {
-            let before_eq = param[..eq_pos].trim();
-            let _after_eq = param[eq_pos + 1..].trim();
+    let (_name, type_str) = if let Some(eq_pos) = param.find('=') {
+        let before_eq = param[..eq_pos].trim();
+        let _after_eq = param[eq_pos + 1..].trim();
 
         // before_eq might be "name: Type" or just "name"
         if let Some(colon_pos) = before_eq.find(':') {

@@ -114,7 +114,10 @@ impl PlaceholderState {
 ///
 /// Placeholders are tracked by (address_of_a, address_of_b) to share the same
 /// placeholder when the same pair is encountered in different contexts.
-pub(crate) fn anti_unify(a: &Expr, b: &Expr) -> Option<(Expr, HashMap<String, Expr>, HashMap<String, Expr>)> {
+pub(crate) fn anti_unify(
+    a: &Expr,
+    b: &Expr,
+) -> Option<(Expr, HashMap<String, Expr>, HashMap<String, Expr>)> {
     let mut state = PlaceholderState::new();
     let mut subst_a: HashMap<String, Expr> = HashMap::new();
     let mut subst_b: HashMap<String, Expr> = HashMap::new();
@@ -123,7 +126,14 @@ pub(crate) fn anti_unify(a: &Expr, b: &Expr) -> Option<(Expr, HashMap<String, Ex
     // We use a simple HashMap keyed by (ptr_a, ptr_b).
     let mut placeholder_map: HashMap<(usize, usize), String> = HashMap::new();
 
-    let result = anti_unify_expr(a, b, &mut state, &mut placeholder_map, &mut subst_a, &mut subst_b)?;
+    let result = anti_unify_expr(
+        a,
+        b,
+        &mut state,
+        &mut placeholder_map,
+        &mut subst_a,
+        &mut subst_b,
+    )?;
     Some((result, subst_a, subst_b))
 }
 
@@ -154,27 +164,53 @@ fn anti_unify_expr(
             // inflate the substitution set.
             Some(Expr::BinaryOp(
                 *k1,
-                Box::new(anti_unify_expr(l1, l2, state, placeholder_map, subst_a, subst_b)?),
-                Box::new(anti_unify_expr(r1, r2, state, placeholder_map, subst_a, subst_b)?),
+                Box::new(anti_unify_expr(
+                    l1,
+                    l2,
+                    state,
+                    placeholder_map,
+                    subst_a,
+                    subst_b,
+                )?),
+                Box::new(anti_unify_expr(
+                    r1,
+                    r2,
+                    state,
+                    placeholder_map,
+                    subst_a,
+                    subst_b,
+                )?),
             ))
         }
-        (Expr::UnaryOp(k1, i1), Expr::UnaryOp(k2, i2)) if k1 == k2 => {
-            Some(Expr::UnaryOp(
-                *k1,
-                Box::new(anti_unify_expr(i1, i2, state, placeholder_map, subst_a, subst_b)?),
-            ))
-        }
+        (Expr::UnaryOp(k1, i1), Expr::UnaryOp(k2, i2)) if k1 == k2 => Some(Expr::UnaryOp(
+            *k1,
+            Box::new(anti_unify_expr(
+                i1,
+                i2,
+                state,
+                placeholder_map,
+                subst_a,
+                subst_b,
+            )?),
+        )),
         (Expr::If(c1, t1, e1), Expr::If(c2, t2, e2)) => {
             let cond = anti_unify_expr(c1, c2, state, placeholder_map, subst_a, subst_b)?;
             let then = anti_unify_expr(t1, t2, state, placeholder_map, subst_a, subst_b)?;
             let else_expr = match (e1, e2) {
-                (Some(ee1), Some(ee2)) => {
-                    Some(Box::new(anti_unify_expr(ee1, ee2, state, placeholder_map, subst_a, subst_b)?))
-                }
+                (Some(ee1), Some(ee2)) => Some(Box::new(anti_unify_expr(
+                    ee1,
+                    ee2,
+                    state,
+                    placeholder_map,
+                    subst_a,
+                    subst_b,
+                )?)),
                 (None, None) => None,
                 _ => {
                     // One has else, other doesn't → need placeholder
-                    let var = placeholder_map.entry(ptr_pair(a, b)).or_insert_with(|| state.fresh());
+                    let var = placeholder_map
+                        .entry(ptr_pair(a, b))
+                        .or_insert_with(|| state.fresh());
                     subst_a.insert(var.clone(), a.clone());
                     subst_b.insert(var.clone(), b.clone());
                     return Some(Expr::Identifier(var.clone()));
@@ -182,8 +218,12 @@ fn anti_unify_expr(
             };
             Some(Expr::If(Box::new(cond), Box::new(then), else_expr))
         }
-        (Expr::Call(n1, args1, _), Expr::Call(n2, args2, _)) if n1 == n2 && args1.len() == args2.len() => {
-            let args: Vec<Expr> = args1.iter().zip(args2.iter())
+        (Expr::Call(n1, args1, _), Expr::Call(n2, args2, _))
+            if n1 == n2 && args1.len() == args2.len() =>
+        {
+            let args: Vec<Expr> = args1
+                .iter()
+                .zip(args2.iter())
                 .map(|(a1, a2)| anti_unify_expr(a1, a2, state, placeholder_map, subst_a, subst_b))
                 .collect::<Option<Vec<_>>>()?;
             Some(Expr::Call(n1.clone(), args, None))
@@ -290,13 +330,24 @@ fn infer_return_type(expr: &Expr) -> String {
         Expr::UnaryOp(UnaryOpKind::Not, _) => "Bool".to_string(),
         Expr::UnaryOp(UnaryOpKind::BitNot, _) => "Int".to_string(),
         Expr::BinaryOp(op, _, _) => match op {
-            BinaryOpKind::Add | BinaryOpKind::Sub | BinaryOpKind::Mul
-            | BinaryOpKind::Div | BinaryOpKind::Mod
-            | BinaryOpKind::BitAnd | BinaryOpKind::BitOr | BinaryOpKind::BitXor
-            | BinaryOpKind::Shl | BinaryOpKind::Shr => "Int".to_string(),
-            BinaryOpKind::Eq | BinaryOpKind::Neq | BinaryOpKind::Lt
-            | BinaryOpKind::Gt | BinaryOpKind::Le | BinaryOpKind::Ge
-            | BinaryOpKind::And | BinaryOpKind::Or => "Bool".to_string(),
+            BinaryOpKind::Add
+            | BinaryOpKind::Sub
+            | BinaryOpKind::Mul
+            | BinaryOpKind::Div
+            | BinaryOpKind::Mod
+            | BinaryOpKind::BitAnd
+            | BinaryOpKind::BitOr
+            | BinaryOpKind::BitXor
+            | BinaryOpKind::Shl
+            | BinaryOpKind::Shr => "Int".to_string(),
+            BinaryOpKind::Eq
+            | BinaryOpKind::Neq
+            | BinaryOpKind::Lt
+            | BinaryOpKind::Gt
+            | BinaryOpKind::Le
+            | BinaryOpKind::Ge
+            | BinaryOpKind::And
+            | BinaryOpKind::Or => "Bool".to_string(),
             BinaryOpKind::Concat => "Int".to_string(),
         },
         Expr::If(_, _, _) => "Int".to_string(),
@@ -328,11 +379,28 @@ pub(crate) fn discover_and_register_helpers(
 ) -> Vec<HelperFunction> {
     // Step 1: Collect all expressions from the LevelCache by type
     let mut by_type: HashMap<String, Vec<Expr>> = HashMap::new();
-    for e in &cache.int_exprs { by_type.entry("Int".to_string()).or_default().push(e.clone()); }
-    for e in &cache.float_exprs { by_type.entry("Float".to_string()).or_default().push(e.clone()); }
-    for e in &cache.bool_exprs { by_type.entry("Bool".to_string()).or_default().push(e.clone()); }
+    for e in &cache.int_exprs {
+        by_type
+            .entry("Int".to_string())
+            .or_default()
+            .push(e.clone());
+    }
+    for e in &cache.float_exprs {
+        by_type
+            .entry("Float".to_string())
+            .or_default()
+            .push(e.clone());
+    }
+    for e in &cache.bool_exprs {
+        by_type
+            .entry("Bool".to_string())
+            .or_default()
+            .push(e.clone());
+    }
     for (ty, list) in &cache.compound_exprs {
-        for e in list { by_type.entry(ty.clone()).or_default().push(e.clone()); }
+        for e in list {
+            by_type.entry(ty.clone()).or_default().push(e.clone());
+        }
     }
 
     let mut helpers: Vec<HelperFunction> = Vec::new();
@@ -349,30 +417,46 @@ pub(crate) fn discover_and_register_helpers(
     // This is a heuristic: at higher depths, Bool expressions are complex
     // enough that abstraction is safe.
     for (ret_type, exprs) in &by_type {
-        if exprs.len() < 2 { continue; }
+        if exprs.len() < 2 {
+            continue;
+        }
         // 2026-07-29: Skip Bool at depth 2 to preserve IF generation.
         // A more principled fix: only anti-unify types that have enough
         // complexity (expr_size > threshold) to benefit from abstraction.
         if ret_type == "Bool" && exprs.iter().any(|e| expr_size(e) <= 3) {
             continue;
         }
-        let max_h = config.max_helpers_per_type.saturating_sub(
-            helpers.iter().filter(|h| h.ret_type == *ret_type).count()
-        );
-        if max_h == 0 { continue; }
+        let max_h = config
+            .max_helpers_per_type
+            .saturating_sub(helpers.iter().filter(|h| h.ret_type == *ret_type).count());
+        if max_h == 0 {
+            continue;
+        }
 
         // Step 2: Iterate over all pairs in this type group
         for i in 0..exprs.len() {
-            if replaced.contains(&(ret_type.clone(), i)) { continue; }
-            if helpers.len() >= config.max_helpers_per_type { break; }
+            if replaced.contains(&(ret_type.clone(), i)) {
+                continue;
+            }
+            if helpers.len() >= config.max_helpers_per_type {
+                break;
+            }
 
             for j in (i + 1)..exprs.len() {
-                if replaced.contains(&(ret_type.clone(), j)) { continue; }
-                if helpers.len() >= config.max_helpers_per_type { break; }
-                if helpers.iter().filter(|h| h.ret_type == *ret_type).count() >= max_h { break; }
+                if replaced.contains(&(ret_type.clone(), j)) {
+                    continue;
+                }
+                if helpers.len() >= config.max_helpers_per_type {
+                    break;
+                }
+                if helpers.iter().filter(|h| h.ret_type == *ret_type).count() >= max_h {
+                    break;
+                }
 
                 // Skip identical expressions (no abstraction possible)
-                if exprs[i] == exprs[j] { continue; }
+                if exprs[i] == exprs[j] {
+                    continue;
+                }
 
                 let result = anti_unify(&exprs[i], &exprs[j]);
                 let (common, sigma_a, sigma_b) = match result {
@@ -387,7 +471,9 @@ pub(crate) fn discover_and_register_helpers(
                 }
 
                 let savings = compute_savings(&exprs[i], &exprs[j], &common, &sigma_a, &sigma_b);
-                if savings < config.min_savings { continue; }
+                if savings < config.min_savings {
+                    continue;
+                }
 
                 // 2026-07-29: Verify that the DIFFERENCES between expressions
                 // are only in CONSTANT values, not in variable/param references.
@@ -395,9 +481,13 @@ pub(crate) fn discover_and_register_helpers(
                 // parameter for each variable difference, which bloats the call
                 // and reduces the abstraction's value. Constants-as-params is
                 // fine (e.g., _h0(x, 1) for x+1).
-                let all_subs_const = sigma_a.values().chain(sigma_b.values())
+                let all_subs_const = sigma_a
+                    .values()
+                    .chain(sigma_b.values())
                     .all(|e| matches!(e, Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_)));
-                if !all_subs_const { continue; }
+                if !all_subs_const {
+                    continue;
+                }
 
                 // Step 3: Determine helper parameters.
                 // Parameters = (common's free vars) + (placeholder vars that are params)
@@ -414,24 +504,32 @@ pub(crate) fn discover_and_register_helpers(
                 let all_params: Vec<String> = {
                     let mut p = common_free_vars.clone();
                     for pv in &placeholder_vars {
-                        if !p.contains(pv) { p.push(pv.clone()); }
+                        if !p.contains(pv) {
+                            p.push(pv.clone());
+                        }
                     }
                     p
                 };
 
-                let param_types_resolved: Vec<String> = all_params.iter().map(|p| {
-                    // Try to find type from original param_names
-                    if let Some(idx) = param_names.iter().position(|n| n == p) {
-                        param_types.get(idx).cloned().unwrap_or_else(|| "Int".to_string())
-                    } else {
-                        // Placeholder — infer from substitution expressions
-                        if let Some(sub_expr) = sigma_a.get(p) {
-                            infer_return_type(sub_expr)
+                let param_types_resolved: Vec<String> = all_params
+                    .iter()
+                    .map(|p| {
+                        // Try to find type from original param_names
+                        if let Some(idx) = param_names.iter().position(|n| n == p) {
+                            param_types
+                                .get(idx)
+                                .cloned()
+                                .unwrap_or_else(|| "Int".to_string())
                         } else {
-                            "Int".to_string()
+                            // Placeholder — infer from substitution expressions
+                            if let Some(sub_expr) = sigma_a.get(p) {
+                                infer_return_type(sub_expr)
+                            } else {
+                                "Int".to_string()
+                            }
                         }
-                    }
-                }).collect();
+                    })
+                    .collect();
 
                 let name = format!("_h{}", *name_counter);
                 *name_counter += 1;
@@ -464,18 +562,36 @@ pub(crate) fn discover_and_register_helpers(
                 if !cache.helper_names.contains(&name) {
                     cache.helper_names.push(name.clone());
                 }
-                cache.helper_info.entry(name.clone()).or_insert_with(|| {
-                    (helper.params.clone(), helper.ret_type.clone())
-                });
+                cache
+                    .helper_info
+                    .entry(name.clone())
+                    .or_insert_with(|| (helper.params.clone(), helper.ret_type.clone()));
 
                 // Add the replacement calls to the LevelCache
                 match ret_type.as_str() {
-                    "Int" => { cache.int_exprs.push(call_a); cache.int_exprs.push(call_b); }
-                    "Float" => { cache.float_exprs.push(call_a); cache.float_exprs.push(call_b); }
-                    "Bool" => { cache.bool_exprs.push(call_a); cache.bool_exprs.push(call_b); }
+                    "Int" => {
+                        cache.int_exprs.push(call_a);
+                        cache.int_exprs.push(call_b);
+                    }
+                    "Float" => {
+                        cache.float_exprs.push(call_a);
+                        cache.float_exprs.push(call_b);
+                    }
+                    "Bool" => {
+                        cache.bool_exprs.push(call_a);
+                        cache.bool_exprs.push(call_b);
+                    }
                     _ => {
-                        cache.compound_exprs.entry(ret_type.clone()).or_default().push(call_a);
-                        cache.compound_exprs.entry(ret_type.clone()).or_default().push(call_b);
+                        cache
+                            .compound_exprs
+                            .entry(ret_type.clone())
+                            .or_default()
+                            .push(call_a);
+                        cache
+                            .compound_exprs
+                            .entry(ret_type.clone())
+                            .or_default()
+                            .push(call_b);
                     }
                 }
 
@@ -538,15 +654,18 @@ fn build_helper_call(
     sigma: &HashMap<String, Expr>,
     original: &Expr,
 ) -> Expr {
-    let args: Vec<Expr> = params.iter().map(|p| {
-        // If this param is a placeholder with a substitution, use the sub expression
-        if let Some(sub) = sigma.get(p) {
-            sub.clone()
-        } else {
-            // Otherwise it's a regular param — keep it as identifier
-            Expr::Identifier(p.clone())
-        }
-    }).collect();
+    let args: Vec<Expr> = params
+        .iter()
+        .map(|p| {
+            // If this param is a placeholder with a substitution, use the sub expression
+            if let Some(sub) = sigma.get(p) {
+                sub.clone()
+            } else {
+                // Otherwise it's a regular param — keep it as identifier
+                Expr::Identifier(p.clone())
+            }
+        })
+        .collect();
     Expr::Call(name.to_string(), args, None)
 }
 
@@ -554,7 +673,9 @@ fn build_helper_call(
 fn collect_placeholders(expr: &Expr, vars: &mut Vec<String>) {
     match expr {
         Expr::Identifier(name) if name.starts_with("_t") => {
-            if !vars.contains(name) { vars.push(name.clone()); }
+            if !vars.contains(name) {
+                vars.push(name.clone());
+            }
         }
         Expr::UnaryOp(_, inner) => collect_placeholders(inner, vars),
         Expr::BinaryOp(_, lhs, rhs) => {
@@ -564,15 +685,21 @@ fn collect_placeholders(expr: &Expr, vars: &mut Vec<String>) {
         Expr::If(cond, then, else_) => {
             collect_placeholders(cond, vars);
             collect_placeholders(then, vars);
-            if let Some(e) = else_ { collect_placeholders(e, vars); }
+            if let Some(e) = else_ {
+                collect_placeholders(e, vars);
+            }
         }
         Expr::Call(_, args, _) => {
-            for arg in args { collect_placeholders(arg, vars); }
+            for arg in args {
+                collect_placeholders(arg, vars);
+            }
         }
         Expr::Field(inner, _) => collect_placeholders(inner, vars),
         Expr::Match(scrut, arms) => {
             collect_placeholders(scrut, vars);
-            for arm in arms { collect_placeholders(&arm.body, vars); }
+            for arm in arms {
+                collect_placeholders(&arm.body, vars);
+            }
         }
         _ => {}
     }
@@ -581,11 +708,9 @@ fn collect_placeholders(expr: &Expr, vars: &mut Vec<String>) {
 // ── Garbage Collection ───────────────────────────────────────────────
 
 /// 2026-07-29: Garbage-collect unused helpers after each depth level.
-pub(crate) fn gc_helpers(
-    cache: &mut LevelCache,
-    helpers: &mut Vec<HelperFunction>,
-) {
-    let active: HashSet<String> = helpers.iter()
+pub(crate) fn gc_helpers(cache: &mut LevelCache, helpers: &mut Vec<HelperFunction>) {
+    let active: HashSet<String> = helpers
+        .iter()
         .filter(|h| h.use_count > 0)
         .map(|h| h.name.clone())
         .collect();
@@ -597,7 +722,9 @@ pub(crate) fn gc_helpers(
 
 /// 2026-07-29: Increment use counts for helpers referenced in candidates.
 pub fn count_helper_uses(helpers: &mut Vec<HelperFunction>, candidates: &[Expr]) {
-    for helper in helpers.iter_mut() { helper.use_count = 0; }
+    for helper in helpers.iter_mut() {
+        helper.use_count = 0;
+    }
     for candidate in candidates {
         count_uses_in_expr(candidate, helpers);
     }
@@ -618,15 +745,21 @@ fn count_uses_in_expr(expr: &Expr, helpers: &mut [HelperFunction]) {
         Expr::If(cond, then, else_) => {
             count_uses_in_expr(cond, helpers);
             count_uses_in_expr(then, helpers);
-            if let Some(e) = else_ { count_uses_in_expr(e, helpers); }
+            if let Some(e) = else_ {
+                count_uses_in_expr(e, helpers);
+            }
         }
         Expr::Call(_, args, _) => {
-            for arg in args { count_uses_in_expr(arg, helpers); }
+            for arg in args {
+                count_uses_in_expr(arg, helpers);
+            }
         }
         Expr::Field(inner, _) => count_uses_in_expr(inner, helpers),
         Expr::Match(scrut, arms) => {
             count_uses_in_expr(scrut, helpers);
-            for arm in arms { count_uses_in_expr(&arm.body, helpers); }
+            for arm in arms {
+                count_uses_in_expr(&arm.body, helpers);
+            }
         }
         _ => {}
     }
@@ -641,15 +774,24 @@ mod tests {
 
     fn empty_cache() -> LevelCache {
         LevelCache {
-            int_exprs: vec![], float_exprs: vec![], bool_exprs: vec![],
+            int_exprs: vec![],
+            float_exprs: vec![],
+            bool_exprs: vec![],
             compound_exprs: std::collections::HashMap::new(),
-            helper_names: vec![], helper_info: std::collections::HashMap::new(),
+            helper_names: vec![],
+            helper_info: std::collections::HashMap::new(),
         }
     }
 
-    fn int_var(name: &str) -> Expr { Expr::Identifier(name.to_string()) }
-    fn int_const(n: i64) -> Expr { Expr::Decimal(n) }
-    fn bool_const(b: bool) -> Expr { Expr::Bool(b) }
+    fn int_var(name: &str) -> Expr {
+        Expr::Identifier(name.to_string())
+    }
+    fn int_const(n: i64) -> Expr {
+        Expr::Decimal(n)
+    }
+    fn bool_const(b: bool) -> Expr {
+        Expr::Bool(b)
+    }
     fn binop(kind: BinaryOpKind, lhs: Expr, rhs: Expr) -> Expr {
         Expr::BinaryOp(kind, Box::new(lhs), Box::new(rhs))
     }
@@ -665,7 +807,10 @@ mod tests {
         let result = anti_unify(&expr, &expr);
         assert!(result.is_some());
         let (common, sigma_a, sigma_b) = result.unwrap();
-        assert_eq!(common, expr, "identical exprs should produce same anti-unifier");
+        assert_eq!(
+            common, expr,
+            "identical exprs should produce same anti-unifier"
+        );
         assert!(sigma_a.is_empty(), "no substitutions for identical");
         assert!(sigma_b.is_empty(), "no substitutions for identical");
     }
@@ -716,8 +861,16 @@ mod tests {
         // (x + 1) * (x + 2) and (x + 1) * (x + 3)
         let sub1 = binop(BinaryOpKind::Add, int_var("x"), int_const(2));
         let sub2 = binop(BinaryOpKind::Add, int_var("x"), int_const(3));
-        let e1 = binop(BinaryOpKind::Mul, binop(BinaryOpKind::Add, int_var("x"), int_const(1)), sub1);
-        let e2 = binop(BinaryOpKind::Mul, binop(BinaryOpKind::Add, int_var("x"), int_const(1)), sub2);
+        let e1 = binop(
+            BinaryOpKind::Mul,
+            binop(BinaryOpKind::Add, int_var("x"), int_const(1)),
+            sub1,
+        );
+        let e2 = binop(
+            BinaryOpKind::Mul,
+            binop(BinaryOpKind::Add, int_var("x"), int_const(1)),
+            sub2,
+        );
         // (x+1) is shared, (x+2)/(x+3) differ → should produce (x+1) * (x + _t0)
         let result = anti_unify(&e1, &e2);
         assert!(result.is_some());
@@ -751,8 +904,8 @@ mod tests {
 
     #[test]
     fn test_savings_positive() {
-        let e1 = binop(BinaryOpKind::Add, int_var("x"), int_const(1));  // size 3
-        let e2 = binop(BinaryOpKind::Add, int_var("x"), int_const(2));  // size 3
+        let e1 = binop(BinaryOpKind::Add, int_var("x"), int_const(1)); // size 3
+        let e2 = binop(BinaryOpKind::Add, int_var("x"), int_const(2)); // size 3
         let (common, sigma_a, sigma_b) = anti_unify(&e1, &e2).unwrap();
         let savings = compute_savings(&e1, &e2, &common, &sigma_a, &sigma_b);
         // common = x + _t0 (size 3), sigma_a: _t0→1 (size 1), sigma_b: _t0→2 (size 1)
@@ -772,14 +925,18 @@ mod tests {
 
     #[test]
     fn test_savings_negative_different_ops() {
-        let e1 = binop(BinaryOpKind::Add, int_var("x"), int_const(1));  // size 3
-        let e2 = binop(BinaryOpKind::Sub, int_var("x"), int_var("y"));  // size 3
+        let e1 = binop(BinaryOpKind::Add, int_var("x"), int_const(1)); // size 3
+        let e2 = binop(BinaryOpKind::Sub, int_var("x"), int_var("y")); // size 3
         let (common, sigma_a, sigma_b) = anti_unify(&e1, &e2).unwrap();
         let savings = compute_savings(&e1, &e2, &common, &sigma_a, &sigma_b);
         // Different ops → top-level placeholder. common = _t0 (size 1),
         // sigma_a: _t0→e1 (size 3), sigma_b: _t0→e2 (size 3)
         // savings = (3+3) - (1+3+3) = 6 - 7 = -1
-        assert!(savings < 0, "different ops should have negative savings: got {}", savings);
+        assert!(
+            savings < 0,
+            "different ops should have negative savings: got {}",
+            savings
+        );
     }
 
     // ── discover_and_register_helpers Tests ───────────────────────
@@ -789,7 +946,12 @@ mod tests {
         let mut cache = empty_cache();
         let mut counter = 0;
         let helpers = discover_and_register_helpers(
-            &mut cache, &[], &[], &DiscoverConfig::default(), &mut counter);
+            &mut cache,
+            &[],
+            &[],
+            &DiscoverConfig::default(),
+            &mut counter,
+        );
         assert!(helpers.is_empty(), "empty cache should produce no helpers");
     }
 
@@ -799,7 +961,12 @@ mod tests {
         cache.int_exprs.push(int_var("x"));
         let mut counter = 0;
         let helpers = discover_and_register_helpers(
-            &mut cache, &["x".into()], &["Int".into()], &DiscoverConfig::default(), &mut counter);
+            &mut cache,
+            &["x".into()],
+            &["Int".into()],
+            &DiscoverConfig::default(),
+            &mut counter,
+        );
         assert!(helpers.is_empty(), "single expr should produce no helpers");
     }
 
@@ -808,12 +975,16 @@ mod tests {
         let mut cache = empty_cache();
         // Use deeper expressions to get savings >= 2
         // (x+1)*y and (x+2)*y → common = (x+_t0)*y, savings = (5+5) - (5+1+1) = 3
-        let e1 = binop(BinaryOpKind::Mul,
+        let e1 = binop(
+            BinaryOpKind::Mul,
             binop(BinaryOpKind::Add, int_var("x"), int_const(1)),
-            int_var("y"));
-        let e2 = binop(BinaryOpKind::Mul,
+            int_var("y"),
+        );
+        let e2 = binop(
+            BinaryOpKind::Mul,
             binop(BinaryOpKind::Add, int_var("x"), int_const(2)),
-            int_var("y"));
+            int_var("y"),
+        );
         cache.int_exprs.push(e1);
         cache.int_exprs.push(e2);
         let mut counter = 0;
@@ -834,8 +1005,12 @@ mod tests {
         let mut cache = empty_cache();
         // x+1 and y-2 have different structures, so anti-unification
         // produces a top-level placeholder with negative savings.
-        cache.int_exprs.push(binop(BinaryOpKind::Add, int_var("x"), int_const(1)));
-        cache.int_exprs.push(binop(BinaryOpKind::Sub, int_var("y"), int_const(2)));
+        cache
+            .int_exprs
+            .push(binop(BinaryOpKind::Add, int_var("x"), int_const(1)));
+        cache
+            .int_exprs
+            .push(binop(BinaryOpKind::Sub, int_var("y"), int_const(2)));
         let mut counter = 0;
         let helpers = discover_and_register_helpers(
             &mut cache,
@@ -845,7 +1020,10 @@ mod tests {
             &mut counter,
         );
         // Savings should be negative → no helper
-        assert!(helpers.is_empty(), "no helper for structurally different exprs");
+        assert!(
+            helpers.is_empty(),
+            "no helper for structurally different exprs"
+        );
     }
 
     #[test]
@@ -853,12 +1031,16 @@ mod tests {
         let mut cache = empty_cache();
         // Use deeper expressions (savings >= 2):
         // (x+1)*y and (x+2)*y → common = (x+_t0)*y, savings = 3
-        let e1 = binop(BinaryOpKind::Mul,
+        let e1 = binop(
+            BinaryOpKind::Mul,
             binop(BinaryOpKind::Add, int_var("x"), int_const(1)),
-            int_var("y"));
-        let e2 = binop(BinaryOpKind::Mul,
+            int_var("y"),
+        );
+        let e2 = binop(
+            BinaryOpKind::Mul,
             binop(BinaryOpKind::Add, int_var("x"), int_const(2)),
-            int_var("y"));
+            int_var("y"),
+        );
         let e3 = int_var("x"); // third unrelated expression
         cache.int_exprs.push(e1);
         cache.int_exprs.push(e2);
@@ -876,9 +1058,15 @@ mod tests {
 
         // After replacement: 2 originals removed, 2 helper calls added
         // But e3 remains → total = 2 helper calls + e3 = 3
-        assert_eq!(cache.int_exprs.len(), before, "replaced 2 exprs with 2 calls + 1 original");
+        assert_eq!(
+            cache.int_exprs.len(),
+            before,
+            "replaced 2 exprs with 2 calls + 1 original"
+        );
         // The helper calls should be Expr::Call nodes
-        let call_count = cache.int_exprs.iter()
+        let call_count = cache
+            .int_exprs
+            .iter()
             .filter(|e| matches!(e, Expr::Call(_, _, _)))
             .count();
         assert!(call_count >= 1, "should have at least one replacement call");
@@ -888,15 +1076,29 @@ mod tests {
     fn test_discover_anti_unify_filters_by_savings() {
         let mut cache = empty_cache();
         // Two structurally equal expressions (x+1 and x+1) but we skip identical
-        cache.int_exprs.push(binop(BinaryOpKind::Add, int_var("x"), int_const(1)));
-        cache.int_exprs.push(binop(BinaryOpKind::Add, int_var("x"), int_const(1)));
+        cache
+            .int_exprs
+            .push(binop(BinaryOpKind::Add, int_var("x"), int_const(1)));
+        cache
+            .int_exprs
+            .push(binop(BinaryOpKind::Add, int_var("x"), int_const(1)));
         // With an intervening expression that differs
-        cache.int_exprs.push(binop(BinaryOpKind::Add, int_var("x"), int_const(3)));
+        cache
+            .int_exprs
+            .push(binop(BinaryOpKind::Add, int_var("x"), int_const(3)));
 
-        let strict = DiscoverConfig { min_savings: 10, ..Default::default() };
+        let strict = DiscoverConfig {
+            min_savings: 10,
+            ..Default::default()
+        };
         let mut counter = 0;
         let helpers = discover_and_register_helpers(
-            &mut cache, &["x".into()], &["Int".into()], &strict, &mut counter);
+            &mut cache,
+            &["x".into()],
+            &["Int".into()],
+            &strict,
+            &mut counter,
+        );
         // savings = (3+3) - (3+1+1) = 1 < 10 → no helpers
         assert!(helpers.is_empty(), "strict savings filter should reject");
     }
@@ -907,13 +1109,19 @@ mod tests {
     fn test_gc_unused_helper() {
         let mut cache = empty_cache();
         let mut helpers = vec![HelperFunction {
-            name: "_h0".to_string(), params: vec!["x".into()],
+            name: "_h0".to_string(),
+            params: vec!["x".into()],
             param_types: vec!["Int".into()],
             body: binop(BinaryOpKind::Add, int_var("x"), int_const(1)),
-            ret_type: "Int".to_string(), body_cost: 5, call_cost: 4, use_count: 0,
+            ret_type: "Int".to_string(),
+            body_cost: 5,
+            call_cost: 4,
+            use_count: 0,
         }];
         cache.helper_names.push("_h0".into());
-        cache.helper_info.insert("_h0".into(), (vec!["x".into()], "Int".into()));
+        cache
+            .helper_info
+            .insert("_h0".into(), (vec!["x".into()], "Int".into()));
 
         gc_helpers(&mut cache, &mut helpers);
 
@@ -926,13 +1134,19 @@ mod tests {
     fn test_gc_keeps_used() {
         let mut cache = empty_cache();
         let mut helpers = vec![HelperFunction {
-            name: "_h0".to_string(), params: vec!["x".into()],
+            name: "_h0".to_string(),
+            params: vec!["x".into()],
             param_types: vec!["Int".into()],
             body: binop(BinaryOpKind::Add, int_var("x"), int_const(1)),
-            ret_type: "Int".to_string(), body_cost: 5, call_cost: 4, use_count: 3,
+            ret_type: "Int".to_string(),
+            body_cost: 5,
+            call_cost: 4,
+            use_count: 3,
         }];
         cache.helper_names.push("_h0".into());
-        cache.helper_info.insert("_h0".into(), (vec!["x".into()], "Int".into()));
+        cache
+            .helper_info
+            .insert("_h0".into(), (vec!["x".into()], "Int".into()));
 
         gc_helpers(&mut cache, &mut helpers);
 

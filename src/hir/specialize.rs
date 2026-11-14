@@ -43,10 +43,7 @@ pub fn mangled_instantiation_name(name: &str, type_args: &[Type]) -> String {
 /// (declared param type vs concrete arg type), using the shared unifier.
 /// Returns `None` when a declared type param remains unbound — an under-
 /// constrained call is not silently specialized to the wrong type.
-pub fn bind_from_arguments(
-    c: &HirCallable,
-    arg_types: &[Type],
-) -> Option<HashMap<String, Type>> {
+pub fn bind_from_arguments(c: &HirCallable, arg_types: &[Type]) -> Option<HashMap<String, Type>> {
     if c.type_params.is_empty() || c.params.len() != arg_types.len() {
         return None;
     }
@@ -150,7 +147,9 @@ fn subst_output(o: &HirOutput, subst: &HashMap<String, Type>) -> HirOutput {
         HirOutput::Union(v) => HirOutput::Union(v.iter().map(|x| subst_output(x, subst)).collect()),
         HirOutput::Tuple(v) => HirOutput::Tuple(v.iter().map(|x| subst_output(x, subst)).collect()),
         HirOutput::Array(inner) => HirOutput::Array(Box::new(subst_output(inner, subst))),
-        HirOutput::Named(n, inner) => HirOutput::Named(n.clone(), Box::new(subst_output(inner, subst))),
+        HirOutput::Named(n, inner) => {
+            HirOutput::Named(n.clone(), Box::new(subst_output(inner, subst)))
+        }
     }
 }
 
@@ -243,9 +242,12 @@ fn subst_pattern(
     ids: &mut IdSupply,
 ) {
     match &mut p.kind {
-        HirPatternKind::Literal(e) | HirPatternKind::Range(e, _) | HirPatternKind::RangeInclusive(e, _) => {
+        HirPatternKind::Literal(e)
+        | HirPatternKind::Range(e, _)
+        | HirPatternKind::RangeInclusive(e, _) => {
             subst_expr(e, subst, renames, ids);
-            if let HirPatternKind::Range(_, r) | HirPatternKind::RangeInclusive(_, r) = &mut p.kind {
+            if let HirPatternKind::Range(_, r) | HirPatternKind::RangeInclusive(_, r) = &mut p.kind
+            {
                 subst_expr(r, subst, renames, ids);
             }
         }
@@ -323,7 +325,12 @@ fn subst_expr(
             subst_expr(a, subst, renames, ids);
             subst_expr(b, subst, renames, ids);
         }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             subst_expr(array, subst, renames, ids);
             for opt in [start, end, stride].into_iter().flatten() {
                 subst_expr(opt, subst, renames, ids);
@@ -338,7 +345,11 @@ fn subst_expr(
                 subst_expr(a, subst, renames, ids);
             }
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             subst_expr(condition, subst, renames, ids);
             subst_expr(then_branch, subst, renames, ids);
             if let Some(e) = else_branch {

@@ -21,7 +21,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::analysis::accel::AccelEntry;
 use crate::analysis::gpu_schedule::{
-    fusion_applies, ArrayMeta, ChainFusion, EdgeKind, Fusion, GpuSchedule,
+    ArrayMeta, ChainFusion, EdgeKind, Fusion, GpuSchedule, fusion_applies,
 };
 use crate::ast::BinaryOpKind;
 use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral};
@@ -859,9 +859,11 @@ accel node second [j < 64][j == 64] {
 "#;
         let meta = sizes(&[("a", 256, 4), ("b", 256, 4), ("c", 256, 4), ("d", 256, 4)]);
         let sched = parity(src, &meta, false);
-        assert!(sched
-            .independent
-            .contains(&("first".into(), "second".into())));
+        assert!(
+            sched
+                .independent
+                .contains(&("first".into(), "second".into()))
+        );
         assert!(sched.edges.is_empty(), "edges: {:?}", sched.edges);
     }
 

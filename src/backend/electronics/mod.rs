@@ -14,9 +14,9 @@
 
 pub mod routing;
 
-use std::collections::BTreeMap;
 use crate::analysis::electronics::{ComponentInstance, ElectronicsNetlist, TypeInfo};
 use crate::backend::capabilities::BackendCapabilities;
+use std::collections::BTreeMap;
 
 pub const CAPABILITIES: BackendCapabilities = BackendCapabilities {
     name: "electronics",
@@ -210,9 +210,8 @@ impl ElectronicsBackend {
         // 2026-09-21 (E14a): drive-intent failures — an intent that could
         // not complete, or completed ambiguously.
         if !netlist.intent_errors.is_empty() {
-            let mut errs = vec![
-                "cannot emit schematic: a drive intent could not be completed".to_string(),
-            ];
+            let mut errs =
+                vec!["cannot emit schematic: a drive intent could not be completed".to_string()];
             errs.extend(netlist.intent_errors.iter().map(|e| format!("  {}", e)));
             return Some(errs);
         }
@@ -234,9 +233,8 @@ impl ElectronicsBackend {
         // of a `spec Decouple` type without a bridging `spec Decoupler`
         // part on its rail.
         if !netlist.convention_errors.is_empty() {
-            let mut errs = vec![
-                "cannot emit schematic: the decoupling convention is violated".to_string(),
-            ];
+            let mut errs =
+                vec!["cannot emit schematic: the decoupling convention is violated".to_string()];
             errs.extend(netlist.convention_errors.iter().map(|e| format!("  {}", e)));
             return Some(errs);
         }
@@ -259,8 +257,7 @@ impl ElectronicsBackend {
         // 2026-09-24 (component laws): an invalid constitutive law cannot
         // prove physics.
         if !netlist.law_errors.is_empty() {
-            let mut errs =
-                vec!["cannot emit schematic: a component law is invalid".to_string()];
+            let mut errs = vec!["cannot emit schematic: a component law is invalid".to_string()];
             errs.extend(netlist.law_errors.iter().map(|e| format!("  {}", e)));
             return Some(errs);
         }
@@ -276,10 +273,15 @@ impl ElectronicsBackend {
         // over-voltage into rated pins, undeclared unrated pins, and
         // postcondition current bounds violated by derived physics.
         if !netlist.voltage.violations.is_empty() {
-            let mut errs = vec![
-                "cannot emit schematic: the electrical contracts are violated".to_string(),
-            ];
-            errs.extend(netlist.voltage.violations.iter().map(|v| format!("  {}", v)));
+            let mut errs =
+                vec!["cannot emit schematic: the electrical contracts are violated".to_string()];
+            errs.extend(
+                netlist
+                    .voltage
+                    .violations
+                    .iter()
+                    .map(|v| format!("  {}", v)),
+            );
             return Some(errs);
         }
         None
@@ -358,7 +360,11 @@ impl ElectronicsBackend {
             let cross: Vec<bool> = netlist
                 .nets
                 .iter()
-                .map(|net| net.pins.iter().any(|p| !members.contains(p.component.as_str())))
+                .map(|net| {
+                    net.pins
+                        .iter()
+                        .any(|p| !members.contains(p.component.as_str()))
+                })
                 .collect();
             let filename = format!("{}_{}.kicad_sch", stem, i);
             let mut sheet = String::new();
@@ -396,7 +402,10 @@ impl ElectronicsBackend {
             ));
         }
         master.push_str("  (sheet_instances\n");
-        master.push_str(&format!("    (path \"/{}\" (page \"1\"))\n", Self::uuid("sheet")));
+        master.push_str(&format!(
+            "    (path \"/{}\" (page \"1\"))\n",
+            Self::uuid("sheet")
+        ));
         for i in 0..n {
             master.push_str(&format!(
                 "    (path \"/{}\" (page \"{}\"))\n",
@@ -442,7 +451,11 @@ impl ElectronicsBackend {
         let mut pin_xy = Vec::new();
         for (idx, comp) in bank.iter().enumerate() {
             let (x, y) = (
-                if idx % 2 == 0 { PLACE_X_LEFT } else { PLACE_X_RIGHT },
+                if idx % 2 == 0 {
+                    PLACE_X_LEFT
+                } else {
+                    PLACE_X_RIGHT
+                },
                 PLACE_Y0 + idx as f64 * PLACE_PITCH,
             );
             let reference = refs.get(&comp.name).cloned().unwrap_or_default();
@@ -527,7 +540,9 @@ impl ElectronicsBackend {
             let symbol_pt = wiring.power_names[i].as_ref().and_then(|_| {
                 let mut sorted = pts.clone();
                 sorted.sort_by(|a, b| {
-                    a.1.partial_cmp(&b.1).unwrap().then(a.0.partial_cmp(&b.0).unwrap())
+                    a.1.partial_cmp(&b.1)
+                        .unwrap()
+                        .then(a.0.partial_cmp(&b.0).unwrap())
                 });
                 sorted.first().map(|&(x, y)| (x, y - 5.08))
             });
@@ -535,7 +550,13 @@ impl ElectronicsBackend {
                 pwr_no += 1;
                 Self::emit_power_symbol(
                     out,
-                    &PowerPlacement { name, net_index: i, pwr_no, sx, sy },
+                    &PowerPlacement {
+                        name,
+                        net_index: i,
+                        pwr_no,
+                        sx,
+                        sy,
+                    },
                 );
             }
             Self::emit_net(out, net, &pts, &label, symbol_pt);
@@ -570,8 +591,7 @@ impl ElectronicsBackend {
                     let info = inst_to_type
                         .get(p.component.as_str())
                         .and_then(|ty| netlist.type_info.get(*ty));
-                    let idx = info
-                        .and_then(|i| i.pins.iter().position(|(n, _)| n == &p.pin));
+                    let idx = info.and_then(|i| i.pins.iter().position(|(n, _)| n == &p.pin));
                     match (info, idx) {
                         (Some(i), Some(ix)) => i
                             .pin_classes
@@ -702,7 +722,11 @@ impl ElectronicsBackend {
         let refs = Self::reference_map(netlist, components);
         for (idx, comp) in components.iter().enumerate() {
             let (x, y) = (
-                if idx % 2 == 0 { PLACE_X_LEFT } else { PLACE_X_RIGHT },
+                if idx % 2 == 0 {
+                    PLACE_X_LEFT
+                } else {
+                    PLACE_X_RIGHT
+                },
                 PLACE_Y0 + idx as f64 * PLACE_PITCH,
             );
             let reference = refs.get(&comp.name).cloned().unwrap_or_default();
@@ -744,8 +768,18 @@ impl ElectronicsBackend {
         cp: &ComponentPlacement<'_>,
         props: &PlacementProps<'_>,
     ) {
-        let ComponentPlacement { comp, info, origin, reference } = *cp;
-        let PlacementProps { value, footprint, jlcpcn, unpop } = *props;
+        let ComponentPlacement {
+            comp,
+            info,
+            origin,
+            reference,
+        } = *cp;
+        let PlacementProps {
+            value,
+            footprint,
+            jlcpcn,
+            unpop,
+        } = *props;
         let (x, y) = origin;
         let h = Self::unit_height(&info.pins, &info.pin_classes);
         for (u, (_, members)) in info.unit_groups.iter().enumerate() {
@@ -785,14 +819,13 @@ impl ElectronicsBackend {
     /// is identical to the single-unit layout of the unit's own pins).
     /// `members` is the unit's pin indices into `pins` (declaration order);
     /// `idx` is the target pin's index into `pins`.
-    fn pin_offset_at(
-        pins: &[(String, u64)],
-        members: &[usize],
-        idx: usize,
-    ) -> (f64, f64) {
+    fn pin_offset_at(pins: &[(String, u64)], members: &[usize], idx: usize) -> (f64, f64) {
         let unit_pins: Vec<(String, u64)> = members.iter().map(|&i| pins[i].clone()).collect();
         let layout = pin_layout(&unit_pins);
-        let pos = members.iter().position(|&i| i == idx).expect("member present");
+        let pos = members
+            .iter()
+            .position(|&i| i == idx)
+            .expect("member present");
         let (x, y, _, _) = layout[pos];
         (x, y)
     }
@@ -831,8 +864,9 @@ impl ElectronicsBackend {
         for (i, net) in netlist.nets.iter().enumerate() {
             let mut pts: Vec<(f64, f64)> = Vec::new();
             for p in &net.pins {
-                if let Some(&(_, _, x, y)) =
-                    pin_xy.iter().find(|(c, pn, _, _)| c == &p.component && pn == &p.pin)
+                if let Some(&(_, _, x, y)) = pin_xy
+                    .iter()
+                    .find(|(c, pn, _, _)| c == &p.component && pn == &p.pin)
                 {
                     pts.push((x, y));
                 }
@@ -842,7 +876,9 @@ impl ElectronicsBackend {
                 // Topmost member, same sort emit_net applies.
                 let mut sorted = pts.clone();
                 sorted.sort_by(|a, b| {
-                    a.1.partial_cmp(&b.1).unwrap().then(a.0.partial_cmp(&b.0).unwrap())
+                    a.1.partial_cmp(&b.1)
+                        .unwrap()
+                        .then(a.0.partial_cmp(&b.0).unwrap())
                 });
                 sorted.first().map(|&(x, y)| (x, y - 5.08))
             });
@@ -852,7 +888,13 @@ impl ElectronicsBackend {
                 pwr_no += 1;
                 Self::emit_power_symbol(
                     out,
-                    &PowerPlacement { name, net_index: i, pwr_no, sx, sy },
+                    &PowerPlacement {
+                        name,
+                        net_index: i,
+                        pwr_no,
+                        sx,
+                        sy,
+                    },
                 );
             }
             Self::emit_net(out, net, &pts, &label, symbol_pt);
@@ -1008,7 +1050,10 @@ impl ElectronicsBackend {
         classes: &[crate::analysis::electronics::PinClassProps],
         unit_groups: &[(String, Vec<usize>)],
     ) {
-        out.push_str(&format!("    (symbol \"{}\" (in_bom yes) (on_board yes)\n", name));
+        out.push_str(&format!(
+            "    (symbol \"{}\" (in_bom yes) (on_board yes)\n",
+            name
+        ));
         out.push_str(&format!(
             "      (property \"Reference\" \"{}\" (at 0 5.08 0) (effects (font (size 1.27 1.27))))\n",
             reference
@@ -1060,8 +1105,7 @@ impl ElectronicsBackend {
         // 2026-09-21 (E12): the KiCad electrical pin type comes from the
         // pin's class fundamental (`spec KicadType`), resolved in analysis.
         // Unclassed pins default to `passive` — pre-E12 output unchanged.
-        let unit_pins: Vec<(String, u64)> =
-            members.iter().map(|&i| pins[i].clone()).collect();
+        let unit_pins: Vec<(String, u64)> = members.iter().map(|&i| pins[i].clone()).collect();
         let unit_classes: Vec<&crate::analysis::electronics::PinClassProps> =
             members.iter().map(|&i| &classes[i]).collect();
         for ((x, y, pname, number), cls) in
@@ -1095,7 +1139,10 @@ impl ElectronicsBackend {
         let y = p.y;
         out.push_str(&format!(
             "  (symbol (lib_id \"{}\") (at {} {} 0) (unit {})\n",
-            p.comp.type_name, coord(x), coord(y), p.unit
+            p.comp.type_name,
+            coord(x),
+            coord(y),
+            p.unit
         ));
         // 2026-09-22 (Slice B): an `unpop` part keeps its pads on the board
         // but is excluded from the BOM.
@@ -1104,7 +1151,10 @@ impl ElectronicsBackend {
         } else {
             out.push_str("    (in_bom yes) (on_board yes)\n");
         }
-        out.push_str(&format!("    (uuid \"{}\")\n", Self::uuid(&format!("inst:{}", p.comp.name))));
+        out.push_str(&format!(
+            "    (uuid \"{}\")\n",
+            Self::uuid(&format!("inst:{}", p.comp.name))
+        ));
         out.push_str(&format!(
             "    (property \"Reference\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27))))\n",
             p.reference,
@@ -1272,7 +1322,12 @@ impl ElectronicsBackend {
             let (c, s) = (part.rot.to_radians().cos(), part.rot.to_radians().sin());
             out.push_str(&format!("  (footprint \"{}\"\n", package));
             out.push_str("    (layer \"F.Cu\")\n");
-            out.push_str(&format!("    (at {} {} {})\n", coord(part.x), coord(part.y), part.rot));
+            out.push_str(&format!(
+                "    (at {} {} {})\n",
+                coord(part.x),
+                coord(part.y),
+                part.rot
+            ));
             out.push_str(&format!(
                 "    (fp_text reference \"{}\" (at 0 {}) (layer \"F.SilkS\"))\n",
                 reference,
@@ -1336,9 +1391,7 @@ impl ElectronicsBackend {
     }
 
     /// Pin → (net number, net name), from the derived nets.
-    fn pin_nets(
-        netlist: &ElectronicsNetlist,
-    ) -> BTreeMap<(String, String), (usize, String)> {
+    fn pin_nets(netlist: &ElectronicsNetlist) -> BTreeMap<(String, String), (usize, String)> {
         let mut map = BTreeMap::new();
         for (i, net) in netlist.nets.iter().enumerate() {
             for pin in &net.pins {
@@ -1406,7 +1459,11 @@ mod tests {
         let sch = ElectronicsBackend::generate(&nl).unwrap();
         assert_eq!(sch.matches("(pin power_in line").count(), 2, "vdd + p1");
         assert_eq!(sch.matches("(pin no_connect line").count(), 1, "prog");
-        assert_eq!(sch.matches("(pin passive line").count(), 2, "unclassed gnd pins");
+        assert_eq!(
+            sch.matches("(pin passive line").count(),
+            2,
+            "unclassed gnd pins"
+        );
     }
 
     #[test]
@@ -1512,10 +1569,18 @@ mod tests {
     fn emits_balanced_sexpr_with_components_and_wires() {
         let nl = netlist_of(LED_CIRCUIT);
         let sch = ElectronicsBackend::generate(&nl).unwrap();
-        assert_eq!(sch.matches('(').count(), sch.matches(')').count(), "balanced parens");
+        assert_eq!(
+            sch.matches('(').count(),
+            sch.matches(')').count(),
+            "balanced parens"
+        );
         assert!(sch.starts_with("(kicad_sch"));
         assert!(sch.contains("(lib_symbols"));
-        assert!(sch.contains("\"Resistor\"") && sch.contains("\"Led\"") && sch.contains("\"Connector\""));
+        assert!(
+            sch.contains("\"Resistor\"")
+                && sch.contains("\"Led\"")
+                && sch.contains("\"Connector\"")
+        );
         // 3 two-pin nets × 3 segments per hop = 9 wires.
         assert_eq!(sch.matches("(wire ").count(), 9);
         assert!(sch.contains("\"N1\"") && sch.contains("\"N3\""));
@@ -1525,7 +1590,13 @@ mod tests {
     fn reference_metadata_drives_designators() {
         let nl = netlist_of(LED_CIRCUIT);
         let sch = ElectronicsBackend::generate(&nl).unwrap();
-        assert!(sch.contains("\"J1\""), "connector ref missing. refs found: J-refs={:?}", sch.lines().filter(|l| l.contains("property \"Reference\"")).collect::<Vec<_>>());
+        assert!(
+            sch.contains("\"J1\""),
+            "connector ref missing. refs found: J-refs={:?}",
+            sch.lines()
+                .filter(|l| l.contains("property \"Reference\""))
+                .collect::<Vec<_>>()
+        );
         assert!(sch.contains("\"R1\""));
         assert!(sch.contains("\"D1\""));
     }
@@ -1581,10 +1652,9 @@ mod tests {
         //   2. label justify must be bare tokens — `(justify left bottom)`.
         //   3. the sheet_instances table is mandatory.
         let sch = ElectronicsBackend::generate(&netlist_of(LED_CIRCUIT)).unwrap();
-        let uuid_re = regex::Regex::new(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-        )
-        .unwrap();
+        let uuid_re =
+            regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+                .unwrap();
         let uuids: Vec<&str> = sch
             .match_indices("(uuid \"")
             .filter_map(|(i, _)| {
@@ -1593,12 +1663,21 @@ mod tests {
                 Some(&rest[..end])
             })
             .collect();
-        assert!(uuids.len() >= 3, "expected uuids on sheet+symbols+wires: {sch}");
+        assert!(
+            uuids.len() >= 3,
+            "expected uuids on sheet+symbols+wires: {sch}"
+        );
         for u in &uuids {
             assert!(uuid_re.is_match(u), "malformed uuid '{u}' in:\n{sch}");
         }
-        assert!(sch.contains("(sheet_instances\n    (path \"/\" (page \"1\"))\n  )"), "sheet_instances missing:\n{sch}");
-        assert!(sch.contains("(justify left bottom)"), "bare justify missing:\n{sch}");
+        assert!(
+            sch.contains("(sheet_instances\n    (path \"/\" (page \"1\"))\n  )"),
+            "sheet_instances missing:\n{sch}"
+        );
+        assert!(
+            sch.contains("(justify left bottom)"),
+            "bare justify missing:\n{sch}"
+        );
         assert!(
             !sch.contains("(justify (left bottom))"),
             "parenthesized justify must not appear:\n{sch}"
@@ -1625,7 +1704,10 @@ mod tests {
             { }
         "#;
         let sch = ElectronicsBackend::generate(&netlist_of(src)).unwrap();
-        assert!(sch.contains("(property \"Reference\" \"#PWR"), "expected a power symbol: {sch}");
+        assert!(
+            sch.contains("(property \"Reference\" \"#PWR"),
+            "expected a power symbol: {sch}"
+        );
         // The power-symbol Reference property must be bare `hide`, never
         // `hide yes` (KiCad 10 rejects the latter as a stray token).
         for line in sch.lines() {
@@ -1634,7 +1716,10 @@ mod tests {
                     line.contains("(effects (font (size 1.27 1.27)) hide)"),
                     "power Reference property must be bare 'hide': {line}"
                 );
-                assert!(!line.contains("hide yes"), "power Reference uses 'hide yes': {line}");
+                assert!(
+                    !line.contains("hide yes"),
+                    "power Reference uses 'hide yes': {line}"
+                );
             }
         }
     }
@@ -1660,11 +1745,17 @@ mod tests {
         "#;
         let table_bom = ElectronicsBackend::generate_bom(&netlist_of(table_src));
         let literal_bom = ElectronicsBackend::generate_bom(&netlist_of(literal_src));
-        assert_eq!(table_bom, literal_bom, "table BOM:\n{table_bom}\nliteral BOM:\n{literal_bom}");
+        assert_eq!(
+            table_bom, literal_bom,
+            "table BOM:\n{table_bom}\nliteral BOM:\n{literal_bom}"
+        );
         assert!(table_bom.contains("R1,100,,"), "{table_bom}");
         assert!(table_bom.contains("R4,470,,"), "{table_bom}");
         // Determinism: two runs of the same input are byte-identical.
-        assert_eq!(table_bom, ElectronicsBackend::generate_bom(&netlist_of(table_src)));
+        assert_eq!(
+            table_bom,
+            ElectronicsBackend::generate_bom(&netlist_of(table_src))
+        );
     }
 
     #[test]
@@ -1695,9 +1786,16 @@ mod tests {
         // The return is GND (class-derived); the supply nets have no derived
         // voltage here, so they keep their structural names.
         assert!(sch.contains("(symbol \"power:GND\" (power)"), "{sch}");
-        assert_eq!(sch.matches("(power)").count(), 2, "two power lib entries: {sch}");
+        assert_eq!(
+            sch.matches("(power)").count(),
+            2,
+            "two power lib entries: {sch}"
+        );
         assert!(sch.contains("(lib_id \"power:GND\")"), "{sch}");
-        assert!(sch.contains("\"#PWR01\"") && sch.contains("\"#PWR02\""), "{sch}");
+        assert!(
+            sch.contains("\"#PWR01\"") && sch.contains("\"#PWR02\""),
+            "{sch}"
+        );
         // The label is replaced by the symbol on rail nets.
         assert!(
             !sch.contains("(label \"GND\""),
@@ -1768,8 +1866,16 @@ mod tests {
         "#;
         let nl = netlist_of(src);
         let err = ElectronicsBackend::generate(&nl).unwrap_err();
-        assert!(err[0].contains("electrical contracts are violated"), "{}", err[0]);
-        assert!(err.iter().any(|e| e.contains("tolerates only 3.3")), "{:?}", err);
+        assert!(
+            err[0].contains("electrical contracts are violated"),
+            "{}",
+            err[0]
+        );
+        assert!(
+            err.iter().any(|e| e.contains("tolerates only 3.3")),
+            "{:?}",
+            err
+        );
     }
 
     #[test]
@@ -1806,8 +1912,14 @@ mod tests {
         let nl = netlist_of(src);
         assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
         let sch = ElectronicsBackend::generate(&nl).unwrap();
-        assert!(sch.contains("\"GND\""), "a return-class net must label GND: {sch}");
-        assert!(sch.contains("\"V3.3\""), "a 3.3V driven supply net must label V3.3: {sch}");
+        assert!(
+            sch.contains("\"GND\""),
+            "a return-class net must label GND: {sch}"
+        );
+        assert!(
+            sch.contains("\"V3.3\""),
+            "a 3.3V driven supply net must label V3.3: {sch}"
+        );
     }
 
     #[test]
@@ -1830,7 +1942,10 @@ mod tests {
             .lines()
             .filter(|l| l.contains("lib_id \"Resistor\""))
             .collect::<Vec<_>>();
-        assert!(!r1_inst.is_empty(), "the resistor instance must emit: {sch}");
+        assert!(
+            !r1_inst.is_empty(),
+            "the resistor instance must emit: {sch}"
+        );
         assert!(
             sch.contains("(in_bom no) (on_board yes)"),
             "unpop part must be in_bom no: {sch}"
@@ -1933,15 +2048,31 @@ mod tests {
 
     /// Every hard error vector empty — the Slice 2 gate's zero-error rule.
     fn assert_clean(nl: &ElectronicsNetlist, label: &str) {
-        assert!(nl.intent_errors.is_empty(), "{label} intent: {:?}", nl.intent_errors);
-        assert!(nl.class_errors.is_empty(), "{label} class: {:?}", nl.class_errors);
+        assert!(
+            nl.intent_errors.is_empty(),
+            "{label} intent: {:?}",
+            nl.intent_errors
+        );
+        assert!(
+            nl.class_errors.is_empty(),
+            "{label} class: {:?}",
+            nl.class_errors
+        );
         assert!(
             nl.convention_errors.is_empty(),
             "{label} convention: {:?}",
             nl.convention_errors
         );
-        assert!(nl.budget_errors.is_empty(), "{label} budget: {:?}", nl.budget_errors);
-        assert!(nl.dangling.is_empty(), "{label} dangling: {:?}", nl.dangling);
+        assert!(
+            nl.budget_errors.is_empty(),
+            "{label} budget: {:?}",
+            nl.budget_errors
+        );
+        assert!(
+            nl.dangling.is_empty(),
+            "{label} dangling: {:?}",
+            nl.dangling
+        );
         assert!(
             nl.contention_errors.is_empty(),
             "{label} contention: {:?}",
@@ -2044,12 +2175,20 @@ mod tests {
         let nl = derive_netlist(&fixture_items(&fx));
         let joined = nl.intent_errors.join("\n");
         assert!(
-            nl.intent_errors.iter().any(|e| e.contains("en") && e.contains("ambiguous")),
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("en") && e.contains("ambiguous")),
             "ambiguous en intent expected: {:?}",
             nl.intent_errors
         );
-        assert!(joined.contains("u2.gpio[0]"), "candidates enumerated: {joined}");
-        assert!(joined.contains("u2.gpio[1]"), "candidates enumerated: {joined}");
+        assert!(
+            joined.contains("u2.gpio[0]"),
+            "candidates enumerated: {joined}"
+        );
+        assert!(
+            joined.contains("u2.gpio[1]"),
+            "candidates enumerated: {joined}"
+        );
     }
 
     #[test]
@@ -2184,7 +2323,11 @@ mod tests {
             .iter()
             .filter(|p| p.contains("pull-up forced"))
             .count();
-        assert_eq!(forced, 2, "one pull-up per obligation: {:?}", nl.intent_proofs);
+        assert_eq!(
+            forced, 2,
+            "one pull-up per obligation: {:?}",
+            nl.intent_proofs
+        );
         assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
     }
 
@@ -2209,7 +2352,10 @@ mod tests {
         let nl = netlist_of(src);
         assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
         assert_eq!(
-            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            nl.intent_proofs
+                .iter()
+                .filter(|p| p.contains("pull-up forced"))
+                .count(),
             1,
             "one obligation → one deterministic pull-up: {:?}",
             nl.intent_proofs
@@ -2245,7 +2391,10 @@ mod tests {
         let nl = netlist_of(src);
         assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
         assert_eq!(
-            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            nl.intent_proofs
+                .iter()
+                .filter(|p| p.contains("pull-up forced"))
+                .count(),
             3,
             "every obligation gets a pull-up: {:?}",
             nl.intent_proofs
@@ -2367,7 +2516,7 @@ mod tests {
                 u1.gpio.voltage <= 0.3V;
             }
         "#;
-let nl = netlist_of(src);
+        let nl = netlist_of(src);
         assert!(
             nl.intent_errors
                 .iter()
@@ -2401,7 +2550,10 @@ let nl = netlist_of(src);
         let nl = netlist_of(src);
         assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
         assert_eq!(
-            nl.intent_proofs.iter().filter(|p| p.contains("drive assignment")).count(),
+            nl.intent_proofs
+                .iter()
+                .filter(|p| p.contains("drive assignment"))
+                .count(),
             2,
             "both intents must resolve: {:?}",
             nl.intent_proofs
@@ -2488,12 +2640,17 @@ let nl = netlist_of(src);
         let nl = netlist_of(src);
         assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
         assert!(
-            nl.intent_proofs.iter().any(|p| p.contains("bus assembled") && p.contains("u1") && p.contains("u2")),
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("bus assembled") && p.contains("u1") && p.contains("u2")),
             "{:?}",
             nl.intent_proofs
         );
         assert_eq!(
-            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            nl.intent_proofs
+                .iter()
+                .filter(|p| p.contains("pull-up forced"))
+                .count(),
             1,
             "one bus → one pull-up: {:?}",
             nl.intent_proofs
@@ -2526,7 +2683,10 @@ let nl = netlist_of(src);
             nl.intent_proofs
         );
         assert_eq!(
-            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            nl.intent_proofs
+                .iter()
+                .filter(|p| p.contains("pull-up forced"))
+                .count(),
             2,
             "{:?}",
             nl.intent_proofs
@@ -2562,7 +2722,10 @@ let nl = netlist_of(src);
             nl.intent_proofs
         );
         assert_eq!(
-            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            nl.intent_proofs
+                .iter()
+                .filter(|p| p.contains("pull-up forced"))
+                .count(),
             2,
             "{:?}",
             nl.intent_proofs
@@ -2598,7 +2761,10 @@ let nl = netlist_of(src);
             nl.intent_proofs
         );
         assert_eq!(
-            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            nl.intent_proofs
+                .iter()
+                .filter(|p| p.contains("pull-up forced"))
+                .count(),
             2,
             "{:?}",
             nl.intent_proofs
@@ -2629,14 +2795,8 @@ let nl = netlist_of(src);
         );
         let footprints = board.matches("(footprint \"").count();
         assert!(footprints >= 14, "one per part: {footprints}");
-        assert!(
-            board.contains("(pad \"1\" smd rect"),
-            "pads wired: {board}"
-        );
-        assert!(
-            board.contains("(segment (start"),
-            "routed copper: {board}"
-        );
+        assert!(board.contains("(pad \"1\" smd rect"), "pads wired: {board}");
+        assert!(board.contains("(segment (start"), "routed copper: {board}");
         // Determinism: an independent derivation is byte-identical (the
         // routed segments are part of that — routing is deterministic).
         let nl2 = derive_netlist(&fixture_items(gate_fixture()));
@@ -2658,24 +2818,20 @@ let nl = netlist_of(src);
         let items = fixture_items(&fx);
         let nl = derive_netlist(&items);
         let err = ElectronicsBackend::generate_board(&nl, &items).unwrap_err();
-        assert!(
-            err.iter().any(|e| e.contains("does not fit")),
-            "{:?}",
-            err
-        );
+        assert!(err.iter().any(|e| e.contains("does not fit")), "{:?}", err);
     }
 
     #[test]
     fn fab_unknown_package_is_rejected() {
-        let fx = mutate(gate_fixture(), "package: \"0603\"", "package: \"not-a-package\"");
+        let fx = mutate(
+            gate_fixture(),
+            "package: \"0603\"",
+            "package: \"not-a-package\"",
+        );
         let items = fixture_items(&fx);
         let nl = derive_netlist(&items);
         let err = ElectronicsBackend::generate_board(&nl, &items).unwrap_err();
-        assert!(
-            err.iter().any(|e| e.contains("no footprint")),
-            "{:?}",
-            err
-        );
+        assert!(err.iter().any(|e| e.contains("no footprint")), "{:?}", err);
     }
 
     #[test]
@@ -2712,22 +2868,32 @@ let nl = netlist_of(src);
         // Two unit blocks in the lib symbol (body + pins per unit).
         let pat_body_a = format!("(symbol \"{}\"\n", "OpAmp_0_1");
         let pat_body_b = format!("(symbol \"{}\"\n", "OpAmp_1_1");
-        let pat_pin_a  = format!("(symbol \"{}\"\n", "OpAmp_0_2");
-        let pat_pin_b  = format!("(symbol \"{}\"\n", "OpAmp_1_2");
+        let pat_pin_a = format!("(symbol \"{}\"\n", "OpAmp_0_2");
+        let pat_pin_b = format!("(symbol \"{}\"\n", "OpAmp_1_2");
         assert!(out.contains(&pat_body_a), "unit-A body block missing");
         assert!(out.contains(&pat_body_b), "unit-B body block missing");
-        assert!(out.contains(&pat_pin_a),  "unit-A pin block missing");
-        assert!(out.contains(&pat_pin_b),  "unit-B pin block missing");
+        assert!(out.contains(&pat_pin_a), "unit-A pin block missing");
+        assert!(out.contains(&pat_pin_b), "unit-B pin block missing");
         // Two placement instances (unit 1 + unit 2).
         let placements = out.matches("(lib_id \"OpAmp\")").count();
-        assert!(placements >= 2, "expected >=2 OpAmp placements, got {}", placements);
+        assert!(
+            placements >= 2,
+            "expected >=2 OpAmp placements, got {}",
+            placements
+        );
         assert!(out.contains("(unit 2)"), "unit-2 placement missing");
         // Unit-1 instance carries the footprint.
         assert!(out.contains("(property \"Footprint\""), "footprint missing");
         // Unit-2 reference appends the unit name.
-        let refs: Vec<&str> = out.lines().filter(|l| l.contains("(reference \"U1")).collect();
-        assert!(refs.iter().any(|r| r.contains("U1A") || r.contains("U1B")),
-            "unit-2 reference missing: {:?}", refs);
+        let refs: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains("(reference \"U1"))
+            .collect();
+        assert!(
+            refs.iter().any(|r| r.contains("U1A") || r.contains("U1B")),
+            "unit-2 reference missing: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -2752,13 +2918,22 @@ let nl = netlist_of(src);
         let out = ElectronicsBackend::generate(&nl).unwrap();
         // The original block suffixes — not `_0_2`/`_1_2`.
         let pat_body = format!("(symbol \"{}\"\n", "Resistor_0_1");
-        let pat_pin  = format!("(symbol \"{}\"\n", "Resistor_1_1");
+        let pat_pin = format!("(symbol \"{}\"\n", "Resistor_1_1");
         assert!(out.contains(&pat_body), "body block wrong");
-        assert!(out.contains(&pat_pin),  "pin block wrong");
-        assert!(!out.contains("_0_2") && !out.contains("_1_2"), "multi-unit suffix leaked");
+        assert!(out.contains(&pat_pin), "pin block wrong");
+        assert!(
+            !out.contains("_0_2") && !out.contains("_1_2"),
+            "multi-unit suffix leaked"
+        );
         // One placement instance per component, all (unit 1).
-        assert!(out.matches("(unit 1)").count() >= 3, "unit-1 instances missing");
-        assert!(!out.contains("(unit 2)"), "unit-2 instance on a single-unit type");
+        assert!(
+            out.matches("(unit 1)").count() >= 3,
+            "unit-1 instances missing"
+        );
+        assert!(
+            !out.contains("(unit 2)"),
+            "unit-2 instance on a single-unit type"
+        );
     }
 
     #[test]
@@ -2804,8 +2979,14 @@ let nl = netlist_of(src);
         let paths = master.matches("(path \"/").count();
         assert_eq!(paths, 10, "master sheet_instances path count");
         // Master carries no instances or lib symbols.
-        assert!(!master.contains("(symbol (lib_id"), "master must not place instances");
-        assert!(!master.contains("(lib_symbols"), "master must not define symbols");
+        assert!(
+            !master.contains("(symbol (lib_id"),
+            "master must not place instances"
+        );
+        assert!(
+            !master.contains("(lib_symbols"),
+            "master must not define symbols"
+        );
     }
 
     #[test]
@@ -2814,13 +2995,25 @@ let nl = netlist_of(src);
         let files = ElectronicsBackend::generate_hierarchical(&nl, "tile_512").unwrap();
         for (name, content) in files.iter().skip(1) {
             // Each child defines the symbols it places and has a sheet table.
-            assert!(content.contains("(lib_symbols"), "{name} missing lib_symbols");
-            assert!(content.contains("(sheet_instances"), "{name} missing sheet_instances");
+            assert!(
+                content.contains("(lib_symbols"),
+                "{name} missing lib_symbols"
+            );
+            assert!(
+                content.contains("(sheet_instances"),
+                "{name} missing sheet_instances"
+            );
             // A child places no sub-sheets.
-            assert!(!content.contains("(sheet \""), "{name} must not reference sub-sheets");
+            assert!(
+                !content.contains("(sheet \""),
+                "{name} must not reference sub-sheets"
+            );
             // The two rail nets are cross-sheet: every child carries global
             // labels for both rails (each in-bank pin on a rail gets one).
-            assert!(content.contains("(global_label \""), "{name} missing global labels");
+            assert!(
+                content.contains("(global_label \""),
+                "{name} missing global labels"
+            );
         }
     }
 
@@ -2834,7 +3027,10 @@ let nl = netlist_of(src);
         let files = ElectronicsBackend::generate_hierarchical(&nl, "usb_sensor").unwrap();
         assert_eq!(files.len(), 1, "small board is one sheet");
         assert_eq!(files[0].0, "usb_sensor.kicad_sch");
-        assert_eq!(files[0].1, single, "small board must match generate() byte-for-byte");
+        assert_eq!(
+            files[0].1, single,
+            "small board must match generate() byte-for-byte"
+        );
     }
 
     #[test]

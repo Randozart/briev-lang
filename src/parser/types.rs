@@ -16,7 +16,9 @@ impl<'a> Parser<'a> {
         // `dyn` is contextual (no Token); recognized only in type-prefix
         // position, so identifiers named dyn elsewhere are untouched.
         if self.check_identifier("dyn") {
-            if let Some(Token::Identifier(trait_name)) = self.tokens.get(self.pos + 1).map(|(t, _)| t) {
+            if let Some(Token::Identifier(trait_name)) =
+                self.tokens.get(self.pos + 1).map(|(t, _)| t)
+            {
                 let trait_name = trait_name.clone();
                 self.pos += 2;
                 return Ok(Type::Dyn(Box::new(Type::Custom(trait_name))));
@@ -114,7 +116,10 @@ impl<'a> Parser<'a> {
                 if !self.eat_type_close() {
                     return self.error_at_current("expected '>' after the protocol variant");
                 }
-                return Ok(Type::Applied(prim_name.to_string(), vec![Type::Custom(variant)]));
+                return Ok(Type::Applied(
+                    prim_name.to_string(),
+                    vec![Type::Custom(variant)],
+                ));
             }
         }
         // 2026-08-05 (Phase 3): free-form dot-extension type suffixes
@@ -133,8 +138,13 @@ impl<'a> Parser<'a> {
             if matches!(self.peek_next(), Some(Token::Integer(_))) {
                 self.pos += 1; // consume LBracket
                 let size = match self.peek() {
-                    Some(&Token::Integer(n)) => { self.pos += 1; n as usize }
-                    _ => { return self.error_at_current("expected array size (integer)"); }
+                    Some(&Token::Integer(n)) => {
+                        self.pos += 1;
+                        n as usize
+                    }
+                    _ => {
+                        return self.error_at_current("expected array size (integer)");
+                    }
                 };
                 self.expect(Token::RBracket)?;
                 dims.push(Dimension::Anonymous(size));
@@ -266,8 +276,13 @@ impl<'a> Parser<'a> {
             if matches!(self.peek_next(), Some(Token::Integer(_))) {
                 self.pos += 1; // consume LBracket
                 let size = match self.peek() {
-                    Some(&Token::Integer(n)) => { self.pos += 1; n as usize }
-                    _ => { return self.error_at_current("expected array size (integer)"); }
+                    Some(&Token::Integer(n)) => {
+                        self.pos += 1;
+                        n as usize
+                    }
+                    _ => {
+                        return self.error_at_current("expected array size (integer)");
+                    }
                 };
                 self.expect(Token::RBracket)?;
                 dims.push(Dimension::Anonymous(size));
@@ -384,9 +399,8 @@ mod tests {
     use logos::Logos;
 
     fn parse_type_str(src: &str) -> Type {
-        let tokens: Vec<(Token, std::ops::Range<usize>)> = Token::lexer(src)
-            .map(|r| (r.unwrap(), 0..0))
-            .collect();
+        let tokens: Vec<(Token, std::ops::Range<usize>)> =
+            Token::lexer(src).map(|r| (r.unwrap(), 0..0)).collect();
         let mut p = Parser::new(tokens, src);
         p.parse_type().expect("type should parse")
     }
@@ -394,7 +408,9 @@ mod tests {
     #[test]
     fn fn_type_annotation() {
         let t = parse_type_str("fn(Int) -> Int");
-        assert!(matches!(t, Type::Function(params, ret) if params.len() == 1 && matches!(params[0], Type::Custom(ref n) if n == "Int") && matches!(*ret, Type::Custom(ref n) if n == "Int")));
+        assert!(
+            matches!(t, Type::Function(params, ret) if params.len() == 1 && matches!(params[0], Type::Custom(ref n) if n == "Int") && matches!(*ret, Type::Custom(ref n) if n == "Int"))
+        );
     }
 
     #[test]
@@ -430,12 +446,16 @@ mod tests {
     #[test]
     fn fn_type_void_return_defaults() {
         let t = parse_type_str("fn(Int)");
-        assert!(matches!(t, Type::Function(params, ret) if params.len() == 1 && matches!(*ret, Type::Void)));
+        assert!(
+            matches!(t, Type::Function(params, ret) if params.len() == 1 && matches!(*ret, Type::Void))
+        );
     }
 
     #[test]
     fn fn_type_multi_param() {
         let t = parse_type_str("fn(Int, Float) -> Bool");
-        assert!(matches!(t, Type::Function(params, ret) if params.len() == 2 && matches!(*ret, Type::Custom(ref n) if n == "Bool")));
+        assert!(
+            matches!(t, Type::Function(params, ret) if params.len() == 2 && matches!(*ret, Type::Custom(ref n) if n == "Bool"))
+        );
     }
 }

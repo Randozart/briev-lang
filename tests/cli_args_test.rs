@@ -118,33 +118,22 @@ node main [n == 0][n == 1] {
 /// wins, which is why `build --verbose --name world` → "build".
 #[test]
 fn entry_cmd_greet_verbose_name() {
-    let (out, code) = build_link_run_argv(
-        "greet",
-        GREET,
-        &["greet", "--verbose", "--name", "world"],
-    );
+    let (out, code) =
+        build_link_run_argv("greet", GREET, &["greet", "--verbose", "--name", "world"]);
     assert_eq!(code, 0, "greet probe exit code");
     assert_eq!(out, "verbose\nworld\n", "golden stdout");
 }
 
 #[test]
 fn entry_cmd_greet_quiet() {
-    let (out, code) = build_link_run_argv(
-        "greet_quiet",
-        GREET,
-        &["greet", "--name", "world"],
-    );
+    let (out, code) = build_link_run_argv("greet_quiet", GREET, &["greet", "--name", "world"]);
     assert_eq!(code, 0, "greet probe (no --verbose) exit code");
     assert_eq!(out, "world\n", "verbose branch silent, name value printed");
 }
 
 #[test]
 fn entry_cmd_wrong_command_skips_node() {
-    let (out, code) = build_link_run_argv(
-        "wrong_cmd",
-        GREET,
-        &["run", "--name", "world"],
-    );
+    let (out, code) = build_link_run_argv("wrong_cmd", GREET, &["run", "--name", "world"]);
     assert_eq!(code, 0, "non-matching entry_cmd must exit cleanly");
     assert_eq!(out, "", "greet body never fires");
 }

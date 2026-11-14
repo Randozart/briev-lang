@@ -44,9 +44,7 @@ pub struct EnumLoweringEntry {
 impl EnumLoweringEntry {
     pub fn variant(&self, name: &str) -> Option<&EnumVariantLowering> {
         let bare = name.rsplit("::").next().unwrap_or(name);
-        self.variants
-            .iter()
-            .find(|variant| variant.name == bare)
+        self.variants.iter().find(|variant| variant.name == bare)
     }
 
     pub fn variant_at(&self, tag: usize) -> Option<&EnumVariantLowering> {
@@ -131,9 +129,7 @@ impl EnumLoweringPlan {
     /// the tag the legacy constructor map selected.
     pub fn agrees_with_tag(&self, ty: &Type, tag: usize, name: &str) -> bool {
         match self.variant_at(ty, tag) {
-            Some(variant) => {
-                variant.name == name.rsplit("::").next().unwrap_or(name)
-            }
+            Some(variant) => variant.name == name.rsplit("::").next().unwrap_or(name),
             None => true,
         }
     }
@@ -156,7 +152,10 @@ fn validate_entry(entry: &EnumLoweringEntry) -> Result<(), String> {
 
 fn validate_lengths(entry: &EnumLoweringEntry) -> Result<(), String> {
     if entry.variants.len() != entry.layout.variant_payload_words.len() {
-        return Err(format!("{:?}: variant/payload width length mismatch", entry.ty));
+        return Err(format!(
+            "{:?}: variant/payload width length mismatch",
+            entry.ty
+        ));
     }
     if entry.variants.len() != entry.layout.variant_payload_inline.len() {
         return Err(format!("{:?}: variant/inline length mismatch", entry.ty));
@@ -190,8 +189,7 @@ fn validate_variants(entry: &EnumLoweringEntry) -> Result<(), String> {
                 entry.ty, variant.name
             ));
         }
-        if variant.payload_inline_object
-            != entry.layout.variant_payload_inline_object[expected_tag]
+        if variant.payload_inline_object != entry.layout.variant_payload_inline_object[expected_tag]
         {
             return Err(format!(
                 "{:?}: variant {} inline-object flag disagrees with layout",
@@ -231,10 +229,7 @@ fn build_variant_ctor(
     out
 }
 
-fn add_variant_ctors(
-    definition: &EnumDefinitionPlan,
-    out: &mut BTreeMap<String, (String, usize)>,
-) {
+fn add_variant_ctors(definition: &EnumDefinitionPlan, out: &mut BTreeMap<String, (String, usize)>) {
     for (tag, variant) in definition.variants.iter().enumerate() {
         out.insert(variant.name.clone(), (definition.name.clone(), tag));
         out.insert(

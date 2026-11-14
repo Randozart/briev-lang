@@ -18,9 +18,9 @@
 //! to `Expr`, `Statement`, `Pattern`, `MatchArm`, or `StmtMatchArm` fails
 //! to compile until it is visited, so coverage cannot rot silently.
 
+use super::Expr;
 use super::expr::{ChainSegment, DerivationBlock, DerivationExample, MatchArm, Pattern};
 use super::top::{Contract, Definition, Statement, StmtMatchArm, TopLevel, Transaction};
-use super::Expr;
 
 /// Visit every `Expr` node in `e`, including `e` itself.
 pub fn walk_expr<F: FnMut(&Expr)>(e: &Expr, f: &mut F) {
@@ -67,7 +67,12 @@ pub fn walk_expr<F: FnMut(&Expr)>(e: &Expr, f: &mut F) {
             walk_expr(a, f);
             walk_expr(b, f);
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             walk_expr(array, f);
             for part in [start, end, stride].into_iter().flatten() {
                 walk_expr(part, f);
@@ -106,10 +111,9 @@ pub fn walk_expr<F: FnMut(&Expr)>(e: &Expr, f: &mut F) {
             walk_expr(a, f);
             walk_expr(b, f);
         }
-        Expr::Deref(inner)
-        | Expr::AddrOf(inner)
-        | Expr::Consume(inner)
-        | Expr::Await(inner) => walk_expr(inner, f),
+        Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) | Expr::Await(inner) => {
+            walk_expr(inner, f)
+        }
         Expr::Block(stmts) => walk_stmts(stmts, f),
         Expr::DerivationBlock(block) => walk_derivation(block, f),
     }
@@ -130,7 +134,11 @@ pub fn walk_stmts<F: FnMut(&Expr)>(stmts: &[Statement], f: &mut F) {
                 walk_expr(lhs, f);
                 walk_expr(rhs, f);
             }
-            Statement::ArrowAssign { target, value, consume: _ } => {
+            Statement::ArrowAssign {
+                target,
+                value,
+                consume: _,
+            } => {
                 if let Some(t) = target {
                     walk_expr(t, f);
                 }

@@ -21,7 +21,7 @@
 // or embeds the Work.
 
 use crate::ast::{Expr, Import, ImportKind, StageKind, TopLevel, Type};
-use crate::conformance::{classify, SourceKind};
+use crate::conformance::{SourceKind, classify};
 use crate::dbriev::v2 as dbriev_v2;
 use crate::lexer::Token;
 use logos::Logos;
@@ -339,7 +339,11 @@ impl ImportResolver {
     pub fn new() -> Self {
         ImportResolver {
             loaded_modules: HashMap::new(),
-            search_paths: vec![PathBuf::from("lib"), PathBuf::from("imports"), PathBuf::from(".")],
+            search_paths: vec![
+                PathBuf::from("lib"),
+                PathBuf::from("imports"),
+                PathBuf::from("."),
+            ],
             root_path: PathBuf::from("."),
             stdlib_path: None,
             board_name: None,
@@ -372,7 +376,9 @@ impl ImportResolver {
     /// 2026-07-16: P3 — Resolve a path relative to the stdlib root.
     /// Searches the same paths as resolve_stdlib_root().
     pub fn resolve_stdlib_relative_path(&self, relative: &str) -> Option<PathBuf> {
-        self.resolve_stdlib_root().map(|root| root.join(relative)).filter(|p| p.exists())
+        self.resolve_stdlib_root()
+            .map(|root| root.join(relative))
+            .filter(|p| p.exists())
     }
 
     /// Resolve the stdlib root path, trying multiple sources in order:
@@ -616,9 +622,7 @@ impl ImportResolver {
         let mut current = source_dir.to_path_buf();
         while let Some(parent) = current.parent() {
             if parent.join("Cargo.toml").exists() {
-                let lib_candidate = parent
-                    .join("lib")
-                    .join(format!("{}{}", module_path, ext));
+                let lib_candidate = parent.join("lib").join(format!("{}{}", module_path, ext));
                 if lib_candidate.exists() {
                     return Some(lib_candidate);
                 }
@@ -698,7 +702,9 @@ impl ImportResolver {
         //   lib/boards/<board>/registers.dbvl   — flat register detail
         // The old single-file `boards/<board>.dbvl` is obsolete. Look for the
         // addresses table first; fall back to the legacy single file.
-        let addresses_path = self.search_paths.iter()
+        let addresses_path = self
+            .search_paths
+            .iter()
             .map(|p| p.join("boards").join(board).join("addresses.dbvl"))
             .chain(std::iter::once(PathBuf::from(board).join("addresses.dbvl")))
             .find(|p| p.exists());
@@ -737,17 +743,21 @@ impl ImportResolver {
             // Legacy single-file board (pre-2026-08-03). Kept as a fallback
             // for out-of-tree board packs that still ship the old layout.
             let file_name = format!("{}.dbvl", board);
-            let file_path = self.search_paths.iter()
+            let file_path = self
+                .search_paths
+                .iter()
                 .map(|p| p.join("boards").join(&file_name))
                 .chain(std::iter::once(PathBuf::from(&file_name)))
                 .find(|p| p.exists());
             let path = match file_path {
                 Some(p) => p,
-                None => return Err(format!(
-                    "Board file 'lib/boards/{}.dbvl' or 'lib/boards/{}/addresses.dbvl' not found. \
+                None => {
+                    return Err(format!(
+                        "Board file 'lib/boards/{}.dbvl' or 'lib/boards/{}/addresses.dbvl' not found. \
                      Use --board <name> or create a board directory.",
-                    board, board
-                )),
+                        board, board
+                    ));
+                }
             };
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
@@ -758,7 +768,9 @@ impl ImportResolver {
         // Resolve schema imports (schema <path>; directives)
         let mut resolved_imports = Vec::new();
         for import_path in &doc.imports {
-            let schema_path = self.search_paths.iter()
+            let schema_path = self
+                .search_paths
+                .iter()
                 .map(|p| p.join(&import_path))
                 .chain(std::iter::once(PathBuf::from(&import_path)))
                 .find(|p| p.exists());
@@ -799,9 +811,14 @@ impl ImportResolver {
             if let Some(reg_path) = crate::registry::find_registry_entry(name) {
                 // 2026-08-09 (Phase 11, Slice 2): record the registry name →
                 // canonical path (SPEC §7.1 determinism record).
-                self.resolved_paths
-                    .push((import.path().to_string(), reg_path.to_string_lossy().to_string()));
-                let literal_import = Import::literal(reg_path.to_string_lossy().to_string(), import.symbols.clone());
+                self.resolved_paths.push((
+                    import.path().to_string(),
+                    reg_path.to_string_lossy().to_string(),
+                ));
+                let literal_import = Import::literal(
+                    reg_path.to_string_lossy().to_string(),
+                    import.symbols.clone(),
+                );
                 return self.resolve_import(&literal_import, source_file);
             }
             let resolved_path = self.registry.get(name.as_str());
@@ -841,7 +858,12 @@ impl ImportResolver {
 
         // Cache check
         if let Some((cached, sed_names, cached_origins)) = self.loaded_modules.get(import.path()) {
-            return self.filter_items_with_origins(cached, cached_origins, sed_names, &import.symbols);
+            return self.filter_items_with_origins(
+                cached,
+                cached_origins,
+                sed_names,
+                &import.symbols,
+            );
         }
 
         // Check for CSS import (loader extracted 2026-09-25, C1: flat
@@ -880,8 +902,13 @@ impl ImportResolver {
                     )
                 })?;
 
-            let content = std::fs::read_to_string(&dbriev_path)
-                .map_err(|e| format!("Failed to read DBriev file '{}': {}", dbriev_path.display(), e))?;
+            let content = std::fs::read_to_string(&dbriev_path).map_err(|e| {
+                format!(
+                    "Failed to read DBriev file '{}': {}",
+                    dbriev_path.display(),
+                    e
+                )
+            })?;
 
             let is_dbvl = import.path().ends_with(".dbvl");
 
@@ -890,7 +917,14 @@ impl ImportResolver {
                 dbriev_v2::parse_document_track_offsets(&content)
             } else {
                 dbriev_v2::parse_document(&content)
-            }.map_err(|e| format!("Failed to parse DBriev file '{}': {}", dbriev_path.display(), e))?;
+            }
+            .map_err(|e| {
+                format!(
+                    "Failed to parse DBriev file '{}': {}",
+                    dbriev_path.display(),
+                    e
+                )
+            })?;
 
             // Determine the constant name from import symbols
             let constant_name = import
@@ -905,9 +939,8 @@ impl ImportResolver {
                     fname
                 });
 
-            let mut dbriev_items = crate::dbriev::bridge::document_to_program_flags(
-                &doc, &constant_name, is_dbvl,
-            );
+            let mut dbriev_items =
+                crate::dbriev::bridge::document_to_program_flags(&doc, &constant_name, is_dbvl);
 
             let program_for_cache = dbriev_items.clone();
 
@@ -946,23 +979,19 @@ impl ImportResolver {
                         .into_iter()
                         .map(|cwd| cwd.join(&import.path())),
                 )
-                .chain(
-                    self.resolve_stdlib_root()
-                        .into_iter()
-                        .flat_map(|root| {
-                            // `.bad` stdlib lives at <repo>/std/bad/ — the
-                            // repo root is one level up from the .bv stdlib
-                            // root (`lib/`). Also try `lib/bad/`.
-                            let repo = root.parent().map(|p| p.to_path_buf());
-                            let mut candidates = Vec::new();
-                            if let Some(r) = repo {
-                                candidates.push(r.join(&import.path()));
-                            }
-                            let rel = import.path().strip_prefix("std/").unwrap_or(&import.path());
-                            candidates.push(root.join("bad").join(rel));
-                            candidates.into_iter()
-                        }),
-                )
+                .chain(self.resolve_stdlib_root().into_iter().flat_map(|root| {
+                    // `.bad` stdlib lives at <repo>/std/bad/ — the
+                    // repo root is one level up from the .bv stdlib
+                    // root (`lib/`). Also try `lib/bad/`.
+                    let repo = root.parent().map(|p| p.to_path_buf());
+                    let mut candidates = Vec::new();
+                    if let Some(r) = repo {
+                        candidates.push(r.join(&import.path()));
+                    }
+                    let rel = import.path().strip_prefix("std/").unwrap_or(&import.path());
+                    candidates.push(root.join("bad").join(rel));
+                    candidates.into_iter()
+                }))
                 .find(|p| p.exists())
                 .ok_or_else(|| {
                     format!(
@@ -970,15 +999,15 @@ impl ImportResolver {
                         import.path()
                     )
                 })?;
-            self.resolved_paths
-                .push((import.path().to_string(), bad_path.to_string_lossy().to_string()));
+            self.resolved_paths.push((
+                import.path().to_string(),
+                bad_path.to_string_lossy().to_string(),
+            ));
             if !self.bad_imports.contains(&bad_path) {
                 self.bad_imports.push(bad_path);
             }
-            self.loaded_modules.insert(
-                import.path().to_string(),
-                (vec![], vec![], vec![]),
-            );
+            self.loaded_modules
+                .insert(import.path().to_string(), (vec![], vec![], vec![]));
             return Ok((vec![], vec![]));
         }
 
@@ -1013,17 +1042,19 @@ impl ImportResolver {
             }),
         };
 
-        let resolved_path = found_path
-            .ok_or_else(|| self.not_found_diagnostic(import.path(), &module_path, explicit_ext, &source_dir))?;
+        let resolved_path = found_path.ok_or_else(|| {
+            self.not_found_diagnostic(import.path(), &module_path, explicit_ext, &source_dir)
+        })?;
 
         // 2026-08-09 (Phase 11, Slice 2): record the deterministic resolution
         // (specifier → canonical path) for reproducibility/diagnostics (SPEC
         // §7.1). The specifier is the ORIGINAL import path; a registry import
         // lands here after its literal re-entry, so the record uses the
         // import's current path (already rewritten to the resolved literal).
-        self.resolved_paths
-            .push((import.path().to_string(), resolved_path.to_string_lossy().to_string()));
-
+        self.resolved_paths.push((
+            import.path().to_string(),
+            resolved_path.to_string_lossy().to_string(),
+        ));
 
         // 2026-07-01: Cycle detection
         if !self.in_progress.insert(import.path().to_string()) {
@@ -1080,7 +1111,9 @@ impl ImportResolver {
             Err(e) => {
                 eprintln!(
                     "warning: import '{}' at '{}' failed to fully parse: {}",
-                    import.path(), resolved_path.display(), e
+                    import.path(),
+                    resolved_path.display(),
+                    e
                 );
                 vec![]
             }
@@ -1107,15 +1140,17 @@ impl ImportResolver {
             None
         };
         let module_len = imported_program.len();
-        let (mut resolved, mut resolved_origins) =
-            self.resolve_imports_inner(imported_program, vec![Some(m_id); module_len], &resolved_path)?;
+        let (mut resolved, mut resolved_origins) = self.resolve_imports_inner(
+            imported_program,
+            vec![Some(m_id); module_len],
+            &resolved_path,
+        )?;
         if let Some(component) = sbv_component {
             let n = component.len();
             resolved.splice(0..0, component);
             resolved_origins.splice(0..0, vec![Some(m_id); n]);
         }
-        if import.path().contains("glue/c") {
-        }
+        if import.path().contains("glue/c") {}
 
         // 2026-10-12 (daily-driver quick wins): a module's `export defn`/
         // `export let` items — the export marker publishes the item as the
@@ -1145,7 +1180,8 @@ impl ImportResolver {
             (resolved.clone(), vec![], resolved_origins.clone()),
         );
 
-        let result = self.filter_items_with_origins(&resolved, &resolved_origins, &[], &import.symbols);
+        let result =
+            self.filter_items_with_origins(&resolved, &resolved_origins, &[], &import.symbols);
 
         self.in_progress.remove(import.path());
         result
@@ -1211,9 +1247,16 @@ impl ImportResolver {
         let m_id = self.push_module(import.path(), &css_path);
         self.loaded_modules.insert(
             import.path().to_string(),
-            (vec![TopLevel::Stylesheet(css_for_cache)], vec![], vec![Some(m_id)]),
+            (
+                vec![TopLevel::Stylesheet(css_for_cache)],
+                vec![],
+                vec![Some(m_id)],
+            ),
         );
-        Ok(Some((vec![TopLevel::Stylesheet(css_content)], vec![Some(m_id)])))
+        Ok(Some((
+            vec![TopLevel::Stylesheet(css_content)],
+            vec![Some(m_id)],
+        )))
     }
 
     /// 2026-09-25 (interop Wave 1 C1): `.svg` component import body,
@@ -1249,9 +1292,7 @@ impl ImportResolver {
                     .map(|s| {
                         let mut chars = s.chars();
                         match chars.next() {
-                            Some(c) => {
-                                c.to_uppercase().collect::<String>() + chars.as_str()
-                            }
+                            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
                             None => String::new(),
                         }
                     })
@@ -1261,15 +1302,22 @@ impl ImportResolver {
         let m_id = self.push_module(import.path(), &svg_path);
         self.loaded_modules.insert(
             import.path().to_string(),
-            (vec![TopLevel::SvgComponent {
-                name: component_name.clone(),
-                content: svg_for_cache,
-            }], vec![], vec![Some(m_id)]),
+            (
+                vec![TopLevel::SvgComponent {
+                    name: component_name.clone(),
+                    content: svg_for_cache,
+                }],
+                vec![],
+                vec![Some(m_id)],
+            ),
         );
-        Ok(Some((vec![TopLevel::SvgComponent {
-            name: component_name,
-            content: svg_content,
-        }], vec![Some(m_id)])))
+        Ok(Some((
+            vec![TopLevel::SvgComponent {
+                name: component_name,
+                content: svg_content,
+            }],
+            vec![Some(m_id)],
+        )))
     }
 
     /// 2026-08-06 (Phase 11): filter imported items by the EXPORTED names and
@@ -1423,17 +1471,50 @@ impl ImportResolver {
     /// Apply a selective-import rename to a top-level item's name.
     fn rename_item(item: &TopLevel, local: &str) -> TopLevel {
         match item.clone() {
-            TopLevel::Definition(mut d) => { d.name = local.to_string(); TopLevel::Definition(d) }
-            TopLevel::Signature(mut s) => { s.name = local.to_string(); TopLevel::Signature(s) }
-            TopLevel::Constant(mut c) => { c.name = local.to_string(); TopLevel::Constant(c) }
-            TopLevel::Init(mut i) => { i.name = local.to_string(); TopLevel::Init(i) }
-            TopLevel::Obj(mut s) => { s.name = local.to_string(); TopLevel::Obj(s) }
-            TopLevel::Transaction(mut t) => { t.name = local.to_string(); TopLevel::Transaction(t) }
-            TopLevel::Trigger(mut t) => { t.name = local.to_string(); TopLevel::Trigger(t) }
-            TopLevel::Cell(mut c) => { c.name = local.to_string(); TopLevel::Cell(c) }
-            TopLevel::StateDecl(mut s) => { s.name = local.to_string(); TopLevel::StateDecl(s) }
-            TopLevel::TypeDef(mut t) => { t.name = local.to_string(); TopLevel::TypeDef(t) }
-            TopLevel::Trait(mut t) => { t.name = local.to_string(); TopLevel::Trait(t) }
+            TopLevel::Definition(mut d) => {
+                d.name = local.to_string();
+                TopLevel::Definition(d)
+            }
+            TopLevel::Signature(mut s) => {
+                s.name = local.to_string();
+                TopLevel::Signature(s)
+            }
+            TopLevel::Constant(mut c) => {
+                c.name = local.to_string();
+                TopLevel::Constant(c)
+            }
+            TopLevel::Init(mut i) => {
+                i.name = local.to_string();
+                TopLevel::Init(i)
+            }
+            TopLevel::Obj(mut s) => {
+                s.name = local.to_string();
+                TopLevel::Obj(s)
+            }
+            TopLevel::Transaction(mut t) => {
+                t.name = local.to_string();
+                TopLevel::Transaction(t)
+            }
+            TopLevel::Trigger(mut t) => {
+                t.name = local.to_string();
+                TopLevel::Trigger(t)
+            }
+            TopLevel::Cell(mut c) => {
+                c.name = local.to_string();
+                TopLevel::Cell(c)
+            }
+            TopLevel::StateDecl(mut s) => {
+                s.name = local.to_string();
+                TopLevel::StateDecl(s)
+            }
+            TopLevel::TypeDef(mut t) => {
+                t.name = local.to_string();
+                TopLevel::TypeDef(t)
+            }
+            TopLevel::Trait(mut t) => {
+                t.name = local.to_string();
+                TopLevel::Trait(t)
+            }
             // 2026-09-27 (Wave 2 C1 — the graft pattern): top-level state
             // renames. A die field colliding with a board let needs the C4
             // rename escape like any other named item; this previously fell
@@ -1839,8 +1920,8 @@ impl Default for ImportResolver {
 mod tests {
     use super::*;
     use crate::ast::*;
-    use std::path::PathBuf;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn import_program(path: &str, symbols: Vec<String>) -> Vec<TopLevel> {
@@ -1861,17 +1942,16 @@ mod tests {
     /// 2026-09-25 (Wave 1 C3): the production factory the compile/check
     /// call sites install (`pipeline::module_plugin_factory`), default opts.
     fn default_factory() -> Box<dyn Fn(&str) -> Result<crate::plugin::PluginManager, String>> {
-        crate::pipeline::module_plugin_factory(
-            &crate::pipeline::BuildOptions::default(),
-            "main.bv",
-        )
+        crate::pipeline::module_plugin_factory(&crate::pipeline::BuildOptions::default(), "main.bv")
     }
 
     #[test]
     fn test_resolve_empty_import() {
         let items = import_program("", vec![]);
         let mut resolver = ImportResolver::new();
-        let result = resolver.resolve_imports(items, &PathBuf::from("main.bv")).unwrap();
+        let result = resolver
+            .resolve_imports(items, &PathBuf::from("main.bv"))
+            .unwrap();
         assert_eq!(result.len(), 0);
     }
 
@@ -1887,7 +1967,10 @@ mod tests {
         let src = dir.path().join("main.bv");
         fs::write(&src, "").unwrap();
         let result = resolver.resolve_imports(items, &src).unwrap();
-        let defns: Vec<&TopLevel> = result.iter().filter(|i| matches!(i, TopLevel::Definition(_))).collect();
+        let defns: Vec<&TopLevel> = result
+            .iter()
+            .filter(|i| matches!(i, TopLevel::Definition(_)))
+            .collect();
         assert_eq!(defns.len(), 1);
     }
 
@@ -1896,17 +1979,34 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let nested = dir.path().join("nested");
         fs::create_dir(&nested).unwrap();
-        fs::write(dir.path().join("value.bv"), "defn value -> Int { term 42; };").unwrap();
-        fs::write(nested.join("value.part.bv"), "defn dotted -> Int { term 7; };").unwrap();
+        fs::write(
+            dir.path().join("value.bv"),
+            "defn value -> Int { term 42; };",
+        )
+        .unwrap();
+        fs::write(
+            nested.join("value.part.bv"),
+            "defn dotted -> Int { term 7; };",
+        )
+        .unwrap();
         let src = nested.join("main.bv");
         fs::write(&src, "").unwrap();
 
-        for specifier in ["../value.bv", "../value", "./value.part.bv", "./../value.bv"] {
+        for specifier in [
+            "../value.bv",
+            "../value",
+            "./value.part.bv",
+            "./../value.bv",
+        ] {
             let mut resolver = ImportResolver::new();
             let items = import_program(specifier, vec![]);
-            let result = resolver.resolve_imports(items, &src)
+            let result = resolver
+                .resolve_imports(items, &src)
                 .unwrap_or_else(|error| panic!("{specifier}: {error}"));
-            let count = result.iter().filter(|item| matches!(item, TopLevel::Definition(_))).count();
+            let count = result
+                .iter()
+                .filter(|item| matches!(item, TopLevel::Definition(_)))
+                .count();
             assert_eq!(count, 1, "{specifier} must load the requested definition");
         }
     }
@@ -1915,13 +2015,25 @@ mod tests {
     fn bare_dotted_code_import_still_expands_namespace() {
         let dir = TempDir::new().unwrap();
         fs::create_dir(dir.path().join("package")).unwrap();
-        fs::write(dir.path().join("package/value.bv"), "defn value -> Int { term 42; };").unwrap();
+        fs::write(
+            dir.path().join("package/value.bv"),
+            "defn value -> Int { term 42; };",
+        )
+        .unwrap();
         let src = dir.path().join("main.bv");
         fs::write(&src, "").unwrap();
         let mut resolver = ImportResolver::new();
         resolver.add_search_path(dir.path().to_path_buf());
-        let result = resolver.resolve_imports(import_program("package.value", vec![]), &src).unwrap();
-        assert_eq!(result.iter().filter(|item| matches!(item, TopLevel::Definition(_))).count(), 1);
+        let result = resolver
+            .resolve_imports(import_program("package.value", vec![]), &src)
+            .unwrap();
+        assert_eq!(
+            result
+                .iter()
+                .filter(|item| matches!(item, TopLevel::Definition(_)))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1958,7 +2070,11 @@ mod tests {
     fn test_filter_items_by_name() {
         let dir = TempDir::new().unwrap();
         let bv_path = dir.path().join("filter_mod.bv");
-        fs::write(&bv_path, "defn keep -> Int { term 1; };\ndefn discard -> Int { term 2; };").unwrap();
+        fs::write(
+            &bv_path,
+            "defn keep -> Int { term 1; };\ndefn discard -> Int { term 2; };",
+        )
+        .unwrap();
         let src = dir.path().join("main.bv");
         fs::write(&src, "").unwrap();
 
@@ -1966,10 +2082,13 @@ mod tests {
         resolver.add_search_path(dir.path().to_path_buf());
         let items = import_program("filter_mod", vec!["keep".into()]);
         let result = resolver.resolve_imports(items, &src).unwrap();
-        let names: Vec<&str> = result.iter().filter_map(|i| match i {
-            TopLevel::Definition(d) => Some(d.name.as_str()),
-            _ => None,
-        }).collect();
+        let names: Vec<&str> = result
+            .iter()
+            .filter_map(|i| match i {
+                TopLevel::Definition(d) => Some(d.name.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(names, vec!["keep"]);
     }
 
@@ -1977,7 +2096,11 @@ mod tests {
     fn test_filter_items_empty() {
         let dir = TempDir::new().unwrap();
         let bv_path = dir.path().join("full_mod.bv");
-        fs::write(&bv_path, "defn a -> Int { term 0; }; defn b -> Int { term 0; };").unwrap();
+        fs::write(
+            &bv_path,
+            "defn a -> Int { term 0; }; defn b -> Int { term 0; };",
+        )
+        .unwrap();
         let src = dir.path().join("main.bv");
         fs::write(&src, "").unwrap();
 
@@ -1985,7 +2108,10 @@ mod tests {
         resolver.add_search_path(dir.path().to_path_buf());
         let items = import_program("full_mod", vec![]);
         let result = resolver.resolve_imports(items, &src).unwrap();
-        let count = result.iter().filter(|i| matches!(i, TopLevel::Definition(_))).count();
+        let count = result
+            .iter()
+            .filter(|i| matches!(i, TopLevel::Definition(_)))
+            .count();
         assert_eq!(count, 2);
     }
 
@@ -2033,26 +2159,55 @@ mod tests {
         fs::create_dir_all(&core_dir).unwrap();
         fs::create_dir_all(&types_dir).unwrap();
         fs::write(core_dir.join("ptr.bv"), "defn p_fn -> Int { term 0; };").unwrap();
-        fs::write(core_dir.join("string_builder.bv"), "defn s_fn -> Int { term 0; };").unwrap();
+        fs::write(
+            core_dir.join("string_builder.bv"),
+            "defn s_fn -> Int { term 0; };",
+        )
+        .unwrap();
         // 2026-09-01: canonical spellings (BUGS.md "Bits tripwire") — `spec
-// MaxBits: N;` metadata, not the legacy `maxbits <~ N;` grammar.
-fs::write(types_dir.join("bootstrap.bv"), "type Int : Bits { spec MaxBits: 64; }; type Float : Bits { spec MaxBits: 32; };").unwrap();
+        // MaxBits: N;` metadata, not the legacy `maxbits <~ N;` grammar.
+        fs::write(
+            types_dir.join("bootstrap.bv"),
+            "type Int : Bits { spec MaxBits: 64; }; type Float : Bits { spec MaxBits: 32; };",
+        )
+        .unwrap();
         let os_dir = stdlib_root.join("std").join("os");
         fs::create_dir_all(&os_dir).unwrap();
-        for module in &["fs.bv", "net.bv", "signal.bv", "ipc.bv", "thread.bv", "dir.bv",
-                        "process.bv", "tty.bv", "user.bv", "time.bv", "mem.bv", "rand.bv",
-                        "sched.bv", "resource.bv", "sysinfo.bv", "temp.bv", "dynlib.bv",
-                        "debug.bv", "ring.bv", "atomic.bv", "io.bv"] {
+        for module in &[
+            "fs.bv",
+            "net.bv",
+            "signal.bv",
+            "ipc.bv",
+            "thread.bv",
+            "dir.bv",
+            "process.bv",
+            "tty.bv",
+            "user.bv",
+            "time.bv",
+            "mem.bv",
+            "rand.bv",
+            "sched.bv",
+            "resource.bv",
+            "sysinfo.bv",
+            "temp.bv",
+            "dynlib.bv",
+            "debug.bv",
+            "ring.bv",
+            "atomic.bv",
+            "io.bv",
+        ] {
             fs::write(os_dir.join(module), "").unwrap();
         }
         let src = dir.path().join("main.bv");
         fs::write(&src, "").unwrap();
 
         let items = import_program("", vec![]);
-        let mut resolver = ImportResolver::new()
-            .with_stdlib_path(Some(stdlib_root));
+        let mut resolver = ImportResolver::new().with_stdlib_path(Some(stdlib_root));
         let result = resolver.resolve_imports(items, &src).unwrap();
-        let defns: Vec<&TopLevel> = result.iter().filter(|i| matches!(i, TopLevel::Definition(_))).collect();
+        let defns: Vec<&TopLevel> = result
+            .iter()
+            .filter(|i| matches!(i, TopLevel::Definition(_)))
+            .collect();
         // Prelude injection is now handled by the plugin system, not the resolver.
         // Definitions come from explicit imports, not auto-injection.
         // This test is preserved as a smoke test that resolve_imports doesn't crash.
@@ -2104,140 +2259,162 @@ fs::write(types_dir.join("bootstrap.bv"), "type Int : Bits { spec MaxBits: 64; }
             constant_names.iter().any(|n| n.contains("UART1")),
             "expected UART1-derived constants, got {constant_names:?}"
         );
-        assert_eq!(crate::address_resolver::resolve_address("uart1"), 0x40011000);
+        assert_eq!(
+            crate::address_resolver::resolve_address("uart1"),
+            0x40011000
+        );
     }
 
+    #[test]
+    fn test_selective_rename_binds_local_name() {
+        // import { Local: Exported } — the module's `Exported` is bound as `Local`.
+        let dir = TempDir::new().unwrap();
+        let bv = dir.path().join("rename_mod.bv");
+        fs::write(&bv, "defn Exported -> Int { term 7; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![TopLevel::Import(Import::literal(
+            "rename_mod.bv".to_string(),
+            vec![("Local".to_string(), "Exported".to_string())],
+        ))];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result
+                .iter()
+                .any(|i| matches!(i, TopLevel::Definition(d) if d.name == "Local")),
+            "the imported defn must be renamed to Local; got: {:?}",
+            result
+                .iter()
+                .map(|i| item_name(i).unwrap_or("?"))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !result
+                .iter()
+                .any(|i| matches!(i, TopLevel::Definition(d) if d.name == "Exported")),
+            "the original exported name must not leak"
+        );
+    }
 
-#[test]
-fn test_selective_rename_binds_local_name() {
-    // import { Local: Exported } — the module's `Exported` is bound as `Local`.
-    let dir = TempDir::new().unwrap();
-    let bv = dir.path().join("rename_mod.bv");
-    fs::write(&bv, "defn Exported -> Int { term 7; };").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![TopLevel::Import(Import::literal(
-        "rename_mod.bv".to_string(),
-        vec![("Local".to_string(), "Exported".to_string())],
-    ))];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    assert!(
-        result.iter().any(|i| matches!(i, TopLevel::Definition(d) if d.name == "Local")),
-        "the imported defn must be renamed to Local; got: {:?}",
-        result.iter().map(|i| item_name(i).unwrap_or("?")).collect::<Vec<_>>()
-    );
-    assert!(
-        !result.iter().any(|i| matches!(i, TopLevel::Definition(d) if d.name == "Exported")),
-        "the original exported name must not leak"
-    );
-}
+    #[test]
+    fn test_import_collision_is_an_error() {
+        // Two different modules both exporting `foo` is a hard error (SPEC 7.2).
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![
+            TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])),
+            TopLevel::Import(Import::literal("m2.bv".to_string(), vec![])),
+        ];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let err = resolver.resolve_imports(items, &src).unwrap_err();
+        assert!(
+            err.contains("conflicts"),
+            "expected a collision error, got: {err}"
+        );
+    }
 
-#[test]
-fn test_import_collision_is_an_error() {
-    // Two different modules both exporting `foo` is a hard error (SPEC 7.2).
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
-    fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![
-        TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])),
-        TopLevel::Import(Import::literal("m2.bv".to_string(), vec![])),
-    ];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let err = resolver.resolve_imports(items, &src).unwrap_err();
-    assert!(err.contains("conflicts"), "expected a collision error, got: {err}");
-}
+    #[test]
+    fn test_rename_resolves_collision() {
+        // Renaming one import resolves the collision.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![
+            TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])),
+            TopLevel::Import(Import::literal(
+                "m2.bv".to_string(),
+                vec![("renamed".to_string(), "foo".to_string())],
+            )),
+        ];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result
+                .iter()
+                .any(|i| matches!(i, TopLevel::Definition(d) if d.name == "renamed"))
+        );
+    }
 
-#[test]
-fn test_rename_resolves_collision() {
-    // Renaming one import resolves the collision.
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
-    fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![
-        TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])),
-        TopLevel::Import(Import::literal(
-            "m2.bv".to_string(),
-            vec![("renamed".to_string(), "foo".to_string())],
-        )),
-    ];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    assert!(result.iter().any(|i| matches!(i, TopLevel::Definition(d) if d.name == "renamed")));
-}
+    #[test]
+    fn test_glob_import_is_rejected() {
+        // import * from "x" is invalid (SPEC 7.2).
+        let src = r#"import * from "m.bv";"#;
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        assert!(p.parse_program().is_err(), "glob imports must be rejected");
+    }
 
-#[test]
-fn test_glob_import_is_rejected() {
-    // import * from "x" is invalid (SPEC 7.2).
-    let src = r#"import * from "m.bv";"#;
-    let tokens = crate::lexer::tokenize(src).unwrap();
-    let mut p = crate::parser::Parser::new(tokens, src);
-    assert!(
-        p.parse_program().is_err(),
-        "glob imports must be rejected"
-    );
-}
+    #[test]
+    fn test_export_import_propagates() {
+        // A module that re-exports (export import) provides the names to importers.
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("internal.bv"),
+            "defn pub -> Int { term 5; };",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("facade.bv"),
+            "export import { pub } from \"internal.bv\";",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![TopLevel::Import(Import::literal(
+            "facade.bv".to_string(),
+            vec![],
+        ))];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result
+                .iter()
+                .any(|i| matches!(i, TopLevel::Definition(d) if d.name == "pub")),
+            "the re-exported defn must be visible to importers"
+        );
+    }
 
-#[test]
-fn test_export_import_propagates() {
-    // A module that re-exports (export import) provides the names to importers.
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("internal.bv"), "defn pub -> Int { term 5; };").unwrap();
-    fs::write(
-        dir.path().join("facade.bv"),
-        "export import { pub } from \"internal.bv\";",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![TopLevel::Import(Import::literal("facade.bv".to_string(), vec![]))];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    assert!(
-        result.iter().any(|i| matches!(i, TopLevel::Definition(d) if d.name == "pub")),
-        "the re-exported defn must be visible to importers"
-    );
-}
+    #[test]
+    fn test_identical_duplicate_imports_do_not_conflict() {
+        // Two modules declaring the SAME constant (e.g. SYS_WRITE in fs.bv +
+        // net.bv) are a benign duplicate, not a collision.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("d1.bv"), "const SYS_WRITE: Int = 4;").unwrap();
+        fs::write(dir.path().join("d2.bv"), "const SYS_WRITE: Int = 4;").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![
+            TopLevel::Import(Import::literal("d1.bv".to_string(), vec![])),
+            TopLevel::Import(Import::literal("d2.bv".to_string(), vec![])),
+        ];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        assert!(
+            resolver.resolve_imports(items, &src).is_ok(),
+            "identical duplicate definitions must not conflict"
+        );
+    }
 
-#[test]
-fn test_identical_duplicate_imports_do_not_conflict() {
-    // Two modules declaring the SAME constant (e.g. SYS_WRITE in fs.bv +
-    // net.bv) are a benign duplicate, not a collision.
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("d1.bv"), "const SYS_WRITE: Int = 4;").unwrap();
-    fs::write(dir.path().join("d2.bv"), "const SYS_WRITE: Int = 4;").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![
-        TopLevel::Import(Import::literal("d1.bv".to_string(), vec![])),
-        TopLevel::Import(Import::literal("d2.bv".to_string(), vec![])),
-    ];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    assert!(
-        resolver.resolve_imports(items, &src).is_ok(),
-        "identical duplicate definitions must not conflict"
-    );
-}
-
-/// 2026-08-16 (Phase 3c): a named import must ALSO bring the requested defn's
-/// transitive referenced FUNCTIONS — `import { iter_map } from "iterator.bv"`
-/// pulls `iter_map_loop` (the helper txn iter_map's body calls). Before this
-/// fix the closure only pulled referenced TYPE names, so the helper was
-/// dropped, the call resolved to the raw-type fallback (return became Int),
-/// and the generic adapter body failed to typecheck.
-#[test]
-fn test_named_import_pulls_transitive_function_deps() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
+    /// 2026-08-16 (Phase 3c): a named import must ALSO bring the requested defn's
+    /// transitive referenced FUNCTIONS — `import { iter_map } from "iterator.bv"`
+    /// pulls `iter_map_loop` (the helper txn iter_map's body calls). Before this
+    /// fix the closure only pulled referenced TYPE names, so the helper was
+    /// dropped, the call resolved to the raw-type fallback (return became Int),
+    /// and the generic adapter body failed to typecheck.
+    #[test]
+    fn test_named_import_pulls_transitive_function_deps() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
         dir.path().join("mod.bv"),
         "txn helper_loop(list: List<Int>, acc: Int, i: Int) [i < list.Count#()][i == list.Count#()] -> Int {\n\
              let _ = acc;\n\
@@ -2248,37 +2425,42 @@ fn test_named_import_pulls_transitive_function_deps() {
          };\n",
     )
     .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![TopLevel::Import(Import::literal(
-        "mod.bv".to_string(),
-        vec![("use_helper".to_string(), "use_helper".to_string())],
-    ))];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    assert!(
-        result.iter().any(|i| matches!(i, TopLevel::Transaction(t) if t.name == "helper_loop")),
-        "importing a defn must pull the helper txn it calls (transitive function dep); got: {:?}",
-        result.iter().filter_map(|i| match i {
-            TopLevel::Definition(d) => Some(d.name.clone()),
-            TopLevel::Transaction(t) => Some(t.name.clone()),
-            _ => None,
-        }).collect::<Vec<_>>()
-    );
-}
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![TopLevel::Import(Import::literal(
+            "mod.bv".to_string(),
+            vec![("use_helper".to_string(), "use_helper".to_string())],
+        ))];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result
+                .iter()
+                .any(|i| matches!(i, TopLevel::Transaction(t) if t.name == "helper_loop")),
+            "importing a defn must pull the helper txn it calls (transitive function dep); got: {:?}",
+            result
+                .iter()
+                .filter_map(|i| match i {
+                    TopLevel::Definition(d) => Some(d.name.clone()),
+                    TopLevel::Transaction(t) => Some(t.name.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        );
+    }
 
-/// 2026-09-09 (parity spike): a helper called ONLY from a `when` GUARD
-/// position must still be pulled by the transitive import closure. Before
-/// this fix `referenced_function_names` recursed into Guarded bodies but not
-/// the guard CONDITION, so `when value_ge_10(acc, b) { ... }` dropped the
-/// helper and the backend emitted an undefined `@value_ge_10`.
-#[test]
-fn test_named_import_pulls_guard_condition_deps() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("mod.bv"),
-        "defn helper(x: Int) [x >= 0][term == true || term == false] -> Bool {\n\
+    /// 2026-09-09 (parity spike): a helper called ONLY from a `when` GUARD
+    /// position must still be pulled by the transitive import closure. Before
+    /// this fix `referenced_function_names` recursed into Guarded bodies but not
+    /// the guard CONDITION, so `when value_ge_10(acc, b) { ... }` dropped the
+    /// helper and the backend emitted an undefined `@value_ge_10`.
+    #[test]
+    fn test_named_import_pulls_guard_condition_deps() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("mod.bv"),
+            "defn helper(x: Int) [x >= 0][term == true || term == false] -> Bool {\n\
              term x > 0;\n\
          };\n\
          defn use_helper(x: Int) -> Int {\n\
@@ -2287,88 +2469,98 @@ fn test_named_import_pulls_guard_condition_deps() {
              };\n\
              term 0;\n\
          };\n",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![TopLevel::Import(Import::literal(
-        "mod.bv".to_string(),
-        vec![("use_helper".to_string(), "use_helper".to_string())],
-    ))];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    assert!(
-        result.iter().any(|i| matches!(i, TopLevel::Definition(d) if d.name == "helper")),
-        "a defn called only from a when-guard condition must be pulled by the import closure; got: {:?}",
-        result.iter().filter_map(|i| match i {
-            TopLevel::Definition(d) => Some(d.name.clone()),
-            _ => None,
-        }).collect::<Vec<_>>()
-    );
-}
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![TopLevel::Import(Import::literal(
+            "mod.bv".to_string(),
+            vec![("use_helper".to_string(), "use_helper".to_string())],
+        ))];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result
+                .iter()
+                .any(|i| matches!(i, TopLevel::Definition(d) if d.name == "helper")),
+            "a defn called only from a when-guard condition must be pulled by the import closure; got: {:?}",
+            result
+                .iter()
+                .filter_map(|i| match i {
+                    TopLevel::Definition(d) => Some(d.name.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        );
+    }
 
-/// 2026-08-09 (Phase 11, Slice 2): an `impl T` extends the type `T` — it does
-/// NOT declare it. `type Point` in a.bv + `impl Point` in b.bv, both imported,
-/// is a VALID cross-module coherence pair (§17.2); the impl must not collide
-/// with the type it targets.
-#[test]
-fn test_cross_module_impl_does_not_collide_with_target_type() {
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("ty.bv"), "type Point: Int;").unwrap();
-    fs::write(dir.path().join("impl.bv"), "impl Point { defn origin() -> Int { term 0; }; };").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![
-        TopLevel::Import(Import::literal("ty.bv".to_string(), vec![])),
-        TopLevel::Import(Import::literal("impl.bv".to_string(), vec![])),
-    ];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    assert!(
-        result.iter().any(|i| matches!(i, TopLevel::Impl(imp) if imp.target == "Point")),
-        "the impl must survive import (coherence pair)"
-    );
-    assert!(
-        result.iter().any(|i| matches!(i, TopLevel::TypeDef(t) if t.name == "Point")),
-        "the type must survive import"
-    );
-}
+    /// 2026-08-09 (Phase 11, Slice 2): an `impl T` extends the type `T` — it does
+    /// NOT declare it. `type Point` in a.bv + `impl Point` in b.bv, both imported,
+    /// is a VALID cross-module coherence pair (§17.2); the impl must not collide
+    /// with the type it targets.
+    #[test]
+    fn test_cross_module_impl_does_not_collide_with_target_type() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("ty.bv"), "type Point: Int;").unwrap();
+        fs::write(
+            dir.path().join("impl.bv"),
+            "impl Point { defn origin() -> Int { term 0; }; };",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![
+            TopLevel::Import(Import::literal("ty.bv".to_string(), vec![])),
+            TopLevel::Import(Import::literal("impl.bv".to_string(), vec![])),
+        ];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result
+                .iter()
+                .any(|i| matches!(i, TopLevel::Impl(imp) if imp.target == "Point")),
+            "the impl must survive import (coherence pair)"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|i| matches!(i, TopLevel::TypeDef(t) if t.name == "Point")),
+            "the type must survive import"
+        );
+    }
 
-/// 2026-08-09 (Phase 11, Slice 2): a `:` module alias resolves a name collision
-/// between two DIFFERENT modules exporting the same symbol (SPEC §7.2).
-/// 2026-09-26 (Wave 1 C4): RETIRED as a collision escape — the alias tag never
-/// renamed the inlined items ("no qualified access"), so differing aliases
-/// only silenced the old record while dedup silently dropped one `foo`
-/// (order-dependent winner — exactly the trap C4 closes; SPEC §7.2's escape
-/// list updated in the same commit). The escape that is real: selective
-/// rename (`{ Local: Exported }`) or an identical definition.
-#[test]
-fn test_module_alias_is_no_longer_a_collision_escape() {
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
-    fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    // `import a: "m1.bv"; import b: "m2.bv";` — both export `foo`; the tags
-    // differ but the inlined names do not, so the collision is real.
-    let mut a = Import::literal("m1.bv".to_string(), vec![]);
-    a.alias = Some("a".to_string());
-    let mut b = Import::literal("m2.bv".to_string(), vec![]);
-    b.alias = Some("b".to_string());
-    let items = vec![
-        TopLevel::Import(a),
-        TopLevel::Import(b),
-    ];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let err = resolver.resolve_imports(items, &src).unwrap_err();
-    assert!(
-        err.contains("conflicts") && err.contains("selective import"),
-        "differing module aliases must not mask the collision: {err}"
-    );
-}
+    /// 2026-08-09 (Phase 11, Slice 2): a `:` module alias resolves a name collision
+    /// between two DIFFERENT modules exporting the same symbol (SPEC §7.2).
+    /// 2026-09-26 (Wave 1 C4): RETIRED as a collision escape — the alias tag never
+    /// renamed the inlined items ("no qualified access"), so differing aliases
+    /// only silenced the old record while dedup silently dropped one `foo`
+    /// (order-dependent winner — exactly the trap C4 closes; SPEC §7.2's escape
+    /// list updated in the same commit). The escape that is real: selective
+    /// rename (`{ Local: Exported }`) or an identical definition.
+    #[test]
+    fn test_module_alias_is_no_longer_a_collision_escape() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        // `import a: "m1.bv"; import b: "m2.bv";` — both export `foo`; the tags
+        // differ but the inlined names do not, so the collision is real.
+        let mut a = Import::literal("m1.bv".to_string(), vec![]);
+        a.alias = Some("a".to_string());
+        let mut b = Import::literal("m2.bv".to_string(), vec![]);
+        b.alias = Some("b".to_string());
+        let items = vec![TopLevel::Import(a), TopLevel::Import(b)];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let err = resolver.resolve_imports(items, &src).unwrap_err();
+        assert!(
+            err.contains("conflicts") && err.contains("selective import"),
+            "differing module aliases must not mask the collision: {err}"
+        );
+    }
 
     // ── Wave 1 C4: the pre-dedup collision gate (2026-09-26) ──────────
 
@@ -2392,7 +2584,10 @@ fn test_module_alias_is_no_longer_a_collision_escape() {
         let src = dir.path().join("main.bv");
         fs::write(&src, root_src).unwrap();
         let mut items = parse_root(root_src);
-        items.push(TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])));
+        items.push(TopLevel::Import(Import::literal(
+            "m1.bv".to_string(),
+            vec![],
+        )));
 
         let mut resolver = ImportResolver::new();
         resolver.add_search_path(dir.path().to_path_buf());
@@ -2437,7 +2632,10 @@ fn test_module_alias_is_no_longer_a_collision_escape() {
         let src = dir.path().join("main.bv");
         fs::write(&src, body).unwrap();
         let mut items = parse_root(body);
-        items.push(TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])));
+        items.push(TopLevel::Import(Import::literal(
+            "m1.bv".to_string(),
+            vec![],
+        )));
 
         let mut resolver = ImportResolver::new();
         resolver.add_search_path(dir.path().to_path_buf());
@@ -2446,7 +2644,11 @@ fn test_module_alias_is_no_longer_a_collision_escape() {
             .iter()
             .filter(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo"))
             .count();
-        assert_eq!(foos, 1, "identical duplicates collapse to one: {} copies", foos);
+        assert_eq!(
+            foos, 1,
+            "identical duplicates collapse to one: {} copies",
+            foos
+        );
     }
 
     /// A diamond (the same module imported twice) shares one origin — the
@@ -2466,7 +2668,11 @@ fn test_module_alias_is_no_longer_a_collision_escape() {
         resolver.add_search_path(dir.path().to_path_buf());
         let result = resolver.resolve_imports(items, &src).unwrap();
         assert_eq!(
-            resolver.modules.iter().filter(|m| m.specifier == "m1.bv").count(),
+            resolver
+                .modules
+                .iter()
+                .filter(|m| m.specifier == "m1.bv")
+                .count(),
             1,
             "one load, one record"
         );
@@ -2474,7 +2680,11 @@ fn test_module_alias_is_no_longer_a_collision_escape() {
             .iter()
             .filter(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo"))
             .count();
-        assert_eq!(foos, 1, "the diamond collapses to one copy: {} copies", foos);
+        assert_eq!(
+            foos, 1,
+            "the diamond collapses to one copy: {} copies",
+            foos
+        );
     }
 
     /// Selective rename is THE escape: moving the import's `foo` to a
@@ -2496,11 +2706,15 @@ fn test_module_alias_is_no_longer_a_collision_escape() {
         resolver.add_search_path(dir.path().to_path_buf());
         let result = resolver.resolve_imports(items, &src).unwrap();
         assert!(
-            result.iter().any(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo")),
+            result
+                .iter()
+                .any(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo")),
             "the root defn survives"
         );
         assert!(
-            result.iter().any(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo_local")),
+            result
+                .iter()
+                .any(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo_local")),
             "the renamed import coexists"
         );
     }
@@ -2520,210 +2734,215 @@ fn test_module_alias_is_no_longer_a_collision_escape() {
         let src = dir.path().join("main.bv");
         fs::write(&src, root_src).unwrap();
         let mut items = parse_root(root_src);
-        items.push(TopLevel::Import(Import::literal("impl.bv".to_string(), vec![])));
+        items.push(TopLevel::Import(Import::literal(
+            "impl.bv".to_string(),
+            vec![],
+        )));
 
         let mut resolver = ImportResolver::new();
         resolver.add_search_path(dir.path().to_path_buf());
         let result = resolver.resolve_imports(items, &src).unwrap();
         assert!(
-            result.iter().any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Point")),
+            result
+                .iter()
+                .any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Point")),
             "the root type survives"
         );
         assert!(
-            result.iter().any(|t| matches!(t, TopLevel::Impl(imp) if imp.target == "Point")),
+            result
+                .iter()
+                .any(|t| matches!(t, TopLevel::Impl(imp) if imp.target == "Point")),
             "the module impl coheres with it"
         );
     }
 
-/// 2026-08-09 (Phase 11, Slice 2): same-alias imports of the same exported
-/// name from DIFFERENT modules STILL collide (the alias is per-import).
-#[test]
-fn test_same_alias_still_collides() {
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
-    fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let mut a = Import::literal("m1.bv".to_string(), vec![]);
-    a.alias = Some("a".to_string());
-    let mut b = Import::literal("m2.bv".to_string(), vec![]);
-    b.alias = Some("a".to_string()); // same tag → still a collision
-    let items = vec![
-        TopLevel::Import(a),
-        TopLevel::Import(b),
-    ];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    assert!(
-        resolver.resolve_imports(items, &src).is_err(),
-        "two imports with the SAME alias must still collide"
-    );
-}
+    /// 2026-08-09 (Phase 11, Slice 2): same-alias imports of the same exported
+    /// name from DIFFERENT modules STILL collide (the alias is per-import).
+    #[test]
+    fn test_same_alias_still_collides() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let mut a = Import::literal("m1.bv".to_string(), vec![]);
+        a.alias = Some("a".to_string());
+        let mut b = Import::literal("m2.bv".to_string(), vec![]);
+        b.alias = Some("a".to_string()); // same tag → still a collision
+        let items = vec![TopLevel::Import(a), TopLevel::Import(b)];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        assert!(
+            resolver.resolve_imports(items, &src).is_err(),
+            "two imports with the SAME alias must still collide"
+        );
+    }
 
-/// 2026-08-09 (Phase 11, Slice 2): resolution records the deterministic
-/// (specifier → resolved path) map (SPEC §7.1).
-#[test]
-fn test_resolved_paths_are_recorded() {
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("m.bv"), "defn foo -> Int { term 1; };").unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-    let items = vec![
-        TopLevel::Import(Import::literal("m.bv".to_string(), vec![])),
-    ];
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    resolver.resolve_imports(items, &src).unwrap();
-    assert_eq!(resolver.resolved_paths.len(), 1);
-    assert_eq!(resolver.resolved_paths[0].0, "m.bv");
-    assert!(
-        resolver.resolved_paths[0].1.ends_with("m.bv"),
-        "the record must map the specifier to its canonical path: {:?}",
-        resolver.resolved_paths
-    );
-}
+    /// 2026-08-09 (Phase 11, Slice 2): resolution records the deterministic
+    /// (specifier → resolved path) map (SPEC §7.1).
+    #[test]
+    fn test_resolved_paths_are_recorded() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m.bv"), "defn foo -> Int { term 1; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![TopLevel::Import(Import::literal(
+            "m.bv".to_string(),
+            vec![],
+        ))];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        resolver.resolve_imports(items, &src).unwrap();
+        assert_eq!(resolver.resolved_paths.len(), 1);
+        assert_eq!(resolver.resolved_paths[0].0, "m.bv");
+        assert!(
+            resolver.resolved_paths[0].1.ends_with("m.bv"),
+            "the record must map the specifier to its canonical path: {:?}",
+            resolver.resolved_paths
+        );
+    }
 
-// ── Wave 1 C1: provenance tests (2026-09-25) ─────────────────────────
+    // ── Wave 1 C1: provenance tests (2026-09-25) ─────────────────────────
 
-/// Helper: the origin recorded for the named `defn` in the resolved items.
-fn definition_origin(
-    items: &[TopLevel],
-    origins: &[Option<u32>],
-    name: &str,
-) -> Option<Option<u32>> {
-    items
-        .iter()
-        .zip(origins)
-        .find(|(item, _)| matches!(item, TopLevel::Definition(d) if d.name == name))
-        .map(|(_, origin)| *origin)
-}
+    /// Helper: the origin recorded for the named `defn` in the resolved items.
+    fn definition_origin(
+        items: &[TopLevel],
+        origins: &[Option<u32>],
+        name: &str,
+    ) -> Option<Option<u32>> {
+        items
+            .iter()
+            .zip(origins)
+            .find(|(item, _)| matches!(item, TopLevel::Definition(d) if d.name == name))
+            .map(|(_, origin)| *origin)
+    }
 
-/// A→B→C: C's items must carry C's module id, not B's — provenance
-/// survives the two-level splice chain (each `resolve_imports_inner`
-/// level returns its own aligned origins that the parent splices).
-#[test]
-fn test_provenance_survives_two_level_chain() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("mod_c.bv"),
-        "defn from_c -> Int { term 3; };",
-    )
-    .unwrap();
-    fs::write(
-        dir.path().join("mod_b.bv"),
-        "import \"mod_c\";\ndefn from_b -> Int { term 2; };",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
+    /// A→B→C: C's items must carry C's module id, not B's — provenance
+    /// survives the two-level splice chain (each `resolve_imports_inner`
+    /// level returns its own aligned origins that the parent splices).
+    #[test]
+    fn test_provenance_survives_two_level_chain() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("mod_c.bv"),
+            "defn from_c -> Int { term 3; };",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("mod_b.bv"),
+            "import \"mod_c\";\ndefn from_b -> Int { term 2; };",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
 
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let items = import_program("mod_b", vec![]);
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    let origins = &resolver.item_origins;
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let items = import_program("mod_b", vec![]);
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        let origins = &resolver.item_origins;
 
-    assert_eq!(result.len(), origins.len(), "origins must align with items");
+        assert_eq!(result.len(), origins.len(), "origins must align with items");
 
-    let origin_c = definition_origin(&result, origins, "from_c")
-        .expect("from_c must be spliced into the result");
-    let origin_b = definition_origin(&result, origins, "from_b")
-        .expect("from_b must be spliced into the result");
-    let id_c = origin_c.expect("imported items must carry a module id");
-    let id_b = origin_b.expect("imported items must carry a module id");
-    assert_ne!(id_c, id_b, "C's items must not be attributed to B");
-    assert_eq!(resolver.modules[id_c as usize].specifier, "mod_c");
-    assert!(
-        resolver.modules[id_c as usize]
-            .source_path
-            .file_name()
-            .unwrap()
-            .eq("mod_c.bv"),
-        "record points at C's file: {:?}",
-        resolver.modules[id_c as usize].source_path
-    );
-    assert_eq!(resolver.modules[id_b as usize].specifier, "mod_b");
-    assert_eq!(
-        resolver.modules.len(),
-        2,
-        "root file is not a module; exactly B and C register"
-    );
-}
+        let origin_c = definition_origin(&result, origins, "from_c")
+            .expect("from_c must be spliced into the result");
+        let origin_b = definition_origin(&result, origins, "from_b")
+            .expect("from_b must be spliced into the result");
+        let id_c = origin_c.expect("imported items must carry a module id");
+        let id_b = origin_b.expect("imported items must carry a module id");
+        assert_ne!(id_c, id_b, "C's items must not be attributed to B");
+        assert_eq!(resolver.modules[id_c as usize].specifier, "mod_c");
+        assert!(
+            resolver.modules[id_c as usize]
+                .source_path
+                .file_name()
+                .unwrap()
+                .eq("mod_c.bv"),
+            "record points at C's file: {:?}",
+            resolver.modules[id_c as usize].source_path
+        );
+        assert_eq!(resolver.modules[id_b as usize].specifier, "mod_b");
+        assert_eq!(
+            resolver.modules.len(),
+            2,
+            "root file is not a module; exactly B and C register"
+        );
+    }
 
-/// Root-file items carry `None` — provenance distinguishes "written here"
-/// from "imported from module id".
-#[test]
-fn test_provenance_root_items_are_none() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("mod_m.bv"),
-        "defn imported_fn -> Int { term 1; };",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
+    /// Root-file items carry `None` — provenance distinguishes "written here"
+    /// from "imported from module id".
+    #[test]
+    fn test_provenance_root_items_are_none() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("mod_m.bv"),
+            "defn imported_fn -> Int { term 1; };",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
 
-    let root_src = "defn root_fn -> Int { term 0; };";
-    let tokens = lex_source(root_src).unwrap();
-    let mut parser = crate::parser::Parser::new(tokens, root_src);
-    let mut root_items = parser.parse_program().unwrap();
-    root_items.push(TopLevel::Import(Import::literal(
-        "mod_m".to_string(),
-        vec![],
-    )));
+        let root_src = "defn root_fn -> Int { term 0; };";
+        let tokens = lex_source(root_src).unwrap();
+        let mut parser = crate::parser::Parser::new(tokens, root_src);
+        let mut root_items = parser.parse_program().unwrap();
+        root_items.push(TopLevel::Import(Import::literal(
+            "mod_m".to_string(),
+            vec![],
+        )));
 
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let result = resolver.resolve_imports(root_items, &src).unwrap();
-    let origins = &resolver.item_origins;
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(root_items, &src).unwrap();
+        let origins = &resolver.item_origins;
 
-    assert_eq!(
-        definition_origin(&result, origins, "root_fn"),
-        Some(None),
-        "root-file items carry no module id"
-    );
-    let imported = definition_origin(&result, origins, "imported_fn")
-        .expect("imported_fn must be spliced")
-        .expect("imported items must carry a module id");
-    assert_eq!(resolver.modules[imported as usize].specifier, "mod_m");
-}
+        assert_eq!(
+            definition_origin(&result, origins, "root_fn"),
+            Some(None),
+            "root-file items carry no module id"
+        );
+        let imported = definition_origin(&result, origins, "imported_fn")
+            .expect("imported_fn must be spliced")
+            .expect("imported items must carry a module id");
+        assert_eq!(resolver.modules[imported as usize].specifier, "mod_m");
+    }
 
-/// Diamond (X and Y both import C): the cached C loads ONCE (one module
-/// record) and both splice sites carry the SAME id. `let` statements have
-/// no dedup key, so both site copies survive into the final items — the
-/// only shape where "both sites, same id" is observable after dedup.
-#[test]
-fn test_provenance_cache_shared_origins() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("mod_c.bv"),
-        "let shared_val: Int = 7;\ndefn from_c -> Int { term 3; };",
-    )
-    .unwrap();
-    fs::write(
-        dir.path().join("mod_x.bv"),
-        "import \"mod_c\";\ndefn from_x -> Int { term 1; };",
-    )
-    .unwrap();
-    fs::write(
-        dir.path().join("mod_y.bv"),
-        "import \"mod_c\";\ndefn from_y -> Int { term 2; };",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
+    /// Diamond (X and Y both import C): the cached C loads ONCE (one module
+    /// record) and both splice sites carry the SAME id. `let` statements have
+    /// no dedup key, so both site copies survive into the final items — the
+    /// only shape where "both sites, same id" is observable after dedup.
+    #[test]
+    fn test_provenance_cache_shared_origins() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("mod_c.bv"),
+            "let shared_val: Int = 7;\ndefn from_c -> Int { term 3; };",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("mod_x.bv"),
+            "import \"mod_c\";\ndefn from_x -> Int { term 1; };",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("mod_y.bv"),
+            "import \"mod_c\";\ndefn from_y -> Int { term 2; };",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
 
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let items = vec![
-        TopLevel::Import(Import::literal("mod_x".to_string(), vec![])),
-        TopLevel::Import(Import::literal("mod_y".to_string(), vec![])),
-    ];
-    let result = resolver.resolve_imports(items, &src).unwrap();
-    let origins = &resolver.item_origins;
-    assert_eq!(result.len(), origins.len(), "origins must align with items");
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let items = vec![
+            TopLevel::Import(Import::literal("mod_x".to_string(), vec![])),
+            TopLevel::Import(Import::literal("mod_y".to_string(), vec![])),
+        ];
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        let origins = &resolver.item_origins;
+        assert_eq!(result.len(), origins.len(), "origins must align with items");
 
-    let shared_ids: Vec<u32> = result
+        let shared_ids: Vec<u32> = result
         .iter()
         .zip(origins)
         .filter(|(item, _)| {
@@ -2731,177 +2950,176 @@ fn test_provenance_cache_shared_origins() {
         })
         .map(|(_, origin)| origin.expect("imported let must carry a module id"))
         .collect();
-    assert_eq!(
-        shared_ids.len(),
-        2,
-        "both diamond splice sites survive dedup (no dedup key for lets)"
-    );
-    assert_eq!(
-        shared_ids[0], shared_ids[1],
-        "cache hit must reuse the SAME module id at both sites"
-    );
+        assert_eq!(
+            shared_ids.len(),
+            2,
+            "both diamond splice sites survive dedup (no dedup key for lets)"
+        );
+        assert_eq!(
+            shared_ids[0], shared_ids[1],
+            "cache hit must reuse the SAME module id at both sites"
+        );
 
-    let c_records = resolver
-        .modules
-        .iter()
-        .filter(|m| m.specifier == "mod_c")
-        .count();
-    assert_eq!(c_records, 1, "cached module must register exactly once");
+        let c_records = resolver
+            .modules
+            .iter()
+            .filter(|m| m.specifier == "mod_c")
+            .count();
+        assert_eq!(c_records, 1, "cached module must register exactly once");
 
-    let origin_c = definition_origin(&result, origins, "from_c")
-        .expect("from_c spliced")
-        .expect("imported defn carries id");
-    assert_eq!(
-        resolver.modules[origin_c as usize].specifier,
-        "mod_c",
-        "shared id must point at C"
-    );
-}
+        let origin_c = definition_origin(&result, origins, "from_c")
+            .expect("from_c spliced")
+            .expect("imported defn carries id");
+        assert_eq!(
+            resolver.modules[origin_c as usize].specifier, "mod_c",
+            "shared id must point at C"
+        );
+    }
 
-// ── Wave 1 C2: extension dispatch tests (2026-09-25) ─────────────────
+    // ── Wave 1 C2: extension dispatch tests (2026-09-25) ─────────────────
 
-/// The real `.ebv` import candidate (item 3): an extension-less specifier
-/// resolves an `.ebv` file when no `.bv` sibling exists, and the module
-/// record classifies it as Electronics.
-#[test]
-fn test_ebv_module_imports() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("elec_mod.ebv"),
-        "defn ebv_fn -> Int { term 1; };",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
+    /// The real `.ebv` import candidate (item 3): an extension-less specifier
+    /// resolves an `.ebv` file when no `.bv` sibling exists, and the module
+    /// record classifies it as Electronics.
+    #[test]
+    fn test_ebv_module_imports() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("elec_mod.ebv"),
+            "defn ebv_fn -> Int { term 1; };",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
 
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let items = import_program("elec_mod", vec![]);
-    let result = resolver.resolve_imports(items, &src).unwrap();
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let items = import_program("elec_mod", vec![]);
+        let result = resolver.resolve_imports(items, &src).unwrap();
 
-    assert!(
-        definition_origin(&result, &resolver.item_origins, "ebv_fn").is_some(),
-        "the .ebv module's defn must be spliced: {:?}",
-        result
-    );
-    let record = resolver
-        .modules
-        .iter()
-        .find(|m| m.specifier == "elec_mod")
-        .expect("elec_mod registers a module record");
-    assert_eq!(
-        record.kind,
-        Some(SourceKind::Electronics),
-        "record classifies by resolved path: {:?}",
-        record.source_path
-    );
-    assert!(
-        record.source_path.ends_with("elec_mod.ebv"),
-        "record points at the .ebv file: {:?}",
-        record.source_path
-    );
-}
-
-/// The diagnostic's promise is truthful (item 1): it names ONLY the
-/// extensions the search actually probes (`.bv`, `.ebv`) — no `.abv`,
-/// `.rbv`, or `.sbv` — and carries the concrete fix (house style).
-#[test]
-fn test_diagnostic_names_only_searched_exts() {
-    let dir = TempDir::new().unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let items = import_program("ghost_mod", vec![]);
-    let err = resolver.resolve_imports(items, &src).unwrap_err();
-
-    assert!(
-        err.contains(".{bv,ebv}") && err.contains("ghost_mod"),
-        "error must name the searched extension set: {}",
-        err
-    );
-    for unsearched in [".abv", ".rbv", ".sbv"] {
         assert!(
-            !err.contains(unsearched),
-            "error must not promise unsearched ext {}: {}",
-            unsearched,
+            definition_origin(&result, &resolver.item_origins, "ebv_fn").is_some(),
+            "the .ebv module's defn must be spliced: {:?}",
+            result
+        );
+        let record = resolver
+            .modules
+            .iter()
+            .find(|m| m.specifier == "elec_mod")
+            .expect("elec_mod registers a module record");
+        assert_eq!(
+            record.kind,
+            Some(SourceKind::Electronics),
+            "record classifies by resolved path: {:?}",
+            record.source_path
+        );
+        assert!(
+            record.source_path.ends_with("elec_mod.ebv"),
+            "record points at the .ebv file: {:?}",
+            record.source_path
+        );
+    }
+
+    /// The diagnostic's promise is truthful (item 1): it names ONLY the
+    /// extensions the search actually probes (`.bv`, `.ebv`) — no `.abv`,
+    /// `.rbv`, or `.sbv` — and carries the concrete fix (house style).
+    #[test]
+    fn test_diagnostic_names_only_searched_exts() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let items = import_program("ghost_mod", vec![]);
+        let err = resolver.resolve_imports(items, &src).unwrap_err();
+
+        assert!(
+            err.contains(".{bv,ebv}") && err.contains("ghost_mod"),
+            "error must name the searched extension set: {}",
+            err
+        );
+        for unsearched in [".abv", ".rbv", ".sbv"] {
+            assert!(
+                !err.contains(unsearched),
+                "error must not promise unsearched ext {}: {}",
+                unsearched,
+                err
+            );
+        }
+        assert!(err.contains("Fix:"), "error must carry the fix: {}", err);
+    }
+
+    /// An explicit `.rbv` specifier imports the file, and only its Briev
+    /// remainder parses — markup and style stay with the view pipeline.
+    #[test]
+    fn test_rbv_module_imports_briev_remainder() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("views.rbv"),
+            "<view><div>ok</div></view>\n<style>.a{color:red;}</style>\n\
+         defn rbv_fn -> Int { term 2; };\n",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let items = vec![TopLevel::Import(Import::literal(
+            "views.rbv".to_string(),
+            vec![],
+        ))];
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        assert!(
+            definition_origin(&result, &resolver.item_origins, "rbv_fn").is_some(),
+            "the .rbv remainder's defn must be spliced: {:?}",
+            result
+        );
+        let record = resolver
+            .modules
+            .iter()
+            .find(|m| m.specifier == "views.rbv")
+            .expect("views.rbv registers a module record");
+        assert_eq!(record.kind, Some(SourceKind::Rendered));
+    }
+
+    /// Data dialects are not code imports (item 3's contract): an implicit
+    /// specifier over a `.dbv` file is rejected with the explanation and the
+    /// explicit-specifier fix (the `x.dbv` arm still loads data constants).
+    #[test]
+    fn test_dbv_import_rejected() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("registry_data.dbv"),
+            "entry { kind: \"probe\" }",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let items = import_program("registry_data", vec![]);
+        let err = resolver.resolve_imports(items, &src).unwrap_err();
+
+        assert!(
+            err.contains("data dialects are not code imports"),
+            "error must state the data-dialect refusal: {}",
+            err
+        );
+        assert!(
+            err.contains("registry_data.dbv"),
+            "error must point at the data file it found: {}",
+            err
+        );
+        assert!(
+            err.contains("import { name } from"),
+            "error must carry the explicit data-import fix: {}",
             err
         );
     }
-    assert!(err.contains("Fix:"), "error must carry the fix: {}", err);
-}
-
-/// An explicit `.rbv` specifier imports the file, and only its Briev
-/// remainder parses — markup and style stay with the view pipeline.
-#[test]
-fn test_rbv_module_imports_briev_remainder() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("views.rbv"),
-        "<view><div>ok</div></view>\n<style>.a{color:red;}</style>\n\
-         defn rbv_fn -> Int { term 2; };\n",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let items = vec![TopLevel::Import(Import::literal(
-        "views.rbv".to_string(),
-        vec![],
-    ))];
-    let result = resolver.resolve_imports(items, &src).unwrap();
-
-    assert!(
-        definition_origin(&result, &resolver.item_origins, "rbv_fn").is_some(),
-        "the .rbv remainder's defn must be spliced: {:?}",
-        result
-    );
-    let record = resolver
-        .modules
-        .iter()
-        .find(|m| m.specifier == "views.rbv")
-        .expect("views.rbv registers a module record");
-    assert_eq!(record.kind, Some(SourceKind::Rendered));
-}
-
-/// Data dialects are not code imports (item 3's contract): an implicit
-/// specifier over a `.dbv` file is rejected with the explanation and the
-/// explicit-specifier fix (the `x.dbv` arm still loads data constants).
-#[test]
-fn test_dbv_import_rejected() {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("registry_data.dbv"),
-        "entry { kind: \"probe\" }",
-    )
-    .unwrap();
-    let src = dir.path().join("main.bv");
-    fs::write(&src, "").unwrap();
-
-    let mut resolver = ImportResolver::new();
-    resolver.add_search_path(dir.path().to_path_buf());
-    let items = import_program("registry_data", vec![]);
-    let err = resolver.resolve_imports(items, &src).unwrap_err();
-
-    assert!(
-        err.contains("data dialects are not code imports"),
-        "error must state the data-dialect refusal: {}",
-        err
-    );
-    assert!(
-        err.contains("registry_data.dbv"),
-        "error must point at the data file it found: {}",
-        err
-    );
-    assert!(
-        err.contains("import { name } from"),
-        "error must carry the explicit data-import fix: {}",
-        err
-    );
-}
 
     // ── Wave 1 C3: per-module dialect preludes ─────────────────────────
 
@@ -2932,7 +3150,11 @@ fn test_dbv_import_rejected() {
             .unwrap_or_else(|| {
                 panic!(
                     "module prelude must load std/electronics.bv: {:?}",
-                    resolver.modules.iter().map(|m| &m.specifier).collect::<Vec<_>>()
+                    resolver
+                        .modules
+                        .iter()
+                        .map(|m| &m.specifier)
+                        .collect::<Vec<_>>()
                 )
             }) as u32;
         assert!(
@@ -2973,7 +3195,11 @@ fn test_dbv_import_rejected() {
         assert!(
             resolver.modules.iter().any(|m| m.specifier == "std/io.bv"),
             "native prelude's std bundle must load: {:?}",
-            resolver.modules.iter().map(|m| &m.specifier).collect::<Vec<_>>()
+            resolver
+                .modules
+                .iter()
+                .map(|m| &m.specifier)
+                .collect::<Vec<_>>()
         );
         assert!(
             definition_origin(&result, &resolver.item_origins, "dep_fn").is_some(),
@@ -3013,10 +3239,16 @@ fn test_dbv_import_rejected() {
             .iter()
             .filter(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Volt"))
             .count();
-        assert_eq!(volts, 1, "std items dedup to a single copy: {} copies", volts);
+        assert_eq!(
+            volts, 1,
+            "std items dedup to a single copy: {} copies",
+            volts
+        );
         for name in ["FooA", "FooB"] {
             assert!(
-                result.iter().any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == name)),
+                result
+                    .iter()
+                    .any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == name)),
                 "module {}'s own typedef must survive: {:?}",
                 name,
                 result
@@ -3040,12 +3272,17 @@ fn test_dbv_import_rejected() {
         let result = resolver.resolve_imports(items, &src).unwrap();
 
         assert!(
-            !resolver.modules.iter().any(|m| m.specifier.starts_with("std/")),
+            !resolver
+                .modules
+                .iter()
+                .any(|m| m.specifier.starts_with("std/")),
             "no prelude ran without a factory: {:?}",
             resolver.modules
         );
         assert!(
-            result.iter().any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Probe")),
+            result
+                .iter()
+                .any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Probe")),
             "the module's own typedef must splice: {:?}",
             result
         );
@@ -3143,7 +3380,10 @@ fn test_dbv_import_rejected() {
             components.len(),
             1,
             "exactly one projected component: {:?}",
-            result.iter().filter_map(ImportResolver::item_name).collect::<Vec<_>>()
+            result
+                .iter()
+                .filter_map(ImportResolver::item_name)
+                .collect::<Vec<_>>()
         );
         let pins: Vec<(String, u64, Option<&str>)> = components[0]
             .body
@@ -3151,8 +3391,10 @@ fn test_dbv_import_rejected() {
             .iter()
             .map(|p| (p.name.clone(), p.number, p.class_ref.as_deref()))
             .collect();
-        let mut expected: Vec<(String, u64, Option<&str>)> =
-            vec![("sda".into(), 1, Some("IoOd")), ("scl".into(), 2, Some("Out"))];
+        let mut expected: Vec<(String, u64, Option<&str>)> = vec![
+            ("sda".into(), 1, Some("IoOd")),
+            ("scl".into(), 2, Some("Out")),
+        ];
         for i in 0..8u64 {
             expected.push((format!("gpio[{i}]"), 3 + i, Some("Io")));
         }
@@ -3163,7 +3405,10 @@ fn test_dbv_import_rejected() {
             result.len(),
             6,
             "the fixture grafts exactly its component + five fields: {:?}",
-            result.iter().filter_map(ImportResolver::item_name).collect::<Vec<_>>()
+            result
+                .iter()
+                .filter_map(ImportResolver::item_name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3193,7 +3438,10 @@ fn test_dbv_import_rejected() {
         resolver.add_search_path(dir.path().to_path_buf());
         let result = resolver.resolve_imports(items, &src).unwrap();
 
-        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        let names: Vec<&str> = result
+            .iter()
+            .filter_map(ImportResolver::item_name)
+            .collect();
         for grafted in ["InnerDie", "Internal", "helper", "sda", "DieInner"] {
             assert!(
                 names.contains(&grafted),
@@ -3227,7 +3475,12 @@ fn test_dbv_import_rejected() {
                 _ => None,
             })
             .unwrap();
-        let pin_names: Vec<&str> = component.body.pins.iter().map(|p| p.name.as_str()).collect();
+        let pin_names: Vec<&str> = component
+            .body
+            .pins
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         assert_eq!(pin_names, ["sda"], "only the file-scope field projects");
 
         // Root check: the same die as a standalone file passes the ordinary
@@ -3263,7 +3516,10 @@ fn test_dbv_import_rejected() {
         resolver.add_search_path(dir.path().to_path_buf());
         let result = resolver.resolve_imports(items, &src).unwrap();
 
-        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        let names: Vec<&str> = result
+            .iter()
+            .filter_map(ImportResolver::item_name)
+            .collect();
         assert!(
             names.contains(&"c2") && !names.contains(&"counter"),
             "renamed state binds the local name: {names:?}"
@@ -3291,7 +3547,10 @@ fn test_dbv_import_rejected() {
         resolver.add_search_path(dir.path().to_path_buf());
         let result = resolver.resolve_imports(items, &src).unwrap();
 
-        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        let names: Vec<&str> = result
+            .iter()
+            .filter_map(ImportResolver::item_name)
+            .collect();
         assert!(
             names.contains(&"get"),
             "the named import keeps the defn: {names:?}"
@@ -3332,7 +3591,10 @@ fn test_dbv_import_rejected() {
         resolver.add_search_path(dir.path().to_path_buf());
         let result = resolver.resolve_imports(items, &src).unwrap();
 
-        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        let names: Vec<&str> = result
+            .iter()
+            .filter_map(ImportResolver::item_name)
+            .collect();
         assert!(
             names.contains(&"put_raw"),
             "the named defn is kept: {names:?}"

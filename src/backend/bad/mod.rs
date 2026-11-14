@@ -14,8 +14,8 @@
 // To undo: delete src/backend/bad/ + the two config files, revert
 // `BackendKind::Bad`, the targets.dbvl row, and the parser/AST modules.
 
-pub mod contracts;
 pub mod comptime;
+pub mod contracts;
 pub mod lint;
 pub mod lower;
 pub mod notices;
@@ -44,7 +44,10 @@ pub fn generate(source: &str, target_triple: &str) -> Result<String, String> {
 /// fired / which form picked / where registers landed. `friendly`
 /// selects the default alias sheet; `--raw` passes false.
 pub fn generate_with(
-    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+    source: &str,
+    target_triple: &str,
+    trace: bool,
+    base_dir: Option<&std::path::Path>,
     friendly: bool,
 ) -> Result<String, String> {
     let (asm, _) = generate_with_notices(source, target_triple, trace, base_dir, friendly)?;
@@ -55,7 +58,10 @@ pub fn generate_with(
 /// (the predicted probable errors, acknowledged and unacknowledged).
 /// Callers that want the notices — the CLI, the tests — use this.
 pub fn generate_with_notices(
-    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+    source: &str,
+    target_triple: &str,
+    trace: bool,
+    base_dir: Option<&std::path::Path>,
     friendly: bool,
 ) -> Result<(String, Vec<notices::Notice>), String> {
     let program: BadProgram =
@@ -75,8 +81,12 @@ pub fn generate_with_notices(
 /// symbolic values alongside the assembly. `warn_unused` enables the
 /// lint; without it the vector is empty.
 pub fn generate_with_lints(
-    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
-    friendly: bool, warn_unused: bool,
+    source: &str,
+    target_triple: &str,
+    trace: bool,
+    base_dir: Option<&std::path::Path>,
+    friendly: bool,
+    warn_unused: bool,
 ) -> Result<(String, Vec<UnusedValue>), String> {
     let program: BadProgram =
         parse_bad(source).map_err(|e| format!("bad: line {}: {}", e.line, e.message))?;
@@ -114,7 +124,11 @@ pub struct BadFnReq<'a> {
 pub fn generate_bad_fn(req: BadFnReq<'_>) -> Result<String, String> {
     let program = prepare_bad_source(req.body, req.name, req.bootstrap)?;
     let (isa, regs) = registries();
-    let family = req.target_triple.split('-').next().unwrap_or(req.target_triple);
+    let family = req
+        .target_triple
+        .split('-')
+        .next()
+        .unwrap_or(req.target_triple);
     lower::Lowerer::new(&isa, &regs, family)
         .with_base_dir(req.base_dir)
         .with_param_env(req.param_env)
@@ -221,7 +235,8 @@ pub fn generate_bad_kernel(req: BadKernelReq<'_>) -> Result<BadKernel, String> {
     let mut src = imports;
     src.push_str(&rest.join("\n"));
     src.push('\n');
-    let program = parse_bad(&src).map_err(|e| format!("bad ptx fn body: line {}: {}", e.line, e.message))?;
+    let program =
+        parse_bad(&src).map_err(|e| format!("bad ptx fn body: line {}: {}", e.line, e.message))?;
     let (isa, regs) = registries();
     let mut env = std::collections::HashMap::new();
     env.insert(
@@ -248,8 +263,8 @@ pub fn generate_bad_kernel(req: BadKernelReq<'_>) -> Result<BadKernel, String> {
         ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 {})\n{{\n{}    ld.param.b64 %rd1, [{}];\n{}\n    ret;\n}}\n",
         req.param, decls, req.param, text
     );
-    let blob = crate::backend::ptx::compile_cubin(&ptx, 0)
-        .unwrap_or_else(|| ptx.as_bytes().to_vec());
+    let blob =
+        crate::backend::ptx::compile_cubin(&ptx, 0).unwrap_or_else(|| ptx.as_bytes().to_vec());
     Ok(BadKernel {
         blob,
         block_threads,
@@ -320,9 +335,7 @@ pub fn assemble(text: &str, triple: &str, out_path: &std::path::Path) -> Result<
     let family = triple.split('-').next().unwrap_or(triple);
     let (_, regs) = registries();
     let as_bin = regs.cross_as(family).ok_or_else(|| {
-        format!(
-            "no cross_as row for target `{family}` - add one to bad-registers.dbvl"
-        )
+        format!("no cross_as row for target `{family}` - add one to bad-registers.dbvl")
     })?;
     let flags = as_flags(family, triple);
     let s_path = out_path.with_extension("s");
@@ -365,7 +378,10 @@ fn bin_responsive(bin: &str) -> bool {
 
 /// Run the cross assembler over the emitted `.s`.
 fn run_as(
-    bin: &str, flags: &[&str], s_path: &std::path::Path, out_path: &std::path::Path,
+    bin: &str,
+    flags: &[&str],
+    s_path: &std::path::Path,
+    out_path: &std::path::Path,
     family: &str,
 ) -> Result<(), String> {
     let status = std::process::Command::new(bin)
@@ -392,7 +408,9 @@ fn clang_available() -> bool {
 
 /// Assemble bare-metal thumb/arm with clang's integrated assembler.
 fn clang_assemble(
-    triple: &str, s_path: &std::path::Path, out_path: &std::path::Path,
+    triple: &str,
+    s_path: &std::path::Path,
+    out_path: &std::path::Path,
 ) -> Result<(), String> {
     let family = triple.split('-').next().unwrap_or(triple);
     let status = std::process::Command::new("clang")
@@ -459,7 +477,10 @@ mod tests {
              ptx => mul.lo.u64 %rd2, %rd2, 4\n    end site\n    store r2, r1\n    jmp start\n",
         );
         let x = &k.ptx_text;
-        assert!(x.contains(".visible .entry main (.param .b64 state)"), "{x}");
+        assert!(
+            x.contains(".visible .entry main (.param .b64 state)"),
+            "{x}"
+        );
         assert!(x.contains("ld.param.b64 %rd1, [state];"), "{x}");
         assert!(x.contains(".reg .pred %p1;"), "{x}");
         // mov imm: shared form + empty imm prefix + suffix `;`.
@@ -533,7 +554,8 @@ mod tests {
     /// meaningless text to that assembler: loud error, never silent.
     #[test]
     fn geometry_directive_rejected_off_family() {
-        let src = "section .text\nglobal _start\n.blockthreads 128\n_start:\n    mov r0, 42\n    ret\n";
+        let src =
+            "section .text\nglobal _start\n.blockthreads 128\n_start:\n    mov r0, 42\n    ret\n";
         let err = generate(src, "x86_64").unwrap_err();
         assert!(err.contains("ptx-family kernel directive"), "{err}");
     }
@@ -564,9 +586,7 @@ mod tests {
             let mut p = crate::parser::Parser::new(tokens, src);
             p.parse_program().expect("parse")
         };
-        let program = parse(
-            "bad<ptx> scale(state: Ptr) -> Int [true] { mov r2, 0 }\n",
-        );
+        let program = parse("bad<ptx> scale(state: Ptr) -> Int [true] { mov r2, 0 }\n");
         match program.first() {
             Some(TopLevel::BadFn(bf)) => {
                 assert_eq!(bf.target.as_deref(), Some("ptx"), "marker");
@@ -594,7 +614,11 @@ mod tests {
         assert!(asm.contains("leaq msg(%rip), %rsi"), "{}", asm);
         assert!(asm.contains("syscall"), "{}", asm);
         let joined = asm.replace('\n', "; ");
-        assert!(joined.contains("movq $1, %rax; syscall"), "number loads last: {}", asm);
+        assert!(
+            joined.contains("movq $1, %rax; syscall"),
+            "number loads last: {}",
+            asm
+        );
         assert!(asm.contains(".asciz \"ok\\n\""));
     }
 
@@ -715,8 +739,11 @@ mod tests {
 
     #[test]
     fn declarations_stack_rejects_zero() {
-        let err = generate("declarations {\n    stack 0\n}\n_start:\n    halt\n", "x86_64")
-            .expect_err("zero stack");
+        let err = generate(
+            "declarations {\n    stack 0\n}\n_start:\n    halt\n",
+            "x86_64",
+        )
+        .expect_err("zero stack");
         assert!(err.contains("greater than zero"), "{err}");
     }
 
@@ -724,7 +751,10 @@ mod tests {
     fn declarations_extern_bad_shape_is_loud() {
         let err = generate("declarations {\n    extern foo\n}\n", "x86_64")
             .expect_err("malformed extern");
-        assert!(err.contains("extern fn") && err.contains("extern data"), "{err}");
+        assert!(
+            err.contains("extern fn") && err.contains("extern data"),
+            "{err}"
+        );
     }
 
     fn lint(src: &str, warn: bool) -> Vec<UnusedValue> {
@@ -792,7 +822,10 @@ mod tests {
         ));
         let x86 = generate(src, "x86_64").unwrap_or_else(|e| panic!("{e}"));
         assert!(x86.contains("0x1BADB002"), "{x86}");
-        assert!(x86.contains("ljmp $0x08, $_start64") || x86.contains("ljmp $0x8"), "{x86}");
+        assert!(
+            x86.contains("ljmp $0x08, $_start64") || x86.contains("ljmp $0x8"),
+            "{x86}"
+        );
         assert!(x86.contains("outb %al, %dx"), "{x86}");
         assert!(x86.contains("gdt_desc:"), "{x86}");
     }
@@ -824,8 +857,8 @@ mod tests {
 
     #[test]
     fn boundary_register_must_exist() {
-        let err = generate("_start:\n    let x = pin r99\n", "x86_64")
-            .expect_err("missing register");
+        let err =
+            generate("_start:\n    let x = pin r99\n", "x86_64").expect_err("missing register");
         assert!(err.contains("r99"), "{err}");
     }
 
@@ -956,8 +989,7 @@ mod tests {
 
     #[test]
     fn fn_keyword_is_rejected_with_fix() {
-        let err = generate("fn foo() {\n    halt\n}\n", "x86_64")
-            .expect_err("fn removed");
+        let err = generate("fn foo() {\n    halt\n}\n", "x86_64").expect_err("fn removed");
         assert!(err.contains("`defn name(params)"), "{err}");
         assert!(err.contains("call defn"), "{err}");
     }
@@ -1070,7 +1102,8 @@ mod tests {
 
     #[test]
     fn else_is_rejected() {
-        let src = "_start:\n    when 1 {\n        mov x, 1\n    } else {\n        mov x, 2\n    }\n";
+        let src =
+            "_start:\n    when 1 {\n        mov x, 1\n    } else {\n        mov x, 2\n    }\n";
         let err = generate(src, "x86_64").expect_err("`.bad` has no else");
         assert!(err.contains("no `else`"), "{err}");
     }
@@ -1205,7 +1238,11 @@ mod tests {
                    store x, r2\n    x86_64 => movq [addr], x\n\n_start:\n    store_pair r0, \
                    r1\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
-        assert!(x86.contains("movq [%rcx], %rax"), "raw target row expected: {}", x86);
+        assert!(
+            x86.contains("movq [%rcx], %rax"),
+            "raw target row expected: {}",
+            x86
+        );
         assert!(!x86.contains("sd "), "{}", x86);
         let arm = lower_ok(src, "aarch64");
         assert!(arm.contains("str x0, [x1]"), "{}", arm);
@@ -1215,7 +1252,10 @@ mod tests {
 
     #[test]
     fn riscv_imm_form_picks_li_over_mv() {
-        let riscv = lower_ok("_start:\n    mov r0, 7\n    mov r0, r1\n    ret\n", "riscv64");
+        let riscv = lower_ok(
+            "_start:\n    mov r0, 7\n    mov r0, r1\n    ret\n",
+            "riscv64",
+        );
         assert!(riscv.contains("li a0, 7"), "{}", riscv);
         assert!(riscv.contains("mv a0, a1"), "{}", riscv);
     }
@@ -1270,8 +1310,12 @@ mod tests {
 
     #[test]
     fn symbol_in_non_sym_op_is_rejected_with_fix() {
-        let err = generate("_start:\n    mov r0, msg\n    ret\n\n\
-                            section .data\nmsg: .asciz \"x\"\n", "x86_64").unwrap_err();
+        let err = generate(
+            "_start:\n    mov r0, msg\n    ret\n\n\
+                            section .data\nmsg: .asciz \"x\"\n",
+            "x86_64",
+        )
+        .unwrap_err();
         assert!(err.contains("addr d, msg"), "{}", err);
     }
 
@@ -1287,7 +1331,11 @@ mod tests {
     #[test]
     fn unknown_mnemonic_names_known_ops() {
         let err = generate("_start:\n    frobnicate r0\n", "x86_64").unwrap_err();
-        assert!(err.contains("frobnicate") && err.contains("not a core op"), "{}", err);
+        assert!(
+            err.contains("frobnicate") && err.contains("not a core op"),
+            "{}",
+            err
+        );
     }
 
     #[test]
@@ -1311,7 +1359,11 @@ mod tests {
         lower_ok(ok, "x86_64");
         let bad = "_start: [r0 preserved]\n    mov r0, 1\n    ret\n";
         let err = generate(bad, "x86_64").unwrap_err();
-        assert!(err.contains("unproven") && err.contains("caller-saved"), "{}", err);
+        assert!(
+            err.contains("unproven") && err.contains("caller-saved"),
+            "{}",
+            err
+        );
         assert!(err.contains("push r0"), "error must state the fix: {}", err);
     }
 
@@ -1325,12 +1377,19 @@ mod tests {
     #[test]
     fn defn_recursion_is_cycle_guarded() {
         let err = generate("defn a x\n    a x\n\n_start:\n    a r0\n", "x86_64").unwrap_err();
-        assert!(err.contains("expansion depth") || err.contains("recursive"), "{}", err);
+        assert!(
+            err.contains("expansion depth") || err.contains("recursive"),
+            "{}",
+            err
+        );
     }
 
     #[test]
     fn alias_resolves_through_register_table() {
-        let asm = lower_ok("alias out = r0\n_start:\n    mov out, 9\n    ret\n", "x86_64");
+        let asm = lower_ok(
+            "alias out = r0\n_start:\n    mov out, 9\n    ret\n",
+            "x86_64",
+        );
         assert!(asm.contains("movq $9, %rax"), "{}", asm);
     }
 
@@ -1357,7 +1416,11 @@ mod appgrade_tests {
         assert!(x86.contains("jl loop"), "{}", x86);
         assert!(x86.contains("jae loop"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("b.lt loop") && arm.contains("b.hs loop"), "{}", arm);
+        assert!(
+            arm.contains("b.lt loop") && arm.contains("b.hs loop"),
+            "{}",
+            arm
+        );
         let riscv = lower_ok(src, "riscv64");
         assert!(riscv.contains("blt a0, a1, loop"), "{}", riscv);
         assert!(riscv.contains("bgeu a0, a1, loop"), "{}", riscv);
@@ -1366,7 +1429,11 @@ mod appgrade_tests {
     #[test]
     fn riscv_branch_imm_borrows_t0() {
         let riscv = lower_ok("l:\n    jlt r0, 10, l\n    ret\n", "riscv64");
-        assert!(riscv.contains("li t0, 10") && riscv.contains("blt a0, t0, l"), "{}", riscv);
+        assert!(
+            riscv.contains("li t0, 10") && riscv.contains("blt a0, t0, l"),
+            "{}",
+            riscv
+        );
     }
 
     #[test]
@@ -1377,7 +1444,11 @@ mod appgrade_tests {
         assert!(x86.contains("andq $15, %rax"), "{}", x86);
         assert!(x86.contains("shlq $4, %rbx"), "{}", x86);
         let joined = x86.replace('\n', "; ");
-        assert!(joined.contains("movq %rdi, %rcx; shlq %cl"), "variable shift uses %cl: {}", x86);
+        assert!(
+            joined.contains("movq %rdi, %rcx; shlq %cl"),
+            "variable shift uses %cl: {}",
+            x86
+        );
         assert!(x86.contains("notq %r8"), "{}", x86);
         let riscv = lower_ok(src, "riscv64");
         assert!(riscv.contains("andi a0, a1, 15"), "{}", riscv);
@@ -1393,11 +1464,23 @@ mod appgrade_tests {
                    sltu r8, r9, r10\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
         let joined = x86.replace('\n', "; ");
-        assert!(joined.contains("cqto; idivq %rdx; movq %rdx, %rax"), "{}", x86);
-        assert!(joined.contains("cmpq $7, %r9; setl %al; movzbq %al, %r8"), "{}", x86);
+        assert!(
+            joined.contains("cqto; idivq %rdx; movq %rdx, %rax"),
+            "{}",
+            x86
+        );
+        assert!(
+            joined.contains("cmpq $7, %r9; setl %al; movzbq %al, %r8"),
+            "{}",
+            x86
+        );
         let arm = lower_ok(src, "aarch64");
         let aj = arm.replace('\n', "; ");
-        assert!(aj.contains("sdiv x9, x1, x2; msub x0, x9, x2, x1"), "{}", arm);
+        assert!(
+            aj.contains("sdiv x9, x1, x2; msub x0, x9, x2, x1"),
+            "{}",
+            arm
+        );
         assert!(arm.contains("smulh x3, x4, x5"), "{}", arm);
         assert!(arm.contains("cset x6, lt"), "{}", arm);
         let riscv = lower_ok(src, "riscv64");
@@ -1421,26 +1504,50 @@ mod appgrade_tests {
                    sth r5, r1\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("movsbq (%rcx), %rax"), "{}", x86);
-        assert!(x86.contains("movb %sil, (%rcx)"), "stb uses r4.w8=%sil: {}", x86);
+        assert!(
+            x86.contains("movb %sil, (%rcx)"),
+            "stb uses r4.w8=%sil: {}",
+            x86
+        );
         assert!(x86.contains("movw %di, (%rcx)"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("ldrsb w0, [x1]"), "aarch64 byte loads write a w-register: {}", arm);
+        assert!(
+            arm.contains("ldrsb w0, [x1]"),
+            "aarch64 byte loads write a w-register: {}",
+            arm
+        );
         assert!(arm.contains("strb w4, [x1]"), "{}", arm);
         assert!(arm.contains("strh w5, [x1]"), "{}", arm);
         let riscv = lower_ok(src, "riscv64");
-        assert!(riscv.contains("lb a0, 0(a1)") && riscv.contains("sb a4, 0(a1)"), "{}", riscv);
+        assert!(
+            riscv.contains("lb a0, 0(a1)") && riscv.contains("sb a4, 0(a1)"),
+            "{}",
+            riscv
+        );
     }
 
     #[test]
     fn loadoff_storeoff_and_bare_disp_ref() {
         let src = "o:\n    loadoff r0, r1, 8\n    storeoff r2, r1, 16\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
-        assert!(x86.contains("movq 8(%rcx), %rax"), "bare $N! strips the $ prefix: {}", x86);
+        assert!(
+            x86.contains("movq 8(%rcx), %rax"),
+            "bare $N! strips the $ prefix: {}",
+            x86
+        );
         assert!(x86.contains("movq %rdx, 16(%rcx)"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("ldr x0, [x1, #8]") && arm.contains("str x2, [x1, #16]"), "{}", arm);
+        assert!(
+            arm.contains("ldr x0, [x1, #8]") && arm.contains("str x2, [x1, #16]"),
+            "{}",
+            arm
+        );
         let riscv = lower_ok(src, "riscv64");
-        assert!(riscv.contains("ld a0, 8(a1)") && riscv.contains("sd a2, 16(a1)"), "{}", riscv);
+        assert!(
+            riscv.contains("ld a0, 8(a1)") && riscv.contains("sd a2, 16(a1)"),
+            "{}",
+            riscv
+        );
     }
 
     #[test]
@@ -1450,8 +1557,16 @@ mod appgrade_tests {
         assert!(arm.contains("stp x1, x0, [sp, #-16]!"), "{}", arm);
         assert!(arm.contains("ldp x1, x0, [sp], #16"), "{}", arm);
         let x86 = lower_ok(src, "x86_64");
-        assert!(x86.contains("pushq %rax") && x86.contains("pushq %rcx"), "{}", x86);
-        assert!(x86.contains("popq %rcx") && x86.contains("popq %rax"), "{}", x86);
+        assert!(
+            x86.contains("pushq %rax") && x86.contains("pushq %rcx"),
+            "{}",
+            x86
+        );
+        assert!(
+            x86.contains("popq %rcx") && x86.contains("popq %rax"),
+            "{}",
+            x86
+        );
     }
 
     #[test]
@@ -1460,7 +1575,11 @@ mod appgrade_tests {
                    itof f6, r0\n    ftoi r1, f6\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
         let joined = x86.replace('\n', "; ");
-        assert!(joined.contains("movsd %xmm1, %xmm0; addsd %xmm2, %xmm0"), "{}", x86);
+        assert!(
+            joined.contains("movsd %xmm1, %xmm0; addsd %xmm2, %xmm0"),
+            "{}",
+            x86
+        );
         assert!(x86.contains("cvtsi2sdq %rax, %xmm6"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
         assert!(arm.contains("fadd d0, d1, d2"), "{}", arm);
@@ -1481,8 +1600,16 @@ mod appgrade_tests {
         assert!(joined.contains("fcmp d0, d1; b.mi fl"), "{}", arm);
         let riscv = lower_ok(src, "riscv64");
         let rj = riscv.replace('\n', "; ");
-        assert!(rj.contains("flt.d t0, fa0, fa1; bne t0, zero, fl"), "{}", riscv);
-        assert!(rj.contains("fle.d t0, fa3, fa2; bne t0, zero, fl"), "{}", riscv);
+        assert!(
+            rj.contains("flt.d t0, fa0, fa1; bne t0, zero, fl"),
+            "{}",
+            riscv
+        );
+        assert!(
+            rj.contains("fle.d t0, fa3, fa2; bne t0, zero, fl"),
+            "{}",
+            riscv
+        );
     }
 
     #[test]
@@ -1780,7 +1907,11 @@ fn sym_op_with_immediate_last_operand_is_rejected() {
         "x86_64",
     )
     .unwrap_err();
-    assert!(err.contains("label or symbol") && err.contains("mov` for values"), "{}", err);
+    assert!(
+        err.contains("label or symbol") && err.contains("mov` for values"),
+        "{}",
+        err
+    );
 }
 
 #[cfg(test)]
@@ -1800,10 +1931,7 @@ mod hardening_tests {
         if std::path::Path::new(&sysroot).is_dir() {
             cmd.arg("-L").arg(&sysroot);
         }
-        let out = cmd
-            .arg(bin)
-            .output()
-            .map_err(|e| format!("qemu: {e}"))?;
+        let out = cmd.arg(bin).output().map_err(|e| format!("qemu: {e}"))?;
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
@@ -1822,7 +1950,11 @@ mod hardening_tests {
             let (_, regs) = registries();
             let ld = regs.cross_ld(family).unwrap();
             let bin = dir.join("hello");
-            let st = std::process::Command::new(ld).arg(&o).arg("-o").arg(&bin).status()
+            let st = std::process::Command::new(ld)
+                .arg(&o)
+                .arg("-o")
+                .arg(&bin)
+                .status()
                 .expect("ld");
             assert!(st.success(), "{family} link failed");
             let stdout = run_under_qemu(&bin, family).unwrap_or_else(|e| panic!("{family}: {e}"));
@@ -1849,7 +1981,11 @@ mod phase3_hardening_tests {
         assert!(x86.contains(".Lfloat_1:\n.double 2.25"), "{}", x86);
         let riscv = lower_ok(src, "riscv64");
         let joined = riscv.replace('\n', "; ");
-        assert!(joined.contains("la t0, .Lfloat_0; fld fa0, 0(t0)"), "{}", riscv);
+        assert!(
+            joined.contains("la t0, .Lfloat_0; fld fa0, 0(t0)"),
+            "{}",
+            riscv
+        );
     }
 
     #[test]
@@ -1944,7 +2080,11 @@ mod phase4_hardening_tests {
             "x86_64",
         )
         .unwrap_err();
-        assert!(err.contains("frobnicate") && err.contains("known:"), "{}", err);
+        assert!(
+            err.contains("frobnicate") && err.contains("known:"),
+            "{}",
+            err
+        );
     }
 }
 
@@ -1959,10 +2099,18 @@ mod arg_tests {
         let src = "f:\n    arg r9, 1\n    arg r8, 6\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
         let joined = x86.replace('\n', "; ");
-        assert!(joined.contains("movq %rdi, %r11") && joined.contains("movq %r9, %r10"), "{}", x86);
+        assert!(
+            joined.contains("movq %rdi, %r11") && joined.contains("movq %r9, %r10"),
+            "{}",
+            x86
+        );
         let arm = lower_ok(src, "aarch64");
         let joined = arm.replace('\n', "; ");
-        assert!(joined.contains("mov x9, x0") && joined.contains("mov x8, x5"), "{}", arm);
+        assert!(
+            joined.contains("mov x9, x0") && joined.contains("mov x8, x5"),
+            "{}",
+            arm
+        );
     }
 
     #[test]
@@ -2000,17 +2148,17 @@ mod hygiene_tests {
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("Ltwice__1__loop:"), "{}", x86);
         assert!(x86.contains("Ltwice__2__loop:"), "{}", x86);
-        assert_eq!(x86.matches("Ltwice__1__loop").count(), 2, "label + branch ref");
+        assert_eq!(
+            x86.matches("Ltwice__1__loop").count(),
+            2,
+            "label + branch ref"
+        );
         assert_eq!(x86.matches("Ltwice__2__loop").count(), 2, "{}", x86);
     }
 
     #[test]
     fn local_labels_are_illegal_in_branch_defns() {
-        let err = generate(
-            "defn f x\n    default => nop\n.name:\n",
-            "x86_64",
-        )
-        .unwrap_err();
+        let err = generate("defn f x\n    default => nop\n.name:\n", "x86_64").unwrap_err();
         assert!(err.contains("branch defn"), "{}", err);
     }
 }
@@ -2031,9 +2179,12 @@ mod alias_tests {
     fn raw_mode_skips_the_sheet() {
         let (_, regs) = registries();
         let _ = regs;
-        let err = generate_with("t:\n    Move r0, 1\n", "x86_64", false, None, false)
-            .unwrap_err();
-        assert!(err.contains("Move") && err.contains("not a core op"), "{}", err);
+        let err = generate_with("t:\n    Move r0, 1\n", "x86_64", false, None, false).unwrap_err();
+        assert!(
+            err.contains("Move") && err.contains("not a core op"),
+            "{}",
+            err
+        );
         // Raw names work in both modes.
         lower_ok("t:\n    mov r0, 1\n", "x86_64");
         lower_ok("t:\n    mov r0, 1\n", "x86_64");
@@ -2052,7 +2203,11 @@ _start:
         // Jump = jz: compare-and-branch (3 operands) wins over jmp;
         // line breaks in the output join with "; " in the assertion.
         let joined = asm.replace('\n', "; ");
-        assert!(joined.contains("cmpq %rcx, %rax; je L_start__done"), "{}", asm);
+        assert!(
+            joined.contains("cmpq %rcx, %rax; je L_start__done"),
+            "{}",
+            asm
+        );
     }
 
     #[test]
@@ -2081,11 +2236,16 @@ mod notices_tests {
     use crate::backend::bad::notices::Notice;
 
     fn notices(src: &str, triple: &str) -> Vec<Notice> {
-        generate_with_notices(src, triple, false, None, true).unwrap().1
+        generate_with_notices(src, triple, false, None, true)
+            .unwrap()
+            .1
     }
 
     fn codes(src: &str, triple: &str) -> Vec<String> {
-        notices(src, triple).iter().map(|n| n.code.to_string()).collect()
+        notices(src, triple)
+            .iter()
+            .map(|n| n.code.to_string())
+            .collect()
     }
 
     #[test]
@@ -2115,7 +2275,10 @@ mod notices_tests {
     #[test]
     fn ack_suppresses_and_records() {
         let n = notices("t:\n    mov r5, 1\n    ^ W1 call f\n    ret\n", "x86_64");
-        let w1 = n.iter().find(|x| x.code == "W1").expect("W1 recorded (never silent)");
+        let w1 = n
+            .iter()
+            .find(|x| x.code == "W1")
+            .expect("W1 recorded (never silent)");
         assert!(w1.acknowledged, "{w1:?}");
         let n = notices("t:\n    mov r5, 1\n    ^ call f\n    ret\n", "x86_64");
         let w1 = n.iter().find(|x| x.code == "W1").expect("bare ^ acks");
@@ -2152,12 +2315,15 @@ mod notices_tests {
 
     #[test]
     fn w2_fires_on_branch_path_imbalance() {
-        let c = codes("defn f x
+        let c = codes(
+            "defn f x
     default => push r0
     x86_64 => pop r0
 
 t:\n    call f
-", "x86_64");
+",
+            "x86_64",
+        );
         assert!(c.contains(&"W2".to_string()), "{c:?}");
     }
 }
@@ -2214,7 +2380,11 @@ mod csr_tests {
 
     #[test]
     fn csr_ops_lower_on_riscv64_and_error_elsewhere() {
-        let asm = generate("t:\n    csrw mtvec, r0\n    csrr r1, mcause\n    mret\n", "riscv64-unknown-none").unwrap();
+        let asm = generate(
+            "t:\n    csrw mtvec, r0\n    csrr r1, mcause\n    mret\n",
+            "riscv64-unknown-none",
+        )
+        .unwrap();
         assert!(asm.contains("csrw mtvec, a0"), "{asm}");
         assert!(asm.contains("csrr a1, mcause"), "{asm}");
         assert!(asm.contains("mret"), "{asm}");
@@ -2234,7 +2404,10 @@ mod csr_tests {
             assemble(&asm, "riscv64-unknown-none", &out).expect("assemble failed");
             let obj = std::fs::read(&out).unwrap();
             std::fs::remove_file(&out).ok();
-            assert!(obj.windows(4).any(|w| w == &[0x7f, b'E', b'L', b'F']), "ELF magic");
+            assert!(
+                obj.windows(4).any(|w| w == &[0x7f, b'E', b'L', b'F']),
+                "ELF magic"
+            );
         }
     }
 }
@@ -2254,18 +2427,39 @@ mod raw_bin_tests {
         assemble(&asm, "x86_64", &o).expect("assemble");
         let bin = dir.join("t");
         let status = std::process::Command::new("ld")
-            .arg(&o).arg("-o").arg(&bin).status().expect("ld");
+            .arg(&o)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+            .expect("ld");
         assert!(status.success());
         let raw = dir.join("t.bin");
-        let oc = if std::process::Command::new("llvm-objcopy").arg("--version").output().ok().map(|o| o.status.success()).unwrap_or(false) {
+        let oc = if std::process::Command::new("llvm-objcopy")
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
             "llvm-objcopy"
-        } else { "objcopy" };
+        } else {
+            "objcopy"
+        };
         let status = std::process::Command::new(oc)
-            .arg("-O").arg("binary").arg(&bin).arg(&raw).status().expect("objcopy");
+            .arg("-O")
+            .arg("binary")
+            .arg(&bin)
+            .arg(&raw)
+            .status()
+            .expect("objcopy");
         assert!(status.success());
         let img = std::fs::read(&raw).unwrap();
         // movl $42, %eax = 48 c7 c0 2a 00 00 00; hlt = f4
-        assert!(img.starts_with(&[0x48, 0xc7, 0xc0, 0x2a]), "{:02x?}", &img[..8]);
+        assert!(
+            img.starts_with(&[0x48, 0xc7, 0xc0, 0x2a]),
+            "{:02x?}",
+            &img[..8]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
@@ -2386,7 +2580,10 @@ mod interpretation_b_tests {
         let label_idx = asm.find("boot_putc:").unwrap_or(usize::MAX);
         assert!(asm.contains(".global boot_putc"), "{asm}");
         assert!(asm.contains("call putc"), "{asm}");
-        assert!(label_idx < asm.find("call putc").unwrap_or(usize::MAX), "{asm}");
+        assert!(
+            label_idx < asm.find("call putc").unwrap_or(usize::MAX),
+            "{asm}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

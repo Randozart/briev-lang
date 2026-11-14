@@ -65,7 +65,11 @@ struct LineCtx<'a> {
 /// Who currently owns instruction lines.
 enum Owner {
     Label(usize),
-    Defn { idx: usize, branch_rows: bool, seq_body: bool },
+    Defn {
+        idx: usize,
+        branch_rows: bool,
+        seq_body: bool,
+    },
 }
 
 impl<'s> Parser<'s> {
@@ -117,7 +121,10 @@ impl<'s> Parser<'s> {
             // may carry the first row header (`site ptx => ...`) — the
             // `raw <target>` head convention. Unconditional call: the
             // fn early-returns for non-site lines.
-            if self.try_site(content, line, span.clone(), &owner)?.is_some() {
+            if self
+                .try_site(content, line, span.clone(), &owner)?
+                .is_some()
+            {
                 continue;
             }
 
@@ -187,7 +194,11 @@ impl<'s> Parser<'s> {
                     line,
                     span,
                 })?;
-                let lctx = LineCtx { content, line, span };
+                let lctx = LineCtx {
+                    content,
+                    line,
+                    span,
+                };
                 self.push_branch_row(owner, branch, &lctx)?;
                 self.pos += 1;
                 continue;
@@ -211,17 +222,26 @@ impl<'s> Parser<'s> {
                 line,
                 span,
             })?;
-            let lctx = LineCtx { content, line, span };
+            let lctx = LineCtx {
+                content,
+                line,
+                span,
+            };
             self.push_instruction(owner, instrs, &lctx)?;
             self.pos += 1;
         }
         let end = self.lines.last().map(|(o, c, _)| o + c.len()).unwrap_or(0);
-        Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
+        Ok(BadProgram {
+            items: self.items,
+            span: Span::new(0, end, 0, 0),
+        })
     }
 
-
     fn try_declarations(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<BadTopLevel>, BadParseError> {
         if !(content == "declarations {" || content == "declarations{") {
             return Ok(None);
@@ -254,7 +274,10 @@ impl<'s> Parser<'s> {
     }
 
     fn try_fn(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<BadTopLevel>, BadParseError> {
         let (rest, callable) = if let Some(r) = content.strip_prefix("call defn ") {
             (r, true)
@@ -274,8 +297,7 @@ impl<'s> Parser<'s> {
         let Some(open) = rest.find('(') else {
             if callable {
                 return Err(BadParseError {
-                    message: "`call defn` needs `call defn name(params) -> Ret { … }`"
-                        .to_string(),
+                    message: "`call defn` needs `call defn name(params) -> Ret { … }`".to_string(),
                     line,
                     span,
                 });
@@ -304,8 +326,7 @@ impl<'s> Parser<'s> {
         let (ret, tail) = if let Some(after) = after.strip_prefix("->") {
             let Some(brace) = after.find('{') else {
                 return Err(BadParseError {
-                    message: "`fn` return type needs `{` at the end of the head line"
-                        .to_string(),
+                    message: "`fn` return type needs `{` at the end of the head line".to_string(),
                     line,
                     span,
                 });
@@ -353,9 +374,14 @@ impl<'s> Parser<'s> {
     }
 
     fn try_bootstrap(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<(BadDirective, BadLabel)>, BadParseError> {
-        let Some(rest) = content.strip_prefix("bootstrap ") else { return Ok(None) };
+        let Some(rest) = content.strip_prefix("bootstrap ") else {
+            return Ok(None);
+        };
         if self.saw_bootstrap {
             return Err(BadParseError {
                 message: "a .bad image has at most ONE `bootstrap` entry - merge the steps \
@@ -403,7 +429,10 @@ impl<'s> Parser<'s> {
     }
 
     fn try_data_block(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<Vec<BadTopLevel>>, BadParseError> {
         if !(content == "data {" || content == "data{") {
             return Ok(None);
@@ -460,8 +489,7 @@ impl<'s> Parser<'s> {
                 }
                 _ => {
                     return Err(BadParseError {
-                        message: "a `data` block holds directives and data labels only"
-                            .to_string(),
+                        message: "a `data` block holds directives and data labels only".to_string(),
                         line: lno,
                         span: sp,
                     });
@@ -478,7 +506,11 @@ impl<'s> Parser<'s> {
 
     /// `.name:` local label. Returns true when the line was consumed.
     fn try_local(
-        &mut self, owner: &mut Option<Owner>, content: &str, line: usize, span: Span,
+        &mut self,
+        owner: &mut Option<Owner>,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<bool, BadParseError> {
         // `.name:` (legacy explicit local) or `local name:` (no dot).
         let source = if let Some(rest) = content.strip_prefix("local ") {
@@ -496,7 +528,9 @@ impl<'s> Parser<'s> {
                 let i = *i;
                 self.append_local(i, source, span);
             }
-            Some(Owner::Defn { idx, branch_rows, .. }) => {
+            Some(Owner::Defn {
+                idx, branch_rows, ..
+            }) => {
                 let (idx, branch_rows) = (*idx, *branch_rows);
                 self.append_defn_local(idx, branch_rows, source, span)?;
             }
@@ -520,7 +554,11 @@ impl<'s> Parser<'s> {
     /// consumed (the item parser advances `self.pos` itself, including
     /// whole braced blocks).
     fn try_symbolic_item(
-        &mut self, owner: &mut Option<Owner>, content: &str, line: usize, span: Span,
+        &mut self,
+        owner: &mut Option<Owner>,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<bool, BadParseError> {
         if let Some(item) = self.parse_symbolic_item(content, line, span.clone())? {
             self.push_body_item(owner, item, line, span)?;
@@ -530,7 +568,10 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_symbolic_item(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<BadBodyItem>, BadParseError> {
         let c = content.trim();
         if c == "else" || c.starts_with("else ") || c.starts_with("else{") {
@@ -561,7 +602,11 @@ impl<'s> Parser<'s> {
         if c == "raw {" || c.starts_with("raw ") {
             let clobbers = parse_raw_region_head(c, line, span.clone())?;
             let text = self.consume_raw_block(line, span.clone())?;
-            return Ok(Some(BadBodyItem::RawRegion { text, clobbers, span }));
+            return Ok(Some(BadBodyItem::RawRegion {
+                text,
+                clobbers,
+                span,
+            }));
         }
         if let Some(rest) = c.strip_prefix("let ") {
             let item = parse_let_text(rest, span.clone(), line)?;
@@ -597,7 +642,10 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_when(
-        &mut self, rest: &str, line: usize, span: Span,
+        &mut self,
+        rest: &str,
+        line: usize,
+        span: Span,
     ) -> Result<BadBodyItem, BadParseError> {
         let (cond, after) = split_cond_head(rest, line, span.clone())?;
         let after = after.trim();
@@ -605,8 +653,7 @@ impl<'s> Parser<'s> {
             let stmt = after[1..].trim();
             if stmt.is_empty() {
                 return Err(BadParseError {
-                    message: "`when <cond>:` needs a statement after the colon"
-                        .to_string(),
+                    message: "`when <cond>:` needs a statement after the colon".to_string(),
                     line,
                     span,
                 });
@@ -633,7 +680,9 @@ impl<'s> Parser<'s> {
     /// `}`. Blocks are line-delimited in .bad: `{` ends the head line and
     /// `}` sits alone.
     fn consume_block(
-        &mut self, line: usize, span: Span,
+        &mut self,
+        line: usize,
+        span: Span,
     ) -> Result<Vec<BadBodyItem>, BadParseError> {
         let (_, head, _) = self.lines[self.pos];
         if !head.trim_end().ends_with('{') {
@@ -693,8 +742,7 @@ impl<'s> Parser<'s> {
         }
         let (off, c, lno) = self.lines.last().copied().unwrap_or((0, "", line));
         Err(BadParseError {
-            message: "unterminated symbolic block - add a `}` on its own line"
-                .to_string(),
+            message: "unterminated symbolic block - add a `}` on its own line".to_string(),
             line: lno.max(line),
             span: Span::new(off, off + c.len(), lno, 0),
         })
@@ -702,9 +750,7 @@ impl<'s> Parser<'s> {
 
     /// Capture a `raw [clobbers ...] { … }` region verbatim. Braces are
     /// line-delimited: the head ends in `{`, the close is a lone `}`.
-    fn consume_raw_block(
-        &mut self, line: usize, span: Span,
-    ) -> Result<String, BadParseError> {
+    fn consume_raw_block(&mut self, line: usize, span: Span) -> Result<String, BadParseError> {
         let (_, head, _) = self.lines[self.pos];
         if !head.trim_end().ends_with('{') {
             return Err(BadParseError {
@@ -745,7 +791,10 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_inline_items(
-        &mut self, text: &str, line: usize, span: Span,
+        &mut self,
+        text: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Vec<BadBodyItem>, BadParseError> {
         let t = text.trim().trim_end_matches(';').trim();
         if t == "break" {
@@ -771,7 +820,11 @@ impl<'s> Parser<'s> {
     }
 
     fn push_body_item(
-        &mut self, owner: &mut Option<Owner>, item: BadBodyItem, line: usize, span: Span,
+        &mut self,
+        owner: &mut Option<Owner>,
+        item: BadBodyItem,
+        line: usize,
+        span: Span,
     ) -> Result<(), BadParseError> {
         if self.pending_contract.is_some() {
             return Err(BadParseError {
@@ -788,7 +841,9 @@ impl<'s> Parser<'s> {
                     l.body.push(item);
                 }
             }
-            Some(Owner::Defn { idx, branch_rows, .. }) => {
+            Some(Owner::Defn {
+                idx, branch_rows, ..
+            }) => {
                 if *branch_rows {
                     return Err(BadParseError {
                         message: "defn mixes branch rows with a symbolic body - branch \
@@ -839,7 +894,11 @@ impl<'s> Parser<'s> {
     }
 
     fn append_defn_local(
-        &mut self, idx: usize, branch_rows: bool, content: &str, span: Span,
+        &mut self,
+        idx: usize,
+        branch_rows: bool,
+        content: &str,
+        span: Span,
     ) -> Result<(), BadParseError> {
         let name = split_label(content)
             .map(|(n, _)| n.trim_start_matches('.').to_string())
@@ -880,11 +939,18 @@ impl<'s> Parser<'s> {
     /// attachment was retired — target rows now belong ONLY in branch
     /// defns; everywhere else the parser points at `site`.
     fn push_branch_row(
-        &mut self, owner: &mut Owner, branch: BadBranch, lc: &LineCtx,
+        &mut self,
+        owner: &mut Owner,
+        branch: BadBranch,
+        lc: &LineCtx,
     ) -> Result<(), BadParseError> {
         let (content, line, span) = (lc.content, lc.line, lc.span);
         match owner {
-            Owner::Defn { branch_rows, seq_body, .. } => {
+            Owner::Defn {
+                branch_rows,
+                seq_body,
+                ..
+            } => {
                 if *seq_body {
                     let why = if branch.is_default {
                         "the sequence body of a defn already lowers universally"
@@ -940,7 +1006,10 @@ impl<'s> Parser<'s> {
     /// default row; `default =>` is the explicit spelling. Duplicate
     /// rows and nesting are loud. Consumes its own lines.
     fn try_site(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
         owner: &Option<Owner>,
     ) -> Result<Option<()>, BadParseError> {
         let (head, head_rest) = match content.split_once(char::is_whitespace) {
@@ -998,10 +1067,10 @@ impl<'s> Parser<'s> {
             }
             let sp = Span::new(off, off + row_content.len(), lno, 0);
             let instrs = self.parse_instr_line(row_content, lno, sp)?;
-            open
-                .as_mut()
+            open.as_mut()
                 .expect("default row seeded before instruction fill")
-                .body.extend(instrs);
+                .body
+                .extend(instrs);
             self.pos += 1;
         }
         if let Some(prev) = open.take() {
@@ -1009,8 +1078,10 @@ impl<'s> Parser<'s> {
         }
         if rows.is_empty() {
             return Err(BadParseError {
-                message: format!("`site` (line {line}) has no rows - write a `default =>` \
-                                  row, a `target =>` row, or leading default lines"),
+                message: format!(
+                    "`site` (line {line}) has no rows - write a `default =>` \
+                                  row, a `target =>` row, or leading default lines"
+                ),
                 line,
                 span,
             });
@@ -1025,7 +1096,11 @@ impl<'s> Parser<'s> {
     /// head convention). Bare default lines belong on their own lines —
     /// a head rest without `=>` is an error.
     fn parse_site_head_row(
-        &mut self, content: &str, head_rest: Option<&str>, line: usize, span: &Span,
+        &mut self,
+        content: &str,
+        head_rest: Option<&str>,
+        line: usize,
+        span: &Span,
     ) -> Result<Option<BadBranch>, BadParseError> {
         let Some(rest) = head_rest else {
             return Ok(None);
@@ -1059,7 +1134,9 @@ impl<'s> Parser<'s> {
     /// row — seeding the implicit default when none is open).
     /// `Ok(None)` = fall through; `Ok(Some(()))` = line consumed.
     fn site_row_line(
-        &mut self, line: SiteLine<'_>, open: &mut Option<BadBranch>,
+        &mut self,
+        line: SiteLine<'_>,
+        open: &mut Option<BadBranch>,
         rows: &mut Vec<BadBranch>,
     ) -> Result<Option<()>, BadParseError> {
         if let Some(err) = site_line_error(line.trimmed, line.lno, line.off) {
@@ -1126,7 +1203,10 @@ impl<'s> Parser<'s> {
     /// Route an instruction line to its owner (label body or defn
     /// sequence body).
     fn push_instruction(
-        &mut self, owner: &mut Owner, instrs: Vec<BadInstr>, lc: &LineCtx,
+        &mut self,
+        owner: &mut Owner,
+        instrs: Vec<BadInstr>,
+        lc: &LineCtx,
     ) -> Result<(), BadParseError> {
         match owner {
             Owner::Label(i) => {
@@ -1136,7 +1216,11 @@ impl<'s> Parser<'s> {
                     });
                 }
             }
-            Owner::Defn { seq_body, branch_rows, .. } => {
+            Owner::Defn {
+                seq_body,
+                branch_rows,
+                ..
+            } => {
                 if *branch_rows {
                     return Err(BadParseError {
                         message: format!(
@@ -1174,7 +1258,10 @@ impl<'s> Parser<'s> {
 
     /// Try the top-level shapes; `Ok(None)` = not top-level.
     fn try_top_level(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<BadTopLevel>, BadParseError> {
         // `defn name params`
         if let Some(rest) = content.strip_prefix("defn ") {
@@ -1185,7 +1272,8 @@ impl<'s> Parser<'s> {
             return Ok(Some(self.parse_alias(rest, line, span)?));
         }
         // `section X` / `global X` / `export name` / `import "path"`
-        if let Some(rest) = content.strip_prefix("section ")
+        if let Some(rest) = content
+            .strip_prefix("section ")
             .or_else(|| content.strip_prefix("global "))
             .or_else(|| content.strip_prefix("export "))
             .or_else(|| content.strip_prefix("import "))
@@ -1216,7 +1304,11 @@ impl<'s> Parser<'s> {
     /// The `name: ...` tail: data line (`.dir` follows) or code label
     /// with optional trailing contracts (`_start: [post: ...]`).
     fn parse_name_colon(
-        &mut self, name: &str, rest: &str, line: usize, span: Span,
+        &mut self,
+        name: &str,
+        rest: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<BadTopLevel>, BadParseError> {
         validate_ident(name, line, span)?;
         if rest.starts_with('.') || rest.starts_with("section ") || rest.starts_with("global ") {
@@ -1239,7 +1331,10 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_alias(
-        &mut self, rest: &str, line: usize, span: Span,
+        &mut self,
+        rest: &str,
+        line: usize,
+        span: Span,
     ) -> Result<BadTopLevel, BadParseError> {
         let (name, reg) = rest.split_once('=').ok_or_else(|| BadParseError {
             message: format!("alias needs `alias name = register` form ('alias {rest}')"),
@@ -1248,23 +1343,37 @@ impl<'s> Parser<'s> {
         })?;
         let (name, reg) = (name.trim().to_string(), reg.trim().to_string());
         validate_ident(&name, line, span)?;
-        Ok(BadTopLevel::Alias(BadAlias { name, register: reg, span }))
+        Ok(BadTopLevel::Alias(BadAlias {
+            name,
+            register: reg,
+            span,
+        }))
     }
 
     fn parse_data_label(
-        &mut self, name: &str, rest: &str, span: Span,
+        &mut self,
+        name: &str,
+        rest: &str,
+        span: Span,
     ) -> Result<BadTopLevel, BadParseError> {
         // Data: `msg: .asciz "hi"` — label + directive pair.
         let (dname, dargs) = split_ws(rest);
         Ok(BadTopLevel::Data(BadDataLabel {
             name: name.to_string(),
-            directive: BadDirective { name: dname.to_string(), args: dargs.to_string(), span },
+            directive: BadDirective {
+                name: dname.to_string(),
+                args: dargs.to_string(),
+                span,
+            },
             span,
         }))
     }
 
     fn parse_defn(
-        &mut self, rest: &str, _line: usize, span: Span,
+        &mut self,
+        rest: &str,
+        _line: usize,
+        span: Span,
     ) -> Result<BadTopLevel, BadParseError> {
         let mut parts = rest.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or("").trim().to_string();
@@ -1291,7 +1400,10 @@ impl<'s> Parser<'s> {
     /// as-is (no mnemonic classification); `.end` terminates it, and an
     /// unterminated block before EOF is a loud error.
     fn try_raw_block(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<BadRawBlock>, BadParseError> {
         // Inline `raw { … }` / `raw clobbers … { … }` is a symbolic-body
         // region, not the top-level `raw <target> … end raw` form.
@@ -1318,10 +1430,13 @@ impl<'s> Parser<'s> {
         let mut parts = rest.split_whitespace();
         let target = parts.next().unwrap_or("");
         validate_ident(target, line, span.clone())?;
-        let name = parts.next().map(|n| {
-            validate_ident(n, line, span.clone())?;
-            Ok(n.to_string())
-        }).transpose()?;
+        let name = parts
+            .next()
+            .map(|n| {
+                validate_ident(n, line, span.clone())?;
+                Ok(n.to_string())
+            })
+            .transpose()?;
         let mut lines = Vec::new();
         self.pos += 1; // consume the `raw` head line
         loop {
@@ -1354,12 +1469,20 @@ impl<'s> Parser<'s> {
             lines.push(trimmed.to_string());
             self.pos += 1;
         }
-        Ok(Some(BadRawBlock { target: target.to_string(), name, lines, span }))
+        Ok(Some(BadRawBlock {
+            target: target.to_string(),
+            name,
+            lines,
+            span,
+        }))
     }
 
     /// `x86_64 => instr; instr` / `default => ...`
     fn try_branch_row(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Option<BadBranch>, BadParseError> {
         let Some((target, rest)) = content.split_once("=>") else {
             return Ok(None);
@@ -1370,14 +1493,22 @@ impl<'s> Parser<'s> {
             validate_ident(target, line, span)?;
         }
         let body = self.parse_row_body(rest, line, span.clone())?;
-        Ok(Some(BadBranch { target: target.to_string(), is_default, body, span }))
+        Ok(Some(BadBranch {
+            target: target.to_string(),
+            is_default,
+            body,
+            span,
+        }))
     }
 
     /// The instruction text after a `target =>` on the same line —
     /// `;`-separated segments, ack-prefixed. Shared by branch rows and
     /// site rows.
     fn parse_row_body(
-        &mut self, rest: &str, line: usize, span: Span,
+        &mut self,
+        rest: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Vec<BadInstr>, BadParseError> {
         let mut body = Vec::new();
         let mut line_ack: Option<Ack> = None;
@@ -1405,7 +1536,10 @@ impl<'s> Parser<'s> {
     /// `^^^` acknowledge prefix (optionally followed by a keyword tail
     /// and/or `W<n>` warning names) is stripped before parsing.
     fn parse_instr_line(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Vec<BadInstr>, BadParseError> {
         let (off, _, _) = self.lines[self.pos];
         let mut out = Vec::new();
@@ -1442,7 +1576,10 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_instr_text(
-        &self, text: &str, off: usize, line: usize,
+        &self,
+        text: &str,
+        off: usize,
+        line: usize,
     ) -> Result<BadInstr, BadParseError> {
         let (mnemonic, rest) = split_ws(text);
         let mut operands = Vec::new();
@@ -1463,7 +1600,10 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_contract_line(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<BadContract, BadParseError> {
         let inner = content
             .strip_prefix('[')
@@ -1473,7 +1613,10 @@ impl<'s> Parser<'s> {
                 line,
                 span,
             })?;
-        Ok(BadContract { preds: parse_preds(inner, line, span)?, span })
+        Ok(BadContract {
+            preds: parse_preds(inner, line, span)?,
+            span,
+        })
     }
 
     /// `[pre: ...] [post: ...]` trailing a label line.
@@ -1482,18 +1625,24 @@ impl<'s> Parser<'s> {
     /// its keyword (a different proof kind). No `pre:`/`post:` keywords —
     /// position is the whole story.
     fn parse_contract_list(
-        &mut self, content: &str, line: usize, span: Span,
+        &mut self,
+        content: &str,
+        line: usize,
+        span: Span,
     ) -> Result<Vec<BadContract>, BadParseError> {
         let mut out = Vec::new();
         let mut rest = content.trim();
         while let Some((start, end_rel)) = next_group(rest) {
             let inner = rest[start + 1..start + 1 + end_rel].trim();
-            out.push(BadContract { preds: parse_pred_group(inner, line, span)?, span });
+            out.push(BadContract {
+                preds: parse_pred_group(inner, line, span)?,
+                span,
+            });
             rest = rest[start + 1 + end_rel + 1..].trim();
         }
         match out.len() {
-            1 => Ok(out),                            // single = post
-            2 => Ok(out),                            // [pre, post] — order is the meaning
+            1 => Ok(out), // single = post
+            2 => Ok(out), // [pre, post] — order is the meaning
             0 => Ok(out),
             n => Err(BadParseError {
                 message: format!(
@@ -1522,7 +1671,8 @@ fn is_local_label_shape(content: &str) -> bool {
 /// Push a `;`-packed instruction run; the pending contract binds to the
 /// FIRST of the run (exceptions from later lines attach to the LAST).
 fn push_with_contract(
-    instrs: Vec<BadInstr>, pending: &mut Option<BadContract>,
+    instrs: Vec<BadInstr>,
+    pending: &mut Option<BadContract>,
     mut push: impl FnMut(BadInstr),
 ) {
     let mut first = true;
@@ -1611,7 +1761,10 @@ fn split_top(s: &str, sep: u8) -> Vec<&str> {
 /// names (`^ W1 mov ...`, `^ack W1 mov ...`). Returns `(None, s)` when no
 /// prefix is present.
 fn parse_ack_prefix(
-    s: &str, off: usize, line: usize, span: Span,
+    s: &str,
+    off: usize,
+    line: usize,
+    span: Span,
 ) -> Result<(Option<Ack>, &str), BadParseError> {
     let Some(scope) = parse_ack_scope(s, line, span)? else {
         return Ok((None, s));
@@ -1637,7 +1790,14 @@ fn parse_ack_prefix(
                 span,
             });
         }
-        return Ok((Some(Ack { scope, warnings: Vec::new(), span }), rest));
+        return Ok((
+            Some(Ack {
+                scope,
+                warnings: Vec::new(),
+                span,
+            }),
+            rest,
+        ));
     }
     if rest.is_empty() {
         return Err(BadParseError {
@@ -1650,7 +1810,14 @@ fn parse_ack_prefix(
             span,
         });
     }
-    Ok((Some(Ack { scope, warnings, span }), rest))
+    Ok((
+        Some(Ack {
+            scope,
+            warnings,
+            span,
+        }),
+        rest,
+    ))
 }
 
 /// Count the leading carets of an ack prefix.
@@ -1659,9 +1826,7 @@ fn carets_of(s: &str) -> usize {
 }
 
 /// Parse the caret count → scope; `None` when there is no prefix.
-fn parse_ack_scope(
-    s: &str, line: usize, span: Span,
-) -> Result<Option<AckScope>, BadParseError> {
+fn parse_ack_scope(s: &str, line: usize, span: Span) -> Result<Option<AckScope>, BadParseError> {
     let carets = carets_of(s);
     if carets == 0 {
         return Ok(None);
@@ -1691,7 +1856,8 @@ fn parse_ack_warnings(rest: &str) -> (Vec<String>, &str) {
     let mut rest = rest;
     loop {
         let head = rest.split_whitespace().next().unwrap_or("");
-        if head.len() >= 2 && head.starts_with('W') && head[1..].chars().all(|c| c.is_ascii_digit()) {
+        if head.len() >= 2 && head.starts_with('W') && head[1..].chars().all(|c| c.is_ascii_digit())
+        {
             warnings.push(head.to_string());
             rest = rest[head.len()..].trim_start();
         } else {
@@ -1706,20 +1872,19 @@ fn parse_ack_warnings(rest: &str) -> (Vec<String>, &str) {
 /// One operand token → its AST kind. Int; float literal; Name (or raw
 /// memory-ref text like `[sp, #-16]!`, resolved at lowering); or an
 /// arithmetic Expr (`addr + 8`, `MAX * 4`) for the comptime pass.
-fn classify_operand(
-    piece: &str, line: usize, off: usize,
-) -> Result<BadOperand, BadParseError> {
+fn classify_operand(piece: &str, line: usize, off: usize) -> Result<BadOperand, BadParseError> {
     if let Ok(n) = piece.parse::<i64>() {
         return Ok(BadOperand::Int(n));
     }
     if is_float_literal(piece) {
-        return piece.parse::<f64>().map(|_| BadOperand::Float(piece.to_string())).map_err(|_| {
-            BadParseError {
+        return piece
+            .parse::<f64>()
+            .map(|_| BadOperand::Float(piece.to_string()))
+            .map_err(|_| BadParseError {
                 message: format!("float literal `{piece}` does not parse"),
                 line,
                 span: Span::new(off, off + piece.len(), line, 0),
-            }
-        });
+            });
     }
     if is_ident(piece) || piece.starts_with('[') || piece.starts_with('(') {
         return Ok(BadOperand::Name(piece.to_string()));
@@ -1741,7 +1906,10 @@ fn is_ident_char(c: char) -> bool {
 
 fn is_ident(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().next().map(|c| c.is_alphabetic() || c == '_' || c == '.').unwrap_or(false)
+        && s.chars()
+            .next()
+            .map(|c| c.is_alphabetic() || c == '_' || c == '.')
+            .unwrap_or(false)
         && s.chars().all(is_ident_char)
 }
 
@@ -1758,14 +1926,20 @@ struct SiteLine<'a> {
 /// bare instruction.
 fn site_line_error(trimmed: &str, lno: usize, off: usize) -> Option<BadParseError> {
     let sp = Span::new(off, off + trimmed.len(), lno, 0);
-    let err = |message: String| BadParseError { message, line: lno, span: sp };
+    let err = |message: String| BadParseError {
+        message,
+        line: lno,
+        span: sp,
+    };
     if trimmed == "end" {
         return Some(err(format!(
             "`end` (line {lno}) inside a site - the close is `end site`"
         )));
     }
     if trimmed == "site" {
-        return Some(err(format!("nested `site` (line {lno}) - sites do not nest")));
+        return Some(err(format!(
+            "nested `site` (line {lno}) - sites do not nest"
+        )));
     }
     if trimmed.starts_with('[') {
         return Some(err(format!(
@@ -1783,9 +1957,7 @@ fn site_check_dups(rows: &[BadBranch], line: usize, span: Span) -> Result<(), Ba
         let key: &str = if r.is_default { "default" } else { &r.target };
         if seen.contains(&key) {
             return Err(BadParseError {
-                message: format!(
-                    "duplicate `{key} =>` row in `site` (line {line}) - remove one"
-                ),
+                message: format!("duplicate `{key} =>` row in `site` (line {line}) - remove one"),
                 line,
                 span,
             });
@@ -1797,7 +1969,9 @@ fn site_check_dups(rows: &[BadBranch], line: usize, span: Span) -> Result<(), Ba
 
 /// Parse `raw {` / `raw clobbers r3, r4 {` and return the clobber list.
 fn parse_raw_region_head(
-    content: &str, line: usize, span: Span,
+    content: &str,
+    line: usize,
+    span: Span,
 ) -> Result<Vec<String>, BadParseError> {
     let t = content.trim_end();
     let Some(head) = t.strip_suffix('{') else {
@@ -1835,7 +2009,10 @@ fn parse_raw_region_head(
 
 /// Route one `declarations { }` line into the block's buckets.
 fn apply_decl_item(
-    decls: &mut BadDeclarations, c: &str, line: usize, span: Span,
+    decls: &mut BadDeclarations,
+    c: &str,
+    line: usize,
+    span: Span,
 ) -> Result<(), BadParseError> {
     if let Some(rest) = c.strip_prefix("extern fn ") {
         decls.extern_fns.push(parse_extern_fn(rest, line, span)?);
@@ -1873,7 +2050,11 @@ fn apply_decl_item(
 fn parse_extern_data(rest: &str, line: usize, span: Span) -> Result<String, BadParseError> {
     let name = rest.trim();
     if !is_ident(name) || name.starts_with('.') {
-        return Err(parse_error(format!("`{name}` is not a valid extern data name"), line, span));
+        return Err(parse_error(
+            format!("`{name}` is not a valid extern data name"),
+            line,
+            span,
+        ));
     }
     Ok(name.to_string())
 }
@@ -1891,7 +2072,11 @@ fn parse_stack_decl(rest: &str, line: usize, span: Span) -> Result<BadStack, Bad
         )
     })?;
     if size <= 0 {
-        return Err(parse_error("the stack size must be greater than zero".to_string(), line, span));
+        return Err(parse_error(
+            "the stack size must be greater than zero".to_string(),
+            line,
+            span,
+        ));
     }
     Ok(BadStack { size, span })
 }
@@ -1910,7 +2095,11 @@ fn parse_pin(c: &str, line: usize, span: Span) -> Result<(String, String), BadPa
     let name = name.trim();
     let reg = reg.trim();
     if !is_ident(name) || name.starts_with('.') {
-        return Err(parse_error(format!("`{name}` is not a valid pin name"), line, span));
+        return Err(parse_error(
+            format!("`{name}` is not a valid pin name"),
+            line,
+            span,
+        ));
     }
     if reg.is_empty() || !is_ident(reg) {
         return Err(parse_error(
@@ -1923,13 +2112,19 @@ fn parse_pin(c: &str, line: usize, span: Span) -> Result<(String, String), BadPa
 }
 
 fn parse_error(message: String, line: usize, span: Span) -> BadParseError {
-    BadParseError { message, line, span }
+    BadParseError {
+        message,
+        line,
+        span,
+    }
 }
 
 /// `extern fn name(params) -> Ret` (the `extern fn ` prefix already
 /// stripped). A raw label or external symbol with a C-ABI signature.
 fn parse_extern_fn(
-    rest: &str, line: usize, span: Span,
+    rest: &str,
+    line: usize,
+    span: Span,
 ) -> Result<crate::ast::bad::BadExternFn, BadParseError> {
     let rest = rest.trim();
     let Some(open) = rest.find('(') else {
@@ -1994,7 +2189,10 @@ fn parse_stack_size(text: &str) -> Option<i64> {
         _ => (text, 1i64),
     };
     let digits = digits.trim();
-    let value = if let Some(hex) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+    let value = if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
         i64::from_str_radix(hex, 16).ok()?
     } else {
         digits.parse::<i64>().ok()?
@@ -2003,7 +2201,9 @@ fn parse_stack_size(text: &str) -> Option<i64> {
 }
 
 fn parse_fn_params(
-    text: &str, line: usize, span: Span,
+    text: &str,
+    line: usize,
+    span: Span,
 ) -> Result<Vec<crate::ast::bad::BadFnParam>, BadParseError> {
     let text = text.trim();
     if text.is_empty() {
@@ -2087,7 +2287,11 @@ fn find_top_assign_eq(s: &str) -> Option<usize> {
             b']' | b')' if !in_str => depth -= 1,
             b'=' if !in_str && depth == 0 => {
                 let next = bytes.get(i + 1).copied();
-                let prev = if i == 0 { None } else { bytes.get(i - 1).copied() };
+                let prev = if i == 0 {
+                    None
+                } else {
+                    bytes.get(i - 1).copied()
+                };
                 if matches!(next, Some(b'=') | Some(b'>')) {
                     continue;
                 }
@@ -2106,7 +2310,9 @@ fn find_top_assign_eq(s: &str) -> Option<usize> {
 /// Returns `(condition, tail)` where the tail still starts with the
 /// delimiter.
 fn split_cond_head<'a>(
-    rest: &'a str, line: usize, span: Span,
+    rest: &'a str,
+    line: usize,
+    span: Span,
 ) -> Result<(String, &'a str), BadParseError> {
     let bytes = rest.as_bytes();
     let mut depth = 0i32;
@@ -2120,8 +2326,7 @@ fn split_cond_head<'a>(
                 let cond = rest[..i].trim();
                 if cond.is_empty() {
                     return Err(BadParseError {
-                        message: "`when`/`while` need a condition before `:` or `{`"
-                            .to_string(),
+                        message: "`when`/`while` need a condition before `:` or `{`".to_string(),
                         line,
                         span,
                     });
@@ -2141,7 +2346,9 @@ fn split_cond_head<'a>(
 }
 
 fn parse_let_text(
-    rest: &str, span: Span, line: usize,
+    rest: &str,
+    span: Span,
+    line: usize,
 ) -> Result<crate::ast::bad::BadLet, BadParseError> {
     let rest = rest.trim().trim_end_matches(';').trim();
     let Some(eq) = find_top_assign_eq(rest) else {
@@ -2187,10 +2394,14 @@ fn parse_let_text(
 }
 
 fn parse_assignment_text(
-    content: &str, span: Span, line: usize,
+    content: &str,
+    span: Span,
+    line: usize,
 ) -> Result<Option<crate::ast::bad::BadAssign>, BadParseError> {
     let c = content.trim().trim_end_matches(';').trim();
-    let Some(eq) = find_top_assign_eq(c) else { return Ok(None) };
+    let Some(eq) = find_top_assign_eq(c) else {
+        return Ok(None);
+    };
     let left = c[..eq].trim_end();
     let value = c[eq + 1..].trim();
     if value.is_empty() {
@@ -2360,13 +2571,22 @@ mod tests {
         assert_eq!(p.items.len(), 5);
         assert!(matches!(&p.items[0], BadTopLevel::Directive(d) if d.name == "section"));
         assert!(matches!(&p.items[1], BadTopLevel::Directive(d) if d.name == "global"));
-        let BadTopLevel::Label(l) = &p.items[2] else { panic!("expected label") };
+        let BadTopLevel::Label(l) = &p.items[2] else {
+            panic!("expected label")
+        };
         assert_eq!(l.name, "_start");
         assert_eq!(l.body.len(), 2);
-        let BadBodyItem::Instr(first) = &l.body[0] else { panic!("expected instr") };
+        let BadBodyItem::Instr(first) = &l.body[0] else {
+            panic!("expected instr")
+        };
         assert_eq!(first.mnemonic, "mov");
-        assert_eq!(first.operands, vec![BadOperand::Name("r0".into()), BadOperand::Int(1)]);
-        let BadTopLevel::Data(d) = &p.items[4] else { panic!("expected data") };
+        assert_eq!(
+            first.operands,
+            vec![BadOperand::Name("r0".into()), BadOperand::Int(1)]
+        );
+        let BadTopLevel::Data(d) = &p.items[4] else {
+            panic!("expected data")
+        };
         assert_eq!(d.name, "msg");
         assert_eq!(d.directive.name, ".asciz");
     }
@@ -2378,15 +2598,25 @@ mod tests {
              default => store x, addr; store x, addr + 8\n    \
              x86_64 => movq [addr], x\n",
         );
-        let BadTopLevel::Defn(d1) = &p.items[0] else { panic!("expected defn") };
+        let BadTopLevel::Defn(d1) = &p.items[0] else {
+            panic!("expected defn")
+        };
         assert_eq!(d1.name, "push2");
         assert_eq!(d1.params, vec!["a", "b"]);
         assert!(matches!(&d1.shape, BadDefnShape::Sequence(b) if b.len() == 2));
-        let BadTopLevel::Defn(d2) = &p.items[1] else { panic!("expected defn") };
-        let BadDefnShape::Branch(rows) = &d2.shape else { panic!("expected branch shape") };
+        let BadTopLevel::Defn(d2) = &p.items[1] else {
+            panic!("expected defn")
+        };
+        let BadDefnShape::Branch(rows) = &d2.shape else {
+            panic!("expected branch shape")
+        };
         assert_eq!(rows.len(), 2);
         assert!(rows[0].is_default);
-        assert_eq!(rows[0].body.len(), 2, "semicolons split into two instructions");
+        assert_eq!(
+            rows[0].body.len(),
+            2,
+            "semicolons split into two instructions"
+        );
         assert_eq!(rows[1].target, "x86_64");
     }
 
@@ -2398,15 +2628,21 @@ mod tests {
             "_start:\n    site\n    mov r2, 8\n    ptx => mov.u64 %rd2, 8\n    \
              st.global.u64 [%rd2], %rd3\n    end site\n    ret\n",
         );
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("expected label")
+        };
         assert_eq!(l.body.len(), 2, "site + ret");
-        let BadBodyItem::Site(site) = &l.body[0] else { panic!("expected site") };
+        let BadBodyItem::Site(site) = &l.body[0] else {
+            panic!("expected site")
+        };
         assert_eq!(site.rows.len(), 2);
         assert!(site.rows[0].is_default, "leading bare lines = default row");
         assert_eq!(site.rows[0].body.len(), 1);
         assert_eq!(site.rows[1].target, "ptx");
         assert_eq!(site.rows[1].body.len(), 2, "same-line `;` segments");
-        let BadBodyItem::Instr(ret_i) = &l.body[1] else { panic!("expected instr") };
+        let BadBodyItem::Instr(ret_i) = &l.body[1] else {
+            panic!("expected instr")
+        };
         assert_eq!(ret_i.mnemonic, "ret", "owner stays open after the site");
     }
 
@@ -2416,15 +2652,23 @@ mod tests {
             "f:\n    site\n    default => mov r2, 0\n    x86_64 => movq $0, %r2\n    \
              end site\n",
         );
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
-        let BadBodyItem::Site(site) = &l.body[0] else { panic!("site") };
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Site(site) = &l.body[0] else {
+            panic!("site")
+        };
         assert!(site.rows[0].is_default, "explicit `default =>` row");
         assert_eq!(site.rows[1].target, "x86_64");
         // No default at all is legal — the capability error fires at the
         // lowerer only when an unmatched family actually reaches it.
         let only = parse_ok("f:\n    site\n    ptx => bar.sync 0\n    end site\n");
-        let BadTopLevel::Label(l2) = &only.items[0] else { panic!("label") };
-        let BadBodyItem::Site(s2) = &l2.body[0] else { panic!("site") };
+        let BadTopLevel::Label(l2) = &only.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Site(s2) = &l2.body[0] else {
+            panic!("site")
+        };
         assert_eq!(s2.rows.len(), 1);
         assert!(!s2.rows[0].is_default);
     }
@@ -2437,25 +2681,41 @@ mod tests {
             "f:\n    site ptx =>\n    ld.global.f32 %fs1, [%rd6]\n    \
              st.global.f32 [%rd5], %fs1\n    end site\n",
         );
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
-        let BadBodyItem::Site(site) = &l.body[0] else { panic!("site") };
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Site(site) = &l.body[0] else {
+            panic!("site")
+        };
         assert_eq!(site.rows.len(), 1);
         assert_eq!(site.rows[0].target, "ptx");
         assert_eq!(site.rows[0].body.len(), 2);
         // Same-line instructions after the head arrow, too.
         let one = parse_ok("f:\n    site ptx => bar.sync 0\n    end site\n");
-        let BadTopLevel::Label(l2) = &one.items[0] else { panic!("label") };
-        let BadBodyItem::Site(s2) = &l2.body[0] else { panic!("site") };
+        let BadTopLevel::Label(l2) = &one.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Site(s2) = &l2.body[0] else {
+            panic!("site")
+        };
         assert_eq!(s2.rows[0].body.len(), 1);
         // `default =>` on the head is legal.
         let d = parse_ok("f:\n    site default => nop\n    ptx => bar.sync 0\n    end site\n");
-        let BadTopLevel::Label(l3) = &d.items[0] else { panic!("label") };
-        let BadBodyItem::Site(s3) = &l3.body[0] else { panic!("site") };
+        let BadTopLevel::Label(l3) = &d.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Site(s3) = &l3.body[0] else {
+            panic!("site")
+        };
         assert!(s3.rows[0].is_default);
         assert_eq!(s3.rows[1].target, "ptx");
         // Head rest that is not a row header is an error.
         let err = parse_bad("f:\n    site mov r2, 8\n    end site\n").unwrap_err();
-        assert!(err.message.contains("site head takes no arguments"), "{}", err.message);
+        assert!(
+            err.message.contains("site head takes no arguments"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
@@ -2470,25 +2730,17 @@ mod tests {
         let err = parse_bad("defn f a\n    push a\n    x86_64 => pop a\n").unwrap_err();
         assert!(err.message.contains("retired"), "{}", err.message);
         // Duplicate rows are loud.
-        let err = parse_bad(
-            "l:\n    site\n    ptx => nop\n    ptx => nop\n    end site\n",
-        )
-        .unwrap_err();
+        let err =
+            parse_bad("l:\n    site\n    ptx => nop\n    ptx => nop\n    end site\n").unwrap_err();
         assert!(err.message.contains("duplicate"), "{}", err.message);
         // Bare `end` inside a site points at `end site`.
         let err = parse_bad("l:\n    site\n    nop\n    end\n").unwrap_err();
         assert!(err.message.contains("end site"), "{}", err.message);
         // Nesting is loud.
-        let err = parse_bad(
-            "l:\n    site\n    site\n    end site\n    end site\n",
-        )
-        .unwrap_err();
+        let err = parse_bad("l:\n    site\n    site\n    end site\n    end site\n").unwrap_err();
         assert!(err.message.contains("do not nest"), "{}", err.message);
         // Contract lines carry no meaning in site rows (v1) — loud.
-        let err = parse_bad(
-            "l:\n    site\n    [r0 valid]\n    nop\n    end site\n",
-        )
-        .unwrap_err();
+        let err = parse_bad("l:\n    site\n    [r0 valid]\n    nop\n    end site\n").unwrap_err();
         assert!(err.message.contains("site rows"), "{}", err.message);
         // Unterminated site.
         let err = parse_bad("l:\n    site\n    nop\n").unwrap_err();
@@ -2499,7 +2751,9 @@ mod tests {
     fn parses_label_contracts_positionally() {
         // Two groups: first = pre, second = post. Keywords are gone.
         let p = parse_ok("_start: [r0 valid] [r10 preserved]\n    ret\n");
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("expected label")
+        };
         assert_eq!(l.contracts.len(), 2);
         assert!(matches!(&l.contracts[0].preds[0], BadContractPred::Valid(r) if r == "r0"));
         assert!(matches!(&l.contracts[1].preds[0], BadContractPred::Preserved(r) if r == "r10"));
@@ -2508,7 +2762,9 @@ mod tests {
     #[test]
     fn single_group_is_the_postcondition_and_keywords_are_rejected() {
         let p = parse_ok("_start: [r0 valid]\n    ret\n");
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("expected label")
+        };
         assert_eq!(l.contracts.len(), 1, "single group = post");
         let err = parse_bad("_start: [post: r0 == 0]\n    ret\n").unwrap_err();
         assert!(err.message.contains("positional"), "{}", err.message);
@@ -2517,11 +2773,11 @@ mod tests {
     #[test]
     fn comment_respects_strings() {
         let p = parse_ok("d: .asciz \"a//b\" // trailing\n");
-        let BadTopLevel::Data(d) = &p.items[0] else { panic!("expected data") };
+        let BadTopLevel::Data(d) = &p.items[0] else {
+            panic!("expected data")
+        };
         assert_eq!(d.directive.args, "\"a//b\"");
     }
-
-
 
     #[test]
     fn errors_on_ownerless_instruction() {
@@ -2537,10 +2793,16 @@ mod tests {
             "defn f a\n    push a\n    site\n    x86_64 => pop a\n    \
              riscv64 => pop a\n    end site\n",
         );
-        let BadTopLevel::Defn(d) = &p.items[0] else { panic!("defn") };
-        let BadDefnShape::Sequence(body) = &d.shape else { panic!("sequence") };
+        let BadTopLevel::Defn(d) = &p.items[0] else {
+            panic!("defn")
+        };
+        let BadDefnShape::Sequence(body) = &d.shape else {
+            panic!("sequence")
+        };
         assert_eq!(body.len(), 2, "push + site");
-        let BadBodyItem::Site(site) = &body[1] else { panic!("site") };
+        let BadBodyItem::Site(site) = &body[1] else {
+            panic!("site")
+        };
         assert_eq!(site.rows.len(), 2);
         assert!(site.rows.iter().all(|r| !r.is_default));
     }
@@ -2552,7 +2814,11 @@ mod tests {
              aarch64 => pop a\n",
         )
         .unwrap_err();
-        assert!(err.message.contains("branch row into the sequence"), "{}", err.message);
+        assert!(
+            err.message.contains("branch row into the sequence"),
+            "{}",
+            err.message
+        );
     }
 }
 
@@ -2565,7 +2831,9 @@ fn next_group(s: &str) -> Option<(usize, usize)> {
 
 /// `pre: r0 valid` / `post: ...` / bare preds → one contract's preds.
 fn parse_pred_group(
-    inner: &str, line: usize, span: Span,
+    inner: &str,
+    line: usize,
+    span: Span,
 ) -> Result<Vec<BadContractPred>, BadParseError> {
     for kw in ["pre:", "post:"] {
         if inner.starts_with(kw) {
@@ -2587,7 +2855,9 @@ fn parse_pred_group(
 
 /// `[frame: 32]` — the byte bound.
 fn parse_frame_group(
-    body: &str, line: usize, span: Span,
+    body: &str,
+    line: usize,
+    span: Span,
 ) -> Result<Vec<BadContractPred>, BadParseError> {
     let n: i64 = body.trim().parse().map_err(|_| BadParseError {
         message: format!("frame contract needs a byte bound: `[frame: 32]` ('{body}')"),
@@ -2610,26 +2880,48 @@ mod semicolon_tests {
             "t:\n    mov r0, 1; mov r1, 2; ret\n\ndefn f x\n    push x; pop x\n\n\
              defn g x\n    default => mov r0, x; ret\n",
         );
-        let BadTopLevel::Label(t) = &p.items[0] else { panic!("label") };
+        let BadTopLevel::Label(t) = &p.items[0] else {
+            panic!("label")
+        };
         assert_eq!(t.body.len(), 3, "label body: packed line = 3 instructions");
-        let BadTopLevel::Defn(d) = &p.items[1] else { panic!("defn") };
-        let BadDefnShape::Sequence(body) = &d.shape else { panic!("sequence") };
+        let BadTopLevel::Defn(d) = &p.items[1] else {
+            panic!("defn")
+        };
+        let BadDefnShape::Sequence(body) = &d.shape else {
+            panic!("sequence")
+        };
         assert_eq!(body.len(), 2, "defn body: packed line = 2 instructions");
-        let BadTopLevel::Defn(g) = &p.items[2] else { panic!("defn g") };
-        let BadDefnShape::Branch(rows) = &g.shape else { panic!("branch shape") };
+        let BadTopLevel::Defn(g) = &p.items[2] else {
+            panic!("defn g")
+        };
+        let BadDefnShape::Branch(rows) = &g.shape else {
+            panic!("branch shape")
+        };
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].body.len(), 2, "branch-row packed line = 2 instructions");
+        assert_eq!(
+            rows[0].body.len(),
+            2,
+            "branch-row packed line = 2 instructions"
+        );
     }
 
     #[test]
     fn contract_binds_first_instruction_of_a_packed_line() {
-        let p = parse_ok(
-            "t:\n    [sp % 16 == 0]\n    push r0; call f\n    ret\n\ndefn f\n    ret\n",
+        let p =
+            parse_ok("t:\n    [sp % 16 == 0]\n    push r0; call f\n    ret\n\ndefn f\n    ret\n");
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Instr(push) = &l.body[0] else {
+            panic!("push")
+        };
+        let BadBodyItem::Instr(call) = &l.body[1] else {
+            panic!("call")
+        };
+        assert!(
+            push.contract.is_some(),
+            "contract binds to the FIRST packed"
         );
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
-        let BadBodyItem::Instr(push) = &l.body[0] else { panic!("push") };
-        let BadBodyItem::Instr(call) = &l.body[1] else { panic!("call") };
-        assert!(push.contract.is_some(), "contract binds to the FIRST packed");
         assert!(call.contract.is_none());
     }
 
@@ -2639,36 +2931,52 @@ mod semicolon_tests {
             "t:\n    ^ mov r5, 1\n    ^^ mov r5, 1; call f\n    ^^^ mov r5, 1\n    \
              ret\n",
         );
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
-        let BadBodyItem::Instr(single) = &l.body[0] else { panic!("single") };
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Instr(single) = &l.body[0] else {
+            panic!("single")
+        };
         let ack = single.ack.as_ref().expect("^ parses to Instr ack");
         assert_eq!(ack.scope, AckScope::Instr);
         assert!(ack.warnings.is_empty());
-        let BadBodyItem::Instr(packed) = &l.body[1] else { panic!("packed") };
+        let BadBodyItem::Instr(packed) = &l.body[1] else {
+            panic!("packed")
+        };
         let ack = packed.ack.as_ref().expect("^^ parses to Line ack");
         assert_eq!(ack.scope, AckScope::Line);
-        let BadBodyItem::Instr(call) = &l.body[2] else { panic!("call") };
+        let BadBodyItem::Instr(call) = &l.body[2] else {
+            panic!("call")
+        };
         let ack = call.ack.as_ref().expect("^^ propagates across ; segments");
         assert_eq!(ack.scope, AckScope::Line);
-        let BadBodyItem::Instr(override_) = &l.body[3] else { panic!("override") };
+        let BadBodyItem::Instr(override_) = &l.body[3] else {
+            panic!("override")
+        };
         let ack = override_.ack.as_ref().expect("^^^ parses to Override ack");
         assert_eq!(ack.scope, AckScope::Override);
     }
 
     #[test]
     fn ack_parses_keyword_tail_and_named_warnings() {
-        let p = parse_ok(
-            "t:\n    ^ack W1 mov r5, 1\n    ^ W2 W3 mov r6, 2\n    ^ W1 mov r7, 3\n",
-        );
-        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
-        let BadBodyItem::Instr(kw) = &l.body[0] else { panic!("kw") };
+        let p = parse_ok("t:\n    ^ack W1 mov r5, 1\n    ^ W2 W3 mov r6, 2\n    ^ W1 mov r7, 3\n");
+        let BadTopLevel::Label(l) = &p.items[0] else {
+            panic!("label")
+        };
+        let BadBodyItem::Instr(kw) = &l.body[0] else {
+            panic!("kw")
+        };
         let ack = kw.ack.as_ref().expect("^ack parses");
         assert_eq!(ack.scope, AckScope::Instr);
         assert_eq!(ack.warnings, vec!["W1".to_string()]);
-        let BadBodyItem::Instr(warns) = &l.body[1] else { panic!("warns") };
+        let BadBodyItem::Instr(warns) = &l.body[1] else {
+            panic!("warns")
+        };
         let ack = warns.ack.as_ref().expect("W2 W3 parses");
         assert_eq!(ack.warnings, vec!["W2".to_string(), "W3".to_string()]);
-        let BadBodyItem::Instr(w1) = &l.body[2] else { panic!("w1") };
+        let BadBodyItem::Instr(w1) = &l.body[2] else {
+            panic!("w1")
+        };
         let ack = w1.ack.as_ref().expect("W1 parses");
         assert_eq!(ack.warnings, vec!["W1".to_string()]);
     }
@@ -2678,15 +2986,19 @@ mod semicolon_tests {
         let err = parse_bad("t:\n    ^^^^ mov r5, 1\n").unwrap_err();
         assert!(err.message.contains("carets"), "{}", err.message);
         let err = parse_bad("t:\n    ^\n").unwrap_err();
-        assert!(err.message.contains("not followed by an instruction"), "{}", err.message);
+        assert!(
+            err.message.contains("not followed by an instruction"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
     fn raw_block_captures_verbatim_and_terminates() {
-        let p = parse_ok(
-            "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend raw\n",
-        );
-        let BadTopLevel::RawBlock(b) = &p.items[0] else { panic!("raw block") };
+        let p = parse_ok("raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend raw\n");
+        let BadTopLevel::RawBlock(b) = &p.items[0] else {
+            panic!("raw block")
+        };
         assert_eq!(b.target, "x86_64");
         assert_eq!(b.lines, vec![".code32", "cli", "movl $0x1000, %eax"]);
     }

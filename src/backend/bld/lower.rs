@@ -35,7 +35,9 @@ use crate::analysis::density::is_float_type;
 use crate::ast::bad::{
     BadBodyItem, BadDirective, BadInstr, BadLabel, BadLocal, BadOperand, BadProgram, BadTopLevel,
 };
-use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldExternFn, BldProgram, BldStmt, BldTopLevel};
+use crate::ast::bld::{
+    BldBootstrap, BldConst, BldDefn, BldExternFn, BldProgram, BldStmt, BldTopLevel,
+};
 use crate::ast::{BinaryOpKind, Expr, Type, UnaryOpKind};
 use crate::backend::bad::registry::{BadIsa, BadIsaLowering, BadRegisters, ImmHandling};
 use crate::errors::Span;
@@ -105,7 +107,12 @@ impl Lowered {
             ConstVal::Int(n) => BadOperand::Int(n),
             ConstVal::Float(f) => BadOperand::Float(float_text(f)),
         };
-        Lowered { op, class, konst: Some(v), temp: false }
+        Lowered {
+            op,
+            class,
+            konst: Some(v),
+            temp: false,
+        }
     }
 
     fn reg(name: &str, class: VClass) -> Self {
@@ -164,7 +171,6 @@ impl Sig {
             file: file.to_string(),
         }
     }
-
 }
 
 /// Where a statement sits in its recipe — .bad ownership items (sections,
@@ -295,11 +301,16 @@ impl Body {
 fn collect_assigned(stmts: &[BldStmt], out: &mut std::collections::HashSet<String>) {
     for st in stmts {
         match st {
-            BldStmt::Assign { target: Expr::Identifier(n), .. } => {
+            BldStmt::Assign {
+                target: Expr::Identifier(n),
+                ..
+            } => {
                 out.insert(n.clone());
             }
             BldStmt::Block { body, .. } => collect_assigned(body, out),
-            BldStmt::When { then, otherwise, .. } => {
+            BldStmt::When {
+                then, otherwise, ..
+            } => {
                 collect_assigned(then, out);
                 if let Some(els) = otherwise {
                     collect_assigned(els, out);
@@ -357,7 +368,12 @@ impl<'a> BldLowerer<'a> {
         root_path: Option<std::path::PathBuf>,
     ) -> Self {
         let empty = Body::new("", None);
-        let span = Span { start: 0, end: 0, line: 1, column: 1 };
+        let span = Span {
+            start: 0,
+            end: 0,
+            line: 1,
+            column: 1,
+        };
         BldLowerer {
             isa,
             regs,
@@ -386,8 +402,7 @@ impl<'a> BldLowerer<'a> {
                 self.modules.insert(canon);
             }
         }
-        let program = parse_bld(source)
-            .map_err(|e| format!("bld: {e}"))?;
+        let program = parse_bld(source).map_err(|e| format!("bld: {e}"))?;
         self.root_span = program.span;
         self.cur_file = self
             .root_path
@@ -416,7 +431,12 @@ impl<'a> BldLowerer<'a> {
     }
 
     /// Merge one file's top-level items, recursing through `.bld` imports.
-    fn load_items(&mut self, items: Vec<BldTopLevel>, file: String, depth: usize) -> Result<(), String> {
+    fn load_items(
+        &mut self,
+        items: Vec<BldTopLevel>,
+        file: String,
+        depth: usize,
+    ) -> Result<(), String> {
         self.cur_file = file.clone();
         if depth > MAX_IMPORT_DEPTH {
             return Err(self.fail(
@@ -434,9 +454,7 @@ impl<'a> BldLowerer<'a> {
                 BldTopLevel::Const(c) => self.stream.push((Stream::Const(c), file.clone())),
                 BldTopLevel::Defn(d) => self.stream.push((Stream::Defn(d), file.clone())),
                 BldTopLevel::Bootstrap(b) => self.stream.push((Stream::Bootstrap(b), file.clone())),
-                BldTopLevel::ExternFn(e) => {
-                    self.stream.push((Stream::ExternFn(e), file.clone()))
-                }
+                BldTopLevel::ExternFn(e) => self.stream.push((Stream::ExternFn(e), file.clone())),
             }
         }
         Ok(())
@@ -452,9 +470,13 @@ impl<'a> BldLowerer<'a> {
         span: Span,
     ) -> Result<(), String> {
         let resolved = self.resolve_import_path(path, from_file, span)?;
-        let canonical = resolved
-            .canonicalize()
-            .map_err(|e| self.fail(&format!("import `{path}`"), &format!("it cannot be canonicalized: {e}"), "use a regular file path"))?;
+        let canonical = resolved.canonicalize().map_err(|e| {
+            self.fail(
+                &format!("import `{path}`"),
+                &format!("it cannot be canonicalized: {e}"),
+                "use a regular file path",
+            )
+        })?;
         let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
         match ext {
             "bld" => {
@@ -462,11 +484,14 @@ impl<'a> BldLowerer<'a> {
                     return Ok(()); // diamond or cycle — merged once
                 }
                 let src = std::fs::read_to_string(&resolved).map_err(|e| {
-                    self.fail(&format!("import `{path}`"), &format!("it cannot be read: {e}"), "check the path")
+                    self.fail(
+                        &format!("import `{path}`"),
+                        &format!("it cannot be read: {e}"),
+                        "check the path",
+                    )
                 })?;
-                let nested = parse_bld(&src).map_err(|e| {
-                    format!("bld `{}`: {e}", resolved.display())
-                })?;
+                let nested =
+                    parse_bld(&src).map_err(|e| format!("bld `{}`: {e}", resolved.display()))?;
                 self.load_items(nested.items, resolved.display().to_string(), depth + 1)
             }
             "bad" => {
@@ -476,7 +501,11 @@ impl<'a> BldLowerer<'a> {
                 }
                 let args = canonical.display().to_string();
                 self.stream.push((
-                    Stream::Import(BadDirective { name: "import".to_string(), args, span }),
+                    Stream::Import(BadDirective {
+                        name: "import".to_string(),
+                        args,
+                        span,
+                    }),
                     from_file.to_string(),
                 ));
                 Ok(())
@@ -543,17 +572,24 @@ impl<'a> BldLowerer<'a> {
         span: Span,
     ) -> Result<(), String> {
         let src = std::fs::read_to_string(resolved).map_err(|e| {
-            self.fail(&format!("import `{path}`"), &format!("it cannot be read: {e}"), "check the path")
+            self.fail(
+                &format!("import `{path}`"),
+                &format!("it cannot be read: {e}"),
+                "check the path",
+            )
         })?;
         let prog = parse_bad(&src).map_err(|e| {
-            format!("bad `{}`: line {}: {}", resolved.display(), e.line, e.message)
+            format!(
+                "bad `{}`: line {}: {}",
+                resolved.display(),
+                e.line,
+                e.message
+            )
         })?;
         let file = resolved.display().to_string();
         for item in prog.items {
             let (name, sig) = match &item {
-                BadTopLevel::Label(l) => {
-                    (l.name.clone(), Sig::external_label(l.span, &file))
-                }
+                BadTopLevel::Label(l) => (l.name.clone(), Sig::external_label(l.span, &file)),
                 BadTopLevel::RawBlock(r) => match &r.name {
                     Some(n) => (n.clone(), Sig::external_label(r.span, &file)),
                     None => continue,
@@ -777,8 +813,9 @@ impl<'a> BldLowerer<'a> {
                     "`{other}` is not a scalar class — a .bld recipe manipulates machine words"
                 )),
             },
-            _ => Err("this type has no .bld value class — recipes manipulate machine words"
-                .to_string()),
+            _ => Err(
+                "this type has no .bld value class — recipes manipulate machine words".to_string(),
+            ),
         }
     }
 
@@ -1076,7 +1113,11 @@ impl<'a> BldLowerer<'a> {
                 self.body.reserved.push(reg.clone());
                 reg
             };
-            let binding = Binding { reg: Some(home), class: *class, konst: None };
+            let binding = Binding {
+                reg: Some(home),
+                class: *class,
+                konst: None,
+            };
             self.scopes_insert(pname, binding)?;
         }
         Ok(())
@@ -1087,7 +1128,9 @@ impl<'a> BldLowerer<'a> {
     fn stmt(&mut self, st: &BldStmt, pos: RecipePos) -> Result<(), String> {
         self.cur_span = stmt_span(st);
         match st {
-            BldStmt::Let { name, ty, value, .. } => self.st_let(name, ty.as_ref(), value),
+            BldStmt::Let {
+                name, ty, value, ..
+            } => self.st_let(name, ty.as_ref(), value),
             BldStmt::Assign { target, value, .. } => self.st_assign(target, value),
             BldStmt::Call { callee, args, .. } => {
                 let _ = self.lower_call(callee, args)?;
@@ -1101,9 +1144,12 @@ impl<'a> BldLowerer<'a> {
                 self.body.scopes.pop();
                 Ok(())
             }
-            BldStmt::When { cond, then, otherwise, .. } => {
-                self.st_when(cond, then, otherwise.as_deref())
-            }
+            BldStmt::When {
+                cond,
+                then,
+                otherwise,
+                ..
+            } => self.st_when(cond, then, otherwise.as_deref()),
             BldStmt::Loop { body, .. } => self.st_loop(body),
             BldStmt::While { cond, body, .. } => self.st_while(cond, body),
             BldStmt::Break { .. } => self.st_break(),
@@ -1112,10 +1158,10 @@ impl<'a> BldLowerer<'a> {
             BldStmt::Bad { text, .. } => self.st_bad(text, pos),
             BldStmt::Instr(i) => self.st_instr(i),
             BldStmt::Bind { name, register, .. } => self.st_bind(name, register),
-            BldStmt::WriteReg { register, value, .. } => self.st_write_reg(register, value),
-            BldStmt::RawClobber { text, clobbers, .. } => {
-                self.st_raw_clobber(text, clobbers, pos)
-            }
+            BldStmt::WriteReg {
+                register, value, ..
+            } => self.st_write_reg(register, value),
+            BldStmt::RawClobber { text, clobbers, .. } => self.st_raw_clobber(text, clobbers, pos),
         }
     }
 
@@ -1141,18 +1187,32 @@ impl<'a> BldLowerer<'a> {
             (Some(_), _) if self.body.mutated.contains(name) => {
                 let reg = self.fresh_vreg(class);
                 self.emit_copy(&reg, v.op.clone(), class)?;
-                Binding { reg: Some(reg), class, konst: None }
+                Binding {
+                    reg: Some(reg),
+                    class,
+                    konst: None,
+                }
             }
-            (Some(k), _) => Binding { reg: None, class, konst: Some(k) },
+            (Some(k), _) => Binding {
+                reg: None,
+                class,
+                konst: Some(k),
+            },
             // A freshly emitted single-def value register becomes the
             // binding's storage directly — no second copy.
-            (None, BadOperand::Name(reg)) if v.temp => {
-                Binding { reg: Some(reg.clone()), class, konst: None }
-            }
+            (None, BadOperand::Name(reg)) if v.temp => Binding {
+                reg: Some(reg.clone()),
+                class,
+                konst: None,
+            },
             (None, _) => {
                 let reg = self.fresh_vreg(class);
                 self.emit_copy(&reg, v.op.clone(), class)?;
-                Binding { reg: Some(reg), class, konst: None }
+                Binding {
+                    reg: Some(reg),
+                    class,
+                    konst: None,
+                }
             }
         };
         self.scopes_insert(name, binding)
@@ -1169,7 +1229,9 @@ impl<'a> BldLowerer<'a> {
         class: VClass,
         value: &Expr,
     ) -> Result<bool, String> {
-        let Expr::BinaryOp(op, l, r) = value else { return Ok(false) };
+        let Expr::BinaryOp(op, l, r) = value else {
+            return Ok(false);
+        };
         let op = *op;
         if matches!(
             op,
@@ -1185,18 +1247,24 @@ impl<'a> BldLowerer<'a> {
         ) {
             return Ok(false);
         }
-        let Expr::Identifier(lhs) = l.as_ref() else { return Ok(false) };
+        let Expr::Identifier(lhs) = l.as_ref() else {
+            return Ok(false);
+        };
         if lhs != name {
             return Ok(false);
         }
         let rv = self.expr(r)?;
         let rv = self.promote(rv, class)?;
         let mn = self.binop_mnemonic(op, class)?;
-        self.emit(mn, vec![
-            BadOperand::Name(reg.to_string()),
-            BadOperand::Name(reg.to_string()),
-            rv.op.clone(),
-        ], class)?;
+        self.emit(
+            mn,
+            vec![
+                BadOperand::Name(reg.to_string()),
+                BadOperand::Name(reg.to_string()),
+                rv.op.clone(),
+            ],
+            class,
+        )?;
         Ok(true)
     }
 
@@ -1243,7 +1311,11 @@ impl<'a> BldLowerer<'a> {
                 self.emit_copy(&reg, v.op.clone(), binding.class)?;
                 self.rebind(
                     &name,
-                    Binding { reg: Some(reg), class: binding.class, konst: None },
+                    Binding {
+                        reg: Some(reg),
+                        class: binding.class,
+                        konst: None,
+                    },
                 )
             }
         }
@@ -1335,7 +1407,13 @@ impl<'a> BldLowerer<'a> {
     /// The condition of a trailing `when cond: break` (one-way, single
     /// `break`), if the loop body ends with one — the back-edge fusion case.
     fn trailing_break(body: &[BldStmt]) -> Option<&Expr> {
-        let BldStmt::When { cond, then, otherwise: None, .. } = body.last()? else {
+        let BldStmt::When {
+            cond,
+            then,
+            otherwise: None,
+            ..
+        } = body.last()?
+        else {
             return None;
         };
         if then.len() == 1 && matches!(then[0], BldStmt::Break { .. }) {
@@ -1392,7 +1470,10 @@ impl<'a> BldLowerer<'a> {
                     "this recipe returns a {}, so a bare `return;` cannot end it",
                     class.name()
                 ),
-                &format!("return a {} value, or drop the return type from the signature", class.name()),
+                &format!(
+                    "return a {} value, or drop the return type from the signature",
+                    class.name()
+                ),
             )),
         }
     }
@@ -1420,7 +1501,11 @@ impl<'a> BldLowerer<'a> {
                     "use a register the target defines, or `raw <target>` for target-only code",
                 ));
             }
-            let class = if name.starts_with('f') { VClass::Float } else { VClass::Int };
+            let class = if name.starts_with('f') {
+                VClass::Float
+            } else {
+                VClass::Int
+            };
             return Ok((name.to_string(), class));
         }
         if let Some((canon, width)) = self.regs.resolve_alias(name, &self.family) {
@@ -1431,7 +1516,11 @@ impl<'a> BldLowerer<'a> {
                     "use the full-width name (`rax`, `x0`, `a0`) or a raw region",
                 ));
             }
-            let class = if canon.starts_with('f') { VClass::Float } else { VClass::Int };
+            let class = if canon.starts_with('f') {
+                VClass::Float
+            } else {
+                VClass::Int
+            };
             return Ok((canon, class));
         }
         let targets = self.regs.alias_targets(name);
@@ -1455,7 +1544,14 @@ impl<'a> BldLowerer<'a> {
             // fine — two pins to the same register are the author's call
         }
         self.body.reserved.push(canon.clone());
-        self.scopes_insert(name, Binding { reg: Some(canon), class, konst: None })
+        self.scopes_insert(
+            name,
+            Binding {
+                reg: Some(canon),
+                class,
+                konst: None,
+            },
+        )
     }
 
     fn st_write_reg(&mut self, register: &str, value: &Expr) -> Result<(), String> {
@@ -1467,7 +1563,10 @@ impl<'a> BldLowerer<'a> {
     }
 
     fn st_raw_clobber(
-        &mut self, text: &str, clobbers: &[String], pos: RecipePos,
+        &mut self,
+        text: &str,
+        clobbers: &[String],
+        pos: RecipePos,
     ) -> Result<(), String> {
         for c in clobbers {
             let (canon, _) = self.canonical_phys(c)?;
@@ -1502,9 +1601,9 @@ impl<'a> BldLowerer<'a> {
             self.emit_copy(&addr, ops[1].clone(), VClass::Int)?;
             ops[1] = BadOperand::Name(addr);
         }
-        let is_float = ops.iter().any(|o| {
-            matches!(o, BadOperand::Name(n) if n.starts_with("fv"))
-        });
+        let is_float = ops
+            .iter()
+            .any(|o| matches!(o, BadOperand::Name(n) if n.starts_with("fv")));
         let class = if is_float { VClass::Float } else { VClass::Int };
         self.emit(&i.mnemonic, ops, class)
     }
@@ -1567,7 +1666,12 @@ impl<'a> BldLowerer<'a> {
     }
 
     fn scopes_insert(&mut self, name: &str, b: Binding) -> Result<(), String> {
-        if self.body.scopes.last().map_or(false, |s| s.contains_key(name)) {
+        if self
+            .body
+            .scopes
+            .last()
+            .map_or(false, |s| s.contains_key(name))
+        {
             return Err(self.fail(
                 &format!("`let {name}`"),
                 "the name is already bound in this scope",
@@ -1669,7 +1773,9 @@ impl<'a> BldLowerer<'a> {
         }
         let v = self.expr(inner)?;
         if let Some(k) = v.konst {
-            return self.fold_unary(op, k).map(|r| Lowered::konst(r, result_class(r, v.class)));
+            return self
+                .fold_unary(op, k)
+                .map(|r| Lowered::konst(r, result_class(r, v.class)));
         }
         let class = match (op, v.class) {
             (UnaryOpKind::Neg, VClass::Float) => VClass::Float,
@@ -1797,8 +1903,14 @@ impl<'a> BldLowerer<'a> {
                 "a string literal",
                 "a .bld value is a machine word — text has no value form",
             ),
-            Expr::Field(..) => ("field access", "recipes manipulate machine words, not structures"),
-            Expr::Index(..) => ("indexing", "recipes manipulate machine words, not collections"),
+            Expr::Field(..) => (
+                "field access",
+                "recipes manipulate machine words, not structures",
+            ),
+            Expr::Index(..) => (
+                "indexing",
+                "recipes manipulate machine words, not collections",
+            ),
             Expr::MethodCall(..) => ("a method call", "methods belong to the .bv tier"),
             Expr::Reflect(..) => ("reflection", "reflection belongs to the .bv tier"),
             Expr::Slice { .. } => ("a slice", "slices belong to the .bv tier"),
@@ -2006,7 +2118,11 @@ impl<'a> BldLowerer<'a> {
     /// substituting a pooled literal into a register slot mis-assembles.
     fn branch_operand(&mut self, v: &Lowered) -> Result<BadOperand, String> {
         match v {
-            Lowered { class: VClass::Float, konst: Some(_), .. } => {
+            Lowered {
+                class: VClass::Float,
+                konst: Some(_),
+                ..
+            } => {
                 let dst = self.fresh_vreg(VClass::Float);
                 self.emit_copy(&dst, v.op.clone(), VClass::Float)?;
                 Ok(BadOperand::Name(dst))
@@ -2023,10 +2139,18 @@ impl<'a> BldLowerer<'a> {
             let dst = self.fresh_vreg(VClass::Bool);
             match op {
                 BinaryOpKind::Lt | BinaryOpKind::Ge => {
-                    self.emit("slt", vec![BadOperand::Name(dst.clone()), l.op.clone(), r.op.clone()], VClass::Int)?;
+                    self.emit(
+                        "slt",
+                        vec![BadOperand::Name(dst.clone()), l.op.clone(), r.op.clone()],
+                        VClass::Int,
+                    )?;
                 }
                 BinaryOpKind::Gt | BinaryOpKind::Le => {
-                    self.emit("slt", vec![BadOperand::Name(dst.clone()), r.op.clone(), l.op.clone()], VClass::Int)?;
+                    self.emit(
+                        "slt",
+                        vec![BadOperand::Name(dst.clone()), r.op.clone(), l.op.clone()],
+                        VClass::Int,
+                    )?;
                 }
                 _ => return self.cmp_dance(op, l, r, false),
             }
@@ -2074,7 +2198,9 @@ impl<'a> BldLowerer<'a> {
     /// (`Store`/`Load`/`ReadControlReg`/`WriteControlReg`). Returns
     /// `Some(result)` when handled, `None` for any other callee.
     fn lower_engine_verb(
-        &mut self, callee: &str, args: &[Expr],
+        &mut self,
+        callee: &str,
+        args: &[Expr],
     ) -> Result<Option<Option<Lowered>>, String> {
         match callee {
             "Store" => {
@@ -2090,13 +2216,21 @@ impl<'a> BldLowerer<'a> {
             "Load" => {
                 let addr = self.check_one_arg(callee, args, "Load(addr)")?;
                 let reg = self.fresh_vreg(VClass::Int);
-                self.emit("load", vec![BadOperand::Name(reg.clone()), addr], VClass::Int)?;
+                self.emit(
+                    "load",
+                    vec![BadOperand::Name(reg.clone()), addr],
+                    VClass::Int,
+                )?;
                 Ok(Some(Some(Lowered::temp_reg(reg, VClass::Int))))
             }
             "ReadControlReg" => {
                 let n = self.check_one_arg(callee, args, "ReadControlReg(csr)")?;
                 let reg = self.fresh_vreg(VClass::Int);
-                self.emit("readcr", vec![BadOperand::Name(reg.clone()), n], VClass::Int)?;
+                self.emit(
+                    "readcr",
+                    vec![BadOperand::Name(reg.clone()), n],
+                    VClass::Int,
+                )?;
                 Ok(Some(Some(Lowered::temp_reg(reg, VClass::Int))))
             }
             _ => Ok(None),
@@ -2104,7 +2238,10 @@ impl<'a> BldLowerer<'a> {
     }
 
     fn check_one_arg(
-        &mut self, callee: &str, args: &[Expr], fix: &str,
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        fix: &str,
     ) -> Result<BadOperand, String> {
         if args.len() != 1 {
             return Err(self.fail(
@@ -2117,7 +2254,10 @@ impl<'a> BldLowerer<'a> {
     }
 
     fn check_two_args(
-        &mut self, callee: &str, args: &[Expr], fix: &str,
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        fix: &str,
     ) -> Result<[BadOperand; 2], String> {
         if args.len() != 2 {
             return Err(self.fail(
@@ -2132,7 +2272,9 @@ impl<'a> BldLowerer<'a> {
     /// `addr(label)` and `copyreg(rN)` — the two symbolic builtins that
     /// emit a core op with a fresh virtual destination. `None` otherwise.
     fn lower_special_call(
-        &mut self, callee: &str, args: &[Expr],
+        &mut self,
+        callee: &str,
+        args: &[Expr],
     ) -> Result<Option<Lowered>, String> {
         match callee {
             "addr" => {
@@ -2207,7 +2349,11 @@ impl<'a> BldLowerer<'a> {
         if sig.check_arity && args.len() != sig.params.len() {
             return Err(self.fail(
                 &format!("call to `{callee}`"),
-                &format!("it takes {} argument(s), got {}", sig.params.len(), args.len()),
+                &format!(
+                    "it takes {} argument(s), got {}",
+                    sig.params.len(),
+                    args.len()
+                ),
                 &format!("match the `defn {callee}` signature"),
             ));
         }
@@ -2307,7 +2453,11 @@ impl<'a> BldLowerer<'a> {
     }
 
     /// Phase 2: copy the staged virtuals into the ABI argument registers.
-    fn copy_staged_out(&mut self, staged: &[(VClass, String)], abi: &ArgRegs) -> Result<(), String> {
+    fn copy_staged_out(
+        &mut self,
+        staged: &[(VClass, String)],
+        abi: &ArgRegs,
+    ) -> Result<(), String> {
         let mut cur = ArgCursor::default();
         for (class, reg) in staged {
             let target = match abi.next_slot(*class, cur) {
@@ -2356,7 +2506,9 @@ impl<'a> BldLowerer<'a> {
             ));
         }
         if matches!(row.imm, ImmHandling::Illegal)
-            && ops.iter().any(|o| matches!(o, BadOperand::Int(_) | BadOperand::Float(_)))
+            && ops
+                .iter()
+                .any(|o| matches!(o, BadOperand::Int(_) | BadOperand::Float(_)))
         {
             for slot in ops.iter_mut() {
                 if matches!(slot, BadOperand::Int(_) | BadOperand::Float(_)) {
@@ -2381,7 +2533,11 @@ impl<'a> BldLowerer<'a> {
     }
 
     fn emit_copy(&mut self, dst: &str, src: BadOperand, class: VClass) -> Result<(), String> {
-        let mn = if class == VClass::Float { "fmov" } else { "mov" };
+        let mn = if class == VClass::Float {
+            "fmov"
+        } else {
+            "mov"
+        };
         let ops = vec![BadOperand::Name(dst.to_string()), src];
         self.emit(mn, ops, class)
     }
@@ -2503,7 +2659,9 @@ fn try_coalesce(items: &mut Vec<BadBodyItem>, i: usize) -> bool {
 /// Drop `mov X, X` / `fmov X, X` no-ops the coalescer can produce.
 fn remove_self_moves(items: &mut Vec<BadBodyItem>) {
     items.retain(|it| {
-        let BadBodyItem::Instr(ins) = it else { return true };
+        let BadBodyItem::Instr(ins) = it else {
+            return true;
+        };
         if ins.mnemonic != "mov" && ins.mnemonic != "fmov" {
             return true;
         }
@@ -2515,11 +2673,40 @@ fn remove_self_moves(items: &mut Vec<BadBodyItem>) {
 fn writes_first_operand(mn: &str) -> bool {
     matches!(
         mn,
-        "mov" | "fmov" | "load" | "addr" | "ldb" | "ldub" | "ldh" | "lduh"
-            | "add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor"
-            | "shl" | "shr" | "sar" | "slt" | "sltu" | "not" | "neg"
-            | "mulhi" | "mulhiu" | "itof" | "ftoi" | "fadd" | "fsub"
-            | "fmul" | "fdiv" | "fneg" | "fabs" | "readcr"
+        "mov"
+            | "fmov"
+            | "load"
+            | "addr"
+            | "ldb"
+            | "ldub"
+            | "ldh"
+            | "lduh"
+            | "add"
+            | "sub"
+            | "mul"
+            | "div"
+            | "mod"
+            | "and"
+            | "or"
+            | "xor"
+            | "shl"
+            | "shr"
+            | "sar"
+            | "slt"
+            | "sltu"
+            | "not"
+            | "neg"
+            | "mulhi"
+            | "mulhiu"
+            | "itof"
+            | "ftoi"
+            | "fadd"
+            | "fsub"
+            | "fmul"
+            | "fdiv"
+            | "fneg"
+            | "fabs"
+            | "readcr"
     )
 }
 
@@ -2541,7 +2728,9 @@ fn copy_pair(item: &BadBodyItem) -> Option<(String, BadOperand)> {
 fn count_name(items: &[BadBodyItem], name: &str) -> usize {
     let mut n = 0;
     for it in items {
-        let BadBodyItem::Instr(ins) = it else { continue };
+        let BadBodyItem::Instr(ins) = it else {
+            continue;
+        };
         for op in &ins.operands {
             if matches!(op, BadOperand::Name(x) if x == name) {
                 n += 1;
@@ -2590,11 +2779,7 @@ fn dual(br: &str) -> Option<&'static str> {
 /// The return-register convention of the .bad ABI: r0 (mapped to the
 /// architecture's integer return register — %rax/x0/a0) or f0 for float.
 fn ret_reg(class: VClass) -> &'static str {
-    if class == VClass::Float {
-        "f0"
-    } else {
-        "r0"
-    }
+    if class == VClass::Float { "f0" } else { "r0" }
 }
 
 /// The text form of a float constant — the .bad float pool keys on this
@@ -2627,12 +2812,23 @@ fn fold_int(op: BinaryOpKind, x: i64, y: i64) -> Result<ConstVal, String> {
     use BinaryOpKind::*;
     let overflow = |what: String| format!("{what} overflows Int - shrink the operands");
     let v = match op {
-        Add => x.checked_add(y).map(ConstVal::Int).ok_or_else(|| overflow(format!("{x} + {y}")))?,
-        Sub => x.checked_sub(y).map(ConstVal::Int).ok_or_else(|| overflow(format!("{x} - {y}")))?,
-        Mul => x.checked_mul(y).map(ConstVal::Int).ok_or_else(|| overflow(format!("{x} * {y}")))?,
+        Add => x
+            .checked_add(y)
+            .map(ConstVal::Int)
+            .ok_or_else(|| overflow(format!("{x} + {y}")))?,
+        Sub => x
+            .checked_sub(y)
+            .map(ConstVal::Int)
+            .ok_or_else(|| overflow(format!("{x} - {y}")))?,
+        Mul => x
+            .checked_mul(y)
+            .map(ConstVal::Int)
+            .ok_or_else(|| overflow(format!("{x} * {y}")))?,
         Div => {
             if y == 0 {
-                return Err(format!("{x} / 0 divides by zero - guard it at run time or fix the constant"));
+                return Err(format!(
+                    "{x} / 0 divides by zero - guard it at run time or fix the constant"
+                ));
             }
             x.checked_div(y)
                 .map(ConstVal::Int)
@@ -2640,7 +2836,9 @@ fn fold_int(op: BinaryOpKind, x: i64, y: i64) -> Result<ConstVal, String> {
         }
         Mod => {
             if y == 0 {
-                return Err(format!("{x} % 0 divides by zero - guard it at run time or fix the constant"));
+                return Err(format!(
+                    "{x} % 0 divides by zero - guard it at run time or fix the constant"
+                ));
             }
             x.checked_rem(y)
                 .map(ConstVal::Int)
@@ -2672,7 +2870,10 @@ fn fold_int(op: BinaryOpKind, x: i64, y: i64) -> Result<ConstVal, String> {
         And => ConstVal::Int((x != 0 && y != 0) as i64),
         Or => ConstVal::Int((x != 0 || y != 0) as i64),
         Concat => {
-            return Err("concatenation has no constant form - build the data in a `bad { }` block".to_string());
+            return Err(
+                "concatenation has no constant form - build the data in a `bad { }` block"
+                    .to_string(),
+            );
         }
     };
     Ok(v)
@@ -2710,9 +2911,10 @@ fn stmts_contain_call(stmts: &[BldStmt]) -> bool {
     stmts.iter().any(|st| match st {
         BldStmt::Call { .. } => true,
         BldStmt::Block { body, .. } => stmts_contain_call(body),
-        BldStmt::When { then, otherwise, .. } => {
-            stmts_contain_call(then)
-                || otherwise.as_ref().map_or(false, |o| stmts_contain_call(o))
+        BldStmt::When {
+            then, otherwise, ..
+        } => {
+            stmts_contain_call(then) || otherwise.as_ref().map_or(false, |o| stmts_contain_call(o))
         }
         BldStmt::Loop { body, .. } | BldStmt::While { body, .. } => stmts_contain_call(body),
         // Raw regions are opaque; assume they can call, so params stash.

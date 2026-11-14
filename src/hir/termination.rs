@@ -101,7 +101,9 @@ mod tests {
 
     fn compare(src: &str) -> (Vec<String>, Vec<String>) {
         let tokens = crate::lexer::tokenize(src).unwrap();
-        let items = crate::parser::Parser::new(tokens, src).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .unwrap();
         let ast = crate::analysis::termination::analyze(&items);
         let hir = analyze(&lower_program(&items));
         assert_eq!(hir, ast, "HIR/AST termination drift");
@@ -110,9 +112,8 @@ mod tests {
 
     #[test]
     fn unreachable_after_value_term() {
-        let (errors, warnings) = compare(
-            "txn n [true][true] { work(); endprogram 1; dead(); term; };",
-        );
+        let (errors, warnings) =
+            compare("txn n [true][true] { work(); endprogram 1; dead(); term; };");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("unreachable"));
         assert!(errors[0].contains("n"));
@@ -121,17 +122,15 @@ mod tests {
 
     #[test]
     fn unreachable_inside_guard_body() {
-        let (errors, _) = compare(
-            "txn n [true][true] { when true { print(); endprogram 1; dead(); }; term; };",
-        );
+        let (errors, _) =
+            compare("txn n [true][true] { when true { print(); endprogram 1; dead(); }; term; };");
         assert_eq!(errors.len(), 1, "{errors:?}");
     }
 
     #[test]
     fn bare_term_guard_hint_and_trailing_guard() {
-        let (errors, warnings) = compare(
-            "txn n [true][true] { when true { print(); term; }; more(); term; };",
-        );
+        let (errors, warnings) =
+            compare("txn n [true][true] { when true { print(); term; }; more(); term; };");
         assert!(errors.is_empty());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("checkpoint"));
@@ -142,9 +141,8 @@ mod tests {
 
     #[test]
     fn valid_swan_song_passes() {
-        let (errors, warnings) = compare(
-            "txn n [true][true] { when true { endprogram PrintLn#(1); }; term; };",
-        );
+        let (errors, warnings) =
+            compare("txn n [true][true] { when true { endprogram PrintLn#(1); }; term; };");
         assert!(errors.is_empty());
         assert!(warnings.is_empty(), "{warnings:?}");
     }

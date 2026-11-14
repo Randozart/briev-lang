@@ -21,8 +21,9 @@ pub fn walk_expr_mut<F: FnMut(&mut HirExpr)>(expr: &mut HirExpr, f: &mut F) {
         | HirExprKind::Await(inner)
         | HirExprKind::IsType { inner, .. }
         | HirExprKind::Lambda { body: inner, .. } => walk_expr_mut(inner, f),
-        HirExprKind::Field { receiver, .. }
-        | HirExprKind::Reflect { receiver, .. } => walk_expr_mut(receiver, f),
+        HirExprKind::Field { receiver, .. } | HirExprKind::Reflect { receiver, .. } => {
+            walk_expr_mut(receiver, f)
+        }
         HirExprKind::MethodCall { receiver, args, .. } => {
             walk_expr_mut(receiver, f);
             walk_exprs_mut(args, f);
@@ -32,7 +33,12 @@ pub fn walk_expr_mut<F: FnMut(&mut HirExpr)>(expr: &mut HirExpr, f: &mut F) {
             walk_expr_mut(right, f);
         }
         HirExprKind::Wildcard => {}
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             walk_expr_mut(array, f);
             walk_opt_box_mut(start.as_deref_mut(), f);
             walk_opt_box_mut(end.as_deref_mut(), f);
@@ -43,7 +49,11 @@ pub fn walk_expr_mut<F: FnMut(&mut HirExpr)>(expr: &mut HirExpr, f: &mut F) {
             walk_expr_mut(end, f);
         }
         HirExprKind::Spawn { args, .. } => walk_exprs_mut(args, f),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             walk_expr_mut(condition, f);
             walk_expr_mut(then_branch, f);
             walk_opt_box_mut(else_branch.as_deref_mut(), f);
@@ -167,7 +177,9 @@ pub fn walk_pattern_mut<F: FnMut(&mut HirExpr)>(pattern: &mut HirPattern, f: &mu
                 walk_pattern_mut(pat, f);
             }
         }
-        HirPatternKind::Wildcard | HirPatternKind::Binding(_) | HirPatternKind::TypedBinding(_, _) => {}
+        HirPatternKind::Wildcard
+        | HirPatternKind::Binding(_)
+        | HirPatternKind::TypedBinding(_, _) => {}
     }
 }
 
@@ -204,8 +216,9 @@ pub fn walk_expr<F: FnMut(&HirExpr)>(expr: &HirExpr, f: &mut F) {
         | HirExprKind::Await(inner)
         | HirExprKind::IsType { inner, .. }
         | HirExprKind::Lambda { body: inner, .. } => walk_expr(inner, f),
-        HirExprKind::Field { receiver, .. }
-        | HirExprKind::Reflect { receiver, .. } => walk_expr(receiver, f),
+        HirExprKind::Field { receiver, .. } | HirExprKind::Reflect { receiver, .. } => {
+            walk_expr(receiver, f)
+        }
         HirExprKind::MethodCall { receiver, args, .. } => {
             walk_expr(receiver, f);
             walk_exprs(args, f);
@@ -215,7 +228,12 @@ pub fn walk_expr<F: FnMut(&HirExpr)>(expr: &HirExpr, f: &mut F) {
             walk_expr(right, f);
         }
         HirExprKind::Wildcard => {}
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             walk_expr(array, f);
             walk_opt_box(start.as_deref(), f);
             walk_opt_box(end.as_deref(), f);
@@ -226,7 +244,11 @@ pub fn walk_expr<F: FnMut(&HirExpr)>(expr: &HirExpr, f: &mut F) {
             walk_expr(end, f);
         }
         HirExprKind::Spawn { args, .. } => walk_exprs(args, f),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             walk_expr(condition, f);
             walk_expr(then_branch, f);
             walk_opt_box(else_branch.as_deref(), f);
@@ -302,9 +324,7 @@ pub fn walk_stmt<F: FnMut(&HirExpr)>(stmt: &HirStmt, f: &mut F) {
                 walk_body(&arm.body, f);
             }
         }
-        HirStmtKind::EndProgram(expr) | HirStmtKind::Rollback(expr) => {
-            walk_opt(expr.as_ref(), f)
-        }
+        HirStmtKind::EndProgram(expr) | HirStmtKind::Rollback(expr) => walk_opt(expr.as_ref(), f),
         HirStmtKind::TrgBinding { instance, .. } => walk_expr(instance, f),
         HirStmtKind::Open(left, right) => {
             walk_expr(left, f);

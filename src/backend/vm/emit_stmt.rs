@@ -1,24 +1,34 @@
 // 2026-07-25: VM backend — statement bytecode emission.
 
-use crate::ast::*;
-use crate::ast::top::*;
-use crate::ast::Statement;
 use super::VmBackend;
+use crate::ast::Statement;
+use crate::ast::top::*;
+use crate::ast::*;
 
 impl VmBackend {
     pub(crate) fn emit_stmt(&mut self, stmt: &Statement) {
         match stmt {
-            Statement::Let { name, names, ty, expr, modifiers: _, .. } => {
+            Statement::Let {
+                name,
+                names,
+                ty,
+                expr,
+                modifiers: _,
+                ..
+            } => {
                 // 2026-07-30: Handle tuple destructuring: let (a, b, c) = expr;
                 if names.is_empty() {
                     // Single variable
                     // 2026-07-30: Allocate slots for struct types (let stack: VMStack;
                     // allocates enough slots for all struct fields + len).
                     let field_count = if let Some(Type::Custom(sname)) = ty {
-                        self.struct_fields.get(sname.as_str())
+                        self.struct_fields
+                            .get(sname.as_str())
                             .map(|f| f.len() as u8)
                             .unwrap_or(1)
-                    } else { 1 };
+                    } else {
+                        1
+                    };
                     let slot = self.next_local_slot;
                     self.next_local_slot += field_count;
                     self.local_slots.insert(name.clone(), slot);
@@ -74,7 +84,7 @@ impl VmBackend {
                             _ => None,
                         };
                         let offset = self.field_offset(sname, field_name) as i64;
-                        self.emit_expr(obj);  // push base ptr
+                        self.emit_expr(obj); // push base ptr
                         self.asm.emit_push_i64(offset);
                         self.asm.emit_add();
                         self.asm.emit_swap(); // val is on top, addr under
@@ -82,9 +92,9 @@ impl VmBackend {
                     }
                     Expr::Index(obj, idx) => {
                         // data[sl] = val → emit val, emit base, emit idx, mul 8, add, STORE
-                        self.emit_expr(obj);  // push base ptr
-                        self.emit_expr(idx);  // push index
-                        self.asm.emit_push_i8(3);  // scale by 8
+                        self.emit_expr(obj); // push base ptr
+                        self.emit_expr(idx); // push index
+                        self.asm.emit_push_i8(3); // scale by 8
                         self.asm.emit_shl();
                         self.asm.emit_add();
                         self.asm.emit_swap(); // val is on top, addr under
@@ -135,7 +145,10 @@ impl VmBackend {
                 self.next_local_slot = saved_slots;
             }
 
-            Statement::Match { expr: scrutinee, arms } => {
+            Statement::Match {
+                expr: scrutinee,
+                arms,
+            } => {
                 self.emit_expr(&**scrutinee);
                 let end_label = self.fresh_label("stmt_match_end");
                 // 2026-08-22 (Phase 4a): unified Pattern grammar. Each
@@ -194,10 +207,7 @@ impl VmBackend {
                     .next()
                     .unwrap_or("this")
                     .to_string();
-                self.record_unsupported(
-                    &format!("{} statements", kind),
-                    &self.current_fn.clone(),
-                );
+                self.record_unsupported(&format!("{} statements", kind), &self.current_fn.clone());
                 self.asm.emit_trap();
             }
         }

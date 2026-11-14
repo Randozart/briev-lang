@@ -65,40 +65,40 @@ fn scan_line(line: &str, line_num: usize) -> Vec<IntrinsicUse> {
         let Some(dollar_pos) = bytes[pos..].iter().position(|&b| b == b'$') else {
             break;
         };
-            let abs_dollar = pos + dollar_pos;
+        let abs_dollar = pos + dollar_pos;
 
-            // Check that the '$' is followed by '(' (a call) and that
-            // there is at least one identifier char before '$'
-            // (excludes bare `$(Stage)` syntax).
-            if abs_dollar > 0
-                && abs_dollar + 1 < bytes.len()
-                && bytes[abs_dollar + 1] == b'('
-                && bytes[abs_dollar - 1].is_ascii_alphanumeric()
-            {
-                // Extract the identifier before '$'
-                let mut start = abs_dollar;
-                while start > 0 {
-                    let c = bytes[start - 1];
-                    if c.is_ascii_alphanumeric() || c == b'_' {
-                        start -= 1;
-                    } else {
-                        break;
-                    }
+        // Check that the '$' is followed by '(' (a call) and that
+        // there is at least one identifier char before '$'
+        // (excludes bare `$(Stage)` syntax).
+        if abs_dollar > 0
+            && abs_dollar + 1 < bytes.len()
+            && bytes[abs_dollar + 1] == b'('
+            && bytes[abs_dollar - 1].is_ascii_alphanumeric()
+        {
+            // Extract the identifier before '$'
+            let mut start = abs_dollar;
+            while start > 0 {
+                let c = bytes[start - 1];
+                if c.is_ascii_alphanumeric() || c == b'_' {
+                    start -= 1;
+                } else {
+                    break;
                 }
-                let name = String::from_utf8_lossy(&bytes[start..abs_dollar + 1]).to_string();
-
-                // Walk forward to find the matching ')' for snippet extraction
-                let snippet_end = bytes.len().min(abs_dollar + 41);
-                let snippet = line[abs_dollar..snippet_end].to_string();
-
-                let sev = intrinsic_severity(&name);
-                results.push(IntrinsicUse {
-                    line: line_num,
-                    snippet,
-                    intrinsic: name,
-                    severity: sev,
-                });
             }
+            let name = String::from_utf8_lossy(&bytes[start..abs_dollar + 1]).to_string();
+
+            // Walk forward to find the matching ')' for snippet extraction
+            let snippet_end = bytes.len().min(abs_dollar + 41);
+            let snippet = line[abs_dollar..snippet_end].to_string();
+
+            let sev = intrinsic_severity(&name);
+            results.push(IntrinsicUse {
+                line: line_num,
+                snippet,
+                intrinsic: name,
+                severity: sev,
+            });
+        }
 
         pos = abs_dollar + 1;
     }
@@ -107,8 +107,8 @@ fn scan_line(line: &str, line_num: usize) -> Vec<IntrinsicUse> {
 
 /// Audit a single .bv file for $ intrinsic usage.
 pub fn audit_file(path: &str) -> Result<FileAudit, String> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read '{}': {}", path, e))?;
+    let source =
+        std::fs::read_to_string(path).map_err(|e| format!("cannot read '{}': {}", path, e))?;
     let mut uses = Vec::new();
     for (i, line) in source.lines().enumerate() {
         let line_num = i + 1;
@@ -154,7 +154,9 @@ pub fn run_audit(source_file: Option<&str>) -> Result<Vec<FileAudit>, String> {
     // Scan system plugins
     for (name, file_path) in crate::macros::lockfile::discover_plugin_files(None) {
         match audit_file(&file_path) {
-            Ok(audit) => { results.insert(format!("system:{}", name), audit); }
+            Ok(audit) => {
+                results.insert(format!("system:{}", name), audit);
+            }
             Err(e) => eprintln!("warning: {}", e),
         }
     }
@@ -162,7 +164,9 @@ pub fn run_audit(source_file: Option<&str>) -> Result<Vec<FileAudit>, String> {
     // Scan specified source file if provided
     if let Some(src) = source_file {
         match audit_file(src) {
-            Ok(audit) => { results.insert(src.to_string(), audit); }
+            Ok(audit) => {
+                results.insert(src.to_string(), audit);
+            }
             Err(e) => eprintln!("warning: {}", e),
         }
     }
@@ -171,7 +175,9 @@ pub fn run_audit(source_file: Option<&str>) -> Result<Vec<FileAudit>, String> {
     for path in discover_bv_files("lib/std") {
         if !results.contains_key(&path) {
             match audit_file(&path) {
-                Ok(audit) => { results.insert(path, audit); }
+                Ok(audit) => {
+                    results.insert(path, audit);
+                }
                 Err(e) => eprintln!("warning: {}", e),
             }
         }
@@ -188,7 +194,10 @@ pub fn print_audit(results: &[FileAudit]) {
         println!("{}", file.path);
         for use_entry in &file.uses {
             let label = severity_label(use_entry.severity);
-            println!("  [{:>6}] {}:{}   {}", label, use_entry.line, use_entry.intrinsic, use_entry.snippet);
+            println!(
+                "  [{:>6}] {}:{}   {}",
+                label, use_entry.line, use_entry.intrinsic, use_entry.snippet
+            );
         }
     }
 }
@@ -241,7 +250,11 @@ mod tests {
         // $(Stage) blocks should not be detected as $ intrinsics
         let results = scan_line("$(Parsed) { EmitInfo$(\"hi\"); }", 1);
         let names: Vec<&str> = results.iter().map(|r| r.intrinsic.as_str()).collect();
-        assert_eq!(names, vec!["EmitInfo$"], "should only find EmitInfo$, not bare $(");
+        assert_eq!(
+            names,
+            vec!["EmitInfo$"],
+            "should only find EmitInfo$, not bare $("
+        );
     }
 
     #[test]
@@ -279,7 +292,11 @@ mod tests {
     fn test_audit_finds_intrinsics() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("test.bv");
-        std::fs::write(&file_path, "$(Parsed) {\n    let data = FileRead$(\"x.txt\");\n    ShellCmd$(\"curl\");\n};").unwrap();
+        std::fs::write(
+            &file_path,
+            "$(Parsed) {\n    let data = FileRead$(\"x.txt\");\n    ShellCmd$(\"curl\");\n};",
+        )
+        .unwrap();
 
         let audit = audit_file(file_path.to_string_lossy().as_ref()).unwrap();
         assert_eq!(audit.uses.len(), 2);

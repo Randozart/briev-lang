@@ -68,12 +68,23 @@ fn config_encodings() -> HashMap<String, EncodingInfo> {
             continue;
         };
         let char_width = db.field_int(&key, 0).unwrap_or(0) as u64;
-        let index_mode = if char_width > 0 { IndexMode::Direct } else { IndexMode::Scan };
+        let index_mode = if char_width > 0 {
+            IndexMode::Direct
+        } else {
+            IndexMode::Scan
+        };
         let ops = EncodingOps {
             index_at: db.field_string(&key, 1).map(|s| s.to_string()),
             char_len: db.field_string(&key, 2).map(|s| s.to_string()),
         };
-        result.insert(enc_key.to_string(), EncodingInfo { char_width, index_mode, ops });
+        result.insert(
+            enc_key.to_string(),
+            EncodingInfo {
+                char_width,
+                index_mode,
+                ops,
+            },
+        );
     }
     result
 }
@@ -85,7 +96,14 @@ pub fn get_encoding_info(name: &str) -> EncodingInfo {
     if let Some(info) = config.get(name) {
         return info.clone();
     }
-    EncodingInfo { char_width: 0, index_mode: IndexMode::Scan, ops: EncodingOps { index_at: None, char_len: None } }
+    EncodingInfo {
+        char_width: 0,
+        index_mode: IndexMode::Scan,
+        ops: EncodingOps {
+            index_at: None,
+            char_len: None,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -189,20 +207,41 @@ char_width = 1
         for (key, value) in raw {
             if let Some(enc_key) = key.strip_prefix("encoding.") {
                 if let toml::Value::Table(table) = value {
-                    let char_width = table.get("char_width").and_then(|v| v.as_integer()).unwrap_or(0) as u64;
-                    let index_mode = if char_width > 0 { IndexMode::Direct } else { IndexMode::Scan };
-                    let ops = EncodingOps {
-                        index_at: table.get("ops").and_then(|v| v.get("index_at")).and_then(|v| v.as_str().map(|s| s.to_string())),
-                        char_len: table.get("ops").and_then(|v| v.get("char_len")).and_then(|v| v.as_str().map(|s| s.to_string())),
+                    let char_width = table
+                        .get("char_width")
+                        .and_then(|v| v.as_integer())
+                        .unwrap_or(0) as u64;
+                    let index_mode = if char_width > 0 {
+                        IndexMode::Direct
+                    } else {
+                        IndexMode::Scan
                     };
-                    toml_map.insert(enc_key.to_string(), EncodingInfo { char_width, index_mode, ops });
+                    let ops = EncodingOps {
+                        index_at: table
+                            .get("ops")
+                            .and_then(|v| v.get("index_at"))
+                            .and_then(|v| v.as_str().map(|s| s.to_string())),
+                        char_len: table
+                            .get("ops")
+                            .and_then(|v| v.get("char_len"))
+                            .and_then(|v| v.as_str().map(|s| s.to_string())),
+                    };
+                    toml_map.insert(
+                        enc_key.to_string(),
+                        EncodingInfo {
+                            char_width,
+                            index_mode,
+                            ops,
+                        },
+                    );
                 }
             }
         }
 
         assert_eq!(db_map.len(), toml_map.len());
         for (name, expected) in &toml_map {
-            let actual = db_map.get(name)
+            let actual = db_map
+                .get(name)
                 .unwrap_or_else(|| panic!("encoding '{}' missing from encodings.dbvl", name));
             assert_eq!(actual.char_width, expected.char_width);
             assert_eq!(actual.index_mode, expected.index_mode);

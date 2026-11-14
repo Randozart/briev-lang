@@ -12,17 +12,19 @@ use super::ids::NodeId;
 use super::loop_carried::classify_fields;
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::slp_isomorphism::analyze_body;
-use crate::analysis::slp_isomorphism::VectorPhiCandidate;
 use super::stmt::{HirStmt, HirStmtKind};
 use super::storage_class::collect_raw_idents;
 use super::swan_song::{has_swan_song, hoist_swan_song};
 use super::transition_graph::{HirReactorNode, HirReactorTransitionGraph};
+use crate::analysis::slp_isomorphism::VectorPhiCandidate;
 // 2026-11-05 (H4 slice A): the HIR analysis returns the shared consumer
 // types (`LoopShape`, `ProgramConvergence`) — the AST types are AST-free
 // since the dead `Convergence::Explicit(Expr)` was deleted, so there are no
 // HIR duplicates and no drift surface.
 use crate::analysis::loop_carried::FieldClass;
-use crate::analysis::loop_shape::{Bound, BoundExpr, LoopShape, ProgramConvergence, Convergence, VectorGroup};
+use crate::analysis::loop_shape::{
+    Bound, BoundExpr, Convergence, LoopShape, ProgramConvergence, VectorGroup,
+};
 use crate::analysis::transition_graph::{BoundedPre, ConvergeDirection};
 use crate::ast::Type;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -86,9 +88,10 @@ pub fn program_convergence(
     let txns = collect_txns(program);
     let has_persistent_txn = txns.values().any(|t| {
         t.is_reactive
-            && !graph.nodes.iter().any(|n| {
-                n.name == t.name && n.bounded_pre.is_some() && n.increments.is_some()
-            })
+            && !graph
+                .nodes
+                .iter()
+                .any(|n| n.name == t.name && n.bounded_pre.is_some() && n.increments.is_some())
     });
     if has_persistent_txn {
         return ProgramConvergence {
@@ -147,8 +150,7 @@ fn build_shape(
         &names.state_fields,
         min_width,
     );
-    let temp_mediated_float_count =
-        count_temp_mediated_float_writes(txn, &carried_fields, program);
+    let temp_mediated_float_count = count_temp_mediated_float_writes(txn, &carried_fields, program);
     let has_swan = has_swan_song(&txn.body.statements);
     let is_pure = node.is_pure_body || node.is_effectively_pure;
     LoopShape {
@@ -212,7 +214,11 @@ fn classify_local_fields(
 }
 
 /// Identifiers every foreign surface of the program can observe.
-fn collect_program_externals(program: &HirProgram, self_name: &str, external: &mut HashSet<String>) {
+fn collect_program_externals(
+    program: &HirProgram,
+    self_name: &str,
+    external: &mut HashSet<String>,
+) {
     for c in &program.callables {
         if !is_bare_self(c, self_name) {
             collect_callable_surface(c, external);
@@ -292,9 +298,7 @@ fn classify_field_pressure(fields: &[String], program: &HirProgram) -> FieldPres
     out
 }
 
-fn field_decls(
-    program: &HirProgram,
-) -> (HashMap<String, Option<Type>>, HashMap<String, HirExpr>) {
+fn field_decls(program: &HirProgram) -> (HashMap<String, Option<Type>>, HashMap<String, HirExpr>) {
     let mut types: HashMap<String, Option<Type>> = HashMap::new();
     let mut exprs: HashMap<String, HirExpr> = HashMap::new();
     for g in &program.globals {
@@ -324,12 +328,10 @@ fn type_pressure_class(ty: &Type) -> PressureClass {
         Type::Bits(_) => PressureClass::Scalar,
         Type::Ptr(_) | Type::PtrConst(_) => PressureClass::Scalar,
         Type::Custom(name) => match name.as_str() {
-            "Float" | "Float16" | "Float32" | "Float64" | "Half" | "Double" => {
-                PressureClass::Float
-            }
+            "Float" | "Float16" | "Float32" | "Float64" | "Half" | "Double" => PressureClass::Float,
             "Int" | "UInt" | "Int8" | "Int16" | "Int32" | "Int64" | "Int128" | "UInt8"
-            | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Bool" | "Char" | "String"
-            | "Blob" | "Data" => PressureClass::Scalar,
+            | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Bool" | "Char" | "String" | "Blob"
+            | "Data" => PressureClass::Scalar,
             _ => PressureClass::Aggregate,
         },
         _ => PressureClass::Aggregate,
@@ -345,10 +347,13 @@ fn count_temp_mediated_float_writes(
     let carried_float = carried_float_names(carried, program);
     let mut seen: HashSet<&str> = HashSet::new();
     for stmt in &txn.body.statements {
-        let HirStmtKind::Assign(lhs, HirExpr {
-            kind: HirExprKind::Identifier(rhs),
-            ..
-        }) = &stmt.kind
+        let HirStmtKind::Assign(
+            lhs,
+            HirExpr {
+                kind: HirExprKind::Identifier(rhs),
+                ..
+            },
+        ) = &stmt.kind
         else {
             continue;
         };
@@ -457,9 +462,11 @@ fn accept_candidate(
 
 fn collect_txns(program: &HirProgram) -> HashMap<String, &HirCallable> {
     let mut txns = HashMap::new();
-    for c in program.callables.iter().filter(|c| {
-        matches!(c.kind, HirCallableKind::Transaction) && c.owner.is_none()
-    }) {
+    for c in program
+        .callables
+        .iter()
+        .filter(|c| matches!(c.kind, HirCallableKind::Transaction) && c.owner.is_none())
+    {
         txns.insert(c.name.clone(), c);
     }
     txns

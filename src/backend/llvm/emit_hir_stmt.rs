@@ -15,13 +15,13 @@
 //! expressions from the SOURCE statement at the same pair slot too, so this
 //! module no longer touches `hir::to_ast` at all.
 
-use super::{emit_stmt::emit_statement, LlvmBackend, TypedRegister};
-use std::fmt::Write;
+use super::{LlvmBackend, TypedRegister, emit_stmt::emit_statement};
 use crate::ast::Statement;
-use crate::hir::expr::{HirExpr, HirExprKind};
 use crate::ast::top::StmtMatchArm;
 use crate::backend::llvm::AllocStrategy;
+use crate::hir::expr::{HirExpr, HirExprKind};
 use crate::hir::stmt::{HirStmt, HirStmtKind};
+use std::fmt::Write;
 
 /// True for a pure compiler insert: a statement with no source syntax that
 /// consumes no AST slot in a pair walk. (`TempTransfer` is NOT one — it
@@ -34,11 +34,7 @@ pub(crate) fn is_pure_insert(kind: &HirStmtKind) -> bool {
 /// except pure inserts) must equal the AST body length. A mismatch is
 /// lowering drift — callers emit the plain AST body.
 fn pair_counts_ok(hir_body: &[HirStmt], ast_body: &[Statement]) -> bool {
-    hir_body
-        .iter()
-        .filter(|s| !is_pure_insert(&s.kind))
-        .count()
-        == ast_body.len()
+    hir_body.iter().filter(|s| !is_pure_insert(&s.kind)).count() == ast_body.len()
 }
 
 /// 2026-11-12 (H5 phase C): validate that (hir_body, ast_body) can emit as a
@@ -75,21 +71,24 @@ fn emit_release_owned_statement(
             // no definition to call — skip the release (conservative leak,
             // previous fallback behavior) rather than emit an undefined sym.
             if !backend.ctx.defn_params.contains_key("coll_destroy") {
-                return Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() });
+                return Some(TypedRegister {
+                    name: backend.fun.gen_reg(),
+                    ty: crate::ast::Type::void(),
+                });
             }
             // Handle width follows the target's pointer-int width; the arg
             // goes through the normal expression/adapter path so ptr-typed
             // bindings materialize correctly (same lesson as Free#).
             let ity = backend.ptr_int_ty();
-            let reg = backend.emit_expr(
-                out,
-                &crate::ast::Expr::Identifier(name.to_string()),
-                indent,
-            );
+            let reg =
+                backend.emit_expr(out, &crate::ast::Expr::Identifier(name.to_string()), indent);
             let h = super::intrinsics::adapt_to_ptr_width(backend, out, &reg, indent);
             let v = backend.fun.gen_reg();
             writeln!(out, "{indent}{v} = call {ity} @coll_destroy({ity} {h})").ok();
-            Some(TypedRegister { name: v, ty: crate::ast::Type::void() })
+            Some(TypedRegister {
+                name: v,
+                ty: crate::ast::Type::void(),
+            })
         }
     }
 }
@@ -110,14 +109,20 @@ fn emit_release_owned_str(
         backend.fun.alloc_strategies.get(&reg.name),
         Some(AllocStrategy::Arena) | Some(AllocStrategy::Alloca)
     ) {
-        return Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() });
+        return Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        });
     }
     let ity = backend.ptr_int_ty();
     let h = super::intrinsics::adapt_handle_to_ptr_int(backend, out, &reg, indent);
     let p = backend.fun.gen_reg();
     writeln!(out, "{indent}{p} = inttoptr {ity} {h} to ptr").ok();
     writeln!(out, "{indent}call void @free(ptr {p})").ok();
-    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// Native emission for a temp-transfer: bind, release, then the original
@@ -129,7 +134,14 @@ fn emit_temp_transfer_statement(
     ast: Option<&Statement>,
     indent: &str,
 ) -> Option<TypedRegister> {
-    let HirStmtKind::TempTransfer { name, ty, expr, releases, ret } = &stmt.kind else {
+    let HirStmtKind::TempTransfer {
+        name,
+        ty,
+        expr,
+        releases,
+        ret,
+    } = &stmt.kind
+    else {
         return None;
     };
     // 2026-11-13 (H5 phase C): the transfer replaced a source return
@@ -269,7 +281,11 @@ pub(crate) fn emit_children_pair(
     ast_body: &[Statement],
     walk: ChildPairWalk<'_>,
 ) -> Option<TypedRegister> {
-    let ChildPairWalk { indent, break_on_terminated, thread_last } = walk;
+    let ChildPairWalk {
+        indent,
+        break_on_terminated,
+        thread_last,
+    } = walk;
     if !pair_counts_ok(hir_body, ast_body) {
         return None;
     }
@@ -310,7 +326,12 @@ pub(crate) fn emit_children_pair(
 }
 
 /// H4 slice D dispatch group: Expression statements (native family fast path).
-fn emit_expr_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
+fn emit_expr_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    indent: &str,
+) -> Option<TypedRegister> {
     if let HirStmtKind::Expression(e) = &stmt.kind {
         // Family-covered expressions AND calls: the Call arm guards its own
         // argument reconstructibility before emitting anything, so a None
@@ -382,7 +403,12 @@ fn emit_guarded_statement(
     let then_lbl = format!("guard.then{}", label_n);
     let end_lbl = format!("guard.end{}", label_n);
     let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
-    writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, cond_i1, then_lbl, end_lbl).ok();
+    writeln!(
+        out,
+        "{}br i1 {}, label %{}, label %{}",
+        indent, cond_i1, then_lbl, end_lbl
+    )
+    .ok();
     writeln!(out, "{}{}:", indent, then_lbl).ok();
     backend.fun.terminated = false;
     let _ = emit_children_pair(
@@ -390,7 +416,11 @@ fn emit_guarded_statement(
         out,
         body,
         ast_children,
-        ChildPairWalk { indent, break_on_terminated: false, thread_last: false },
+        ChildPairWalk {
+            indent,
+            break_on_terminated: false,
+            thread_last: false,
+        },
     );
     backend.fun.last_val_temps = saved_lvt;
     backend.fun.last_val_types = saved_lvt_types;
@@ -401,7 +431,10 @@ fn emit_guarded_statement(
     backend.fun.terminated = false;
     backend.fun.tail_loop_backedge = false;
     backend.fun.cur_block = Some(end_lbl.clone());
-    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// Block/serial-child emission: children through the pair walk, last
@@ -422,7 +455,11 @@ fn emit_block_children(
         out,
         children,
         ast_children,
-        ChildPairWalk { indent, break_on_terminated: false, thread_last: true },
+        ChildPairWalk {
+            indent,
+            break_on_terminated: false,
+            thread_last: true,
+        },
     )
 }
 
@@ -437,8 +474,18 @@ fn emit_value_statement(
     // 2026-11-13 (H5 phase C): shape dispatch and fallback come from the
     // SOURCE AST at the same pair slot — never a reconstruction. HIR still
     // drives native value emission through the dual-fueled helpers.
-    if let HirStmtKind::ArrowAssign { target, value, consume } = &stmt.kind {
-        let Some(Statement::ArrowAssign { target: ast_target, value: ast_value, .. }) = ast else {
+    if let HirStmtKind::ArrowAssign {
+        target,
+        value,
+        consume,
+    } = &stmt.kind
+    {
+        let Some(Statement::ArrowAssign {
+            target: ast_target,
+            value: ast_value,
+            ..
+        }) = ast
+        else {
             return None;
         };
         let target = match (target.as_ref(), ast_target.as_deref()) {
@@ -487,7 +534,15 @@ fn emit_let_pair(
     ast_expr: Option<&crate::ast::Expr>,
     indent: &str,
 ) -> Option<TypedRegister> {
-    let HirStmtKind::Let { name, names, ty, expr, modifiers, .. } = &stmt.kind else {
+    let HirStmtKind::Let {
+        name,
+        names,
+        ty,
+        expr,
+        modifiers,
+        ..
+    } = &stmt.kind
+    else {
         return None;
     };
     let value = match (expr.as_ref(), ast_expr) {
@@ -496,7 +551,14 @@ fn emit_let_pair(
         _ => return None,
     };
     Some(super::emit_stmt::emit_let_statement(
-        backend, out, indent, name, names, ty.as_ref(), modifiers, &value,
+        backend,
+        out,
+        indent,
+        name,
+        names,
+        ty.as_ref(),
+        modifiers,
+        &value,
     ))
 }
 
@@ -515,7 +577,12 @@ fn emit_foreach_statement_hir(
     // (no reconstruction); the pair check runs BEFORE the helper emits
     // (carrier allocas come first), so None falls back cleanly.
     if let HirStmtKind::Foreach { item, body, .. } = &stmt.kind {
-        let Some(Statement::Foreach { list: ast_list, body: ast_body, .. }) = ast else {
+        let Some(Statement::Foreach {
+            list: ast_list,
+            body: ast_body,
+            ..
+        }) = ast
+        else {
             return None;
         };
         if !pair_counts_ok(body, ast_body) {
@@ -527,7 +594,10 @@ fn emit_foreach_statement_hir(
             indent,
             item,
             ast_list,
-            super::emit_stmt::ForeachBody::Hir { hir: body, ast: ast_body },
+            super::emit_stmt::ForeachBody::Hir {
+                hir: body,
+                ast: ast_body,
+            },
         );
         return Some(TypedRegister {
             name: backend.fun.gen_reg(),
@@ -628,7 +698,11 @@ fn emit_match_statement(
     ast: Option<&Statement>,
     indent: &str,
 ) -> Option<TypedRegister> {
-    let HirStmtKind::Match { expr: scrutinee, arms } = &stmt.kind else {
+    let HirStmtKind::Match {
+        expr: scrutinee,
+        arms,
+    } = &stmt.kind
+    else {
         return None;
     };
     // 2026-11-13 (H5 phase C): scrutinee, arm patterns and bodies all come
@@ -636,7 +710,11 @@ fn emit_match_statement(
     // body pairing are checked before the label chain emits; the scrutinee
     // emits natively through the operand path with the source AST as its
     // uncovered-leaf fallback.
-    let Some(Statement::Match { expr: ast_scrutinee, arms: ast_arms }) = ast else {
+    let Some(Statement::Match {
+        expr: ast_scrutinee,
+        arms: ast_arms,
+    }) = ast
+    else {
         return None;
     };
     if ast_arms.len() != arms.len() {
@@ -654,19 +732,24 @@ fn emit_match_statement(
     let counter = backend.fun.txn_counter;
     backend.fun.txn_counter += 1;
     let merge = format!(".smt_end_{}", counter);
-    let ctx = MatchCtx { scrut: &scrut, merge: &merge, counter, indent };
+    let ctx = MatchCtx {
+        scrut: &scrut,
+        merge: &merge,
+        counter,
+        indent,
+    };
     emit_match_conditions(backend, out, arms, ast_arms, &ctx);
     emit_match_bodies(backend, out, arms, ast_arms, &ctx);
-        // 2026-11-05 (#69 mirror): the merge stays open — the no-match edge
-        // and continuing arms always reach it; only explicit
-        // predecessor/exhaustiveness tracking may close it.
-        writeln!(out, "{}:", merge).ok();
-        backend.fun.terminated = false;
-        backend.fun.cur_block = Some(merge);
-        return Some(TypedRegister {
-            name: backend.fun.gen_reg(),
-            ty: crate::ast::Type::void(),
-        });
+    // 2026-11-05 (#69 mirror): the merge stays open — the no-match edge
+    // and continuing arms always reach it; only explicit
+    // predecessor/exhaustiveness tracking may close it.
+    writeln!(out, "{}:", merge).ok();
+    backend.fun.terminated = false;
+    backend.fun.cur_block = Some(merge);
+    return Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    });
 }
 
 /// One arm's emission view (HIR body + source AST arm).
@@ -714,10 +797,16 @@ fn emit_match_condition_arm(
             crate::ast::Pattern::Wildcard | crate::ast::Pattern::Binding(_)
         ) {
             cond = Some(format!("{}", backend.fun.gen_reg()));
-            writeln!(out, "  {} = icmp eq i64 0, 0", cond.as_deref().unwrap_or("")).ok();
+            writeln!(
+                out,
+                "  {} = icmp eq i64 0, 0",
+                cond.as_deref().unwrap_or("")
+            )
+            .ok();
             break;
         }
-        let c = backend.emit_pattern_condition(pat, &ctx.scrut.name, &ctx.scrut.ty, out, ctx.indent);
+        let c =
+            backend.emit_pattern_condition(pat, &ctx.scrut.name, &ctx.scrut.ty, out, ctx.indent);
         cond = Some(match cond {
             None => c,
             Some(prev) => {
@@ -733,7 +822,12 @@ fn emit_match_condition_arm(
         writeln!(out, "  {} = icmp eq i64 0, 0", r).ok();
         r
     });
-    writeln!(out, "  br i1 {}, label %{}, label %{}", cond, body_label, next).ok();
+    writeln!(
+        out,
+        "  br i1 {}, label %{}, label %{}",
+        cond, body_label, next
+    )
+    .ok();
     writeln!(out, "{}:", next).ok();
     backend.fun.cur_block = Some(next);
 }
@@ -789,61 +883,83 @@ fn emit_match_body_arm(
 }
 
 /// Terminal helper: Halt.
-fn emit_halt_statement(backend: &mut LlvmBackend, out: &mut String, indent: &str) -> Option<TypedRegister> {
-            let t = &backend.ctx.target_triple;
-            let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
-                .iter()
-                .any(|fam| t.contains(fam));
-            if wait_family {
-                let uid = backend.fun.txn_counter;
-                backend.fun.txn_counter += 1;
-                writeln!(out, "{}br label %halt_wait_{}", indent, uid).ok();
-                writeln!(out, "halt_wait_{}:", uid).ok();
-                writeln!(out, "  call void asm sideeffect \"wfi\", \"\"()").ok();
-                writeln!(out, "  br label %halt_wait_{}", uid).ok();
-            } else {
-                writeln!(out, "{}call void @llvm.trap()", indent).ok();
-            }
-            writeln!(out, "{}unreachable", indent).ok();
-            backend.fun.terminated = true;
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        
+fn emit_halt_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+) -> Option<TypedRegister> {
+    let t = &backend.ctx.target_triple;
+    let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
+        .iter()
+        .any(|fam| t.contains(fam));
+    if wait_family {
+        let uid = backend.fun.txn_counter;
+        backend.fun.txn_counter += 1;
+        writeln!(out, "{}br label %halt_wait_{}", indent, uid).ok();
+        writeln!(out, "halt_wait_{}:", uid).ok();
+        writeln!(out, "  call void asm sideeffect \"wfi\", \"\"()").ok();
+        writeln!(out, "  br label %halt_wait_{}", uid).ok();
+    } else {
+        writeln!(out, "{}call void @llvm.trap()", indent).ok();
+    }
+    writeln!(out, "{}unreachable", indent).ok();
+    backend.fun.terminated = true;
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// Terminal helper: Gate.
-fn emit_gate_statement(backend: &mut LlvmBackend, out: &mut String, cond: &crate::hir::expr::HirExpr, indent: &str) -> Option<TypedRegister> {
-            // 2026-07-26: convergence gate — mirror of the AST arm.
-            let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
-                return None;
-            };
-            let label_n = backend.fun.txn_counter;
-            backend.fun.txn_counter += 1;
-            let pass_lbl = format!("gate.pass{}", label_n);
-            let has_convergence = backend.fun.convergence_target.is_some();
-            let fail_target = if has_convergence {
-                backend.fun.convergence_target.as_ref().unwrap().clone()
-            } else {
-                format!("gate.fail{}", label_n)
-            };
-            let cond_i1 = if cond_reg.ty == crate::ast::Type::bool_() {
-                let b = backend.fun.gen_reg();
-                writeln!(out, "{}{} = trunc i8 {} to i1", indent, b, cond_reg.name).ok();
-                b
-            } else {
-                let i1_name = format!("%gi1_{}", label_n);
-                writeln!(out, "{}{} = icmp ne i64 {}, 0", indent, i1_name, cond_reg.name).ok();
-                i1_name
-            };
-            writeln!(out, "{0}br i1 {1}, label %{2}, label %{3}",
-                indent, cond_i1, pass_lbl, fail_target).ok();
-            if !has_convergence {
-                writeln!(out, "{}{}:", indent, fail_target).ok();
-                writeln!(out, "{}  unreachable", indent).ok();
-            }
-            writeln!(out, "{}{}:", indent, pass_lbl).ok();
-            backend.fun.terminated = false;
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        
+fn emit_gate_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    cond: &crate::hir::expr::HirExpr,
+    indent: &str,
+) -> Option<TypedRegister> {
+    // 2026-07-26: convergence gate — mirror of the AST arm.
+    let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
+        return None;
+    };
+    let label_n = backend.fun.txn_counter;
+    backend.fun.txn_counter += 1;
+    let pass_lbl = format!("gate.pass{}", label_n);
+    let has_convergence = backend.fun.convergence_target.is_some();
+    let fail_target = if has_convergence {
+        backend.fun.convergence_target.as_ref().unwrap().clone()
+    } else {
+        format!("gate.fail{}", label_n)
+    };
+    let cond_i1 = if cond_reg.ty == crate::ast::Type::bool_() {
+        let b = backend.fun.gen_reg();
+        writeln!(out, "{}{} = trunc i8 {} to i1", indent, b, cond_reg.name).ok();
+        b
+    } else {
+        let i1_name = format!("%gi1_{}", label_n);
+        writeln!(
+            out,
+            "{}{} = icmp ne i64 {}, 0",
+            indent, i1_name, cond_reg.name
+        )
+        .ok();
+        i1_name
+    };
+    writeln!(
+        out,
+        "{0}br i1 {1}, label %{2}, label %{3}",
+        indent, cond_i1, pass_lbl, fail_target
+    )
+    .ok();
+    if !has_convergence {
+        writeln!(out, "{}{}:", indent, fail_target).ok();
+        writeln!(out, "{}  unreachable", indent).ok();
+    }
+    writeln!(out, "{}{}:", indent, pass_lbl).ok();
+    backend.fun.terminated = false;
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// Terminal helper: Rollback.
@@ -873,14 +989,24 @@ fn emit_defer_statement(
         // child, the same silent skip the reconstruction seam had.
         _ => Vec::new(),
     };
-    backend.fun.defer_bodies.push(super::context::DeferCleanupBody {
-        hir: children.to_vec(),
-        ast: ast_children,
-    });
-    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+    backend
+        .fun
+        .defer_bodies
+        .push(super::context::DeferCleanupBody {
+            hir: children.to_vec(),
+            ast: ast_children,
+        });
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
-fn emit_rollback_statement(backend: &mut LlvmBackend, out: &mut String, indent: &str) -> Option<TypedRegister> {
+fn emit_rollback_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+) -> Option<TypedRegister> {
     // 2026-08-09 (Phase 10): deferred cleanup runs on rollback too.
     backend.flush_defer_cleanup(out, indent);
     if backend.fun.fn_ret_ty == "void" {
@@ -890,39 +1016,46 @@ fn emit_rollback_statement(backend: &mut LlvmBackend, out: &mut String, indent: 
         writeln!(out, "{}ret {} {}", indent, backend.fun.fn_ret_ty, zero).ok();
     }
     backend.fun.terminated = true;
-    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// Terminal helper: FreeHint.
-fn emit_free_hint_statement(backend: &mut LlvmBackend, out: &mut String, name: &String, indent: &str) -> Option<TypedRegister> {
-            // 2026-08-26 (async Phase C): a freed TASK HANDLE cancels its
-            // scheduler entry. Ordinary frees keep the Phase 5 path.
-            if backend.fun.task_handle_names.contains(name) {
-                if let Some(h) = backend.fun.let_bindings.get(name).cloned() {
-                    let st = if backend
-                        .ctx
-                        .defn_takes_state("briev_task_cancel_impl")
-                    {
-                        "ptr %state, "
-                    } else {
-                        ""
-                    };
-                    writeln!(out, "{indent}call i64 @briev_task_cancel_impl({st}i64 {h})").ok();
-                    let _ = backend.fun.gen_reg();
-                    return Some(TypedRegister {
-                        name: backend.fun.gen_reg(),
-                        ty: crate::ast::Type::void(),
-                    });
-                }
-            }
-            super::emit_stmt::emit_destroy_consumed(
-                backend,
-                out,
-                indent,
-                &crate::ast::Expr::Identifier(name.clone()),
-            );
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        
+fn emit_free_hint_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    name: &String,
+    indent: &str,
+) -> Option<TypedRegister> {
+    // 2026-08-26 (async Phase C): a freed TASK HANDLE cancels its
+    // scheduler entry. Ordinary frees keep the Phase 5 path.
+    if backend.fun.task_handle_names.contains(name) {
+        if let Some(h) = backend.fun.let_bindings.get(name).cloned() {
+            let st = if backend.ctx.defn_takes_state("briev_task_cancel_impl") {
+                "ptr %state, "
+            } else {
+                ""
+            };
+            writeln!(out, "{indent}call i64 @briev_task_cancel_impl({st}i64 {h})").ok();
+            let _ = backend.fun.gen_reg();
+            return Some(TypedRegister {
+                name: backend.fun.gen_reg(),
+                ty: crate::ast::Type::void(),
+            });
+        }
+    }
+    super::emit_stmt::emit_destroy_consumed(
+        backend,
+        out,
+        indent,
+        &crate::ast::Expr::Identifier(name.clone()),
+    );
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// Terminal helper: SyncBlock/Mutex — a serial section emits inline (a
@@ -943,47 +1076,62 @@ fn emit_serial_statement(
 }
 
 /// Terminal helper: EndProgram.
-fn emit_end_program_statement(backend: &mut LlvmBackend, out: &mut String, val: &Option<crate::hir::expr::HirExpr>, indent: &str) -> Option<TypedRegister> {
-            // 2026-08-06 (endprogram plan): genuine process exit; the value's
-            // side effects emit first, then the runtime exit provider.
-            if backend.ctx.webstack_enabled {
-                super::emit_stmt::emit_web_flush_batch(backend, out, indent);
-            }
-            let code = if let Some(v) = val {
-                let Some(reg) = backend.emit_hir_operand(out, v, indent) else {
-                    return None;
-                };
-                backend.adapt_to_i64(out, indent, &reg)
-            } else {
-                "0".to_string()
-            };
-            writeln!(out, "{}; briev.program_end", indent).ok();
-            if backend.ctx.defn_params.contains_key("exit_prog") {
-                let st = if backend.ctx.defn_takes_state("exit_prog") {
-                    "ptr %state, "
-                } else {
-                    ""
-                };
-                writeln!(out, "{}call i64 @exit_prog({}i64 {})", indent, st, code).ok();
-            } else {
-                writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
-            }
-            writeln!(out, "{}unreachable", indent).ok();
-            backend.fun.terminated = true;
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        
+fn emit_end_program_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    val: &Option<crate::hir::expr::HirExpr>,
+    indent: &str,
+) -> Option<TypedRegister> {
+    // 2026-08-06 (endprogram plan): genuine process exit; the value's
+    // side effects emit first, then the runtime exit provider.
+    if backend.ctx.webstack_enabled {
+        super::emit_stmt::emit_web_flush_batch(backend, out, indent);
+    }
+    let code = if let Some(v) = val {
+        let Some(reg) = backend.emit_hir_operand(out, v, indent) else {
+            return None;
+        };
+        backend.adapt_to_i64(out, indent, &reg)
+    } else {
+        "0".to_string()
+    };
+    writeln!(out, "{}; briev.program_end", indent).ok();
+    if backend.ctx.defn_params.contains_key("exit_prog") {
+        let st = if backend.ctx.defn_takes_state("exit_prog") {
+            "ptr %state, "
+        } else {
+            ""
+        };
+        writeln!(out, "{}call i64 @exit_prog({}i64 {})", indent, st, code).ok();
+    } else {
+        writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
+    }
+    writeln!(out, "{}unreachable", indent).ok();
+    backend.fun.terminated = true;
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// H4 slice D dispatch group: small terminal/directive statements.
 /// (Paired scope kinds — SyncBlock/Mutex/Defer — dispatch separately: they
 /// need their source children for the pair walk.)
-fn emit_terminal_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
+fn emit_terminal_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    indent: &str,
+) -> Option<TypedRegister> {
     match &stmt.kind {
         HirStmtKind::Break => match backend.fun.foreach_break_labels.last() {
             Some(label) => {
                 writeln!(out, "{}br label %{}", indent, label).ok();
                 backend.fun.terminated = true;
-                Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+                Some(TypedRegister {
+                    name: backend.fun.gen_reg(),
+                    ty: crate::ast::Type::void(),
+                })
             }
             None => None,
         },
@@ -991,22 +1139,34 @@ fn emit_terminal_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &H
             writeln!(out, "{}call void @llvm.trap()", indent).ok();
             writeln!(out, "{}unreachable", indent).ok();
             backend.fun.terminated = true;
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+            Some(TypedRegister {
+                name: backend.fun.gen_reg(),
+                ty: crate::ast::Type::void(),
+            })
         }
         HirStmtKind::Halt => emit_halt_statement(backend, out, indent),
-        HirStmtKind::Yield => Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() }),
+        HirStmtKind::Yield => Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        }),
         HirStmtKind::Check(cond) => match backend.emit_hir_operand(out, cond, indent) {
             Some(cond_reg) => {
                 let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
                 let noop = backend.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, 0", indent, noop).ok();
-                Some(TypedRegister { name: noop, ty: crate::ast::Type::void() })
+                Some(TypedRegister {
+                    name: noop,
+                    ty: crate::ast::Type::void(),
+                })
             }
             None => None,
         },
         HirStmtKind::Gate(cond) => emit_gate_statement(backend, out, cond, indent),
         HirStmtKind::Rollback(_) => emit_rollback_statement(backend, out, indent),
-        HirStmtKind::KeepHint(_) => Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() }),
+        HirStmtKind::KeepHint(_) => Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        }),
         HirStmtKind::FreeHint(name) => emit_free_hint_statement(backend, out, name, indent),
         HirStmtKind::EndProgram(val) => emit_end_program_statement(backend, out, val, indent),
         _ => None,
@@ -1068,9 +1228,10 @@ pub(crate) fn emit_hir_statement(
         HirStmtKind::Open(..)
         | HirStmtKind::TrgBinding { .. }
         | HirStmtKind::MetadataAssignment(..)
-        | HirStmtKind::InlineAsm { .. } => {
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
+        | HirStmtKind::InlineAsm { .. } => Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        }),
         HirStmtKind::Other(_) => None,
     }
 }
@@ -1170,7 +1331,13 @@ defn use(s: String) -> Int {
         let ast_native = Statement::Expression(crate::ast::Expr::Decimal(1));
         let mut backend = LlvmBackend::new();
         let mut out = String::new();
-        emit_body_statement(&mut backend, &mut out, Some(&native_stmt), &ast_native, "  ");
+        emit_body_statement(
+            &mut backend,
+            &mut out,
+            Some(&native_stmt),
+            &ast_native,
+            "  ",
+        );
         assert_eq!(backend.hir_stmts_seen, 1);
         assert_eq!(backend.hir_stmts_native, 1);
         assert_eq!(backend.hir_stmts_fallback, 0);

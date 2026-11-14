@@ -7,7 +7,7 @@
 // replace the marker with explicit macros.
 
 use super::helpers::{ModifierPrefix, Parser};
-use super::quantity::{dimension_name, parse_unit_suffix, UnitSuffix};
+use super::quantity::{UnitSuffix, dimension_name, parse_unit_suffix};
 use crate::ast::*;
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
@@ -1285,9 +1285,9 @@ impl<'a> Parser<'a> {
     /// dissolved). 2026-09-14 (machine-entry plan).
     fn parse_node_item(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume 'node'
-                       // 2026-09-22 (order-free-modifiers plan): `async` is PREFIX-only
-                       // (`async node name`). The `node async` postfix is removed — the
-                       // modifier scanner sets is_async before dispatch.
+        // 2026-09-22 (order-free-modifiers plan): `async` is PREFIX-only
+        // (`async node name`). The `node async` postfix is removed — the
+        // modifier scanner sets is_async before dispatch.
         let is_async = false;
         let name = self.expect_identifier()?;
         let name_span = self
@@ -2778,7 +2778,7 @@ impl<'a> Parser<'a> {
                 return self.error_at_current(&format!(
                     "the rest {what} bound on `...{rest_name}` must be an integer \
                  literal"
-                ))
+                ));
             }
         };
         Ok(n)
@@ -3178,7 +3178,7 @@ impl<'a> Parser<'a> {
     fn parse_isr_handler(&mut self) -> Result<IsrHandler, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'isr'
-                        // Optional <mechanism> — explicit beats configured.
+        // Optional <mechanism> — explicit beats configured.
         let mechanism = if self.eat(&Token::Lt) {
             let mech = self.expect_identifier()?;
             self.expect(Token::Gt)?;
@@ -3223,7 +3223,7 @@ impl<'a> Parser<'a> {
     fn parse_asm_fn(&mut self) -> Result<AsmFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'asm'
-                        // expect '<'
+        // expect '<'
         self.expect(Token::Lt)?;
         // expect target identifier
         let target = self.expect_identifier()?;
@@ -3289,8 +3289,8 @@ impl<'a> Parser<'a> {
     fn parse_bad_fn(&mut self, bootstrap: bool) -> Result<BadFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'bad'
-                        // 2026-10-01 (bad-ptx-family plan M2): `bad<ptx> fn` — the
-                        // explicit target marker (D26 disclosure); absent = host triple.
+        // 2026-10-01 (bad-ptx-family plan M2): `bad<ptx> fn` — the
+        // explicit target marker (D26 disclosure); absent = host triple.
         let target = if self.eat(&Token::Lt) {
             let t = self.expect_identifier()?;
             self.expect(Token::Gt)?;
@@ -3545,7 +3545,7 @@ impl<'a> Parser<'a> {
     /// 2026-07-14: Parse: type Name : Parent { slot; slot; }
     fn parse_type_or_group(&mut self) -> Result<Box<TypeDef>, SyntaxError> {
         self.pos += 1; // consume `type` token
-                       // 2026-07-16: All type names are Token::Identifier after Type token removal.
+        // 2026-07-16: All type names are Token::Identifier after Type token removal.
         let name = self.expect_identifier()?;
         // 2026-07-20: Parse type parameters: type List<T: String, V>
         let type_params = self.parse_type_params()?;
@@ -3608,7 +3608,7 @@ impl<'a> Parser<'a> {
                     self.eat(&Token::Semicolon);
                 } else if self.check(&Token::Op) {
                     self.pos += 1; // consume 'op' — expect_identifier would
-                                   // otherwise accept the keyword itself as the name
+                    // otherwise accept the keyword itself as the name
                     self.parse_op_definition(&mut op_bindings, None)?;
                 } else {
                     return self.error_at_current("expected 'defn' or 'op' in impl block");
@@ -3836,8 +3836,9 @@ impl<'a> Parser<'a> {
         let s = match self.peek() {
             Some(Token::String(s)) => s.clone(),
             _ => {
-                return self
-                    .error_at_current("expected a quoted reference prefix (e.g. reference \"R\");")
+                return self.error_at_current(
+                    "expected a quoted reference prefix (e.g. reference \"R\");",
+                );
             }
         };
         self.pos += 1;
@@ -3943,7 +3944,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return self.error_at_current(
                             "expected a parent, trait, or protocol hashword after ':'",
-                        )
+                        );
                     }
                 }
                 if !self.eat(&Token::Comma) {
@@ -4464,7 +4465,7 @@ impl<'a> Parser<'a> {
                     key,
                     crate::ast::QuantityDim::Amp,
                     metadata,
-                )
+                );
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -5189,7 +5190,9 @@ impl<'a> Parser<'a> {
                         return Err(SyntaxError::InvalidStatement {
                             reason: format!(
                                 "union field '{}': width {} is sub-byte — a union overlay needs whole-byte fields (deferred; use `Bits<{}>` or split)",
-                                fname, n, n.div_ceil(8) * 8
+                                fname,
+                                n,
+                                n.div_ceil(8) * 8
                             ),
                             span: self
                                 .peek_with_span()
@@ -5433,7 +5436,7 @@ impl<'a> Parser<'a> {
                 return self.error_at_current(&format!(
                     "expected a fundamental category like 'String', got '{}'",
                     category_type
-                ))
+                ));
             }
         };
 
@@ -5493,7 +5496,7 @@ impl<'a> Parser<'a> {
                             return self.error_at_current(&format!(
                                 "expected a protocol variant like 'String<UTF8>', got '{}'",
                                 target_type
-                            ))
+                            ));
                         }
                     };
                     self.expect(Token::RParen)?;
@@ -6106,7 +6109,7 @@ mod tests {
         // 2026-09-23 (fab plan): bare `m` (metre), `mm`, `cm` resolve to
         // the Length dimension in SI (metres); `mA` must still resolve via
         // the prefix path (the `m` length addition must not break it).
-        use crate::parser::quantity::{parse_unit_suffix, UnitSuffix};
+        use crate::parser::quantity::{UnitSuffix, parse_unit_suffix};
         let expect =
             |suffix: &str, si: f64, dim: crate::ast::QuantityDim| match parse_unit_suffix(suffix) {
                 Some(UnitSuffix::Explicit { scale, dim: got }) => {
@@ -7245,7 +7248,7 @@ mod tests {
     #[test]
     fn test_protocol_def_cross_op() {
         let pd = parse_protocol(
-            "proto ASCII: String { CastTo(String<UTF8>); op Add(String<UTF8>) = add_UTF8_to_ASCII(#Lh, #Rh); };"
+            "proto ASCII: String { CastTo(String<UTF8>); op Add(String<UTF8>) = add_UTF8_to_ASCII(#Lh, #Rh); };",
         );
         assert_eq!(pd.name, "ASCII");
         assert_eq!(pd.cast_edges.len(), 1);

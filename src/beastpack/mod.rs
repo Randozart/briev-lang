@@ -9,13 +9,13 @@
 //
 // See docs/architecture/bounty-architecture.md for the full spec.
 
-pub mod serialize;
 pub mod deserialize;
-pub mod strip;
 pub mod obfuscate;
+pub mod serialize;
+pub mod strip;
 
 #[cfg(test)]
 mod tests;
 
-pub use serialize::serialize;
 pub use deserialize::deserialize;
+pub use serialize::serialize;

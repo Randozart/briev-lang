@@ -176,12 +176,15 @@ fn composed_body(case: &Case) -> String {
 
 fn composed_trace(case: &Case) -> Vec<i64> {
     let mut state = case.initial;
-    case.events.iter().map(|event| {
-        for operation in &case.operations {
-            state = model_operation(case, *operation, state, *event);
-        }
-        state
-    }).collect()
+    case.events
+        .iter()
+        .map(|event| {
+            for operation in &case.operations {
+                state = model_operation(case, *operation, state, *event);
+            }
+            state
+        })
+        .collect()
 }
 
 fn model_operation(case: &Case, operation: u8, state: i64, event: i64) -> i64 {
@@ -198,8 +201,12 @@ fn model_operation(case: &Case, operation: u8, state: i64, event: i64) -> i64 {
 #[test]
 fn composed_operations_match_known_trace() {
     let case = Case {
-        family: 13, initial: 7, threshold: 0, bias: 3,
-        events: vec![0, 2, -4, 1], operations: vec![0, 2, 1, 3],
+        family: 13,
+        initial: 7,
+        threshold: 0,
+        bias: 3,
+        events: vec![0, 2, -4, 1],
+        operations: vec![0, 2, 1, 3],
     };
     assert_eq!(composed_trace(&case), vec![0, -3, -2, 0]);
     assert_eq!(reference(&case).unwrap(), composed_trace(&case));
@@ -208,8 +215,12 @@ fn composed_operations_match_known_trace() {
 #[test]
 fn composed_native_smoke() {
     let case = Case {
-        family: 13, initial: 7, threshold: 0, bias: 3,
-        events: vec![0, 2, -4, 1], operations: vec![0, 2, 1, 3],
+        family: 13,
+        initial: 7,
+        threshold: 0,
+        bias: 3,
+        events: vec![0, 2, -4, 1],
+        operations: vec![0, 2, 1, 3],
     };
     let directory = tempfile::tempdir().unwrap();
     compare(&case, directory.path()).unwrap();
@@ -344,7 +355,10 @@ fn compare(case: &Case, directory: &Path) -> Result<(), String> {
     fs::write(&path, source).map_err(|e| e.to_string())?;
     let expected = reference(case)?;
     if case.family == 13 && expected != composed_trace(case) {
-        return Err(format!("interpreter disagrees with independent model: {expected:?}; model: {:?}", composed_trace(case)));
+        return Err(format!(
+            "interpreter disagrees with independent model: {expected:?}; model: {:?}",
+            composed_trace(case)
+        ));
     }
     checked(
         Command::new("timeout")

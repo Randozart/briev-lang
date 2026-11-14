@@ -5,7 +5,7 @@
 
 use crate::ast::{Expr, Type};
 use crate::errors::RuntimeError;
-use crate::interpreter::{Atom, f64_to_bits, i64_to_bits, Value};
+use crate::interpreter::{Atom, Value, f64_to_bits, i64_to_bits};
 
 /// 2026-08-06 (Slice B): Whether a value is a member of a target type.
 /// Membership is decided by the value's semantic category, not by byte width:
@@ -18,7 +18,9 @@ pub fn eval_is_type(val: &Value, target: &Type) -> Result<Value, RuntimeError> {
         Type::Custom(name) => match name.as_str() {
             "Int" | "UInt" | "Int64" | "UInt64" | "Int32" | "UInt32" | "Int16" | "UInt16"
             | "Int8" | "UInt8" => matches!(val, Value::Atom(Atom::Int(_))),
-            "Float" | "Float64" | "Float32" | "Double" => matches!(val, Value::Atom(Atom::Float(_))),
+            "Float" | "Float64" | "Float32" | "Double" => {
+                matches!(val, Value::Atom(Atom::Float(_)))
+            }
             "Bool" => matches!(val, Value::Atom(Atom::Bool(_))),
             "Char" => matches!(val, Value::Atom(Atom::Char(_))),
             "String" | "Blob" => matches!(val, Value::Bits(_)),

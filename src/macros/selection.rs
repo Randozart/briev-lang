@@ -7,8 +7,8 @@
 // helpers. No duplicated traversal logic.
 // Max 2 levels: visit_node dispatches on match arms with early returns.
 
-use crate::ast::{Expr, Statement, TopLevel};
 use crate::ast::top::*;
+use crate::ast::{Expr, Statement, TopLevel};
 use std::collections::HashMap;
 
 // ── NodeRef ─────────────────────────────────────────────────────────────
@@ -127,13 +127,17 @@ impl Selection {
     /// Take the first N elements (default 1).
     pub fn first(&self, n: usize) -> Selection {
         let limit = n.min(self.nodes.len());
-        Selection { nodes: self.nodes[..limit].to_vec() }
+        Selection {
+            nodes: self.nodes[..limit].to_vec(),
+        }
     }
 
     /// Take the last N elements (default 1).
     pub fn last(&self, n: usize) -> Selection {
         let start = self.nodes.len().saturating_sub(n);
-        Selection { nodes: self.nodes[start..].to_vec() }
+        Selection {
+            nodes: self.nodes[start..].to_vec(),
+        }
     }
 
     /// Take the Nth element (0-indexed).
@@ -222,7 +226,12 @@ impl Selection {
         self.sibling_navigation(items, tag_filter, false)
     }
 
-    fn sibling_navigation(&self, items: &[TopLevel], tag_filter: Option<&str>, forward: bool) -> Selection {
+    fn sibling_navigation(
+        &self,
+        items: &[TopLevel],
+        tag_filter: Option<&str>,
+        forward: bool,
+    ) -> Selection {
         let mut result = Vec::new();
         for node in &self.nodes {
             let siblings = node_siblings(node, items);
@@ -234,10 +243,15 @@ impl Selection {
                 (0..idx).rev().collect()
             };
             for i in range {
-                let tag_matches = tag_filter.map_or(true, |t| node_tag(&siblings[i], items) == Some(t));
-                if !tag_matches { continue; }
+                let tag_matches =
+                    tag_filter.map_or(true, |t| node_tag(&siblings[i], items) == Some(t));
+                if !tag_matches {
+                    continue;
+                }
                 result.push(siblings[i].clone());
-                if tag_filter.is_some() { break; }
+                if tag_filter.is_some() {
+                    break;
+                }
             }
         }
         Selection { nodes: result }
@@ -419,9 +433,18 @@ fn has_metadata_key(item: &TopLevel, key: &str) -> bool {
 
 fn has_metadata_value(item: &TopLevel, key: &str, val: &str) -> bool {
     match item {
-        TopLevel::Definition(d) => d.metadata.get(key).map_or(false, |v| prop_value_matches(v, val)),
-        TopLevel::Transaction(t) => t.metadata.get(key).map_or(false, |v| prop_value_matches(v, val)),
-        TopLevel::Cell(c) => c.metadata.get(key).map_or(false, |v| prop_value_matches(v, val)),
+        TopLevel::Definition(d) => d
+            .metadata
+            .get(key)
+            .map_or(false, |v| prop_value_matches(v, val)),
+        TopLevel::Transaction(t) => t
+            .metadata
+            .get(key)
+            .map_or(false, |v| prop_value_matches(v, val)),
+        TopLevel::Cell(c) => c
+            .metadata
+            .get(key)
+            .map_or(false, |v| prop_value_matches(v, val)),
         _ => false,
     }
 }
@@ -461,7 +484,9 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
         Statement::Rollback(_) => "escape",
         Statement::Foreach { .. } => "foreach",
         Statement::TrgBinding { .. } => "trg",
-        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::Match { .. } => "inline",
+        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::Match { .. } => {
+            "inline"
+        }
         Statement::SyncBlock(_) => "sync",
         Statement::Defer(_) => "defer",
         Statement::Mutex(_) => "mutex",
@@ -473,12 +498,8 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
 /// Get the tag of a NodeRef by resolving it through the AST.
 pub fn node_tag<'a>(node: &'a NodeRef, items: &'a [TopLevel]) -> Option<&'a str> {
     match node {
-        NodeRef::TopLevel(i) => {
-            items.get(*i).and_then(top_level_tag)
-        }
-        NodeRef::Stmt(path, idx) => {
-            resolve_stmt(path, idx, items).map(|s| stmt_tag(s))
-        }
+        NodeRef::TopLevel(i) => items.get(*i).and_then(top_level_tag),
+        NodeRef::Stmt(path, idx) => resolve_stmt(path, idx, items).map(|s| stmt_tag(s)),
         NodeRef::Expr(_) => Some("expr"),
     }
 }
@@ -486,9 +507,10 @@ pub fn node_tag<'a>(node: &'a NodeRef, items: &'a [TopLevel]) -> Option<&'a str>
 /// Get the name of a node, if applicable.
 pub fn node_name(node: &NodeRef, items: &[TopLevel]) -> Option<String> {
     match node {
-        NodeRef::TopLevel(i) => {
-            items.get(*i).and_then(top_level_name).map(|s| s.to_string())
-        }
+        NodeRef::TopLevel(i) => items
+            .get(*i)
+            .and_then(top_level_name)
+            .map(|s| s.to_string()),
         NodeRef::Stmt(path, idx) => {
             let stmt = resolve_stmt(path, idx, items)?;
             if let Statement::Let { name, .. } = stmt {
@@ -502,7 +524,11 @@ pub fn node_name(node: &NodeRef, items: &[TopLevel]) -> Option<String> {
 }
 
 /// Resolve a statement reference through the AST.
-fn resolve_stmt<'a>(path: &[StmtStep], idx: &usize, items: &'a [TopLevel]) -> Option<&'a Statement> {
+fn resolve_stmt<'a>(
+    path: &[StmtStep],
+    idx: &usize,
+    items: &'a [TopLevel],
+) -> Option<&'a Statement> {
     let mut current_stmts: Vec<&Statement> = vec![];
     let mut step_i = 0;
     for item in items {
@@ -536,7 +562,9 @@ fn collect_ancestors(node: &NodeRef, _items: &[TopLevel]) -> Vec<NodeRef> {
     let mut result = Vec::new();
     let mut current = node.clone();
     loop {
-        let Some(parent) = node_parent(&current) else { break };
+        let Some(parent) = node_parent(&current) else {
+            break;
+        };
         result.push(parent.clone());
         current = parent;
     }
@@ -547,27 +575,31 @@ fn collect_ancestors(node: &NodeRef, _items: &[TopLevel]) -> Vec<NodeRef> {
 fn node_children(node: &NodeRef, items: &[TopLevel]) -> Vec<NodeRef> {
     match node {
         NodeRef::TopLevel(i) => {
-            let Some(item) = items.get(*i) else { return vec![] };
+            let Some(item) = items.get(*i) else {
+                return vec![];
+            };
             // Extract body statements as children
             match item {
-                TopLevel::Definition(d) => {
-                    d.body.iter().enumerate().map(|(j, _)| {
-                        NodeRef::Stmt(vec![StmtStep::Body(*i)], j)
-                    }).collect()
-                }
-                TopLevel::Transaction(t) => {
-                    t.body.iter().enumerate().map(|(j, _)| {
-                        NodeRef::Stmt(vec![StmtStep::Body(*i)], j)
-                    }).collect()
-                }
-                TopLevel::Statement(stmt) => {
-                    stmt_children_flat(stmt, items, *i)
-                }
+                TopLevel::Definition(d) => d
+                    .body
+                    .iter()
+                    .enumerate()
+                    .map(|(j, _)| NodeRef::Stmt(vec![StmtStep::Body(*i)], j))
+                    .collect(),
+                TopLevel::Transaction(t) => t
+                    .body
+                    .iter()
+                    .enumerate()
+                    .map(|(j, _)| NodeRef::Stmt(vec![StmtStep::Body(*i)], j))
+                    .collect(),
+                TopLevel::Statement(stmt) => stmt_children_flat(stmt, items, *i),
                 _ => vec![],
             }
         }
         NodeRef::Stmt(path, idx) => {
-            let Some(stmt) = resolve_stmt(path, idx, items) else { return vec![] };
+            let Some(stmt) = resolve_stmt(path, idx, items) else {
+                return vec![];
+            };
             stmt_child_nodes(stmt)
         }
         NodeRef::Expr(_) => vec![],
@@ -586,7 +618,12 @@ fn stmt_children_flat(_stmt: &Statement, _items: &[TopLevel], _top_idx: usize) -
 }
 
 /// Collect all descendant nodes matching a tag filter.
-fn collect_descendants(node: &NodeRef, items: &[TopLevel], tag_filter: Option<&str>, result: &mut Vec<NodeRef>) {
+fn collect_descendants(
+    node: &NodeRef,
+    items: &[TopLevel],
+    tag_filter: Option<&str>,
+    result: &mut Vec<NodeRef>,
+) {
     let children = node_children(node, items);
     for child in children {
         if let Some(tag) = tag_filter {
@@ -631,8 +668,13 @@ fn node_siblings(node: &NodeRef, _items: &[TopLevel]) -> Vec<NodeRef> {
 }
 
 /// Collect statement nodes matching a tag (used by TagSelector for TopLevel::Statement).
-fn collect_stmt_matches(stmt: &Statement, _items: &[TopLevel], _tag: &str,
-                        _result: &mut Vec<NodeRef>, _path: &mut Vec<StmtStep>) {
+fn collect_stmt_matches(
+    stmt: &Statement,
+    _items: &[TopLevel],
+    _tag: &str,
+    _result: &mut Vec<NodeRef>,
+    _path: &mut Vec<StmtStep>,
+) {
     // Recursive statement search — Phase B2
 }
 
@@ -753,7 +795,9 @@ mod tests {
     #[test]
     fn test_tag_selector_import() {
         let items = sample_items();
-        let sel = TagSelector { tag: "import".into() };
+        let sel = TagSelector {
+            tag: "import".into(),
+        };
         let nodes = sel.apply(&items).unwrap();
         assert_eq!(nodes.len(), 1);
     }
@@ -761,7 +805,9 @@ mod tests {
     #[test]
     fn test_named_selector() {
         let items = sample_items();
-        let sel = NamedSelector { name: "main".into() };
+        let sel = NamedSelector {
+            name: "main".into(),
+        };
         let nodes = sel.apply(&items).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(node_name(&nodes[0], &items), Some("main".into()));
@@ -770,7 +816,10 @@ mod tests {
     #[test]
     fn test_with_attr_selector() {
         let items = sample_items();
-        let sel = WithAttrSelector { key: "entry".into(), val: "true".into() };
+        let sel = WithAttrSelector {
+            key: "entry".into(),
+            val: "true".into(),
+        };
         let nodes = sel.apply(&items).unwrap();
         assert_eq!(nodes.len(), 1);
     }
@@ -811,8 +860,14 @@ mod tests {
     fn test_and_selector() {
         let items = sample_items();
         let tag = TagSelector { tag: "txn".into() };
-        let attr = WithAttrSelector { key: "entry".into(), val: "true".into() };
-        let sel = AndSelector { left: Box::new(tag), right: Box::new(attr) };
+        let attr = WithAttrSelector {
+            key: "entry".into(),
+            val: "true".into(),
+        };
+        let sel = AndSelector {
+            left: Box::new(tag),
+            right: Box::new(attr),
+        };
         let nodes = sel.apply(&items).unwrap();
         assert_eq!(nodes.len(), 1);
     }

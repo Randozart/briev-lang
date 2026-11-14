@@ -35,10 +35,7 @@ fn check_in(dir: &PathBuf, module: &str, module_src: &str, main_src: &str) {
     let main_path = dir.join("main.bv");
     fs::write(&main_path, main_src).unwrap();
     let source = fs::read_to_string(&main_path).unwrap();
-    let result = briev_compiler::pipeline::check_source(
-        main_path.to_str().unwrap(),
-        &source,
-    );
+    let result = briev_compiler::pipeline::check_source(main_path.to_str().unwrap(), &source);
     if let Err(errors) = &result {
         panic!("check failed: {errors:#?}");
     }
@@ -51,7 +48,7 @@ fn check_in(dir: &PathBuf, module: &str, module_src: &str, main_src: &str) {
 #[test]
 fn splice_keeps_match_arm_call_targets() {
     let dir = fixture_dir("splice_match_arm");
-        let module_src = r#"
+    let module_src = r#"
 import "std/result";
 
 obj Fr {
@@ -89,7 +86,7 @@ node entry [beginprogram][true] {
 #[test]
 fn splice_keeps_member_body_call_targets() {
     let dir = fixture_dir("splice_member_body");
-        let module_src = r#"
+    let module_src = r#"
 obj Box {
     v: Int;
 
@@ -120,7 +117,7 @@ node entry [beginprogram][true] {
 #[test]
 fn splice_runs_growbuf_put_path() {
     let dir = fixture_dir("splice_growbuf");
-        let main_src = r#"
+    let main_src = r#"
 import { GrowBuf, grow_new, put_u8 } from "std/net/bytes";
 import { print_int } from "std/io";
 

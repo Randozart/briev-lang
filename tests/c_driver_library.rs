@@ -38,21 +38,39 @@ fn c_driver_calls_briev_library() {
 
     // 1. Build the static library + .so.
     let build = Command::new(brievc)
-        .args(["build", &bv, "--library", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc build --library");
-    assert!(build.status.success(), "build --library failed: {}", String::from_utf8_lossy(&build.stderr));
+        .args([
+            "build",
+            &bv,
+            "--library",
+            "--out",
+            &out_dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("failed brievc build --library");
+    assert!(
+        build.status.success(),
+        "build --library failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     // 2. Generate the C header.
     let bindings = Command::new(brievc)
         .args(["bindings", &bv, "c", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc bindings");
-    assert!(bindings.status.success(), "bindings failed: {}", String::from_utf8_lossy(&bindings.stderr));
+        .output()
+        .expect("failed brievc bindings");
+    assert!(
+        bindings.status.success(),
+        "bindings failed: {}",
+        String::from_utf8_lossy(&bindings.stderr)
+    );
     let header = out_dir.join("pp-types-bindings").join("briev_types.h");
     assert!(header.exists(), "briev_types.h not generated");
 
     // 3. Write a C driver that includes the header and calls exports.
     let driver_c = out_dir.join("driver.c");
-    std::fs::write(&driver_c, r#"
+    std::fs::write(
+        &driver_c,
+        r#"
 #include "briev_types.h"
 #include <stdio.h>
 #include <string.h>
@@ -73,7 +91,9 @@ int main(void) {
     __glue_release(st);
     return 0;
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     // 4. Compile + link against the .a (plain cc — the archive is real ELF).
     //    .a lives in out_dir directly; the header in <name>-bindings/.
@@ -85,16 +105,35 @@ int main(void) {
         .arg(format!("-I{}", header_dir.display()))
         .arg(format!("-L{}", out_dir.display()))
         .arg("-lpp-types")
-        .output().expect("failed cc");
-    assert!(cc.status.success(), "cc failed: {}", String::from_utf8_lossy(&cc.stderr));
+        .output()
+        .expect("failed cc");
+    assert!(
+        cc.status.success(),
+        "cc failed: {}",
+        String::from_utf8_lossy(&cc.stderr)
+    );
 
     // 5. Run and assert.
-    let run = Command::new(&driver).output().expect("failed to run driver");
-    assert!(run.status.success(), "driver failed: {}", String::from_utf8_lossy(&run.stderr));
+    let run = Command::new(&driver)
+        .output()
+        .expect("failed to run driver");
+    assert!(
+        run.status.success(),
+        "driver failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let stdout = String::from_utf8_lossy(&run.stdout);
-    assert!(stdout.contains("bits:Bits(42)"), "type_bits output: {}", stdout);
+    assert!(
+        stdout.contains("bits:Bits(42)"),
+        "type_bits output: {}",
+        stdout
+    );
     assert!(stdout.contains("void:void"), "void output: {}", stdout);
-    assert!(stdout.contains("static:Bits(42): test"), "static output: {}", stdout);
+    assert!(
+        stdout.contains("static:Bits(42): test"),
+        "static output: {}",
+        stdout
+    );
 
     let _ = std::fs::remove_dir_all(&out_dir);
 }

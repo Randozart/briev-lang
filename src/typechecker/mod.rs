@@ -10,19 +10,19 @@
 // - Literals → validate formatting compatibility
 // - Variables → look up in scope
 
-mod output_inference;
 mod call_literals;
 mod elaboration_scope;
 mod index_assignment;
+mod output_inference;
 mod validate;
 pub use validate::*;
 
 use crate::analysis::provenance::Provenance;
 use crate::ast::*;
 use crate::errors::{SyntaxError, TypeError};
-use crate::intrinsic_signatures::{get_intrinsic_signature, ReturnKind, Signature};
+use crate::intrinsic_signatures::{ReturnKind, Signature, get_intrinsic_signature};
 use crate::type_universe::{
-    get_operator_intrinsic, protocol_binding, rune_to_op_name, TypeUniverse,
+    TypeUniverse, get_operator_intrinsic, protocol_binding, rune_to_op_name,
 };
 use std::collections::HashMap;
 
@@ -311,14 +311,20 @@ impl<'a> TypecheckContext<'a> {
             if let Some(ops) = self.regular_ops.get(current) {
                 if ops.iter().any(|op| {
                     op.op == op_name
-                        && op.params.first().map_or(false, |p| self.param_covers(p, operand))
+                        && op
+                            .params
+                            .first()
+                            .map_or(false, |p| self.param_covers(p, operand))
                 }) {
                     return true;
                 }
             }
             if let Some(bindings) = self.regular_bindings.get(current) {
                 if bindings.iter().any(|b| {
-                    b.name == op_name && b.protocol_variant.as_ref().map_or(false, |v| self.variant_covers(v, operand))
+                    b.name == op_name
+                        && b.protocol_variant
+                            .as_ref()
+                            .map_or(false, |v| self.variant_covers(v, operand))
                 }) {
                     return true;
                 }
@@ -459,7 +465,10 @@ impl<'a> TypecheckContext<'a> {
                     if op.op != op_name {
                         continue;
                     }
-                    let covers = op.params.first().map_or(false, |p| self.param_covers(p, operand));
+                    let covers = op
+                        .params
+                        .first()
+                        .map_or(false, |p| self.param_covers(p, operand));
                     if covers {
                         if let Some(name) = cross_op_fn_name(&op.impl_args) {
                             return Some(name);
@@ -547,7 +556,11 @@ impl<'a> TypecheckContext<'a> {
         let b = proto.trim_start_matches('#');
         let lt = b.find('<')?;
         let variant = b[lt + 1..].trim_end_matches('>');
-        if variant.is_empty() { None } else { Some(variant) }
+        if variant.is_empty() {
+            None
+        } else {
+            Some(variant)
+        }
     }
 
     /// The bare category of a declared protocol string —
@@ -591,7 +604,9 @@ impl<'a> TypecheckContext<'a> {
         // prefers its VARIANT's own cross-op override (zero cast) over the base
         // binding. This is "adopt whatever operations are most convenient."
         if let Some(variant) = raw_proto.and_then(Self::protocol_variant_of) {
-            if let Some(fn_name) = self.variant_cross_ops.get(variant)
+            if let Some(fn_name) = self
+                .variant_cross_ops
+                .get(variant)
                 .and_then(|ops| ops.get(effective_op))
             {
                 return Some(OpBinding::Function(fn_name.clone()));
@@ -648,17 +663,27 @@ impl<'a> TypecheckContext<'a> {
     /// row). Aliases are the same format with a second spelling; comparisons,
     /// operator checks and bindings must see one type. Follows chains.
     fn canonical_alias(&self, ty: &Type) -> Type {
-        let Type::Custom(start) = ty else { return ty.clone() };
+        let Type::Custom(start) = ty else {
+            return ty.clone();
+        };
         let mut current = start.clone();
         for _ in 0..16 {
-            let Some(rt) = self.universe.get(&current) else { break };
+            let Some(rt) = self.universe.get(&current) else {
+                break;
+            };
             let Some(crate::ast::PropertyValue::String(next)) = rt.properties.get("alias") else {
                 break;
             };
-            if *next == current { break; }
+            if *next == current {
+                break;
+            }
             current = next.clone();
         }
-        if &current == start { ty.clone() } else { Type::Custom(current) }
+        if &current == start {
+            ty.clone()
+        } else {
+            Type::Custom(current)
+        }
     }
 
     /// Does `operand` implement protocol `hw` (e.g. `Int`)? Checks the
@@ -702,7 +727,9 @@ impl<'a> TypecheckContext<'a> {
             Expr::AddrOf(e) => e.as_ref(),
             other => other,
         };
-        let Expr::Identifier(name) = inner else { return None; };
+        let Expr::Identifier(name) = inner else {
+            return None;
+        };
         let (type_name, args) = match self.bindings.get(name)? {
             Type::Custom(n) => (n.clone(), Vec::new()),
             Type::Applied(n, a) => (n.clone(), a.clone()),
@@ -714,7 +741,11 @@ impl<'a> TypecheckContext<'a> {
         // indirection (`op InsertAt(v: T) { … }`).
         if let Some(op_member) = operator_member(members, "InsertAt") {
             let elem = op_member.parameters.first().map(|(_, ty)| ty.clone())?;
-            let params = self.type_params.get(&type_name).cloned().unwrap_or_default();
+            let params = self
+                .type_params
+                .get(&type_name)
+                .cloned()
+                .unwrap_or_default();
             return Some(substitute_type_params(&elem, &params, &args));
         }
         let bindings = self.regular_bindings.get(&type_name)?;
@@ -728,7 +759,11 @@ impl<'a> TypecheckContext<'a> {
         // 2026-08-01 (Phase 3): substitute the collection's concrete type args
         // into the generic member param (`List<Int>` InsertAt's `T` → `Int`),
         // so `queue <- count` on a List<Int> checks Int, not the bare `T`.
-        let params = self.type_params.get(&type_name).cloned().unwrap_or_default();
+        let params = self
+            .type_params
+            .get(&type_name)
+            .cloned()
+            .unwrap_or_default();
         Some(substitute_type_params(&elem, &params, &args))
     }
 
@@ -749,7 +784,9 @@ impl<'a> TypecheckContext<'a> {
             Expr::AddrOf(e) => e.as_ref(),
             other => other,
         };
-        let Expr::Identifier(name) = inner else { return None; };
+        let Expr::Identifier(name) = inner else {
+            return None;
+        };
         let (type_name, args) = match self.bindings.get(name)? {
             Type::Custom(n) => (n.clone(), Vec::new()),
             Type::Applied(n, a) => (n.clone(), a.clone()),
@@ -767,8 +804,15 @@ impl<'a> TypecheckContext<'a> {
             .filter(|m| m.parameters.is_empty())
             .or_else(|| operator_member(members, second).filter(|m| m.parameters.is_empty()))
         {
-            let out = op_member.output_type.as_ref().and_then(|o| o.all_types().into_iter().next())?;
-            let params = self.type_params.get(&type_name).cloned().unwrap_or_default();
+            let out = op_member
+                .output_type
+                .as_ref()
+                .and_then(|o| o.all_types().into_iter().next())?;
+            let params = self
+                .type_params
+                .get(&type_name)
+                .cloned()
+                .unwrap_or_default();
             return Some(substitute_type_params(&out, &params, &args));
         }
         let bindings = self.regular_bindings.get(&type_name)?;
@@ -787,7 +831,11 @@ impl<'a> TypecheckContext<'a> {
         let out = member_output(member)?;
         // 2026-08-01 (Phase 3): substitute concrete args into the generic
         // return (`Stack<Int>` pop → `T` → `Int`).
-        let params = self.type_params.get(&type_name).cloned().unwrap_or_default();
+        let params = self
+            .type_params
+            .get(&type_name)
+            .cloned()
+            .unwrap_or_default();
         Some(substitute_type_params(&out, &params, &args))
     }
 
@@ -803,36 +851,38 @@ impl<'a> TypecheckContext<'a> {
             Expr::AddrOf(e) => e.as_ref(),
             other => other,
         };
-        let Expr::Identifier(name) = inner else { return None; };
+        let Expr::Identifier(name) = inner else {
+            return None;
+        };
         let type_name = match self.bindings.get(name)? {
             Type::Custom(n) => n.clone(),
             Type::Applied(n, _) => n.clone(),
             _ => return None,
         };
         let members = self.type_members.get(&type_name)?;
-    if let Some(op_member) = operator_member(members, first)
-        .filter(|m| m.parameters.is_empty())
-        .or_else(|| operator_member(members, second).filter(|m| m.parameters.is_empty()))
-    {
-        return Some(format!("{}.{}", type_name, op_member.name));
+        if let Some(op_member) = operator_member(members, first)
+            .filter(|m| m.parameters.is_empty())
+            .or_else(|| operator_member(members, second).filter(|m| m.parameters.is_empty()))
+        {
+            return Some(format!("{}.{}", type_name, op_member.name));
+        }
+        let bindings = self.regular_bindings.get(&type_name)?;
+        let binding = bindings
+            .iter()
+            .find(|b| b.name == first)
+            .or_else(|| bindings.iter().find(|b| b.name == second))?;
+        let fn_name = match &binding.expr {
+            Expr::Call(fn_name, _, _) => fn_name.clone(),
+            _ => return None,
+        };
+        let member = members.iter().find(|m| member_name(m) == fn_name)?;
+        if !member_params(member).is_empty() {
+            return None;
+        }
+        Some(format!("{}.{}", type_name, fn_name))
     }
-    let bindings = self.regular_bindings.get(&type_name)?;
-    let binding = bindings
-        .iter()
-        .find(|b| b.name == first)
-        .or_else(|| bindings.iter().find(|b| b.name == second))?;
-    let fn_name = match &binding.expr {
-        Expr::Call(fn_name, _, _) => fn_name.clone(),
-        _ => return None,
-    };
-    let member = members.iter().find(|m| member_name(m) == fn_name)?;
-    if !member_params(member).is_empty() {
-        return None;
-    }
-    Some(format!("{}.{}", type_name, fn_name))
-}
 
-/// 2026-07-20: Find a Parse op on a type that could accept a literal form.
+    /// 2026-07-20: Find a Parse op on a type that could accept a literal form.
     /// form: "Decimal", "Quoted", "Bare", or a hashword category like "Int".
     /// discriminator: optional prefix/suffix hint ("0x", "h", "bf", etc.)
     /// Returns the OperatorDef if a matching Parse op exists.
@@ -858,10 +908,9 @@ impl<'a> TypecheckContext<'a> {
                 }
                 // 2. Qualified match (has pre: or suf:, no discriminator given)
                 if discriminator.is_none() {
-                    if let Some(def) = defs
-                        .iter()
-                        .find(|op| matches_form(&op.params, form) && (op.pre.is_some() || op.suf.is_some()))
-                    {
+                    if let Some(def) = defs.iter().find(|op| {
+                        matches_form(&op.params, form) && (op.pre.is_some() || op.suf.is_some())
+                    }) {
                         return Some(def);
                     }
                 }
@@ -873,7 +922,10 @@ impl<'a> TypecheckContext<'a> {
                     return Some(def);
                 }
                 // 4. Hashword identity (e.g., Parse(Int) for Decimal)
-                if let Some(def) = defs.iter().find(|d| matches_parse_identity(&d.params, form)) {
+                if let Some(def) = defs
+                    .iter()
+                    .find(|d| matches_parse_identity(&d.params, form))
+                {
                     return Some(def);
                 }
             }
@@ -921,7 +973,8 @@ impl<'a> TypecheckContext<'a> {
             self.parse_ops.insert(type_name.to_string(), defs);
         }
         if let Some(Expr::Identifier(pname)) = parent {
-            self.type_parents.insert(type_name.to_string(), pname.clone());
+            self.type_parents
+                .insert(type_name.to_string(), pname.clone());
         }
     }
 
@@ -966,7 +1019,9 @@ fn matches_parse_identity(params: &[Type], form: &str) -> bool {
     // 2026-09-11 (Phase A3): bare fundamentals and legacy # spellings both
     // name the category.
     let hashword_category = match &params[0] {
-        Type::Custom(n) if crate::type_universe::FUNDAMENTAL_TYPES.contains(&n.as_str()) => n.as_str(),
+        Type::Custom(n) if crate::type_universe::FUNDAMENTAL_TYPES.contains(&n.as_str()) => {
+            n.as_str()
+        }
         _ => return false,
     };
     match (hashword_category, form) {
@@ -1060,32 +1115,27 @@ pub fn infer_expression(
                     type_name: name.clone(),
                 });
             }
-            let ty =
-                ctx.bindings
-                    .get(name)
-                    .cloned()
-                    .or_else(|| {
-                        // 2026-08-23 (SPEC §9.2): a NAMED FUNCTION used as a
-                        // value — `apply_function("hi", my_printer)` — types
-                        // as its own signature, so it flows into callable-
-                        // typed parameters. fn_param_types/fn_return_types
-                        // carry the declared shapes.
-                        ctx.fn_return_types.get(name).map(|ret| {
-                            Type::Function(
-                                ctx.fn_param_types
-                                    .get(name)
-                                    .cloned()
-                                    .unwrap_or_default(),
-                                Box::new(ret.clone()),
-                            )
-                        })
+            let ty = ctx
+                .bindings
+                .get(name)
+                .cloned()
+                .or_else(|| {
+                    // 2026-08-23 (SPEC §9.2): a NAMED FUNCTION used as a
+                    // value — `apply_function("hi", my_printer)` — types
+                    // as its own signature, so it flows into callable-
+                    // typed parameters. fn_param_types/fn_return_types
+                    // carry the declared shapes.
+                    ctx.fn_return_types.get(name).map(|ret| {
+                        Type::Function(
+                            ctx.fn_param_types.get(name).cloned().unwrap_or_default(),
+                            Box::new(ret.clone()),
+                        )
                     })
-                    .ok_or_else(|| {
-                        TypeError::UndefinedVariable {
-                            name: name.clone(),
-                            available: ctx.bindings.keys().cloned().collect(),
-                        }
-                    })?;
+                })
+                .ok_or_else(|| TypeError::UndefinedVariable {
+                    name: name.clone(),
+                    available: ctx.bindings.keys().cloned().collect(),
+                })?;
             Ok((ty, Provenance::Known(name.clone())))
         }
 
@@ -1236,8 +1286,7 @@ pub fn infer_expression(
                     _ => None,
                 };
                 elem.map_or(false, |e| {
-                    crate::type_universe::operators::protocol_category(ctx.universe, e)
-                        .as_deref()
+                    crate::type_universe::operators::protocol_category(ctx.universe, e).as_deref()
                         == Some("Bool")
                 })
             };
@@ -1267,10 +1316,8 @@ pub fn infer_expression(
                     _ => None,
                 };
                 if let Some(elem) = i64_slot_elem {
-                    let cat = crate::type_universe::operators::protocol_category(
-                        ctx.universe,
-                        elem,
-                    );
+                    let cat =
+                        crate::type_universe::operators::protocol_category(ctx.universe, elem);
                     if cat.as_deref() == Some("Int")
                         || cat.as_deref() == Some("Bool")
                         || cat.as_deref() == Some("Float")
@@ -1333,7 +1380,9 @@ pub fn infer_expression(
             // cross-protocol edge (SPEC §8.7).
             validate_cast_protocol_crossing(ctx, &src_ty, target_ty)?;
             // 2026-07-26: Vector-to-Vector view cast validation.
-            if let (Type::Vector(src_inner, src_dims), Type::Vector(tgt_inner, tgt_dims)) = (&src_ty, target_ty) {
+            if let (Type::Vector(src_inner, src_dims), Type::Vector(tgt_inner, tgt_dims)) =
+                (&src_ty, target_ty)
+            {
                 if src_inner != tgt_inner || src_dims != tgt_dims {
                     let src_bytes = type_byte_size(&src_ty);
                     let tgt_bytes = type_byte_size(target_ty);
@@ -1341,7 +1390,8 @@ pub fn infer_expression(
                         return Err(TypeError::TypeMismatch {
                             expected: format!("array of {} bytes", tgt_bytes),
                             found: format!("{} ({} bytes)", src_ty, src_bytes),
-                            context: "view cast: source and target byte sizes must match".to_string(),
+                            context: "view cast: source and target byte sizes must match"
+                                .to_string(),
                         });
                     }
                 }
@@ -1358,10 +1408,14 @@ pub fn infer_expression(
         }
         // 2026-07-31: Struct literal — `TypeName { field: e, ... }` resolves
         // to the struct type and validates the fields against its slots.
-        Expr::StructLiteral { type_name, fields, specs: _ } => {
+        Expr::StructLiteral {
+            type_name,
+            fields,
+            specs: _,
+        } => {
             // 2026-08-01 (D3): a struct literal for a GENERIC type infers as
             // the Applied form with the type params as placeholders
-            // (`HashMapEntry { key, val }` in a HashMap<K, V> member → 
+            // (`HashMapEntry { key, val }` in a HashMap<K, V> member →
             // `HashMapEntry<K, V>`), so it matches a member's param type.
             let ty = match ctx.type_params.get(type_name) {
                 Some(params) if !params.is_empty() => Type::Applied(
@@ -1376,9 +1430,8 @@ pub fn infer_expression(
             // field check is deferred to the let-level declared-type coercion
             // (the concrete T→Int substitution); here we only validate the
             // field names exist. Collect the struct's type-param names.
-            let type_param_names: Vec<String> = ctx.type_params.get(type_name)
-                .cloned()
-                .unwrap_or_default();
+            let type_param_names: Vec<String> =
+                ctx.type_params.get(type_name).cloned().unwrap_or_default();
             let contains_type_param = |t: &Type| {
                 fn walk(t: &Type, params: &[String]) -> bool {
                     match t {
@@ -1406,7 +1459,10 @@ pub fn infer_expression(
                             return Err(TypeError::TypeMismatch {
                                 expected: format!("{}", ft),
                                 found: format!("{}", vty),
-                                context: format!("field '{}' of struct literal '{}'", fname, type_name),
+                                context: format!(
+                                    "field '{}' of struct literal '{}'",
+                                    fname, type_name
+                                ),
                             });
                         }
                     }
@@ -1443,9 +1499,13 @@ pub fn infer_expression(
         // marks the local dead (use-after-move is caught by the Identifier arm).
         Expr::Consume(inner) => {
             match inner.as_ref() {
-                Expr::Decimal(_) | Expr::TaggedLiteral(_, _) | Expr::Float(_)
-                | Expr::Bool(_) | Expr::Char(_)
-                | Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) => {
+                Expr::Decimal(_)
+                | Expr::TaggedLiteral(_, _)
+                | Expr::Float(_)
+                | Expr::Bool(_)
+                | Expr::Char(_)
+                | Expr::Quoted(_)
+                | Expr::TaggedQuotedLiteral(_, _) => {
                     return Err(TypeError::InvalidOperation {
                         operation: "cannot consume a constant".into(),
                         type_name: format!("{}", inner),
@@ -1496,10 +1556,7 @@ pub fn infer_expression(
             // 2026-08-22 (Phase 8): await consumes a task handle — only a
             // Task<R> admits it, and it yields R.
             match ty {
-                Type::Task(ret) => Ok((
-                    *ret,
-                    prov,
-                )),
+                Type::Task(ret) => Ok((*ret, prov)),
                 other => Err(TypeError::InvalidOperation {
                     operation: "await".into(),
                     type_name: format!(
@@ -1572,7 +1629,12 @@ pub fn infer_expression(
         // 2026-08-01: Phase 1 of the plugin-macro rework — only lowercase
         // macro names are recognized. PascalCase legacy names (`PrintLn!`,
         // `GetEnvInt!`, ...) are rejected with a rename hint.
-        Expr::PluginIntercept { name, args, receiver, .. } => {
+        Expr::PluginIntercept {
+            name,
+            args,
+            receiver,
+            ..
+        } => {
             // 2026-09-16 (Bug A): a chained plugin call's receiver is a real
             // expression — infer it so an undefined receiver is caught (it is
             // passed to the plugin as the first argument at runtime).
@@ -1608,55 +1670,75 @@ pub fn infer_expression(
         }
         Expr::Exists(name) => Err(TypeError::InvalidOperation {
             operation: format!("compile-time existence check '{}'", name),
-            type_name: "Existence checks resolve during macro evaluation, not type inference".into(),
+            type_name: "Existence checks resolve during macro evaluation, not type inference"
+                .into(),
         }),
-            Expr::Slice { array, start, end, stride } => {
-                let elem_ty = infer_type_only(array, ctx)?;
-                if let Some(e) = start.as_deref() { infer_type_only(e, ctx)?; }
-                if let Some(e) = end.as_deref() { infer_type_only(e, ctx)?; }
-                if let Some(e) = stride.as_deref() { infer_type_only(e, ctx)?; }
-                // 2026-08-22 (Phase 6b): a slice of a VECTOR lowers to a heap
-                // List of the elements (range gather + tier box) — the old
-                // same-shape-array claim made `let c: Int[8] = data[...]`
-                // typecheck and then store an i64 handle into an [8 x i64]
-                // column (invalid IR). Slices are Lists; whole fixed-size
-                // array values stay a future feature.
-                if let Type::Vector(inner, _) = elem_ty {
-                    return Ok((
-                        Type::Applied("List".into(), vec![(*inner).clone()]),
-                        Provenance::Unknown,
-                    ));
-                }
-                Ok((elem_ty, Provenance::Unknown))
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
+            let elem_ty = infer_type_only(array, ctx)?;
+            if let Some(e) = start.as_deref() {
+                infer_type_only(e, ctx)?;
             }
-            // 2026-08-07 (Phase 7): an iterable integer range — `start..end`
-            // / `start..=end`. Consumed by `foreach` (SPEC §11.4).
-            Expr::Range { start, end, inclusive: _ } => {
-                infer_type_only(start, ctx)?;
-                infer_type_only(end, ctx)?;
-                Ok((Type::Applied("Range".into(), vec![Type::int()]), Provenance::Unknown))
+            if let Some(e) = end.as_deref() {
+                infer_type_only(e, ctx)?;
             }
-            // 2026-08-07 (object instance pools): `spawn Obj(args)` creates an
-            // obj instance + returns a handle of the instance type. The type
-            // args come from a `let h: Obj<...> = spawn ...` annotation.
-            Expr::Spawn { type_name, args, .. } => {
-                for a in args {
-                    infer_type_only(a, ctx)?;
-                }
-                // 2026-08-09 (Phase 10): `spawn defn(args)` is a TASK spawn —
-                // its handle carries the defn's return type (SPEC §12.2); an
-                // obj spawn keeps the obj's Custom type.
-                if let Some(ty) = ctx.fn_return_types.get(type_name) {
-                    // 2026-08-22 (Phase 8, SPEC §12.2): a callable spawn yields
-                    // a LINEAR handle Task<R> — await unwraps R; the handle
-                    // must be consumed exactly once (task_linear pass).
-                    Ok((Type::Task(Box::new(ty.clone())), Provenance::Unknown))
-                } else {
-                    Ok((Type::Custom(type_name.clone()), Provenance::Unknown))
-                }
+            if let Some(e) = stride.as_deref() {
+                infer_type_only(e, ctx)?;
             }
-            Expr::UnitLiteral { .. } => Ok((Type::float(), Provenance::Unknown)),
-
+            // 2026-08-22 (Phase 6b): a slice of a VECTOR lowers to a heap
+            // List of the elements (range gather + tier box) — the old
+            // same-shape-array claim made `let c: Int[8] = data[...]`
+            // typecheck and then store an i64 handle into an [8 x i64]
+            // column (invalid IR). Slices are Lists; whole fixed-size
+            // array values stay a future feature.
+            if let Type::Vector(inner, _) = elem_ty {
+                return Ok((
+                    Type::Applied("List".into(), vec![(*inner).clone()]),
+                    Provenance::Unknown,
+                ));
+            }
+            Ok((elem_ty, Provenance::Unknown))
+        }
+        // 2026-08-07 (Phase 7): an iterable integer range — `start..end`
+        // / `start..=end`. Consumed by `foreach` (SPEC §11.4).
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
+            infer_type_only(start, ctx)?;
+            infer_type_only(end, ctx)?;
+            Ok((
+                Type::Applied("Range".into(), vec![Type::int()]),
+                Provenance::Unknown,
+            ))
+        }
+        // 2026-08-07 (object instance pools): `spawn Obj(args)` creates an
+        // obj instance + returns a handle of the instance type. The type
+        // args come from a `let h: Obj<...> = spawn ...` annotation.
+        Expr::Spawn {
+            type_name, args, ..
+        } => {
+            for a in args {
+                infer_type_only(a, ctx)?;
+            }
+            // 2026-08-09 (Phase 10): `spawn defn(args)` is a TASK spawn —
+            // its handle carries the defn's return type (SPEC §12.2); an
+            // obj spawn keeps the obj's Custom type.
+            if let Some(ty) = ctx.fn_return_types.get(type_name) {
+                // 2026-08-22 (Phase 8, SPEC §12.2): a callable spawn yields
+                // a LINEAR handle Task<R> — await unwraps R; the handle
+                // must be consumed exactly once (task_linear pass).
+                Ok((Type::Task(Box::new(ty.clone())), Provenance::Unknown))
+            } else {
+                Ok((Type::Custom(type_name.clone()), Provenance::Unknown))
+            }
+        }
+        Expr::UnitLiteral { .. } => Ok((Type::float(), Provenance::Unknown)),
     }
 }
 
@@ -1669,7 +1751,10 @@ fn declares_collection_ops(ctx: &TypecheckContext, type_name: &str) -> bool {
     ctx.type_members.get(type_name).map_or(false, |members| {
         members.iter().any(|m| match m {
             crate::ast::top::TopLevel::TypeDefOperator(d) => {
-                matches!(d.name.as_str(), "Count" | "Iter" | "Init" | "InitEmpty" | "InsertAt")
+                matches!(
+                    d.name.as_str(),
+                    "Count" | "Iter" | "Init" | "InitEmpty" | "InsertAt"
+                )
             }
             _ => false,
         })
@@ -1690,7 +1775,9 @@ fn check_vector_literal(
     elems: &[Expr],
     ctx: &mut TypecheckContext,
 ) -> Result<bool, TypeError> {
-    let Some(dim) = dims.first() else { return Ok(false); };
+    let Some(dim) = dims.first() else {
+        return Ok(false);
+    };
     if dims.len() != 1 {
         return Ok(false);
     }
@@ -1718,7 +1805,9 @@ fn list_literal_accepted_by(target_ty: &Type, elems: &[Expr], ctx: &TypecheckCon
         Type::Applied(n, _) => Some(n.as_str()),
         _ => None,
     };
-    let Some(n) = target_base else { return false; };
+    let Some(n) = target_base else {
+        return false;
+    };
     if !(n == "List" || ctx.coll_types.contains(n) || declares_collection_ops(ctx, n)) {
         return false;
     }
@@ -1739,7 +1828,9 @@ fn list_literal_accepted_by(target_ty: &Type, elems: &[Expr], ctx: &TypecheckCon
                 crate::ast::Dimension::Anonymous(c) => Some(*c as i64),
                 crate::ast::Dimension::Named(nm, _) => {
                     let params = ctx.type_params.get(n).cloned().unwrap_or_default();
-                    params.iter().position(|p| p == nm)
+                    params
+                        .iter()
+                        .position(|p| p == nm)
                         .and_then(|i| args.get(i))
                         .and_then(|a| match a {
                             Type::Number(sz) => Some(*sz),
@@ -1808,12 +1899,10 @@ fn try_coerce_via_parse(
         // 2026-08-01: `-3.25` is `Neg(Float)` — a negative numeric literal, so
         // it is a "Decimal" form and can coerce (e.g. to Float64) like a
         // positive literal. Without this, `let d: Float64 = -3.25` errored.
-        Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
-            match inner.as_ref() {
-                Expr::Float(_) | Expr::Decimal(_) | Expr::TaggedLiteral(_, _) => ("Decimal", None),
-                _ => return false,
-            }
-        }
+        Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match inner.as_ref() {
+            Expr::Float(_) | Expr::Decimal(_) | Expr::TaggedLiteral(_, _) => ("Decimal", None),
+            _ => return false,
+        },
         Expr::UnitLiteral { value, .. } => {
             return try_coerce_via_parse(&Expr::Float(*value), target_ty, arg_ty, ctx);
         }
@@ -1830,7 +1919,10 @@ fn try_coerce_via_parse(
     };
     // 2026-07-31 (Phase 2): `op Init: init(#Lh, #Rh)` / a registered Parse op
     // authorizes `let t: T = v` construction (the collection stdlib pattern).
-    if ctx.find_parse_op(target_name, form, discriminator).is_some() {
+    if ctx
+        .find_parse_op(target_name, form, discriminator)
+        .is_some()
+    {
         return true;
     }
     if type_has_init_op(target_name, ctx) {
@@ -1865,11 +1957,7 @@ fn try_coerce_via_parse(
 /// round-trips through the target width exactly. 2026-09-02 (plan
 /// fundamental-parent-membership); extracted from try_coerce_via_parse to
 /// keep its complexity at the house bound.
-fn float_literal_admissible(
-    target_ty: &Type,
-    expr: &Expr,
-    ctx: &TypecheckContext,
-) -> bool {
+fn float_literal_admissible(target_ty: &Type, expr: &Expr, ctx: &TypecheckContext) -> bool {
     let Some(f) = float_literal_expr(expr) else {
         return true;
     };
@@ -1899,11 +1987,7 @@ fn float_literal_expr(e: &Expr) -> Option<&Expr> {
 /// seed (type is numeric / has a Decimal Parse op / has `op Init`) AND is the
 /// inferred seed type itself numeric (Int/Float/etc.)? True ⇒ an expression
 /// like `2 * N` (a computed capacity seed) can construct the type.
-fn construction_accepts_numeric(
-    target_ty: &Type,
-    arg_ty: &Type,
-    ctx: &TypecheckContext,
-) -> bool {
+fn construction_accepts_numeric(target_ty: &Type, arg_ty: &Type, ctx: &TypecheckContext) -> bool {
     if *arg_ty != Type::int() && *arg_ty != Type::float() {
         // A non-numeric inferred seed cannot be a numeric-capacity seed.
         return false;
@@ -1962,8 +2046,7 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
                     .variant_defs
                     .iter()
                     .filter(|(k, _)| {
-                        k.contains("::") && k.ends_with(&name)
-                            && k.len() > name.len() + 2
+                        k.contains("::") && k.ends_with(&name) && k.len() > name.len() + 2
                     })
                     .map(|(_, v)| v.clone())
                     .collect();
@@ -1999,9 +2082,17 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
         // (Native Int / Exact Void are already correct); `Count#` on a
         // `String` is handled inside infer_generative_op_call via the
         // signature-free fallthrough below.
-        let op_inferred = matches!(op_name,
-            "At" | "Slice" | "ExtractFrom" | "CopyFrom"
-            | "Count" | "Iter" | "Step" | "IsEnd" | "Current");
+        let op_inferred = matches!(
+            op_name,
+            "At" | "Slice"
+                | "ExtractFrom"
+                | "CopyFrom"
+                | "Count"
+                | "Iter"
+                | "Step"
+                | "IsEnd"
+                | "Current"
+        );
         if op_inferred && is_operation_identity(op_name) {
             if let Some(ty) = infer_generative_op_call(op_name, args, ctx)? {
                 return Ok(ty);
@@ -2057,7 +2148,10 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
                             "argument {} of function value '{}' (declared {})",
                             i,
                             name,
-                            ctx.bindings.get(name).map(|t| format!("{}", t)).unwrap_or_default()
+                            ctx.bindings
+                                .get(name)
+                                .map(|t| format!("{}", t))
+                                .unwrap_or_default()
                         ),
                     });
                 }
@@ -2077,11 +2171,8 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
     // the ws_decode idiom). There is no runtime fallback: contracts are
     // pure static proofs.
     if let Some(contract) = ctx.fn_contracts.get(name).cloned() {
-        let mut goal = crate::proof_engine::callgate::substitute_params(
-            &contract.pre,
-            &contract.params,
-            args,
-        );
+        let mut goal =
+            crate::proof_engine::callgate::substitute_params(&contract.pre, &contract.params, args);
         // Fold constants in the goal and facts together; see fold_constants.
         let verdict = prove_with_constants(&goal, ctx);
         if verdict == crate::proof_engine::callgate::Verdict::Proven {
@@ -2142,7 +2233,8 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
                     let arg_ty = infer_type_only(arg, ctx)?;
                     if let Some(param_ty) = ctx.fn_param_types.get(name).and_then(|p| p.get(i)) {
                         let subst_ty = substitute_type_params(param_ty, &params, &args_conc);
-                        if arg_ty != subst_ty && !try_coerce_via_parse(arg, &arg_ty, &subst_ty, ctx) {
+                        if arg_ty != subst_ty && !try_coerce_via_parse(arg, &arg_ty, &subst_ty, ctx)
+                        {
                             return Err(TypeError::TypeMismatch {
                                 expected: format!("{}", subst_ty),
                                 found: format!("{}", arg_ty),
@@ -2183,8 +2275,8 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
         for (i, arg) in args.iter().enumerate() {
             let arg_ty = infer_type_only(arg, ctx)?;
             if let Some(slot) = slots.get(i) {
-            if arg_ty != slot.ty {
-                let coercible = try_coerce_via_parse(arg, &arg_ty, &slot.ty, ctx);
+                if arg_ty != slot.ty {
+                    let coercible = try_coerce_via_parse(arg, &arg_ty, &slot.ty, ctx);
                     if !coercible {
                         return Err(TypeError::TypeMismatch {
                             expected: format!("{}", slot.ty),
@@ -2266,7 +2358,11 @@ fn resolve_bound_param_call(
     let Some(trait_def) = ctx.trait_defs.get(&trait_name).cloned() else {
         return Ok(None);
     };
-    let Some(requirement) = trait_def.functions.iter().find(|fn_def| fn_def.name == name) else {
+    let Some(requirement) = trait_def
+        .functions
+        .iter()
+        .find(|fn_def| fn_def.name == name)
+    else {
         return Ok(None);
     };
     // `Self` in the requirement signature is this concrete type param.
@@ -2345,14 +2441,20 @@ fn type_conforms_to_trait(ctx: &TypecheckContext, type_name: &str, trait_name: &
         if !requirement.body.is_empty() {
             return true; // a default is provided by the trait, not required
         }
-        members.iter().any(|member| member_name(member) == requirement.name)
+        members
+            .iter()
+            .any(|member| member_name(member) == requirement.name)
     })
 }
 
 /// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S4): the trait
 /// requirements a concrete type is MISSING — the required (empty-body) trait
 /// functions whose names the type does not provide. Empty ⇒ it conforms.
-fn missing_trait_requirements(ctx: &TypecheckContext, type_name: &str, trait_name: &str) -> Vec<String> {
+fn missing_trait_requirements(
+    ctx: &TypecheckContext,
+    type_name: &str,
+    trait_name: &str,
+) -> Vec<String> {
     let Some(trait_def) = ctx.trait_defs.get(trait_name) else {
         return Vec::new();
     };
@@ -2361,7 +2463,11 @@ fn missing_trait_requirements(ctx: &TypecheckContext, type_name: &str, trait_nam
         .functions
         .iter()
         .filter(|requirement| requirement.body.is_empty())
-        .filter(|requirement| !members.iter().any(|member| member_name(member) == requirement.name))
+        .filter(|requirement| {
+            !members
+                .iter()
+                .any(|member| member_name(member) == requirement.name)
+        })
         .map(|requirement| requirement.name.clone())
         .collect()
 }
@@ -2451,7 +2557,10 @@ fn resolve_conforming_trait_call(
     trait_names.sort();
     let resolved = trait_names.iter().find_map(|trait_name| {
         let trait_def = ctx.trait_defs.get(trait_name)?;
-        let requirement = trait_def.functions.iter().find(|fn_def| fn_def.name == name)?;
+        let requirement = trait_def
+            .functions
+            .iter()
+            .find(|fn_def| fn_def.name == name)?;
         if !type_conforms_to_trait(ctx, type_name, trait_name) {
             return None;
         }
@@ -2559,7 +2668,9 @@ fn infer_intrinsic_call(
         // A missing address is a diagnostic, never a crash.
         let Some(addr) = args.first() else {
             return Err(TypeError::TypeMismatch {
-                expected: "1 argument of type Ptr<T> — cast the address first, e.g. 'addr as Ptr<Byte>'".into(),
+                expected:
+                    "1 argument of type Ptr<T> — cast the address first, e.g. 'addr as Ptr<Byte>'"
+                        .into(),
                 found: "0 arguments".into(),
                 context: format!("address argument of '{}'", sig.name),
             });
@@ -2587,7 +2698,8 @@ fn infer_intrinsic_call(
             let is_scalar_ptr = match &ty {
                 crate::ast::Type::Ptr(inner) => match &**inner {
                     crate::ast::Type::Bits(_) => true,
-                    crate::ast::Type::Custom(name) => ctx.universe
+                    crate::ast::Type::Custom(name) => ctx
+                        .universe
                         .get(name)
                         .map(|rt| rt.fields.is_empty())
                         .unwrap_or(false),
@@ -2597,7 +2709,9 @@ fn infer_intrinsic_call(
             };
             if !is_scalar_ptr {
                 return Err(TypeError::TypeMismatch {
-                    expected: "Ptr<scalar> — Int/UInt/Bit<N>/Float pointee (element-wise arithmetic)".into(),
+                    expected:
+                        "Ptr<scalar> — Int/UInt/Bit<N>/Float pointee (element-wise arithmetic)"
+                            .into(),
                     found: format!("{}", ty),
                     context: format!("pointer argument {} of '{}'", i, sig.name),
                 });
@@ -2614,7 +2728,9 @@ fn infer_intrinsic_call(
             // 2026-08-03: CallPtr#(cb, args...) returns the cb's fn RETURN
             // type (e.g. fn(Int) -> Int → Int), not the fn value itself.
             if sig.name == "CallPtr#" {
-                if let Some(Ok(Type::Function(_, ret))) = args.first().map(|a| infer_type_only(a, ctx)) {
+                if let Some(Ok(Type::Function(_, ret))) =
+                    args.first().map(|a| infer_type_only(a, ctx))
+                {
                     return Ok(*ret);
                 }
                 return Ok(Type::int());
@@ -2687,11 +2803,7 @@ fn quoted_literal_type(prefix: &str) -> Type {
 /// (`Int | String`) accepts exactly its members. Single home for the rule so
 /// call arguments, let annotations, and returns stay consistent (DRY). The
 /// Bit<N>↔Bits width fact keeps its dedicated let-site logic.
-pub(crate) fn types_compatible(
-    declared: &Type,
-    value: &Type,
-    ctx: &TypecheckContext,
-) -> bool {
+pub(crate) fn types_compatible(declared: &Type, value: &Type, ctx: &TypecheckContext) -> bool {
     if declared == value {
         return true;
     }
@@ -2710,9 +2822,7 @@ pub(crate) fn types_compatible(
     // assertion is the conformance proof; check_trait_assertion already
     // verified the type provides every requirement at declaration time.
     if let Type::Dyn(trait_ty) = declared {
-        if let (Type::Custom(trait_name), Type::Custom(concrete)) =
-            (trait_ty.as_ref(), value)
-        {
+        if let (Type::Custom(trait_name), Type::Custom(concrete)) = (trait_ty.as_ref(), value) {
             if let Some(asserted) = ctx.trait_assertions.get(concrete.as_str()) {
                 return asserted.iter().any(|t| t == trait_name);
             }
@@ -2721,7 +2831,6 @@ pub(crate) fn types_compatible(
     }
     false
 }
-
 
 /// 2026-08-23 (enum-construction plan): type a variant constructor call.
 /// `Ok(x)` under `Result<T,E>`: payload x:T binds T; E comes from the
@@ -2762,8 +2871,7 @@ fn infer_variant_construction(
     }
     // Type params of the enum — a payload whose declared type IS a param
     // (e.g. T in Ok(T)) BINDS that param from the argument.
-    let params: Vec<String> =
-        ctx.type_params.get(enum_name).cloned().unwrap_or_default();
+    let params: Vec<String> = ctx.type_params.get(enum_name).cloned().unwrap_or_default();
     let mut subst: std::collections::HashMap<String, Type> = HashMap::new();
     for (a, pty) in args.iter().zip(payload_tys.iter()) {
         let aty = infer_type_only(a, ctx)?;
@@ -2784,7 +2892,10 @@ fn infer_variant_construction(
     let mut type_args: Vec<Type> = params
         .iter()
         .map(|pn| {
-            subst.get(pn).cloned().unwrap_or_else(|| Type::Custom(pn.clone()))
+            subst
+                .get(pn)
+                .cloned()
+                .unwrap_or_else(|| Type::Custom(pn.clone()))
         })
         .collect();
     // Unify the remaining (unbound) params against the contextual type.
@@ -2808,7 +2919,8 @@ fn infer_variant_construction(
     }
 }
 
-fn arithmetic_result_ty(ctx: &TypecheckContext,
+fn arithmetic_result_ty(
+    ctx: &TypecheckContext,
     kind: &BinaryOpKind,
     lhs_ty: &Type,
     rhs_ty: &Type,
@@ -2835,7 +2947,11 @@ fn arithmetic_result_ty(ctx: &TypecheckContext,
 /// a defined function is an error (was a silent link-time undefined symbol).
 // module-private: CheckEnv is module-private — visibility must not exceed
 // the parameter type (private_interfaces lint); the sole caller is in this file.
-fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv) -> Vec<TypeError> {
+fn elaborate_ops(
+    items: &mut [TopLevel],
+    universe: &TypeUniverse,
+    env: &CheckEnv,
+) -> Vec<TypeError> {
     let mut errors = Vec::new();
     for item in items.iter_mut() {
         let mut ctx = make_typecheck_context(env, universe);
@@ -2849,9 +2965,10 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                 for (name, ty) in &d.parameters {
                     ctx.bindings.insert(name.clone(), ty.clone());
                 }
-                ctx.known_facts.extend(
-                    crate::proof_engine::callgate::facts_of(&d.contract.pre_condition),
-                );
+                ctx.known_facts
+                    .extend(crate::proof_engine::callgate::facts_of(
+                        &d.contract.pre_condition,
+                    ));
                 ctx.in_defn = true;
                 ctx.param_names = d.parameters.iter().map(|(n, _)| n.clone()).collect();
                 ctx.local_shadows.clear();
@@ -2863,7 +2980,9 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                 // POST-condition — `[term == true]`, `[term.Count#() == n]`
                 // typecheck with the real return type, not the Int fallback.
                 let term_ty = d.output_type.as_ref().map(output_type_to_type);
-                let saved = ctx.bindings.insert("term".to_string(), term_ty.unwrap_or(Type::void()));
+                let saved = ctx
+                    .bindings
+                    .insert("term".to_string(), term_ty.unwrap_or(Type::void()));
                 elaborate_expr(&mut d.contract.post_condition, &mut ctx, &mut errors);
                 if let Some(prev) = saved {
                     ctx.bindings.insert("term".to_string(), prev);
@@ -2877,16 +2996,19 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                     ctx.bindings.insert(name.clone(), ty.clone());
                 }
                 let fact_base = ctx.known_facts.len();
-                ctx.known_facts.extend(
-                    crate::proof_engine::callgate::facts_of(&t.contract.pre_condition),
-                );
+                ctx.known_facts
+                    .extend(crate::proof_engine::callgate::facts_of(
+                        &t.contract.pre_condition,
+                    ));
                 ctx.param_names = t.parameters.iter().map(|(n, _)| n.clone()).collect();
                 ctx.local_shadows.clear();
                 elaborate_stmts(&mut t.body, &mut ctx, &mut errors);
                 ctx.known_facts.truncate(fact_base);
                 elaborate_expr(&mut t.contract.pre_condition, &mut ctx, &mut errors);
                 let term_ty = t.output_type.as_ref().map(output_type_to_type);
-                let saved = ctx.bindings.insert("term".to_string(), term_ty.unwrap_or(Type::void()));
+                let saved = ctx
+                    .bindings
+                    .insert("term".to_string(), term_ty.unwrap_or(Type::void()));
                 elaborate_expr(&mut t.contract.post_condition, &mut ctx, &mut errors);
                 if let Some(prev) = saved {
                     ctx.bindings.insert("term".to_string(), prev);
@@ -2911,7 +3033,11 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
     errors
 }
 
-fn elaborate_stmts(stmts: &mut [Statement], ctx: &mut TypecheckContext, errors: &mut Vec<TypeError>) {
+fn elaborate_stmts(
+    stmts: &mut [Statement],
+    ctx: &mut TypecheckContext,
+    errors: &mut Vec<TypeError>,
+) {
     for stmt in stmts.iter_mut() {
         elaborate_stmt(stmt, ctx, errors);
     }
@@ -2919,7 +3045,13 @@ fn elaborate_stmts(stmts: &mut [Statement], ctx: &mut TypecheckContext, errors: 
 
 fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut Vec<TypeError>) {
     match stmt {
-        Statement::Let { name, names, ty, expr, .. } => {
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            ..
+        } => {
             // 2026-10-19 (contract tiers): a (re)binding conservatively kills
             // every fact mentioning the bound name(s) — then re-derives what
             // the initializer establishes (v2: initializer facts).
@@ -2934,8 +3066,7 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                     }
                 }
                 if names.len() == 1 {
-                    if let Some(f) =
-                        crate::proof_engine::callgate::initializer_equality(name, init)
+                    if let Some(f) = crate::proof_engine::callgate::initializer_equality(name, init)
                     {
                         ctx.known_facts.push(f);
                     }
@@ -2946,9 +3077,9 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
             }
             // Track the binding so later statements resolve its type (mirrors
             // infer_statement). Declared type wins; else infer the initializer.
-            let bound_ty = ty.clone().or_else(|| {
-                expr.as_ref().and_then(|e| infer_type_only(e, ctx).ok())
-            });
+            let bound_ty = ty
+                .clone()
+                .or_else(|| expr.as_ref().and_then(|e| infer_type_only(e, ctx).ok()));
             for n in std::iter::once(&*name).chain(names.iter()) {
                 if let Some(t) = &bound_ty {
                     ctx.bindings.insert(n.clone(), t.clone());
@@ -2990,11 +3121,13 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
             }
         }
-        Statement::Block(body) | Statement::SyncBlock(body)
-        | Statement::Defer(body) | Statement::Mutex(body) => elaborate_stmts(body, ctx, errors),
-        Statement::Foreach { item, list, body , ..} => {
-            elaborate_foreach(item, list, body, ctx, errors)
-        }
+        Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body) => elaborate_stmts(body, ctx, errors),
+        Statement::Foreach {
+            item, list, body, ..
+        } => elaborate_foreach(item, list, body, ctx, errors),
         _ => {}
     }
 }
@@ -3020,7 +3153,8 @@ fn elaborate_foreach(
     };
     let bindings = ctx.bindings.clone();
     let facts = ctx.known_facts.clone();
-    ctx.bindings.insert(item.to_string(), foreach_item_type(ctx, &list_ty));
+    ctx.bindings
+        .insert(item.to_string(), foreach_item_type(ctx, &list_ty));
     ctx.known_facts.extend(foreach_range_facts(list, item));
     ctx.foreach_depth += 1;
     elaborate_stmts(body, ctx, errors);
@@ -3034,7 +3168,11 @@ fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<
     call_literals::elaborate(expr, ctx, errors);
 }
 
-fn elaborate_expr_children(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<TypeError>) {
+fn elaborate_expr_children(
+    expr: &mut Expr,
+    ctx: &mut TypecheckContext,
+    errors: &mut Vec<TypeError>,
+) {
     match expr {
         Expr::Identifier(_) => {
             // 2026-08-06 (fix): closures are real first-class values now (a
@@ -3046,7 +3184,9 @@ fn elaborate_expr_children(expr: &mut Expr, ctx: &mut TypecheckContext, errors: 
         Expr::BinaryOp(kind, l, r) => {
             let lt = infer_type_only(l, ctx).unwrap_or(Type::int());
             let rt = infer_type_only(r, ctx).unwrap_or(Type::int());
-            if let Some(OpBinding::Function(fn_name)) = ctx.resolve_binary_op_binding(kind, &lt, &rt) {
+            if let Some(OpBinding::Function(fn_name)) =
+                ctx.resolve_binary_op_binding(kind, &lt, &rt)
+            {
                 // 2026-08-06 (diagnostics): the declared op's implementation
                 // target must be a defined function — a typo would otherwise
                 // surface as a link-time undefined symbol.
@@ -3100,7 +3240,12 @@ fn elaborate_expr_children(expr: &mut Expr, ctx: &mut TypecheckContext, errors: 
             elaborate_expr(o, ctx, errors);
             elaborate_expr(i, ctx, errors);
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             elaborate_expr(array, ctx, errors);
             for bound in [start, end, stride].into_iter().flatten() {
                 elaborate_expr(bound, ctx, errors);
@@ -3171,9 +3316,7 @@ fn literal_fits_sized(ty: &Type, expr: &Expr, universe: &TypeUniverse) -> bool {
     let Type::Constrained(inner, range) = ty else {
         return false;
     };
-    if matches!(expr, Expr::Bool(_))
-        && matches!(inner.as_ref(), Type::Custom(b) if b == "Bool")
-    {
+    if matches!(expr, Expr::Bool(_)) && matches!(inner.as_ref(), Type::Custom(b) if b == "Bool") {
         return true;
     }
     let BitRange::Single(w) = range else {
@@ -3217,37 +3360,48 @@ fn float_literal_fits(
     // 2026-11-09 (float-formats plan): width facts inherit through the base
     // chain (`type Float16: Half;` has no own bits but resolves 16).
     let own = ty.universe_key().and_then(|k| universe.get(k));
-    let bits = own.and_then(|rt| {
-        rt.properties.iter().find_map(|(k, pv)| match (k.as_str(), pv) {
-            ("bits", crate::ast::PropertyValue::Int(n))
-            | ("maxbits", crate::ast::PropertyValue::Int(n)) => Some(*n as u32),
-            _ => None,
-        })
-    }).or_else(|| {
-        // Walk bases: `Float16 -> Half -> (bits 16)`.
-        let mut current = own;
-        for _ in 0..64 {
-            let rt = current?;
-            let base = rt.base.trim_start_matches('#');
-            let key = crate::casting::graph::CastingGraph::parse_protocol_base(base)?.0;
-            if key == rt.name {
-                return None;
-            }
-            current = universe.get(&key);
-            if let Some(rt) = current {
-                if let Some(n) = rt.properties.iter().find_map(|(k, pv)| match (k.as_str(), pv) {
+    let bits = own
+        .and_then(|rt| {
+            rt.properties
+                .iter()
+                .find_map(|(k, pv)| match (k.as_str(), pv) {
                     ("bits", crate::ast::PropertyValue::Int(n))
                     | ("maxbits", crate::ast::PropertyValue::Int(n)) => Some(*n as u32),
                     _ => None,
-                }) {
-                    return Some(n);
+                })
+        })
+        .or_else(|| {
+            // Walk bases: `Float16 -> Half -> (bits 16)`.
+            let mut current = own;
+            for _ in 0..64 {
+                let rt = current?;
+                let base = rt.base.trim_start_matches('#');
+                let key = crate::casting::graph::CastingGraph::parse_protocol_base(base)?.0;
+                if key == rt.name {
+                    return None;
+                }
+                current = universe.get(&key);
+                if let Some(rt) = current {
+                    if let Some(n) =
+                        rt.properties
+                            .iter()
+                            .find_map(|(k, pv)| match (k.as_str(), pv) {
+                                ("bits", crate::ast::PropertyValue::Int(n))
+                                | ("maxbits", crate::ast::PropertyValue::Int(n)) => Some(*n as u32),
+                                _ => None,
+                            })
+                    {
+                        return Some(n);
+                    }
                 }
             }
-        }
-        None
-    }).or_else(|| {
-        ty.universe_key().and_then(|k| type_max_bits.get(k)).map(|b| *b as u32)
-    });
+            None
+        })
+        .or_else(|| {
+            ty.universe_key()
+                .and_then(|k| type_max_bits.get(k))
+                .map(|b| *b as u32)
+        });
     match bits {
         // 16-bit target: f32→f16→f32 round-trip must be exact.
         Some(16) => f32_fits_f16(v),
@@ -3541,8 +3695,7 @@ fn infer_match(
                 // 2026-08-26 (qualified enum paths): the domain lists BARE
                 // variant names; a qualified pattern normalizes to its last
                 // segment for the declaration/uniqueness checks.
-                let bare_name =
-                    name.rsplit("::").next().unwrap_or(name).to_string();
+                let bare_name = name.rsplit("::").next().unwrap_or(name).to_string();
                 if let MatchDomain::Enum(variants) = &domain {
                     if !variants.contains(&bare_name) {
                         return Err(TypeError::InvalidOperation {
@@ -3577,7 +3730,10 @@ fn infer_match(
                     // 2026-08-26 (qualified enum paths): pattern names may be
                     // qualified (`Res::Ok`) — the SLOT is keyed bare.
                     let bare_name = name.rsplit("::").next().unwrap_or(name);
-                    if let Some(slot) = slots.iter().find(|s| s.name == format!("__variant_{bare_name}")) {
+                    if let Some(slot) = slots
+                        .iter()
+                        .find(|s| s.name == format!("__variant_{bare_name}"))
+                    {
                         let payload: Vec<Type> = match &slot.ty {
                             Type::Tuple(elems) => elems.clone(),
                             one => vec![one.clone()],
@@ -3651,7 +3807,9 @@ fn infer_match(
                     let union_ctx = ctx
                         .current_output_type
                         .as_ref()
-                        .map(|out| types_compatible(out, prev, ctx) && types_compatible(out, &ty, ctx))
+                        .map(|out| {
+                            types_compatible(out, prev, ctx) && types_compatible(out, &ty, ctx)
+                        })
                         .unwrap_or(false);
                     if !union_ctx {
                         return Err(TypeError::TypeMismatch {
@@ -3688,9 +3846,7 @@ fn infer_match(
                             matched_ty,
                             missing.join(", ")
                         ),
-                        type_name: format!(
-                            "add those arms or a trailing `_ =>` fallback"
-                        ),
+                        type_name: format!("add those arms or a trailing `_ =>` fallback"),
                     });
                 }
             }
@@ -3745,14 +3901,16 @@ enum MatchDomain {
 
 fn match_domain_of(ty: &Type, ctx: &TypecheckContext) -> MatchDomain {
     match ty {
-        Type::Union(members) => MatchDomain::Closed(
-            members.iter().map(|m| format!("{}", m)).collect(),
-        ),
+        Type::Union(members) => {
+            MatchDomain::Closed(members.iter().map(|m| format!("{}", m)).collect())
+        }
         // 2026-08-22 (Phase 4): Bool is a two-member closed domain.
         Type::Custom(n) if n == "Bool" => {
             MatchDomain::Closed(vec!["true".to_string(), "false".to_string()])
         }
-        Type::Custom(name) => enum_variants(ctx, name).map_or(MatchDomain::Open, |v| MatchDomain::Enum(v)),
+        Type::Custom(name) => {
+            enum_variants(ctx, name).map_or(MatchDomain::Open, |v| MatchDomain::Enum(v))
+        }
         Type::Applied(base, _) => {
             enum_variants(ctx, base).map_or(MatchDomain::Open, |v| MatchDomain::Enum(v))
         }
@@ -3781,9 +3939,7 @@ fn is_sum_member(scrutinee: &Type, member: &Type) -> bool {
 
 fn unreachable_arm(what: &str, scrutinee: Type) -> TypeError {
     TypeError::InvalidOperation {
-        operation: format!(
-            "unreachable match arm: '{what}' is already covered by an earlier arm"
-        ),
+        operation: format!("unreachable match arm: '{what}' is already covered by an earlier arm"),
         type_name: format!("{}", scrutinee),
     }
 }
@@ -3795,7 +3951,10 @@ fn unreachable_arm(what: &str, scrutinee: Type) -> TypeError {
 /// Contract and full argument list for a call-shaped expression. A method
 /// call resolves `Type::method` first (the receiver's concrete member) and
 /// falls back to the bare method name; the receiver is parameter 0.
-fn call_site(expr: &Expr, ctx: &mut TypecheckContext) -> Option<(crate::proof_engine::callgate::FnContract, Vec<Expr>)> {
+fn call_site(
+    expr: &Expr,
+    ctx: &mut TypecheckContext,
+) -> Option<(crate::proof_engine::callgate::FnContract, Vec<Expr>)> {
     match expr {
         Expr::Call(callee, args, _) => {
             let contract = ctx.fn_contracts.get(callee)?;
@@ -3816,29 +3975,19 @@ fn call_site(expr: &Expr, ctx: &mut TypecheckContext) -> Option<(crate::proof_en
     }
 }
 
-fn record_component_post_facts(
-    expr: Option<&Expr>,
-    names: &[String],
-    ctx: &mut TypecheckContext,
-) {
+fn record_component_post_facts(expr: Option<&Expr>, names: &[String], ctx: &mut TypecheckContext) {
     let Some((contract, args)) = expr.and_then(|e| call_site(e, ctx)) else {
         return;
     };
-    let facts =
-        crate::proof_engine::callgate::post_facts_components(&contract, &args, names);
+    let facts = crate::proof_engine::callgate::post_facts_components(&contract, &args, names);
     ctx.known_facts.extend(facts);
 }
 
-fn record_call_post_facts(
-    expr: Option<&Expr>,
-    binding: &str,
-    ctx: &mut TypecheckContext,
-) {
+fn record_call_post_facts(expr: Option<&Expr>, binding: &str, ctx: &mut TypecheckContext) {
     let Some((contract, args)) = expr.and_then(|e| call_site(e, ctx)) else {
         return;
     };
-    let facts =
-        crate::proof_engine::callgate::post_facts(&contract, &args, binding);
+    let facts = crate::proof_engine::callgate::post_facts(&contract, &args, binding);
     ctx.known_facts.extend(facts);
 }
 
@@ -3854,7 +4003,9 @@ fn collect_loop_assignments(
             Statement::Assign(Expr::Identifier(name), rhs) => {
                 out.push((name.clone(), rhs.clone(), nested));
             }
-            Statement::ArrowAssign { target: Some(t), .. } => {
+            Statement::ArrowAssign {
+                target: Some(t), ..
+            } => {
                 if let Expr::Identifier(name) = t.as_ref() {
                     out.push((name.clone(), Expr::Bool(false), nested));
                 }
@@ -3887,20 +4038,27 @@ fn foreach_counter_facts(
     collect_loop_assignments(body, false, &mut assigns);
     let assigned: Vec<String> = {
         let mut v: Vec<String> = assigns.iter().map(|(n, _, _)| n.clone()).collect();
-        v.sort(); v.dedup(); v
+        v.sort();
+        v.dedup();
+        v
     };
     let mut pre = Vec::new();
     let mut post = Vec::new();
     for name in &assigned {
-        let mine: Vec<&(String, Expr, bool)> = assigns.iter().filter(|(n, _, _)| n == name).collect();
-        if mine.len() != 1 || mine[0].2 { continue; }
+        let mine: Vec<&(String, Expr, bool)> =
+            assigns.iter().filter(|(n, _, _)| n == name).collect();
+        if mine.len() != 1 || mine[0].2 {
+            continue;
+        }
         let increment = matches!(
             &mine[0].1,
             Expr::BinaryOp(BinaryOpKind::Add, l, r)
                 if matches!(l.as_ref(), Expr::Identifier(n) if n == name)
                     && matches!(r.as_ref(), Expr::Decimal(1))
         );
-        if !increment { continue; }
+        if !increment {
+            continue;
+        }
         let zero = Expr::BinaryOp(
             BinaryOpKind::Eq,
             Box::new(Expr::Identifier(name.clone())),
@@ -3950,7 +4108,12 @@ fn foreach_counter_facts(
 /// This is what lets a proven callee precondition (`i < payload_len`) discharge
 /// without a redundant per-iteration guard in the hot loop.
 fn foreach_range_facts(list: &Expr, item: &str) -> Vec<Expr> {
-    let Expr::Range { start, end, inclusive } = list else {
+    let Expr::Range {
+        start,
+        end,
+        inclusive,
+    } = list
+    else {
         return Vec::new();
     };
     fn simple(e: &Expr) -> bool {
@@ -3976,7 +4139,11 @@ fn foreach_range_facts(list: &Expr, item: &str) -> Vec<Expr> {
         start.clone(),
     )];
     facts.push(Expr::BinaryOp(
-        if *inclusive { BinaryOpKind::Le } else { BinaryOpKind::Lt },
+        if *inclusive {
+            BinaryOpKind::Le
+        } else {
+            BinaryOpKind::Lt
+        },
         Box::new(lhs),
         end.clone(),
     ));
@@ -4012,7 +4179,10 @@ fn fold_constants(expr: &Expr, ctx: &TypecheckContext) -> Expr {
     out
 }
 
-fn prove_with_constants(goal: &Expr, ctx: &TypecheckContext) -> crate::proof_engine::callgate::Verdict {
+fn prove_with_constants(
+    goal: &Expr,
+    ctx: &TypecheckContext,
+) -> crate::proof_engine::callgate::Verdict {
     let goal = fold_constants(goal, ctx);
     let facts: Vec<Expr> = ctx
         .known_facts
@@ -4115,7 +4285,13 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             ctx.known_facts.extend(established);
             Ok(())
         }
-        Statement::Let { name, names, ty, expr, .. } => {
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            ..
+        } => {
             // 2026-10-19 (contract tiers): a (re)binding conservatively kills
             // every fact mentioning the bound name(s) — then re-derives what
             // the initializer establishes (v2: initializer facts).
@@ -4130,8 +4306,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                     }
                 }
                 if names.len() == 1 {
-                    if let Some(f) =
-                        crate::proof_engine::callgate::initializer_equality(name, init)
+                    if let Some(f) = crate::proof_engine::callgate::initializer_equality(name, init)
                     {
                         ctx.known_facts.push(f);
                     }
@@ -4214,9 +4389,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 // 2026-08-25 (sized scalars): `let x: Int8 = 7` — a literal
                 // inside the width domain constructs the specialized type.
                 let sized_literal = match (declared, expr.as_ref()) {
-                    (t @ Type::Constrained(..), Some(e)) => {
-                        literal_fits_sized(t, e, ctx.universe)
-                    }
+                    (t @ Type::Constrained(..), Some(e)) => literal_fits_sized(t, e, ctx.universe),
                     _ => false,
                 };
                 // 2026-09-01 (plan float16-float-join-and-purge): a Float
@@ -4265,16 +4438,14 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                         // declaration). Equal widths stay compatible. This is
                         // the "Bit<N>↔Bits unified" hierarchy fact: there is no
                         // separate `Bits` type, only the width-0 flexible form.
-                        (Type::Bits(a), Type::Bits(b)) => {
-                            *a == 0 || *b == 0 || a == b
-                        }
+                        (Type::Bits(a), Type::Bits(b)) => *a == 0 || *b == 0 || a == b,
                         _ => false,
                     }
                 };
                 if !compatible {
-                    let coercible = expr.as_ref().map_or(false, |e| {
-                        try_coerce_via_parse(e, &inferred, declared, ctx)
-                    });
+                    let coercible = expr
+                        .as_ref()
+                        .map_or(false, |e| try_coerce_via_parse(e, &inferred, declared, ctx));
                     if !coercible {
                         return Err(TypeError::TypeMismatch {
                             expected: format!("{}", declared),
@@ -4320,9 +4491,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 // of `e` is known non-negative — accumulators and counters
                 // carry their sign through ordinary code.
                 if let Expr::Identifier(v) = lhs {
-                    if let Some(f) = crate::proof_engine::callgate::rederives_nonneg(
-                        v, rhs, &ctx.known_facts,
-                    ) {
+                    if let Some(f) =
+                        crate::proof_engine::callgate::rederives_nonneg(v, rhs, &ctx.known_facts)
+                    {
                         ctx.known_facts.push(f);
                     }
                 }
@@ -4427,7 +4598,12 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             }
             Ok(())
         }
-        Statement::ArrowAssign { target, value, consume, .. } => {
+        Statement::ArrowAssign {
+            target,
+            value,
+            consume,
+            ..
+        } => {
             // 2026-08-01 (Phase 3): the arrow — `target <- value` (copy into
             // lhs) / `target ~<- value` (destructive). The dispatch finds the
             // collection by the op binding on each side:
@@ -4467,7 +4643,8 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 // passed RingBuffer/List via their Parse ops).
                 let mut arrow_ok = false;
                 if let Some(elem_ty) = ctx.push_element_type(t) {
-                    if value_ty == elem_ty || try_coerce_via_parse(value, &value_ty, &elem_ty, ctx) {
+                    if value_ty == elem_ty || try_coerce_via_parse(value, &value_ty, &elem_ty, ctx)
+                    {
                         arrow_ok = true;
                     } else if dyn_push_admitted(ctx, &elem_ty, &value_ty) {
                         arrow_ok = true;
@@ -4484,7 +4661,8 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                         // 2026-08-17 (Error# usage-gate): `~<- piggy` /
                         // `x <- piggy` invoke the ExtractFrom/CopyFrom member —
                         // promote its pending compile error.
-                        if let Some(extract_member) = ctx.arrow_extract_member_name(value, *consume) {
+                        if let Some(extract_member) = ctx.arrow_extract_member_name(value, *consume)
+                        {
                             promote_member_error(ctx, &extract_member)?;
                         }
                         let target_ty = infer_type_only(t, ctx)?;
@@ -4548,12 +4726,14 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // here (a VERIFIED contract). The local must exist, must be
             // mutable (a constant cannot be freed), and must not already be
             // dead; afterward a read of `x` is a use-after-free compile error.
-            let _ty = ctx.bindings.get(name).cloned().ok_or_else(|| {
-                TypeError::UndefinedVariable {
-                    name: name.clone(),
-                    available: ctx.bindings.keys().cloned().collect(),
-                }
-            })?;
+            let _ty =
+                ctx.bindings
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| TypeError::UndefinedVariable {
+                        name: name.clone(),
+                        available: ctx.bindings.keys().cloned().collect(),
+                    })?;
             if !ctx.is_mutable_location(name) {
                 return Err(TypeError::InvalidOperation {
                     operation: "cannot free a constant".into(),
@@ -4657,11 +4837,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                     {
                         if let Some(name) = ctx.current_fn_name.clone() {
                             PROVEN_GUARDS.with(|set| {
-                                set.borrow_mut().insert((
-                                    name,
-                                    ordinal,
-                                    inner.to_string(),
-                                ));
+                                set.borrow_mut().insert((name, ordinal, inner.to_string()));
                             });
                         }
                     }
@@ -4710,7 +4886,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Rollback(_) => Ok(()),
-        Statement::Foreach { item, list, body , ..} => {
+        Statement::Foreach {
+            item, list, body, ..
+        } => {
             let list_ty = infer_type_only(list, ctx)?;
             // 2026-08-18 (Phase D): `foreach x in piggy` consults the type's
             // iteration ops (At for tier 2, Iter for tier 1) — promote their
@@ -4744,9 +4922,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // The body may have mutated these locals; pre-loop facts about
             // them are no longer valid after the loop.
             ctx.known_facts.retain(|f| {
-                !assigned.iter().any(|n| {
-                    crate::proof_engine::callgate::mentions(f, n)
-                })
+                !assigned
+                    .iter()
+                    .any(|n| crate::proof_engine::callgate::mentions(f, n))
             });
             ctx.known_facts.extend(counter_post);
             Ok(())
@@ -4829,12 +5007,8 @@ fn check_let_destructure(
 fn output_type_to_type(ot: &OutputType) -> Type {
     match ot {
         OutputType::Single(ty) => ty.clone(),
-        OutputType::Tuple(types) => {
-            Type::Tuple(types.iter().map(output_type_to_type).collect())
-        }
-        OutputType::Union(types) => {
-            Type::Union(types.iter().map(output_type_to_type).collect())
-        }
+        OutputType::Tuple(types) => Type::Tuple(types.iter().map(output_type_to_type).collect()),
+        OutputType::Union(types) => Type::Union(types.iter().map(output_type_to_type).collect()),
         _ => Type::int(),
     }
 }
@@ -4917,7 +5091,8 @@ fn check_contract_obligations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
 fn check_trait_declarations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     let mut traits: std::collections::HashMap<&str, &TraitDef> = std::collections::HashMap::new();
     let mut declared: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut impls: std::collections::HashMap<&str, Vec<&ImplDef>> = std::collections::HashMap::new();
+    let mut impls: std::collections::HashMap<&str, Vec<&ImplDef>> =
+        std::collections::HashMap::new();
     let mut type_defs: Vec<&TypeDef> = Vec::new();
     for item in items {
         match item {
@@ -5083,14 +5258,11 @@ fn is_sequence_member_ty(
         // T[N] — a Vector with one dimension whose element is not the array.
         Type::Vector(elem, dims) if dims.len() == 1 => elem.as_ref() != ty,
         // Nested buffer (`inner: ListBuffer<T>`) — resolve its slots.
-        Type::Custom(n) | Type::Applied(n, _) => {
-            slot_lookup(n).map_or(false, |slots| {
-                slots.iter().any(|(_, t)| {
-                    matches!(t, Type::Ptr(_))
-                        || matches!(t, Type::Vector(_, dims) if dims.len() == 1)
-                })
+        Type::Custom(n) | Type::Applied(n, _) => slot_lookup(n).map_or(false, |slots| {
+            slots.iter().any(|(_, t)| {
+                matches!(t, Type::Ptr(_)) || matches!(t, Type::Vector(_, dims) if dims.len() == 1)
             })
-        }
+        }),
         _ => false,
     }
 }
@@ -5108,11 +5280,17 @@ fn check_coll_declarations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     // 2026-08-15 (coll plan §3.2, nested buffers): resolve a nested buffer
     // struct's slots (`ListBuffer<T>` → [data]) so `inner: ListBuffer<T>` is
     // recognized as a sequence member.
-    let slot_map: std::collections::HashMap<String, Vec<(String, Type)>> = items.iter()
+    let slot_map: std::collections::HashMap<String, Vec<(String, Type)>> = items
+        .iter()
         .filter_map(|item| match item {
-            TopLevel::TypeDef(t) if !t.body.slots.is_empty() => {
-                Some((t.name.clone(), t.body.slots.iter().map(|s| (s.name.clone(), s.ty.clone())).collect()))
-            }
+            TopLevel::TypeDef(t) if !t.body.slots.is_empty() => Some((
+                t.name.clone(),
+                t.body
+                    .slots
+                    .iter()
+                    .map(|s| (s.name.clone(), s.ty.clone()))
+                    .collect(),
+            )),
             TopLevel::StaticStruct(s) if !s.fields.is_empty() => {
                 Some((s.name.clone(), s.fields.clone()))
             }
@@ -5124,20 +5302,30 @@ fn check_coll_declarations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
         let (name, slots, is_coll, is_struct) = match item {
             TopLevel::TypeDef(t) if t.coll => (
                 t.name.as_str(),
-                t.body.slots.iter().map(|s| (s.name.as_str(), &s.ty)).collect::<Vec<_>>(),
+                t.body
+                    .slots
+                    .iter()
+                    .map(|s| (s.name.as_str(), &s.ty))
+                    .collect::<Vec<_>>(),
                 true,
                 false,
             ),
             TopLevel::StaticStruct(s) if s.coll => (
                 s.name.as_str(),
-                s.fields.iter().map(|(n, t)| (n.as_str(), t)).collect::<Vec<_>>(),
+                s.fields
+                    .iter()
+                    .map(|(n, t)| (n.as_str(), t))
+                    .collect::<Vec<_>>(),
                 true,
                 true,
             ),
             _ => continue,
         };
 
-        let seq_count = slots.iter().filter(|(_, t)| is_sequence_member_ty(t, &slot_lookup)).count();
+        let seq_count = slots
+            .iter()
+            .filter(|(_, t)| is_sequence_member_ty(t, &slot_lookup))
+            .count();
         if seq_count != 1 {
             errors.push(TypeError::InvalidOperation {
                 operation: format!(
@@ -5207,7 +5395,6 @@ fn check_coll_declarations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     }
 }
 
-
 /// Report every `hold` fact body in a reactive position (software surface).
 fn scan_hold_bodies(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     for item in items {
@@ -5274,7 +5461,10 @@ fn is_hold_marker(stmt: &Statement) -> bool {
     )
 }
 
-pub fn check_program(items: &mut [TopLevel], universe: &TypeUniverse) -> Result<(), Vec<TypeError>> {
+pub fn check_program(
+    items: &mut [TopLevel],
+    universe: &TypeUniverse,
+) -> Result<(), Vec<TypeError>> {
     check_program_with_target(items, universe, None, false)
 }
 
@@ -5297,18 +5487,17 @@ pub fn check_program_with_target(
     // a parent naming a declared trait is an explicit ASSERTION (traits have
     // no layout/state to refine), and duplicates collapse.
     {
-        let trait_names: std::collections::HashSet<String> = items.iter().filter_map(
-            |i| match i {
+        let trait_names: std::collections::HashSet<String> = items
+            .iter()
+            .filter_map(|i| match i {
                 TopLevel::Trait(t) => Some(t.name.clone()),
                 _ => None,
-            },
-        ).collect();
+            })
+            .collect();
         for item in items.iter_mut() {
             if let TopLevel::TypeDef(td) = item {
                 let mut asserted = td.traits.clone();
-                if let Some(crate::ast::Expr::Identifier(pname)) =
-                    td.parent.as_deref()
-                {
+                if let Some(crate::ast::Expr::Identifier(pname)) = td.parent.as_deref() {
                     if trait_names.contains(pname) {
                         asserted.push(pname.clone());
                         td.parent = None;
@@ -5355,10 +5544,7 @@ pub fn check_program_with_target(
                                 }
                                 _ => None,
                             }) {
-                                return Some((
-                                    name.clone(),
-                                    Type::Task(Box::new(ret)),
-                                ));
+                                return Some((name.clone(), Type::Task(Box::new(ret))));
                             }
                         }
                     }
@@ -5390,7 +5576,10 @@ pub fn check_program_with_target(
                         return Some((c.name.clone(), c.ty.clone()));
                     }
                     TopLevel::Statement(stmt) => {
-                        if let Statement::Let { name, ty: Some(t), .. } = stmt.as_ref() {
+                        if let Statement::Let {
+                            name, ty: Some(t), ..
+                        } = stmt.as_ref()
+                        {
                             return Some((name.clone(), t.clone()));
                         }
                     }
@@ -5407,14 +5596,14 @@ pub fn check_program_with_target(
     // `r_pu: Resistor[·]` so the base expression in `r_pu[0].a` typechecks
     // (Index unwraps one layer per bracket group; sizes are type-irrelevant
     // here — the element count lives in the expanded sibling bindings).
-    let mut array_bases: std::collections::HashMap<String, Type> =
-        std::collections::HashMap::new();
+    let mut array_bases: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
     for (name, ty) in &state_bindings {
         if let Some((base, dims)) = name.split_once('[') {
             if name.ends_with(']') && !base.is_empty() {
                 let mut wrapped = ty.clone();
                 for _ in 0..dims.matches('[').count() + 1 {
-                    wrapped = Type::Vector(Box::new(wrapped), vec![crate::ast::Dimension::Anonymous(1)]);
+                    wrapped =
+                        Type::Vector(Box::new(wrapped), vec![crate::ast::Dimension::Anonymous(1)]);
                 }
                 array_bases.entry(base.to_string()).or_insert(wrapped);
             }
@@ -5508,56 +5697,59 @@ pub fn check_program_with_target(
     check_coll_declarations(items, &mut errors);
 
     // 2026-07-25: Pre-collect function return types for call inference.
-    let fn_return_types: HashMap<String, Type> = items.iter().filter_map(|item| {
-        // 2026-07-25: Extract return type from a Definition or exported Definition.
-        fn defn_return_type(d: &Definition) -> Option<Type> {
-            d.output_type.as_ref().and_then(|ot| match ot {
-                OutputType::Single(Type::Tuple(_)) => Some(ot.all_types().into_iter().next().unwrap_or(Type::int())),
-                OutputType::Single(ty) => Some(ty.clone()),
-                OutputType::Tuple(types) => {
-                    Some(Type::Tuple(types.iter().map(|t| output_type_to_type(t)).collect()))
-                }
-                _ => None,
-            })
-        }
-        match item {
-            TopLevel::Definition(d) => {
-                defn_return_type(d).map(|ty| (d.name.clone(), ty))
-            }
-            TopLevel::Export(e) => match &*e.inner {
-                TopLevel::Definition(d) => defn_return_type(d).map(|ty| (d.name.clone(), ty)),
-                _ => None,
-            },
-            // 2026-08-03 (node bridge): transaction return types — `term
-            // store_text(name)` on a CStr-returning txn must see CStr, not the
-            // Int fallback (which only happened to work for Int-returning txns).
-            TopLevel::Transaction(t) => {
-                t.output_type.as_ref().and_then(|ot| match ot {
-                    OutputType::Single(ty) => Some((t.name.clone(), ty.clone())),
+    let fn_return_types: HashMap<String, Type> = items
+        .iter()
+        .filter_map(|item| {
+            // 2026-07-25: Extract return type from a Definition or exported Definition.
+            fn defn_return_type(d: &Definition) -> Option<Type> {
+                d.output_type.as_ref().and_then(|ot| match ot {
+                    OutputType::Single(Type::Tuple(_)) => {
+                        Some(ot.all_types().into_iter().next().unwrap_or(Type::int()))
+                    }
+                    OutputType::Single(ty) => Some(ty.clone()),
+                    OutputType::Tuple(types) => Some(Type::Tuple(
+                        types.iter().map(|t| output_type_to_type(t)).collect(),
+                    )),
                     _ => None,
                 })
             }
-            // 2026-07-31 (Phase 2): frgn return types — `term frgn_foo(x)`
-            // must see the declared foreign return type, not the Int fallback.
-            TopLevel::ForeignBinding(fb) => {
-                let briev_name = fb
-                    .briev_name
-                    .clone()
-                    .unwrap_or_else(|| fb.foreign_name.clone());
-                fb.success_output
-                    .first()
-                    .map(|(_, ty)| (briev_name, ty.clone()))
+            match item {
+                TopLevel::Definition(d) => defn_return_type(d).map(|ty| (d.name.clone(), ty)),
+                TopLevel::Export(e) => match &*e.inner {
+                    TopLevel::Definition(d) => defn_return_type(d).map(|ty| (d.name.clone(), ty)),
+                    _ => None,
+                },
+                // 2026-08-03 (node bridge): transaction return types — `term
+                // store_text(name)` on a CStr-returning txn must see CStr, not the
+                // Int fallback (which only happened to work for Int-returning txns).
+                TopLevel::Transaction(t) => t.output_type.as_ref().and_then(|ot| match ot {
+                    OutputType::Single(ty) => Some((t.name.clone(), ty.clone())),
+                    _ => None,
+                }),
+                // 2026-07-31 (Phase 2): frgn return types — `term frgn_foo(x)`
+                // must see the declared foreign return type, not the Int fallback.
+                TopLevel::ForeignBinding(fb) => {
+                    let briev_name = fb
+                        .briev_name
+                        .clone()
+                        .unwrap_or_else(|| fb.foreign_name.clone());
+                    fb.success_output
+                        .first()
+                        .map(|(_, ty)| (briev_name, ty.clone()))
+                }
+                _ => None,
             }
-            _ => None,
-        }
-    }).collect();
+        })
+        .collect();
 
     let optional_frgns: std::collections::HashSet<String> = items
         .iter()
         .filter_map(|item| match item {
-            TopLevel::ForeignBinding(fb) if fb.is_optional => {
-                Some(fb.briev_name.clone().unwrap_or_else(|| fb.foreign_name.clone()))
-            }
+            TopLevel::ForeignBinding(fb) if fb.is_optional => Some(
+                fb.briev_name
+                    .clone()
+                    .unwrap_or_else(|| fb.foreign_name.clone()),
+            ),
             _ => None,
         })
         .collect();
@@ -5568,10 +5760,28 @@ pub fn check_program_with_target(
         .iter()
         .filter_map(|item| {
             let (name, params) = match item {
-                TopLevel::Definition(d) => (d.name.clone(), d.parameters.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>()),
-                TopLevel::Transaction(t) => (t.name.clone(), t.parameters.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>()),
+                TopLevel::Definition(d) => (
+                    d.name.clone(),
+                    d.parameters
+                        .iter()
+                        .map(|(_, t)| t.clone())
+                        .collect::<Vec<_>>(),
+                ),
+                TopLevel::Transaction(t) => (
+                    t.name.clone(),
+                    t.parameters
+                        .iter()
+                        .map(|(_, t)| t.clone())
+                        .collect::<Vec<_>>(),
+                ),
                 TopLevel::Export(e) => match &*e.inner {
-                    TopLevel::Definition(d) => (d.name.clone(), d.parameters.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>()),
+                    TopLevel::Definition(d) => (
+                        d.name.clone(),
+                        d.parameters
+                            .iter()
+                            .map(|(_, t)| t.clone())
+                            .collect::<Vec<_>>(),
+                    ),
                     _ => return None,
                 },
                 _ => return None,
@@ -5594,14 +5804,8 @@ pub fn check_program_with_target(
         name: String,
         d: &Definition,
     ) -> Option<(String, crate::proof_engine::callgate::FnContract)> {
-        let pre_true = matches!(
-            d.contract.pre_condition,
-            crate::ast::Expr::Bool(true)
-        );
-        let post_true = matches!(
-            d.contract.post_condition,
-            crate::ast::Expr::Bool(true)
-        );
+        let pre_true = matches!(d.contract.pre_condition, crate::ast::Expr::Bool(true));
+        let post_true = matches!(d.contract.post_condition, crate::ast::Expr::Bool(true));
         if pre_true && post_true {
             return None;
         }
@@ -5619,32 +5823,33 @@ pub fn check_program_with_target(
     // the registry (the receiver becomes parameter 0).
     let fn_contracts: HashMap<String, crate::proof_engine::callgate::FnContract> = items
         .iter()
-        .flat_map(|item| -> Vec<(String, crate::proof_engine::callgate::FnContract)> {
-            match item {
-                TopLevel::Definition(d) => {
-                    defn_contract(d.name.clone(), d).into_iter().collect()
-                }
-                TopLevel::Export(e) => match &*e.inner {
+        .flat_map(
+            |item| -> Vec<(String, crate::proof_engine::callgate::FnContract)> {
+                match item {
                     TopLevel::Definition(d) => {
                         defn_contract(d.name.clone(), d).into_iter().collect()
                     }
+                    TopLevel::Export(e) => match &*e.inner {
+                        TopLevel::Definition(d) => {
+                            defn_contract(d.name.clone(), d).into_iter().collect()
+                        }
+                        _ => Vec::new(),
+                    },
+                    TopLevel::TypeDef(t) => t
+                        .body
+                        .members
+                        .iter()
+                        .filter_map(|m| match m {
+                            TopLevel::Definition(d) => {
+                                defn_contract(format!("{}::{}", t.name, d.name), d)
+                            }
+                            _ => None,
+                        })
+                        .collect(),
                     _ => Vec::new(),
-                },
-                TopLevel::TypeDef(t) => t
-                    .body
-                    .members
-                    .iter()
-                    .filter_map(|m| match m {
-                        TopLevel::Definition(d) => defn_contract(
-                            format!("{}::{}", t.name, d.name),
-                            d,
-                        ),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            }
-        })
+                }
+            },
+        )
         .collect();
     // 2026-08-14 (generic `defn f<T>` dispatch): a defn's declared type params
     // (e.g. `["T"]` for `defn first<T>`), for call-site inference + substitution.
@@ -5664,7 +5869,9 @@ pub fn check_program_with_target(
                 TopLevel::Definition(d) => d.type_params.iter().map(|p| p.name.clone()).collect(),
                 TopLevel::Transaction(t) => t.type_params.iter().map(|p| p.name.clone()).collect(),
                 TopLevel::Export(e) => match &*e.inner {
-                    TopLevel::Definition(d) => d.type_params.iter().map(|p| p.name.clone()).collect(),
+                    TopLevel::Definition(d) => {
+                        d.type_params.iter().map(|p| p.name.clone()).collect()
+                    }
                     _ => vec![],
                 },
                 _ => vec![],
@@ -5726,7 +5933,8 @@ pub fn check_program_with_target(
     // cross-protocol overloads) from TypeDef bodies: ProtocolDef-style
     // `operators` and type-body `op_bindings`.
     let mut all_regular_ops: HashMap<String, Vec<crate::ast::top::OperatorDef>> = HashMap::new();
-    let mut all_regular_bindings: HashMap<String, Vec<crate::ast::top::OperatorBinding>> = HashMap::new();
+    let mut all_regular_bindings: HashMap<String, Vec<crate::ast::top::OperatorBinding>> =
+        HashMap::new();
     // 2026-07-31: Pre-collect struct/obj field slots and obj member
     // declarations for Expr::Field / Expr::MethodCall resolution.
     let mut all_type_slots: HashMap<String, Vec<crate::ast::top::TypeDefSlot>> = HashMap::new();
@@ -5734,16 +5942,14 @@ pub fn check_program_with_target(
     let mut all_type_pins: HashMap<String, Vec<crate::ast::top::PinDecl>> = HashMap::new();
     // 2026-10-05 (surface-capability gate): COMPONENT (TypeDef) pins —
     // split from the cell-pin table; see the context field.
-    let mut all_component_pins: HashMap<String, Vec<crate::ast::top::PinDecl>> =
-        HashMap::new();
+    let mut all_component_pins: HashMap<String, Vec<crate::ast::top::PinDecl>> = HashMap::new();
     // 2026-08-22 (Phase 5): explicit trait assertions per concrete type
     // (`type Meter: Int, Comparable<Meter>, Printable { … }` → traits list).
     let mut all_trait_assertions: HashMap<String, Vec<String>> = HashMap::new();
     let mut all_trait_defs: HashMap<String, crate::ast::top::TraitDef> = HashMap::new();
     // 2026-08-22 (Phase 7a): cells register their PORT surface only — the
     // slots stay unregistered so internal fields cannot resolve externally.
-    let mut all_cell_ports: HashMap<String, Vec<(String, crate::ast::Type)>> =
-        HashMap::new();
+    let mut all_cell_ports: HashMap<String, Vec<(String, crate::ast::Type)>> = HashMap::new();
     // 2026-08-27 (Slice B): @-addressed triggers become read-only MMIO pins.
     let trigger_pins: std::collections::HashSet<String> = items
         .iter()
@@ -5781,8 +5987,7 @@ pub fn check_program_with_target(
                             all_variant_defs.insert(vname.to_string(), td.name.clone());
                         }
                     }
-                    all_variant_defs
-                        .insert(format!("{}::{}", td.name, vname), td.name.clone());
+                    all_variant_defs.insert(format!("{}::{}", td.name, vname), td.name.clone());
                 }
             }
         }
@@ -5827,7 +6032,9 @@ pub fn check_program_with_target(
     for item in items.iter() {
         if let TopLevel::ProtocolDef(pd) = item {
             for op in &pd.cross_ops {
-                let Some(fn_name) = cross_op_fn_name(&op.impl_args) else { continue };
+                let Some(fn_name) = cross_op_fn_name(&op.impl_args) else {
+                    continue;
+                };
                 all_cross_ops
                     .entry(pd.name.clone())
                     .or_default()
@@ -5903,17 +6110,24 @@ pub fn check_program_with_target(
                 // same members the backend scaffolds, so the two never
                 // disagree about which ops exist.
                 let slot_map: std::collections::HashMap<String, Vec<(String, crate::ast::Type)>> =
-                    all_type_slots.iter().map(|(k, v)| (
-                        k.clone(),
-                        v.iter().map(|s| (s.name.clone(), s.ty.clone())).collect(),
-                    )).collect();
-                let synth = crate::backend::llvm::coll_scaffold::synthesize_members_for_check(td, &slot_map);
+                    all_type_slots
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                v.iter().map(|s| (s.name.clone(), s.ty.clone())).collect(),
+                            )
+                        })
+                        .collect();
+                let synth = crate::backend::llvm::coll_scaffold::synthesize_members_for_check(
+                    td, &slot_map,
+                );
                 let mut merged = td.body.members.clone();
                 for m in synth {
                     let m_name = crate::backend::llvm::emit_expr::member_briev_name(&m);
-                    let dup = merged.iter().any(|ex| {
-                        crate::backend::llvm::emit_expr::member_briev_name(ex) == m_name
-                    });
+                    let dup = merged
+                        .iter()
+                        .any(|ex| crate::backend::llvm::emit_expr::member_briev_name(ex) == m_name);
                     if !dup {
                         merged.push(m);
                     }
@@ -5923,8 +6137,7 @@ pub fn check_program_with_target(
                 let mut merged = td.body.members.clone();
                 if let Some(imembers) = impl_fn_members.get(&td.name) {
                     for m in imembers {
-                        let m_name =
-                            crate::backend::llvm::emit_expr::member_briev_name(m);
+                        let m_name = crate::backend::llvm::emit_expr::member_briev_name(m);
                         let dup = merged.iter().any(|ex| {
                             crate::backend::llvm::emit_expr::member_briev_name(ex) == m_name
                         });
@@ -5954,7 +6167,11 @@ pub fn check_program_with_target(
             // the precision contract without a universe entry.
             let iv = |key: &str| -> Option<u64> {
                 td.body.metadata.get(key).and_then(|pv| {
-                    if let crate::ast::PropertyValue::Int(n) = pv { Some(*n as u64) } else { None }
+                    if let crate::ast::PropertyValue::Int(n) = pv {
+                        Some(*n as u64)
+                    } else {
+                        None
+                    }
                 })
             };
             if let Some(bits) = iv("bits").or_else(|| iv("maxbits")) {
@@ -5969,7 +6186,11 @@ pub fn check_program_with_target(
                 .transactions
                 .iter()
                 .map(|t| TopLevel::Transaction(t.clone()))
-                .chain(c.definitions.iter().map(|d| TopLevel::Definition(d.clone())))
+                .chain(
+                    c.definitions
+                        .iter()
+                        .map(|d| TopLevel::Definition(d.clone())),
+                )
                 .collect();
             if !members.is_empty() {
                 all_type_members.insert(c.name.clone(), members);
@@ -5982,7 +6203,8 @@ pub fn check_program_with_target(
             if sd.coll {
                 all_coll_types.insert(sd.name.clone());
             }
-            let slots: Vec<crate::ast::top::TypeDefSlot> = sd.fields
+            let slots: Vec<crate::ast::top::TypeDefSlot> = sd
+                .fields
                 .iter()
                 .map(|(n, ty)| crate::ast::top::TypeDefSlot {
                     name: n.clone(),
@@ -6006,36 +6228,62 @@ pub fn check_program_with_target(
             // op members make `Count#`/`Capacity#`/foreach type-check. was
             // missing and `Count#` rejected a valid fixed coll.
             if sd.coll {
-                let fake_slots: Vec<crate::ast::top::TypeDefSlot> = sd.fields
+                let fake_slots: Vec<crate::ast::top::TypeDefSlot> = sd
+                    .fields
                     .iter()
                     .map(|(n, ty)| crate::ast::top::TypeDefSlot {
-                        name: n.clone(), ty: ty.clone(), bit_range: None,
+                        name: n.clone(),
+                        ty: ty.clone(),
+                        bit_range: None,
                     })
                     .collect();
                 let ftd = crate::ast::top::TypeDef {
-                    name: sd.name.clone(), type_params: sd.type_params.clone(),
-                    parent: None, protocol: None, traits: vec![],
-                    ports_in: vec![], ports_out: vec![],
-                    bit_range: None, span: None, coll: true, seq: false,
+                    name: sd.name.clone(),
+                    type_params: sd.type_params.clone(),
+                    parent: None,
+                    protocol: None,
+                    traits: vec![],
+                    ports_in: vec![],
+                    ports_out: vec![],
+                    bit_range: None,
+                    span: None,
+                    coll: true,
+                    seq: false,
                     body: crate::ast::top::TypeDefBody {
-                        slots: fake_slots, pins: vec![], reference: None, metadata: Default::default(),
-                        projections: vec![], bindings: vec![],
-                        operators: vec![], op_bindings: vec![],
-                        constraints: vec![], members: vec![], hold_laws: vec![], modes: vec![], span: None,
+                        slots: fake_slots,
+                        pins: vec![],
+                        reference: None,
+                        metadata: Default::default(),
+                        projections: vec![],
+                        bindings: vec![],
+                        operators: vec![],
+                        op_bindings: vec![],
+                        constraints: vec![],
+                        members: vec![],
+                        hold_laws: vec![],
+                        modes: vec![],
+                        span: None,
                     },
                 };
                 let slot_map: std::collections::HashMap<String, Vec<(String, crate::ast::Type)>> =
-                    all_type_slots.iter().map(|(k, v)| (
-                        k.clone(),
-                        v.iter().map(|s| (s.name.clone(), s.ty.clone())).collect(),
-                    )).collect();
-                let synth = crate::backend::llvm::coll_scaffold::synthesize_members_for_check(&ftd, &slot_map);
+                    all_type_slots
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                v.iter().map(|s| (s.name.clone(), s.ty.clone())).collect(),
+                            )
+                        })
+                        .collect();
+                let synth = crate::backend::llvm::coll_scaffold::synthesize_members_for_check(
+                    &ftd, &slot_map,
+                );
                 let mut merged = Vec::new();
                 for m in synth {
                     let m_name = crate::backend::llvm::emit_expr::member_briev_name(&m);
-                    let dup = merged.iter().any(|ex| {
-                        crate::backend::llvm::emit_expr::member_briev_name(ex) == m_name
-                    });
+                    let dup = merged
+                        .iter()
+                        .any(|ex| crate::backend::llvm::emit_expr::member_briev_name(ex) == m_name);
                     if !dup {
                         merged.push(m);
                     }
@@ -6054,19 +6302,15 @@ pub fn check_program_with_target(
         })
         .collect();
 
-    fn collect_constants(
-        items: &[TopLevel],
-        out: &mut HashMap<String, crate::ast::Expr>,
-    ) {
+    fn collect_constants(items: &[TopLevel], out: &mut HashMap<String, crate::ast::Expr>) {
         for item in items {
             match item {
                 TopLevel::Constant(c) => {
                     out.insert(c.name.clone(), c.expr.clone());
                 }
-                TopLevel::Export(e) => collect_constants(
-                    std::slice::from_ref(e.inner.as_ref()),
-                    out,
-                ),
+                TopLevel::Export(e) => {
+                    collect_constants(std::slice::from_ref(e.inner.as_ref()), out)
+                }
                 TopLevel::TypeDef(t) => collect_constants(&t.body.members, out),
                 _ => {}
             }
@@ -6187,7 +6431,10 @@ pub fn check_program_with_target(
             } else {
                 Type::Applied(
                     td.name.clone(),
-                    td.type_params.iter().map(|p| Type::Custom(p.name.clone())).collect(),
+                    td.type_params
+                        .iter()
+                        .map(|p| Type::Custom(p.name.clone()))
+                        .collect(),
                 )
             };
             for member in &td.body.members {
@@ -6208,8 +6455,13 @@ pub fn check_program_with_target(
                     });
                 }
                 let mut mctx = build_member_ctx(
-                    &td.name, &self_ty, &td.ports_in, &td.ports_out,
-                    &member_slots, member, &mut errors,
+                    &td.name,
+                    &self_ty,
+                    &td.ports_in,
+                    &td.ports_out,
+                    &member_slots,
+                    member,
+                    &mut errors,
                 );
                 match member {
                     TopLevel::Transaction(t) => {
@@ -6271,7 +6523,10 @@ pub fn check_program_with_target(
             } else {
                 Type::Applied(
                     c.name.clone(),
-                    c.type_params.iter().map(|p| Type::Custom(p.name.clone())).collect(),
+                    c.type_params
+                        .iter()
+                        .map(|p| Type::Custom(p.name.clone()))
+                        .collect(),
                 )
             };
             let cell_slots: Vec<crate::ast::top::TypeDefSlot> = c
@@ -6295,8 +6550,13 @@ pub fn check_program_with_target(
                 .collect();
             for member in txn_members.iter().chain(defn_members.iter()) {
                 let mut mctx = build_member_ctx(
-                    &c.name, &self_ty, &c.ports_in, &c.ports_out,
-                    &cell_slots, member, &mut errors,
+                    &c.name,
+                    &self_ty,
+                    &c.ports_in,
+                    &c.ports_out,
+                    &cell_slots,
+                    member,
+                    &mut errors,
                 );
                 match member {
                     TopLevel::Transaction(t) => {
@@ -6350,7 +6610,13 @@ pub fn check_program_with_target(
             }
             let member = TopLevel::Definition(requirement.clone());
             let mut mctx = build_member_ctx(
-                &trait_def.name, &self_ty, &[], &[], &[], &member, &mut errors,
+                &trait_def.name,
+                &self_ty,
+                &[],
+                &[],
+                &[],
+                &member,
+                &mut errors,
             );
             // `Self` is a bound type param of this trait while the default is
             // checked — this is what lets `bump(this, amount)` resolve. The
@@ -6363,8 +6629,7 @@ pub fn check_program_with_target(
             for (param_name, param_ty) in &requirement.parameters {
                 mctx.bindings.insert(param_name.clone(), param_ty.clone());
             }
-            mctx.current_output_type =
-                requirement.output_type.as_ref().map(output_type_to_type);
+            mctx.current_output_type = requirement.output_type.as_ref().map(output_type_to_type);
             for stmt in &requirement.body {
                 if let Err(e) = infer_statement(stmt, &mut mctx) {
                     errors.push(e);
@@ -6372,7 +6637,6 @@ pub fn check_program_with_target(
             }
         }
     }
-
 
     for item in items.iter() {
         if let Err(e) = check_top_level(item, universe, &env) {
@@ -6397,7 +6661,13 @@ pub fn check_program_with_target(
     for item in items.iter() {
         match item {
             TopLevel::Statement(stmt) => {
-                if let Statement::Let { name, names, expr: Some(e), .. } = stmt.as_ref() {
+                if let Statement::Let {
+                    name,
+                    names,
+                    expr: Some(e),
+                    ..
+                } = stmt.as_ref()
+                {
                     let val = match e {
                         Expr::Decimal(n) => Some(*n),
                         Expr::Bool(true) => Some(1),
@@ -6452,14 +6722,10 @@ pub fn check_program_with_target(
     for item in items.iter() {
         if let TopLevel::Transaction(t) = item {
             if t.modifiers.iter().any(|m| m.name == "bootstrap") {
-                if let Err(msg) =
-                    check_goal_reachable(&t.body, &t.contract.post_condition, &values)
+                if let Err(msg) = check_goal_reachable(&t.body, &t.contract.post_condition, &values)
                 {
                     errors.push(TypeError::InvalidOperation {
-                        operation: format!(
-                            "bootstrap node '{}': {}",
-                            t.name, msg
-                        ),
+                        operation: format!("bootstrap node '{}': {}", t.name, msg),
                         type_name: "bootstrap".into(),
                     });
                 }
@@ -6474,7 +6740,9 @@ pub fn check_program_with_target(
     {
         let mut by_slot: Vec<(u64, &str)> = Vec::new();
         for item in items.iter() {
-            let TopLevel::IsrHandler(isr) = item else { continue };
+            let TopLevel::IsrHandler(isr) = item else {
+                continue;
+            };
             let slot = match &isr.vector {
                 Expr::Decimal(n) => *n as u64,
                 Expr::Identifier(name) => {
@@ -6537,8 +6805,16 @@ fn beginprogram_entry(pre: &Expr) -> Option<Expr> {
             let a_begin = contains_beginprogram(a);
             let b_begin = contains_beginprogram(b);
             if a_begin || b_begin {
-                let a_entry = if a_begin { Expr::Bool(true) } else { a.as_ref().clone() };
-                let b_entry = if b_begin { Expr::Bool(true) } else { b.as_ref().clone() };
+                let a_entry = if a_begin {
+                    Expr::Bool(true)
+                } else {
+                    a.as_ref().clone()
+                };
+                let b_entry = if b_begin {
+                    Expr::Bool(true)
+                } else {
+                    b.as_ref().clone()
+                };
                 Some(conjoin(a_entry, b_entry))
             } else {
                 None
@@ -6589,10 +6865,7 @@ fn check_beginprogram_program(
     for (txn, _entry) in nodes {
         if let Err(msg) = check_goal_reachable(&txn.body, &txn.contract.post_condition, values) {
             errors.push(TypeError::InvalidOperation {
-                operation: format!(
-                    "beginprogram node '{}': {}",
-                    txn.name, msg
-                ),
+                operation: format!("beginprogram node '{}': {}", txn.name, msg),
                 type_name: "beginprogram".into(),
             });
         }
@@ -6623,7 +6896,9 @@ fn check_goal_reachable(
 ) -> Result<(), String> {
     match goal {
         Expr::Bool(true) => Ok(()),
-        Expr::Bool(false) => Err("goal '[false]' is never reachable — the entry loop cannot halt".into()),
+        Expr::Bool(false) => {
+            Err("goal '[false]' is never reachable — the entry loop cannot halt".into())
+        }
         // 2026-09-14 (machine-entry plan): a conjunction is reachable iff
         // both conjuncts are — the handoff contract of a bootstrap is often
         // `armed == true && ticks == 0` (each conjunct proven on its own).
@@ -6657,8 +6932,7 @@ fn check_goal_reachable(
         }
         // `[flag == true]` / `[flag == false]` — a Bool flag the body stores.
         Expr::BinaryOp(BinaryOpKind::Eq, l, r)
-            if matches!(l.as_ref(), Expr::Identifier(_))
-                && matches!(r.as_ref(), Expr::Bool(_)) =>
+            if matches!(l.as_ref(), Expr::Identifier(_)) && matches!(r.as_ref(), Expr::Bool(_)) =>
         {
             let want = matches!(r.as_ref(), Expr::Bool(true));
             if let Expr::Identifier(v) = l.as_ref() {
@@ -6814,10 +7088,7 @@ fn unreachable_goal(goal: &Expr) -> String {
 /// Whether the right side of a goal comparison is a literal/state reference
 /// (a bound the counter advances toward).
 fn right_side_terminal(e: &Expr) -> bool {
-    matches!(
-        e,
-        Expr::Decimal(_) | Expr::Identifier(_) | Expr::Char(_)
-    )
+    matches!(e, Expr::Decimal(_) | Expr::Identifier(_) | Expr::Char(_))
 }
 
 /// Whether the body advances `var` toward a bound: `var = var + d` for an
@@ -6951,7 +7222,10 @@ struct CheckEnv<'a> {
 
 /// Build a typecheck context from the pre-collected maps. Shared by
 /// `check_top_level` (typechecking) and `elaborate_ops` (Phase 5 op lowering).
-fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) -> TypecheckContext<'a> {
+fn make_typecheck_context<'a>(
+    env: &CheckEnv<'a>,
+    universe: &'a TypeUniverse,
+) -> TypecheckContext<'a> {
     let mut ctx = TypecheckContext::new(universe);
     // 2026-07-27: Inject pre-collected parse bindings and type parents.
     for (type_name, bindings) in env.all_parse_bindings {
@@ -6988,13 +7262,14 @@ fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) ->
             entry.push((oname.clone(), oty.clone()));
             // Output ports resolve as fields of the instance; inputs do NOT
             // (they are supplied at construction).
-            ctx.type_slots.entry(cname.clone()).or_default().push(
-                crate::ast::top::TypeDefSlot {
+            ctx.type_slots
+                .entry(cname.clone())
+                .or_default()
+                .push(crate::ast::top::TypeDefSlot {
                     name: oname.clone(),
                     ty: oty.clone(),
                     bit_range: None,
-                },
-            );
+                });
         }
     }
     ctx.variant_cross_ops = env.all_cross_ops.clone();
@@ -7108,12 +7383,8 @@ fn lower_guards(
             Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Defer(body)
-            | Statement::Mutex(body) => {
-                lower_guards(body, fn_name, ord, proven, lowered)
-            }
-            Statement::Foreach { body, .. } => {
-                lower_guards(body, fn_name, ord, proven, lowered)
-            }
+            | Statement::Mutex(body) => lower_guards(body, fn_name, ord, proven, lowered),
+            Statement::Foreach { body, .. } => lower_guards(body, fn_name, ord, proven, lowered),
             _ => {}
         }
     }
@@ -7123,11 +7394,15 @@ fn lower_guards(
 /// terminating constructs.
 fn validate_test_stmt(stmt: &Statement) -> Result<(), TypeError> {
     match stmt {
-        Statement::Term(_) => Err(TypeError::MisplacedInTest { construct: "term".into() }),
-        Statement::Tail(_) => Err(TypeError::MisplacedInTest { construct: "tail".into() }),
-        Statement::EndProgram(_) => {
-            Err(TypeError::MisplacedInTest { construct: "endprogram".into() })
-        }
+        Statement::Term(_) => Err(TypeError::MisplacedInTest {
+            construct: "term".into(),
+        }),
+        Statement::Tail(_) => Err(TypeError::MisplacedInTest {
+            construct: "tail".into(),
+        }),
+        Statement::EndProgram(_) => Err(TypeError::MisplacedInTest {
+            construct: "endprogram".into(),
+        }),
         Statement::Guarded(_, body)
         | Statement::Block(body)
         | Statement::SyncBlock(body)
@@ -7216,8 +7491,7 @@ fn check_top_level<'a>(
             // A transaction body may assume its own precondition, exactly as a
             // defn body does; recursive txn calls then discharge from the
             // contract instead of from an unstated caller invariant.
-            let own_pre =
-                crate::proof_engine::callgate::facts_of(&txn.contract.pre_condition);
+            let own_pre = crate::proof_engine::callgate::facts_of(&txn.contract.pre_condition);
             ctx.known_facts.extend(own_pre);
             ctx.current_fn_name = Some(txn.name.clone());
             ctx.guard_ordinal = 0;
@@ -7274,9 +7548,19 @@ fn check_top_level<'a>(
 /// heap operations can deadlock the allocator against the interrupted
 /// context, and blocking primitives have no scheduler to return to.
 const ISR_BANNED_INTRINSICS: &[&str] = &[
-    "Malloc#", "Alloc#", "Free#", "Realloc#",
-    "Spawn#", "Await#", "ThreadCreate#", "MutexLock#", "MutexUnlock#",
-    "BarrierWait#", "DlOpen#", "DlSym#", "DlClose#",
+    "Malloc#",
+    "Alloc#",
+    "Free#",
+    "Realloc#",
+    "Spawn#",
+    "Await#",
+    "ThreadCreate#",
+    "MutexLock#",
+    "MutexUnlock#",
+    "BarrierWait#",
+    "DlOpen#",
+    "DlSym#",
+    "DlClose#",
 ];
 
 /// Resolve the ISR's mechanism and validate the body.
@@ -7398,16 +7682,13 @@ fn check_isr_handler(
     Ok(())
 }
 
-
 // ── section(".name") placement proofs ──────────────────────────────────
 // 2026-09-06 (Phase 8, plan 2026-09-06-cpp-expressiveness.md).
 
 /// Allocator/spawn intrinsics banned in section-placed code — a sectioned
 /// defn runs where the default heap may not exist yet (boot code in .init,
 /// RAM-copied handlers before relocation).
-const SECTION_BANNED_INTRINSICS: &[&str] = &[
-    "Malloc#", "Alloc#", "Realloc#", "Spawn#",
-];
+const SECTION_BANNED_INTRINSICS: &[&str] = &["Malloc#", "Alloc#", "Realloc#", "Spawn#"];
 
 /// The transitive no-alloc proof for section(".name") defns. Any defn
 /// whose reachable callees allocate is rejected with the offending path
@@ -7419,8 +7700,12 @@ fn check_section_proofs(items: &[TopLevel], errors: &mut Vec<TypeError>) {
         std::collections::HashMap::new();
     for item in items {
         match item {
-            TopLevel::Definition(d) => { bodies.insert(d.name.as_str(), d.body.as_slice()); }
-            TopLevel::Transaction(t) => { bodies.insert(t.name.as_str(), t.body.as_slice()); }
+            TopLevel::Definition(d) => {
+                bodies.insert(d.name.as_str(), d.body.as_slice());
+            }
+            TopLevel::Transaction(t) => {
+                bodies.insert(t.name.as_str(), t.body.as_slice());
+            }
             TopLevel::Export(e) => {
                 if let TopLevel::Definition(d) = e.inner.as_ref() {
                     bodies.insert(d.name.as_str(), d.body.as_slice());
@@ -7435,22 +7720,32 @@ fn check_section_proofs(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     for item in items {
         let (name, section, body) = match item {
             TopLevel::Definition(d) => {
-                let Some(section) = defn_section_name(d) else { continue };
+                let Some(section) = defn_section_name(d) else {
+                    continue;
+                };
                 (d.name.clone(), section, d.body.as_slice())
             }
             TopLevel::Export(e) => {
                 if let TopLevel::Definition(d) = e.inner.as_ref() {
-                    let Some(section) = defn_section_name(d) else { continue };
+                    let Some(section) = defn_section_name(d) else {
+                        continue;
+                    };
                     (d.name.clone(), section, d.body.as_slice())
-                } else { continue; }
+                } else {
+                    continue;
+                }
             }
             _ => continue,
         };
         let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut queue: Vec<(&str, Vec<String>)> = vec![(name.as_str(), vec![name.clone()])];
         while let Some((callee, path)) = queue.pop() {
-            if !visited.insert(callee) { continue; }
-            let Some(stmts) = bodies.get(callee) else { continue };
+            if !visited.insert(callee) {
+                continue;
+            }
+            let Some(stmts) = bodies.get(callee) else {
+                continue;
+            };
             for expr in collect_body_exprs(stmts) {
                 if let Expr::Call(callee_name, _, _) = expr {
                     if SECTION_BANNED_INTRINSICS.contains(&callee_name.as_str()) {
@@ -7459,13 +7754,16 @@ fn check_section_proofs(items: &[TopLevel], errors: &mut Vec<TypeError>) {
                         errors.push(TypeError::InvalidOperation {
                             operation: format!(
                                 "section(\"{}\") defn '{}' reaches '{}'",
-                                section, name, callee_name),
+                                section, name, callee_name
+                            ),
                             type_name: format!(
                                 "section-placed code runs where the default heap may \
                                  not exist yet — '{}' (reachable via {}) must not \
                                  allocate. Remove the allocation from the reachable \
                                  path, or drop the section placement.",
-                                callee_name, full_path.join(" -> ")),
+                                callee_name,
+                                full_path.join(" -> ")
+                            ),
                         });
                     } else if bodies.contains_key(callee_name.as_str()) {
                         let mut next_path = path.clone();
@@ -7482,7 +7780,9 @@ fn check_section_proofs(items: &[TopLevel], errors: &mut Vec<TypeError>) {
 /// parser carries the prefix as an Annotation with a Quoted value).
 pub(crate) fn defn_section_name(d: &crate::ast::top::Definition) -> Option<String> {
     d.modifiers.iter().find_map(|a| {
-        if a.name != "section" { return None; }
+        if a.name != "section" {
+            return None;
+        }
         match &a.value {
             Some(crate::ast::Expr::Quoted(bytes)) => {
                 Some(String::from_utf8_lossy(bytes).to_string())
@@ -7498,17 +7798,30 @@ fn collect_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
     fn walk<'a>(stmts: &'a [Statement], out: &mut Vec<&'a Expr>) {
         for stmt in stmts {
             match stmt {
-                Statement::Assign(lhs, rhs) => { out.push(lhs); out.push(rhs); }
+                Statement::Assign(lhs, rhs) => {
+                    out.push(lhs);
+                    out.push(rhs);
+                }
                 Statement::Let { expr: Some(e), .. } => out.push(e),
                 Statement::Expression(e) => out.push(e),
-                Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
-                | Statement::Tail(e) | Statement::Rollback(Some(e)) | Statement::Check(e) | Statement::Gate(e) => out.push(e),
-                Statement::Guarded(g, body) => { out.push(g); walk(body, out); }
+                Statement::Term(Some(e))
+                | Statement::EndProgram(Some(e))
+                | Statement::Tail(e)
+                | Statement::Rollback(Some(e))
+                | Statement::Check(e)
+                | Statement::Gate(e) => out.push(e),
+                Statement::Guarded(g, body) => {
+                    out.push(g);
+                    walk(body, out);
+                }
                 Statement::Block(body)
                 | Statement::Defer(body)
                 | Statement::Mutex(body)
                 | Statement::SyncBlock(body) => walk(body, out),
-                Statement::Foreach { list, body, .. } => { out.push(list); walk(body, out); }
+                Statement::Foreach { list, body, .. } => {
+                    out.push(list);
+                    walk(body, out);
+                }
                 Statement::TrgBinding { instance, .. } => out.push(instance),
                 Statement::Match { expr, arms } => {
                     out.push(expr);
@@ -7529,19 +7842,33 @@ fn collect_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
 /// Collect every expression reachable in an ISR body (complete statement
 /// walk — Let inits, Foreach lists, Defer/Mutex/Barrier bodies, match arms).
 fn isr_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
-    fn walk<'a>(stmts: &'a [Statement], out: &mut Vec<&'a Expr>) {        for stmt in stmts {
+    fn walk<'a>(stmts: &'a [Statement], out: &mut Vec<&'a Expr>) {
+        for stmt in stmts {
             match stmt {
-                Statement::Assign(lhs, rhs) => { out.push(lhs); out.push(rhs); }
+                Statement::Assign(lhs, rhs) => {
+                    out.push(lhs);
+                    out.push(rhs);
+                }
                 Statement::Let { expr: Some(e), .. } => out.push(e),
                 Statement::Expression(e) => out.push(e),
-                Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
-                | Statement::Tail(e) | Statement::Rollback(Some(e)) | Statement::Check(e) | Statement::Gate(e) => out.push(e),
-                Statement::Guarded(g, body) => { out.push(g); walk(body, out); }
+                Statement::Term(Some(e))
+                | Statement::EndProgram(Some(e))
+                | Statement::Tail(e)
+                | Statement::Rollback(Some(e))
+                | Statement::Check(e)
+                | Statement::Gate(e) => out.push(e),
+                Statement::Guarded(g, body) => {
+                    out.push(g);
+                    walk(body, out);
+                }
                 Statement::Block(body)
                 | Statement::Defer(body)
                 | Statement::Mutex(body)
                 | Statement::SyncBlock(body) => walk(body, out),
-                Statement::Foreach { list, body, .. } => { out.push(list); walk(body, out); }
+                Statement::Foreach { list, body, .. } => {
+                    out.push(list);
+                    walk(body, out);
+                }
                 Statement::TrgBinding { instance, .. } => out.push(instance),
                 Statement::Match { expr, arms } => {
                     out.push(expr);
@@ -7576,11 +7903,7 @@ fn isr_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
 /// ARRAY expands to `gpio[0]…`; access on the BASE name (`u2.gpio`) still
 /// resolves to Pin — the Index expr then selects the element (2026-09-23
 /// E11 companion).
-fn resolve_pin_field(
-    type_name: &str,
-    field: &str,
-    ctx: &TypecheckContext,
-) -> Option<Type> {
+fn resolve_pin_field(type_name: &str, field: &str, ctx: &TypecheckContext) -> Option<Type> {
     if let Some(pins) = ctx.component_pins.get(type_name) {
         if pin_matches(pins, field) {
             return if ctx.surface_electronics {
@@ -7670,7 +7993,10 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
         return Some(pin_ty);
     }
     let slots = ctx.type_slots.get(type_name)?;
-    let slot_ty = slots.iter().find(|s| s.name == field).map(|s| s.ty.clone())?;
+    let slot_ty = slots
+        .iter()
+        .find(|s| s.name == field)
+        .map(|s| s.ty.clone())?;
     // 2026-08-07 (object instance pools): an Applied generic obj's member
     // keeps RAW const dims (`data: T[M]` → `Named("M", 0)`); substitute the
     // concrete args so `b.data[2]` resolves to Int (M → Number(5) → 5).
@@ -7698,15 +8024,13 @@ fn resolve_reflect(
     ctx: &TypecheckContext,
 ) -> Result<Type, TypeError> {
     let is_compile_time = matches!(kind, ReflectKind::CompileTime);
-    let wrong_kind = |expected: &str| {
-        TypeError::InvalidOperation {
-            operation: format!("reflection target '{}'", target),
-            type_name: format!(
-                "{} is {expected}; use '.{}'",
-                target,
-                if expected == "runtime" { "^" } else { "^^" }
-            ),
-        }
+    let wrong_kind = |expected: &str| TypeError::InvalidOperation {
+        operation: format!("reflection target '{}'", target),
+        type_name: format!(
+            "{} is {expected}; use '.{}'",
+            target,
+            if expected == "runtime" { "^" } else { "^^" }
+        ),
     };
     match target {
         // 2026-08-23 (SPEC sync): Event port readiness — runtime reflection.
@@ -7848,7 +8172,10 @@ fn resolve_method_call(
             _ => "",
         };
         let lookup = name.trim_end_matches('#');
-        let trait_fns = ctx.trait_defs.get(trait_name).map(|td| td.functions.clone());
+        let trait_fns = ctx
+            .trait_defs
+            .get(trait_name)
+            .map(|td| td.functions.clone());
         if let Some(functions) = trait_fns {
             for d in &functions {
                 if d.name == lookup {
@@ -7885,7 +8212,10 @@ fn resolve_method_call(
                             return Err(TypeError::TypeMismatch {
                                 expected: format!("{}", pty),
                                 found: format!("{}", aty),
-                                context: format!("argument of '.{}()' via dyn {}", name, trait_name),
+                                context: format!(
+                                    "argument of '.{}()' via dyn {}",
+                                    name, trait_name
+                                ),
                             });
                         }
                     }
@@ -7914,7 +8244,10 @@ fn resolve_method_call(
     };
     let lookup_name = name.trim_end_matches('#');
     let members = ctx.type_members.get(type_name).cloned().unwrap_or_default();
-    let member = members.iter().find(|m| member_name(m) == lookup_name).cloned();
+    let member = members
+        .iter()
+        .find(|m| member_name(m) == lookup_name)
+        .cloned();
     let member = match member {
         Some(m) => m,
         // 2026-08-14 (UOL §6b.2): UFCS fallback — `a.OpName#(b)` → `OpName#(a, b)`
@@ -7937,9 +8270,7 @@ fn resolve_method_call(
             // DEFAULT — on a concrete conforming receiver: `tally.bump_twice(5)`.
             // The receiver IS the `Self` argument; the written args are the
             // value parameters after it.
-            if let Some(resolved) =
-                resolve_conforming_trait_call(name, receiver, args, ctx)?
-            {
+            if let Some(resolved) = resolve_conforming_trait_call(name, receiver, args, ctx)? {
                 return Ok(resolved);
             }
             return Err(TypeError::InvalidOperation {
@@ -7966,8 +8297,7 @@ fn resolve_method_call(
     // 2026-10-16 (net stack L2): skip an explicit receiver parameter and
     // check arity — the whole receiver-style disambiguation lives in the
     // helper (see `member_receiver_offset`).
-    let param_offset =
-        member_receiver_offset(&params, type_name, name, args.len())?;
+    let param_offset = member_receiver_offset(&params, type_name, name, args.len())?;
     for (i, arg) in args.iter().enumerate() {
         let arg_ty = infer_type_only(arg, ctx)?;
         let param_ty = params
@@ -7986,7 +8316,9 @@ fn resolve_method_call(
     // 2026-08-17 (Error# usage-gate): invoking a member whose body reaches an
     // Error# fails the compile with the message.
     promote_member_error(ctx, &format!("{}.{}", type_name, member_name(&member)))?;
-    Ok(out.map(|t| substitute_type(&t, &subst)).unwrap_or(Type::void()))
+    Ok(out
+        .map(|t| substitute_type(&t, &subst))
+        .unwrap_or(Type::void()))
 }
 
 /// 2026-08-17 (Error# usage-gate): a member whose body reaches an `Error#`
@@ -8025,14 +8357,43 @@ fn member_name(m: &TopLevel) -> String {
 /// `src/vocab.rs` and `is_operation_identity` in `src/backend/llvm/intrinsics.rs`;
 /// kept in lockstep with both.
 fn is_operation_identity(name: &str) -> bool {
-    matches!(name,
-        "Add" | "Sub" | "Mul" | "Div" | "Rem" | "Neg" | "Abs"
-        | "Eq" | "Neq" | "Lt" | "Le" | "Gt" | "Ge"
-        | "And" | "Or" | "Not"
-        | "BitAnd" | "BitOr" | "BitXor" | "BitNot" | "Shl" | "Shr"
-        | "At" | "Slice" | "InsertAt" | "ExtractFrom" | "CopyFrom"
-        | "Append" | "Prepend"
-        | "Count" | "Iter" | "Step" | "IsEnd" | "Current")
+    matches!(
+        name,
+        "Add"
+            | "Sub"
+            | "Mul"
+            | "Div"
+            | "Rem"
+            | "Neg"
+            | "Abs"
+            | "Eq"
+            | "Neq"
+            | "Lt"
+            | "Le"
+            | "Gt"
+            | "Ge"
+            | "And"
+            | "Or"
+            | "Not"
+            | "BitAnd"
+            | "BitOr"
+            | "BitXor"
+            | "BitNot"
+            | "Shl"
+            | "Shr"
+            | "At"
+            | "Slice"
+            | "InsertAt"
+            | "ExtractFrom"
+            | "CopyFrom"
+            | "Append"
+            | "Prepend"
+            | "Count"
+            | "Iter"
+            | "Step"
+            | "IsEnd"
+            | "Current"
+    )
 }
 
 /// 2026-08-14 (UOL §6b.2): a generative `OpName#(recv, args…)` call — the
@@ -8062,22 +8423,17 @@ fn infer_generative_op_call(
         _ => {
             return Err(TypeError::InvalidOperation {
                 operation: format!("call to '{}#',", op_name),
-                type_name: format!(
-                    "receiver type '{}' has no operator members",
-                    recv_ty
-                ),
+                type_name: format!("receiver type '{}' has no operator members", recv_ty),
             });
         }
     };
     let members = ctx.type_members.get(&base).cloned().unwrap_or_default();
-    let member = operator_member(&members, op_name).ok_or_else(|| {
-        TypeError::InvalidOperation {
-            operation: format!("call to '{}#',", op_name),
-            type_name: format!(
-                "`{}#` requires the receiver type '{}' to declare `op {}`",
-                op_name, recv_ty, op_name
-            ),
-        }
+    let member = operator_member(&members, op_name).ok_or_else(|| TypeError::InvalidOperation {
+        operation: format!("call to '{}#',", op_name),
+        type_name: format!(
+            "`{}#` requires the receiver type '{}' to declare `op {}`",
+            op_name, recv_ty, op_name
+        ),
     })?;
     // Infer the return from the op member's output, substituted with the
     // receiver's concrete generic args (same evidence as resolve_element_type).
@@ -8111,7 +8467,11 @@ fn operator_member<'a>(members: &'a [TopLevel], op: &str) -> Option<&'a Definiti
 /// PROMOTE its pending compile error. Sealed ops (`op At` on a PiggyBank) that
 /// are consulted through SYNTAX — indexing (`piggy[0]` → At), foreach
 /// (`foreach x in piggy` → At/Iter) — must fail like an explicit `At#()` call.
-fn promote_op_member_error(ctx: &mut TypecheckContext, ty: &Type, op: &str) -> Result<(), TypeError> {
+fn promote_op_member_error(
+    ctx: &mut TypecheckContext,
+    ty: &Type,
+    op: &str,
+) -> Result<(), TypeError> {
     let base = match ty {
         Type::Custom(n) => n.clone(),
         Type::Applied(n, _) => n.clone(),
@@ -8183,7 +8543,11 @@ fn foreach_item_type(ctx: &TypecheckContext, list_ty: &Type) -> Type {
     // read op's return with the concrete args substituted.
     let read = operator_member(&members, "At").or_else(|| operator_member(&members, "Current"));
     if let Some(read) = read {
-        if let Some(raw) = read.output_type.as_ref().and_then(|o| o.all_types().into_iter().next()) {
+        if let Some(raw) = read
+            .output_type
+            .as_ref()
+            .and_then(|o| o.all_types().into_iter().next())
+        {
             let params = ctx.type_params.get(&base).cloned().unwrap_or_default();
             let subst: std::collections::HashMap<String, Type> =
                 params.into_iter().zip(args).collect();
@@ -8263,7 +8627,9 @@ fn member_receiver_offset(
 ) -> Result<usize, TypeError> {
     let has_receiver = params
         .first()
-        .map(|p| matches!(p, Type::Custom(n) if n == "Self") || first_param_is_receiver(p, type_name))
+        .map(|p| {
+            matches!(p, Type::Custom(n) if n == "Self") || first_param_is_receiver(p, type_name)
+        })
         .unwrap_or(false);
     let offset = if has_receiver && supplied + 1 == params.len() {
         1
@@ -8285,9 +8651,18 @@ fn member_receiver_offset(
 
 fn member_output(m: &TopLevel) -> Option<Type> {
     match m {
-        TopLevel::Transaction(t) => t.output_type.as_ref().and_then(|o| o.all_types().into_iter().next()),
-        TopLevel::Definition(d) => d.output_type.as_ref().and_then(|o| o.all_types().into_iter().next()),
-        TopLevel::TypeDefOperator(d) => d.output_type.as_ref().and_then(|o| o.all_types().into_iter().next()),
+        TopLevel::Transaction(t) => t
+            .output_type
+            .as_ref()
+            .and_then(|o| o.all_types().into_iter().next()),
+        TopLevel::Definition(d) => d
+            .output_type
+            .as_ref()
+            .and_then(|o| o.all_types().into_iter().next()),
+        TopLevel::TypeDefOperator(d) => d
+            .output_type
+            .as_ref()
+            .and_then(|o| o.all_types().into_iter().next()),
         _ => None,
     }
 }
@@ -8369,7 +8744,11 @@ fn infer_defn_type_args(
 /// defn's type params. A param that IS a type param binds to the arg; a
 /// structured param (`List<T>`) recurses; a concrete-vs-concrete equality is
 /// fine; anything else is a mismatch (returns false).
-fn unify_defn_type(param: &Type, arg: &Type, bindings: &mut std::collections::HashMap<String, Option<Type>>) -> bool {
+fn unify_defn_type(
+    param: &Type,
+    arg: &Type,
+    bindings: &mut std::collections::HashMap<String, Option<Type>>,
+) -> bool {
     // A bare type param: `T` unifies with any concrete arg type.
     if let Type::Custom(name) = param {
         if bindings.contains_key(name) {
@@ -8383,14 +8762,21 @@ fn unify_defn_type(param: &Type, arg: &Type, bindings: &mut std::collections::Ha
     match (param, arg) {
         (Type::Custom(p), Type::Custom(a)) => p == a,
         (Type::Applied(pn, p_args), Type::Applied(an, a_args)) => {
-            pn == an && p_args.len() == a_args.len()
-                && p_args.iter().zip(a_args).all(|(p, a)| unify_defn_type(p, a, bindings))
+            pn == an
+                && p_args.len() == a_args.len()
+                && p_args
+                    .iter()
+                    .zip(a_args)
+                    .all(|(p, a)| unify_defn_type(p, a, bindings))
         }
         (Type::Ptr(p), Type::Ptr(a)) => unify_defn_type(p, a, bindings),
         (Type::PtrConst(p), Type::PtrConst(a)) => unify_defn_type(p, a, bindings),
         (Type::Vector(p, _), Type::Vector(a, _)) => unify_defn_type(p, a, bindings),
         (Type::Tuple(p), Type::Tuple(a)) => {
-            p.len() == a.len() && p.iter().zip(a).all(|(p, a)| unify_defn_type(p, a, bindings))
+            p.len() == a.len()
+                && p.iter()
+                    .zip(a)
+                    .all(|(p, a)| unify_defn_type(p, a, bindings))
         }
         // 2026-08-14 (closure-typed generics): a function-typed param (`f: T
         // -> U`) unifies against a closure's inferred `Type::Function` — the
@@ -8398,7 +8784,10 @@ fn unify_defn_type(param: &Type, arg: &Type, bindings: &mut std::collections::Ha
         // (`T -> U` vs `(Int) -> Int` → `T = Int`, `U = Int`).
         (Type::Function(pp, pr), Type::Function(ap, ar)) => {
             pp.len() == ap.len()
-                && pp.iter().zip(ap).all(|(p, a)| unify_defn_type(p, a, bindings))
+                && pp
+                    .iter()
+                    .zip(ap)
+                    .all(|(p, a)| unify_defn_type(p, a, bindings))
                 && unify_defn_type(pr, ar, bindings)
         }
         _ => param == arg,
@@ -8429,22 +8818,37 @@ fn substitute_type_params(ty: &Type, params: &[String], args: &[Type]) -> Type {
             .unwrap_or_else(|| ty.clone()),
         Type::Ptr(i) => Type::Ptr(Box::new(substitute_type_params(i, params, args))),
         Type::PtrConst(i) => Type::PtrConst(Box::new(substitute_type_params(i, params, args))),
-        Type::Vector(i, dims) => Type::Vector(Box::new(substitute_type_params(i, params, args)), dims.clone()),
+        Type::Vector(i, dims) => Type::Vector(
+            Box::new(substitute_type_params(i, params, args)),
+            dims.clone(),
+        ),
         Type::Applied(n, inner) => Type::Applied(
             n.clone(),
-            inner.iter().map(|a| substitute_type_params(a, params, args)).collect(),
+            inner
+                .iter()
+                .map(|a| substitute_type_params(a, params, args))
+                .collect(),
         ),
         Type::Tuple(elems) => Type::Tuple(
-            elems.iter().map(|e| substitute_type_params(e, params, args)).collect(),
+            elems
+                .iter()
+                .map(|e| substitute_type_params(e, params, args))
+                .collect(),
         ),
         Type::Union(members) => Type::Union(
-            members.iter().map(|m| substitute_type_params(m, params, args)).collect(),
+            members
+                .iter()
+                .map(|m| substitute_type_params(m, params, args))
+                .collect(),
         ),
         // 2026-08-14 (closure-typed generics): a function-typed param (`f: T
         // -> U`) substitutes its param and return types — `(T) -> U` with
         // `T=Int, U=Int` becomes `(Int) -> Int`.
         Type::Function(p_params, ret) => Type::Function(
-            p_params.iter().map(|p| substitute_type_params(p, params, args)).collect(),
+            p_params
+                .iter()
+                .map(|p| substitute_type_params(p, params, args))
+                .collect(),
             Box::new(substitute_type_params(ret, params, args)),
         ),
         _ => ty.clone(),
@@ -8470,10 +8874,7 @@ fn type_param_bounds(type_params: &[crate::ast::top::TypeParam]) -> Vec<(String,
 }
 
 fn obj_type_params(ctx: &TypecheckContext, type_name: &str) -> Vec<String> {
-    ctx.type_params
-        .get(type_name)
-        .cloned()
-        .unwrap_or_default()
+    ctx.type_params.get(type_name).cloned().unwrap_or_default()
 }
 
 /// 2026-07-31: Substitute a type's generic parameters. `Type::Custom("T")`
@@ -8589,7 +8990,12 @@ fn substitute_expr_types_children(expr: &mut Expr, subst: &HashMap<String, Type>
             substitute_expr_types(l, subst);
             substitute_expr_types(r, subst);
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             substitute_expr_types(array, subst);
             for part in [start, end, stride].into_iter().flatten() {
                 substitute_expr_types(part, subst);
@@ -8665,18 +9071,18 @@ pub(crate) fn substitute_type(ty: &Type, subst: &HashMap<String, Type>) -> Type 
         }
         Type::Vector(inner, dims) => Type::Vector(
             Box::new(substitute_type(inner, subst)),
-            dims.iter().map(|d| match d {
-                // 2026-07-31 (A8): a Named dimension whose name maps to a
-                // size arg becomes an Anonymous dimension (`T[N]` with N=8 →
-                // `Int[8]`).
-                crate::ast::Dimension::Named(n, _) => {
-                    match subst.get(n) {
+            dims.iter()
+                .map(|d| match d {
+                    // 2026-07-31 (A8): a Named dimension whose name maps to a
+                    // size arg becomes an Anonymous dimension (`T[N]` with N=8 →
+                    // `Int[8]`).
+                    crate::ast::Dimension::Named(n, _) => match subst.get(n) {
                         Some(Type::Number(sz)) => crate::ast::Dimension::Anonymous(*sz as usize),
                         _ => d.clone(),
-                    }
-                }
-                _ => d.clone(),
-            }).collect(),
+                    },
+                    _ => d.clone(),
+                })
+                .collect(),
         ),
         // 2026-08-12 (slice 4, wasm32 maze): Ptr must descend — `Ptr<T>` with
         // {T: Int} → `Ptr<Int>`. The mono substitution (ensure_mono) builds
@@ -8686,7 +9092,9 @@ pub(crate) fn substitute_type(ty: &Type, subst: &HashMap<String, Type>) -> Type 
         // i32).
         Type::Ptr(inner) => Type::Ptr(Box::new(substitute_type(inner, subst))),
         Type::PtrConst(inner) => Type::PtrConst(Box::new(substitute_type(inner, subst))),
-        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| substitute_type(e, subst)).collect()),
+        Type::Tuple(elems) => {
+            Type::Tuple(elems.iter().map(|e| substitute_type(e, subst)).collect())
+        }
         _ => ty.clone(),
     }
 }
@@ -8696,10 +9104,13 @@ fn type_byte_size(ty: &Type) -> u64 {
     match ty {
         Type::Vector(inner, dims) => {
             let elem_size = type_byte_size(inner);
-            let count: u64 = dims.iter().map(|d| match d {
-                crate::ast::Dimension::Anonymous(n) => *n as u64,
-                _ => 1,
-            }).product();
+            let count: u64 = dims
+                .iter()
+                .map(|d| match d {
+                    crate::ast::Dimension::Anonymous(n) => *n as u64,
+                    _ => 1,
+                })
+                .product();
             elem_size * count
         }
         Type::Custom(s) if s == "Int" || s == "Int64" || s == "Ptr" => 8,
@@ -8785,7 +9196,8 @@ mod tests {
         )
         .expect_err("the false arm cannot prove b");
         assert!(
-            errs.iter().any(|e| format!("{e:?}").contains("cannot be proven")),
+            errs.iter()
+                .any(|e| format!("{e:?}").contains("cannot be proven")),
             "expected unproven, not a leaked refutation: {errs:#?}"
         );
         assert!(
@@ -8813,7 +9225,8 @@ mod tests {
         let errs = check("defn f(x: Int) -> Int { check x > 0; term x; };")
             .expect_err("an unprovable check must be rejected under deny");
         assert!(
-            errs.iter().any(|e| format!("{e:?}").contains("cannot be proven")),
+            errs.iter()
+                .any(|e| format!("{e:?}").contains("cannot be proven")),
             "names the fix: {errs:#?}"
         );
     }
@@ -8981,7 +9394,8 @@ mod tests {
         )
         .expect_err("the post-loop count is not known to be zero");
         assert!(
-            errs.iter().any(|e| format!("{e:?}").contains("cannot be proven")),
+            errs.iter()
+                .any(|e| format!("{e:?}").contains("cannot be proven")),
             "expected unproven, not a stale proof: {errs:#?}"
         );
     }
@@ -9073,7 +9487,8 @@ mod tests {
             .expect_err("value tail in a Void body must be rejected");
         let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
         assert!(
-            text.iter().any(|t| t.contains("tail value vs declared return type")),
+            text.iter()
+                .any(|t| t.contains("tail value vs declared return type")),
             "got: {text:?}"
         );
     }
@@ -9081,11 +9496,12 @@ mod tests {
     /// A tail of the wrong type is an error against the declared output.
     #[test]
     fn tail_type_mismatch_is_error() {
-        let errs = check(r#"defn f() -> Int { "hi" };"#)
-            .expect_err("mismatched tail must be rejected");
+        let errs =
+            check(r#"defn f() -> Int { "hi" };"#).expect_err("mismatched tail must be rejected");
         let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
         assert!(
-            text.iter().any(|t| t.contains("tail value vs declared return type")),
+            text.iter()
+                .any(|t| t.contains("tail value vs declared return type")),
             "got: {text:?}"
         );
     }
@@ -9105,10 +9521,8 @@ mod tests {
     #[test]
     fn volatile_arity_gap_is_a_diagnostic_not_a_panic() {
         for call in ["VolatileLoad#()", "VolatileStore#()"] {
-            let src =
-                format!("node report [true][true] {{ let x: Int = {call}; term; }};");
-            let errs = check(&src)
-                .expect_err(&format!("zero-arg {call} must be rejected"));
+            let src = format!("node report [true][true] {{ let x: Int = {call}; term; }};");
+            let errs = check(&src).expect_err(&format!("zero-arg {call} must be rejected"));
             let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
             assert!(
                 text.iter().any(|t| t.contains("address argument")),
@@ -9189,25 +9603,40 @@ node report [n > 0][n > 0] {
     fn intrinsic_min_arity_is_a_diagnostic_not_a_backend_panic() {
         let zero_arg: &[&str] = &[
             // arity 1
-            "Capacity#", "TrimCap#", "Load#", "AtomicLoad#", "Length#",
-            "GetGlobalId#", "DlClose#", "Print#",
+            "Capacity#",
+            "TrimCap#",
+            "Load#",
+            "AtomicLoad#",
+            "Length#",
+            "GetGlobalId#",
+            "DlClose#",
+            "Print#",
             // arity 2
-            "EnsureCap#", "Resize#", "Store#", "AtomicStore#",
-            "AtomicXchg#", "AtomicAdd#", "AtomicLoadN#", "DlOpen#",
+            "EnsureCap#",
+            "Resize#",
+            "Store#",
+            "AtomicStore#",
+            "AtomicXchg#",
+            "AtomicAdd#",
+            "AtomicLoadN#",
+            "DlOpen#",
             "DlSym#",
             // arity 3
-            "Copy#", "Fill#", "AtomicCas#", "AtomicStoreN#", "SimdAdd#",
+            "Copy#",
+            "Fill#",
+            "AtomicCas#",
+            "AtomicStoreN#",
+            "SimdAdd#",
             // arity 4
             "SimdFma#",
             // pointer family (arity 2)
-            "PtrAdd#", "PtrEq#", "PtrLt#",
+            "PtrAdd#",
+            "PtrEq#",
+            "PtrLt#",
         ];
         for name in zero_arg {
-            let src = format!(
-                "node report [true][true] {{ let x: Int = {name}(); term; }};"
-            );
-            let errs = check(&src)
-                .expect_err(&format!("zero-arg {name} must be rejected"));
+            let src = format!("node report [true][true] {{ let x: Int = {name}(); term; }};");
+            let errs = check(&src).expect_err(&format!("zero-arg {name} must be rejected"));
             let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
             assert!(
                 text.iter().any(|t| t.contains("at least")),
@@ -9216,18 +9645,15 @@ node report [n > 0][n > 0] {
         }
         // Too-few (but nonzero) shapes.
         let too_few: &[(&str, usize)] = &[
-            ("AtomicCas#", 2),   // needs 3
-            ("Copy#", 2),        // needs 3
-            ("SimdFma#", 3),     // needs 4
-            ("AtomicStoreN#", 2) // needs 3
+            ("AtomicCas#", 2),    // needs 3
+            ("Copy#", 2),         // needs 3
+            ("SimdFma#", 3),      // needs 4
+            ("AtomicStoreN#", 2), // needs 3
         ];
         for (name, n) in too_few {
             let args = vec!["1"; *n].join(", ");
-            let src = format!(
-                "node report [true][true] {{ let x: Int = {name}({args}); term; }};"
-            );
-            let errs = check(&src)
-                .expect_err(&format!("{name} with {n} args must be rejected"));
+            let src = format!("node report [true][true] {{ let x: Int = {name}({args}); term; }};");
+            let errs = check(&src).expect_err(&format!("{name} with {n} args must be rejected"));
             let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
             assert!(
                 text.iter().any(|t| t.contains("at least")),
@@ -9306,9 +9732,11 @@ let j: Jar = Jar { items: 0 };
         check(seal).expect("declaring a sealed collection must compile");
 
         // A `~<-` extract is the ONE way out — not sealed.
-        let extract = format!(r#"{seal}
+        let extract = format!(
+            r#"{seal}
 txn t [true][j.items >= 0] {{ let v: Int; v ~<- j; }};
-"#);
+"#
+        );
         check(&extract).expect("the destructive ~<- extract must work");
 
         // Each sealed op USE must fail with the Error# promotion.
@@ -9323,9 +9751,11 @@ txn t [true][j.items >= 0] {{ let v: Int; v ~<- j; }};
             "let v: Int; v <- j;",
         ];
         for use_src in sealed_uses {
-            let full = format!(r#"{seal}
+            let full = format!(
+                r#"{seal}
 txn t [true][j.items >= 0] {{ {use_src} }};
-"#);
+"#
+            );
             assert!(
                 check(&full).is_err(),
                 "sealed op use must fail at compile time: {use_src}"
@@ -9383,7 +9813,11 @@ node probe [true][x == x] {
 };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "expected a type error for a non-List generic arg, got: {:?}", e);
+        assert!(
+            e.is_err(),
+            "expected a type error for a non-List generic arg, got: {:?}",
+            e
+        );
     }
 
     /// 2026-08-14 (generic `defn f<T>` dispatch): an EMPTY list literal in a
@@ -9400,7 +9834,8 @@ node probe [a == []][true] {
     term;
 };
 "#;
-        check(src).expect("an empty list in a generic body must adopt the declared return's type param");
+        check(src)
+            .expect("an empty list in a generic body must adopt the declared return's type param");
     }
 
     /// 2026-08-14 (`term` canonical result placeholder): `term` in a defn's
@@ -9435,7 +9870,11 @@ node probe [true][true] {
 };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "a post-condition comparing Int `term` to Bool must error, got: {:?}", e);
+        assert!(
+            e.is_err(),
+            "a post-condition comparing Int `term` to Bool must error, got: {:?}",
+            e
+        );
     }
 
     /// 2026-08-14 (generic `defn f<T>` dispatch): a generic defn with a
@@ -9507,7 +9946,8 @@ node probe [v == 0][v == 1] {
     term;
 };
 "#;
-        check(src).expect("a generic body must return the bound function param's free-U return type");
+        check(src)
+            .expect("a generic body must return the bound function param's free-U return type");
     }
 
     /// 2026-08-14 (stdlib-cleanup): the empty-list element adoption widens
@@ -9525,7 +9965,9 @@ node probe [v == 0][v == 1] {
     term;
 };
 "#;
-        check(src).expect("an empty list in a generic body must adopt a tuple element from the declared return");
+        check(src).expect(
+            "an empty list in a generic body must adopt a tuple element from the declared return",
+        );
     }
 
     /// 2026-08-12 (Iterable protocol): a non-operator member body still fails
@@ -9647,7 +10089,8 @@ node t [count < 5][count == 5] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("no implicit Int/Float coercion")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("no implicit Int/Float coercion")),
             "expected an implicit-coercion error, got {:?}",
             err
         );
@@ -9761,7 +10204,6 @@ node t [true][false] {
         check(src).expect("unpacked member access should typecheck with substituted dims");
     }
 
-
     /// An explicit `as Float` cast resolves the mixed operation.
     #[test]
     fn explicit_cast_resolves_mixed_arithmetic() {
@@ -9819,7 +10261,8 @@ node init [beginprogram][i == 4] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("not provably reachable")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("not provably reachable")),
             "expected an unreachable-goal error, got {:?}",
             err
         );
@@ -9842,7 +10285,8 @@ node two [beginprogram][a == 2] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("conflicting entry conditions")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("conflicting entry conditions")),
             "expected a conflict error, got {:?}",
             err
         );
@@ -9863,7 +10307,10 @@ node t [count < 5][count == 5] {
     term;
 };
 "#;
-        assert!(check(src).is_ok(), "cross-type op overload must authorize Int * MyNum");
+        assert!(
+            check(src).is_ok(),
+            "cross-type op overload must authorize Int * MyNum"
+        );
     }
 
     /// 2026-09-11 (fundamentals doctrine, Phase B2): electrical quantity
@@ -9884,7 +10331,11 @@ txn t
 { }
 "#;
         let err = check(src);
-        assert!(err.is_ok(), "quantity fundamentals must stand alone: {:?}", err);
+        assert!(
+            err.is_ok(),
+            "quantity fundamentals must stand alone: {:?}",
+            err
+        );
     }
 
     /// 2026-09-11 (fundamentals doctrine, Phase A3): the BARE fundamental in
@@ -10019,7 +10470,8 @@ node start [true][false] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("not a defined function")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("not a defined function")),
             "expected an undefined-op-target error, got {err:?}"
         );
     }
@@ -10056,14 +10508,16 @@ node start [true][false] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("get_env_int!")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("get_env_int!")),
             "expected a rename-guidance error, got {err:?}"
         );
     }
 
     /// Without the cross-type overload, `Int * MyNum` errors.
     #[test]
-    fn missing_cross_type_overload_errors() {        let src = r#"
+    fn missing_cross_type_overload_errors() {
+        let src = r#"
 type MyNum : Int {
     op Sub(Int): func(#Lh, #Rh);
 };
@@ -10076,7 +10530,8 @@ node t [count < 5][count == 5] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("no implicit Int/Float coercion")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("no implicit Int/Float coercion")),
             "expected an implicit-coercion error, got {:?}",
             err
         );
@@ -10098,7 +10553,10 @@ node t [a < 5][a == 5] {
     term;
 };
 "#;
-        assert!(check(src).is_ok(), "MyNum + MyNum must inherit Int's Add binding");
+        assert!(
+            check(src).is_ok(),
+            "MyNum + MyNum must inherit Int's Add binding"
+        );
     }
 
     /// A custom type with a declared `op Add(Int)` wins for same-type use.
@@ -10115,7 +10573,10 @@ node t [a < 5][a == 5] {
     term;
 };
 "#;
-        assert!(check(src).is_ok(), "declared op Add(Int) must authorize MyNum + MyNum");
+        assert!(
+            check(src).is_ok(),
+            "declared op Add(Int) must authorize MyNum + MyNum"
+        );
     }
 
     /// A custom type with NO protocol and NO declared op still errors on
@@ -10133,7 +10594,8 @@ node t [a < 5][a == 5] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("invalid operation")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("invalid operation")),
             "expected an invalid-operation error, got {:?}",
             err
         );
@@ -10155,7 +10617,11 @@ node t [a < 5][a == 5] {
 };
 "#;
         let err = check(src);
-        assert!(err.is_ok(), "subtype must inherit the parent's declared op: {:?}", err);
+        assert!(
+            err.is_ok(),
+            "subtype must inherit the parent's declared op: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -10229,8 +10695,14 @@ node probe [p.name != ""][true] {
         let e = check(src);
         assert!(e.is_err(), "unknown mechanism must error");
         let msg = format!("{:?}", e);
-        assert!(msg.contains("isr-targets.dbvl"), "error must name the registry, got: {msg}");
-        assert!(msg.contains("arm_cortex_m"), "error must list known mechanisms, got: {msg}");
+        assert!(
+            msg.contains("isr-targets.dbvl"),
+            "error must name the registry, got: {msg}"
+        );
+        assert!(
+            msg.contains("arm_cortex_m"),
+            "error must list known mechanisms, got: {msg}"
+        );
     }
 
     #[test]
@@ -10242,8 +10714,14 @@ node probe [p.name != ""][true] {
         let e = check(src);
         assert!(e.is_err(), "mechanism-less isr must error");
         let msg = format!("{:?}", e);
-        assert!(msg.contains("will not invent a vector table layout"), "got: {msg}");
-        assert!(msg.contains("isr_mechanism"), "fix must name the profile key, got: {msg}");
+        assert!(
+            msg.contains("will not invent a vector table layout"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("isr_mechanism"),
+            "fix must name the profile key, got: {msg}"
+        );
     }
 
     #[test]
@@ -10355,7 +10833,11 @@ node probe [done == false][done == true] { done = true; term; };
         // a path that must cross two categories in one `as` is rejected.
         let ok_src = "defn to_f(x: Int) -> Float { term x as Float; };\n";
         let e = check(ok_src);
-        assert!(e.is_ok(), "single cross-protocol cast should be allowed, got: {:?}", e);
+        assert!(
+            e.is_ok(),
+            "single cross-protocol cast should be allowed, got: {:?}",
+            e
+        );
     }
 
     #[test]
@@ -10372,7 +10854,11 @@ node probe [true][true] {
 };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "expected reflection kind-mismatch error, got: {:?}", e);
+        assert!(
+            e.is_err(),
+            "expected reflection kind-mismatch error, got: {:?}",
+            e
+        );
     }
 
     #[test]
@@ -10588,7 +11074,11 @@ node probe [true][true] {
 };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "expected method-arg mismatch error, got: {:?}", e);
+        assert!(
+            e.is_err(),
+            "expected method-arg mismatch error, got: {:?}",
+            e
+        );
     }
 
     #[test]
@@ -10742,7 +11232,11 @@ let s: Int = "hello";
 node probe [true][true] { term; };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "expected top-level let type-mismatch error, got: {:?}", e);
+        assert!(
+            e.is_err(),
+            "expected top-level let type-mismatch error, got: {:?}",
+            e
+        );
     }
 
     #[test]
@@ -10751,7 +11245,11 @@ node probe [true][true] { term; };
 defn f() -> Int { term "hello"; };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "expected term/return type-mismatch error, got: {:?}", e);
+        assert!(
+            e.is_err(),
+            "expected term/return type-mismatch error, got: {:?}",
+            e
+        );
     }
 
     #[test]
@@ -10764,7 +11262,11 @@ node probe [true][true] {
 };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "expected call-arg type-mismatch error, got: {:?}", e);
+        assert!(
+            e.is_err(),
+            "expected call-arg type-mismatch error, got: {:?}",
+            e
+        );
     }
 
     #[test]
@@ -10877,7 +11379,8 @@ node go [fired == 0][fired == 1] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("immutable for the run")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("immutable for the run")),
             "expected init-reassign error, got {:?}",
             err
         );
@@ -10896,7 +11399,8 @@ node go [fired == 0][fired == 1] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("immutable for the run")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("immutable for the run")),
             "expected init-arrow error, got {:?}",
             err
         );
@@ -10915,7 +11419,8 @@ node go [fired == 0][fired == 1] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("shadows an `init`")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("shadows an `init`")),
             "expected init-shadow error, got {:?}",
             err
         );
@@ -10931,7 +11436,8 @@ node go [fired == 0][fired == 1] { fired = fired + 1; term; };
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("duplicate `init`")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("duplicate `init`")),
             "expected duplicate-init error, got {:?}",
             err
         );
@@ -10949,7 +11455,8 @@ init BufSize: Int = 64;
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("after a beginprogram")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("after a beginprogram")),
             "expected late-init error, got {:?}",
             err
         );
@@ -10966,7 +11473,10 @@ node entry [beginprogram][i == 4] {
     term;
 };
 "#;
-        assert!(check(src).is_ok(), "init before beginprogram must typecheck");
+        assert!(
+            check(src).is_ok(),
+            "init before beginprogram must typecheck"
+        );
     }
 
     #[test]
@@ -10984,7 +11494,8 @@ node go [fired == 0][fired == 1] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("cannot consume a constant")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("cannot consume a constant")),
             "expected init-consume error, got {:?}",
             err
         );
@@ -11025,7 +11536,8 @@ node go [fired == 0][fired == 1] {
 "#;
         let err = check(src).unwrap_err();
         assert!(
-            err.iter().any(|e| format!("{}", e).contains("only on an `optional frgn`")),
+            err.iter()
+                .any(|e| format!("{}", e).contains("only on an `optional frgn`")),
             "non-optional ^^Available must error, got {:?}",
             err
         );
@@ -11056,7 +11568,9 @@ defn concat_demo() -> List<Int> {
         let mut calls: Vec<String> = Vec::new();
         let mut add_ops: usize = 0;
         for item in &items {
-            let TopLevel::Definition(d) = item else { continue };
+            let TopLevel::Definition(d) = item else {
+                continue;
+            };
             if d.name != "concat_demo" {
                 continue;
             }
@@ -11087,13 +11601,22 @@ defn collect_strings() -> List<String> {
         let (items, _) = crate::library::parse_and_check("foreach_concat.bv", source).unwrap();
         let mut concatenates = 0;
         for item in &items {
-            let TopLevel::Definition(defn) = item else { continue };
-            if defn.name != "collect_strings" { continue; }
+            let TopLevel::Definition(defn) = item else {
+                continue;
+            };
+            if defn.name != "collect_strings" {
+                continue;
+            }
             crate::ast::visit::walk_stmts(&defn.body, &mut |expr| {
-                if matches!(expr, Expr::Call(name, _, _) if name == "iter_chain") { concatenates += 1; }
+                if matches!(expr, Expr::Call(name, _, _) if name == "iter_chain") {
+                    concatenates += 1;
+                }
             });
         }
-        assert_eq!(concatenates, 1, "loop elements must resolve declared collection operations");
+        assert_eq!(
+            concatenates, 1,
+            "loop elements must resolve declared collection operations"
+        );
     }
 
     #[test]
@@ -11116,13 +11639,22 @@ defn render(batch: Batch) -> List<String> {
         let (items, _) = crate::library::parse_and_check("payload_foreach.bv", source).unwrap();
         let mut found = false;
         for item in &items {
-            let TopLevel::Definition(defn) = item else { continue };
-            if defn.name != "render" { continue; }
+            let TopLevel::Definition(defn) = item else {
+                continue;
+            };
+            if defn.name != "render" {
+                continue;
+            }
             crate::ast::visit::walk_stmts(&defn.body, &mut |expr| {
-                if matches!(expr, Expr::Call(name, _, _) if name == "iter_chain") { found = true; }
+                if matches!(expr, Expr::Call(name, _, _) if name == "iter_chain") {
+                    found = true;
+                }
             });
         }
-        assert!(found, "enum payload element types must reach declared collection operators");
+        assert!(
+            found,
+            "enum payload element types must reach declared collection operators"
+        );
     }
 
     /// 2026-10-06: the gate the rewrite must NOT open — mismatched element
@@ -11273,7 +11805,10 @@ mod phase4_tests {
                 term a;
             };
         "#;
-        assert!(check(src).is_err(), "#StdErr <- Int must be rejected (String only)");
+        assert!(
+            check(src).is_err(),
+            "#StdErr <- Int must be rejected (String only)"
+        );
     }
 
     #[test]
@@ -11357,84 +11892,84 @@ mod phase5_tests {
         assert!(check(src).is_err(), "keep of an unknown name must error");
     }
 
-/// 2026-08-06 (Phase 7): `#b"..."` is a Data byte literal; `#r"..."` a String.
-#[test]
-fn byte_literal_is_blob_raw_string_is_string() {
-    let ok = r#"
+    /// 2026-08-06 (Phase 7): `#b"..."` is a Data byte literal; `#r"..."` a String.
+    #[test]
+    fn byte_literal_is_blob_raw_string_is_string() {
+        let ok = r#"
 node start [true][false] {
     let b: Blob = #b"\x89PNG";
     let r: String = #r"a\tb";
     term;
 };
 "#;
-    assert!(check(ok).is_ok(), "a #b literal must type as Data");
-    let bad = r#"
+        assert!(check(ok).is_ok(), "a #b literal must type as Data");
+        let bad = r#"
 node start [true][false] {
     let s: String = #b"\x89";
     term;
 };
 "#;
-    assert!(
-        check(bad).is_err(),
-        "#b must NOT type as String (it is a raw Data literal)"
-    );
-}
+        assert!(
+            check(bad).is_err(),
+            "#b must NOT type as String (it is a raw Data literal)"
+        );
+    }
 
-/// 2026-08-15 (coll plan §3.2): `coll` declarations validate their sequence
-/// member and compiler-owned length/capacity.
-#[test]
-fn coll_requires_one_sequence_member() {
-    let ok = r#"
+    /// 2026-08-15 (coll plan §3.2): `coll` declarations validate their sequence
+    /// member and compiler-owned length/capacity.
+    #[test]
+    fn coll_requires_one_sequence_member() {
+        let ok = r#"
 coll struct Fixed { data: Int[4]; };
 coll obj MyQueue { data: Ptr<Int>; };
 node start [true][false] { term; };
 "#;
-    assert!(check(ok).is_ok(), "coll with one sequence member must type");
-    let bad = r#"
+        assert!(check(ok).is_ok(), "coll with one sequence member must type");
+        let bad = r#"
 coll obj TwoSeq { a: Ptr<Int>; b: Ptr<Int>; };
 node start [true][false] { term; };
 "#;
-    assert!(
-        check(bad).is_err(),
-        "coll with two sequence members must error"
-    );
-}
+        assert!(
+            check(bad).is_err(),
+            "coll with two sequence members must error"
+        );
+    }
 
-/// 2026-08-15 (coll plan §3.2): `coll struct` is fixed `T[N]` only; a
-/// `Ptr<T>` member errors this slice. Length/capacity are compiler-owned.
-#[test]
-fn coll_struct_fixed_array_only_and_len_is_compiler_owned() {
-    let ptr_backed = r#"
+    /// 2026-08-15 (coll plan §3.2): `coll struct` is fixed `T[N]` only; a
+    /// `Ptr<T>` member errors this slice. Length/capacity are compiler-owned.
+    #[test]
+    fn coll_struct_fixed_array_only_and_len_is_compiler_owned() {
+        let ptr_backed = r#"
 coll struct P { data: Ptr<Int>; };
 node start [true][false] { term; };
 "#;
-    assert!(
-        check(ptr_backed).is_err(),
-        "coll struct Ptr<T> member must error (fixed T[N] only)"
-    );
-    let has_len = r#"
+        assert!(
+            check(ptr_backed).is_err(),
+            "coll struct Ptr<T> member must error (fixed T[N] only)"
+        );
+        let has_len = r#"
 coll obj L { data: Ptr<Int>; len: Int; };
 node start [true][false] { term; };
 "#;
-    assert!(
-        check(has_len).is_err(),
-        "coll declaring a len field must error (compiler-owned)"
-    );
-    let has_cap = r#"
+        assert!(
+            check(has_len).is_err(),
+            "coll declaring a len field must error (compiler-owned)"
+        );
+        let has_cap = r#"
 coll obj C { data: Ptr<Int>; cap: Int; };
 node start [true][false] { term; };
 "#;
-    assert!(
-        check(has_cap).is_err(),
-        "coll declaring a cap field must error (compiler-owned)"
-    );
-}
+        assert!(
+            check(has_cap).is_err(),
+            "coll declaring a cap field must error (compiler-owned)"
+        );
+    }
 
-/// 2026-08-15 (coll plan §3.4): a `coll obj` accepts empty AND non-empty list
-/// literals, `<-` push, indexing, and `foreach` — the scaffolded op surface.
-#[test]
-fn coll_obj_lifecycle_typechecks() {
-    let ok = r#"
+    /// 2026-08-15 (coll plan §3.4): a `coll obj` accepts empty AND non-empty list
+    /// literals, `<-` push, indexing, and `foreach` — the scaffolded op surface.
+    #[test]
+    fn coll_obj_lifecycle_typechecks() {
+        let ok = r#"
 coll obj MyQueue { data: Ptr<Int>; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11446,8 +11981,11 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(check(ok).is_ok(), "coll obj empty-init + push + Count# + index must type");
-    let lit = r#"
+        assert!(
+            check(ok).is_ok(),
+            "coll obj empty-init + push + Count# + index must type"
+        );
+        let lit = r#"
 coll obj MyQueue { data: Ptr<Int>; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11457,15 +11995,18 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(check(lit).is_ok(), "coll obj literal-init + foreach must type");
-}
+        assert!(
+            check(lit).is_ok(),
+            "coll obj literal-init + foreach must type"
+        );
+    }
 
-/// 2026-08-15 (coll plan §3.7): a coll obj with a NESTED buffer sequence
-/// member (`inner: ListBuffer<T>`) — the List shape. The element type is
-/// derived through the buffer's Ptr slot; `<-` push and foreach work.
-#[test]
-fn coll_obj_nested_buffer_lifecycle_typechecks() {
-    let ok = r#"
+    /// 2026-08-15 (coll plan §3.7): a coll obj with a NESTED buffer sequence
+    /// member (`inner: ListBuffer<T>`) — the List shape. The element type is
+    /// derived through the buffer's Ptr slot; `<-` push and foreach work.
+    #[test]
+    fn coll_obj_nested_buffer_lifecycle_typechecks() {
+        let ok = r#"
 struct Buf<T> { data: Ptr<T>; };
 coll obj MyList<T> { inner: Buf<T>; };
 let done: Int = 0;
@@ -11479,20 +12020,20 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "nested-buffer coll obj must type (List shape: literal + push + Count + index + foreach)"
-    );
-}
+        assert!(
+            check(ok).is_ok(),
+            "nested-buffer coll obj must type (List shape: literal + push + Count + index + foreach)"
+        );
+    }
 
-/// 2026-08-16 (Phase 3a): a fixed `coll struct` literal construction typechecks
-/// when the element count fits `T[N]`, iterates, and `.^Length`/`Count#`/
-/// `Capacity#` all report N. An OVER-length literal is rejected (the fixed
-/// array cannot hold it — the heap-seq fallback must never fire for a coll
-/// struct).
-#[test]
-fn coll_struct_literal_lifecycle_typechecks() {
-    let ok = r#"
+    /// 2026-08-16 (Phase 3a): a fixed `coll struct` literal construction typechecks
+    /// when the element count fits `T[N]`, iterates, and `.^Length`/`Count#`/
+    /// `Capacity#` all report N. An OVER-length literal is rejected (the fixed
+    /// array cannot hold it — the heap-seq fallback must never fire for a coll
+    /// struct).
+    #[test]
+    fn coll_struct_literal_lifecycle_typechecks() {
+        let ok = r#"
 coll struct Fixed { data: Int[4]; };
 let done: Int = 0;
 let total: Int = 0;
@@ -11509,13 +12050,13 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    let errs = check(ok);
-    assert!(
-        errs.is_ok(),
-        "fixed coll struct literal + Length + Count# + Capacity# + field read + foreach must type; got: {:?}",
-        errs
-    );
-    let empty_ok = r#"
+        let errs = check(ok);
+        assert!(
+            errs.is_ok(),
+            "fixed coll struct literal + Length + Count# + Capacity# + field read + foreach must type; got: {:?}",
+            errs
+        );
+        let empty_ok = r#"
 coll struct Fixed { data: Int[4]; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11523,11 +12064,11 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(empty_ok).is_ok(),
-        "an empty literal for a fixed coll struct must type (length == capacity == N)"
-    );
-    let oversize = r#"
+        assert!(
+            check(empty_ok).is_ok(),
+            "an empty literal for a fixed coll struct must type (length == capacity == N)"
+        );
+        let oversize = r#"
 coll struct Fixed { data: Int[2]; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11535,20 +12076,20 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(oversize).is_err(),
-        "an over-length literal for a fixed coll struct must be a type error"
-    );
-}
+        assert!(
+            check(oversize).is_err(),
+            "an over-length literal for a fixed coll struct must be a type error"
+        );
+    }
 
-/// 2026-08-16 (Phase 3b): a GENERIC `coll struct Fixed<T, N> { data: T[N] }`
-/// with a concrete application `Fixed<Int, 4>` typechecks the literal, the op
-/// surface (Count#/Capacity#/foreach), and field access — the const generic
-/// N resolves to the fixed capacity. An over-length literal on the generic is
-/// still rejected.
-#[test]
-fn coll_struct_generic_const_dimension_typechecks() {
-    let ok = r#"
+    /// 2026-08-16 (Phase 3b): a GENERIC `coll struct Fixed<T, N> { data: T[N] }`
+    /// with a concrete application `Fixed<Int, 4>` typechecks the literal, the op
+    /// surface (Count#/Capacity#/foreach), and field access — the const generic
+    /// N resolves to the fixed capacity. An over-length literal on the generic is
+    /// still rejected.
+    #[test]
+    fn coll_struct_generic_const_dimension_typechecks() {
+        let ok = r#"
 coll struct Fixed<T, N> { data: T[N]; };
 let done: Int = 0;
 let total: Int = 0;
@@ -11564,11 +12105,11 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "generic coll struct literal + Count# + Capacity# + field + foreach must type"
-    );
-    let oversize = r#"
+        assert!(
+            check(ok).is_ok(),
+            "generic coll struct literal + Count# + Capacity# + field + foreach must type"
+        );
+        let oversize = r#"
 coll struct Fixed<T, N> { data: T[N]; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11576,17 +12117,17 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(oversize).is_err(),
-        "an over-length literal for a generic fixed coll must be a type error"
-    );
-}
+        assert!(
+            check(oversize).is_err(),
+            "an over-length literal for a generic fixed coll must be a type error"
+        );
+    }
 
-/// 2026-08-15 (coll plan §3.4.6): `.^Length` on a `coll` type is stored-length
-/// reflection (the hidden `len` slot) — it types as Int, like `Count#`.
-#[test]
-fn coll_length_reflection_typechecks() {
-    let ok = r#"
+    /// 2026-08-15 (coll plan §3.4.6): `.^Length` on a `coll` type is stored-length
+    /// reflection (the hidden `len` slot) — it types as Int, like `Count#`.
+    #[test]
+    fn coll_length_reflection_typechecks() {
+        let ok = r#"
 struct Buf<T> { data: Ptr<T>; };
 coll obj MyList<T> { inner: Buf<T>; };
 let done: Int = 0;
@@ -11597,11 +12138,11 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "coll .^Length must type as Int (stored hidden len slot)"
-    );
-    let non_coll = r#"
+        assert!(
+            check(ok).is_ok(),
+            "coll .^Length must type as Int (stored hidden len slot)"
+        );
+        let non_coll = r#"
 obj Plain { data: Ptr<Int>; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11610,19 +12151,19 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(non_coll).is_err(),
-        "non-coll obj .^Length must error (no compiler-owned length)"
-    );
-}
+        assert!(
+            check(non_coll).is_err(),
+            "non-coll obj .^Length must error (no compiler-owned length)"
+        );
+    }
 
-/// 2026-08-16 (Phase 3e, SPEC §17.1): `Bit<N>` ↔ `Bits` unification — the bare
-/// `Bits` is the FLEXIBLE bit type (Type::Bits(0)), and it accepts a value of
-/// any `Bit<N>`; a declared `Bit<N>` pins an inferred flexible width. This is
-/// the "Bit<N> unified, no separate Bits" hierarchy fact.
-#[test]
-fn bit_n_and_bits_unify() {
-    let ok = r#"
+    /// 2026-08-16 (Phase 3e, SPEC §17.1): `Bit<N>` ↔ `Bits` unification — the bare
+    /// `Bits` is the FLEXIBLE bit type (Type::Bits(0)), and it accepts a value of
+    /// any `Bit<N>`; a declared `Bit<N>` pins an inferred flexible width. This is
+    /// the "Bit<N> unified, no separate Bits" hierarchy fact.
+    #[test]
+    fn bit_n_and_bits_unify() {
+        let ok = r#"
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let b: Bit<8> = 0xFF as Bit<8>;
@@ -11633,11 +12174,11 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "Bits must accept any Bit<N> value (flexible-width unification)"
-    );
-    let pinned = r#"
+        assert!(
+            check(ok).is_ok(),
+            "Bits must accept any Bit<N> value (flexible-width unification)"
+        );
+        let pinned = r#"
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let b: Bit<8> = 0xFF as Bit<8>;
@@ -11647,19 +12188,19 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(pinned).is_ok(),
-        "a declared Bit<N> must pin an inferred flexible Bits value"
-    );
-}
+        assert!(
+            check(pinned).is_ok(),
+            "a declared Bit<N> must pin an inferred flexible Bits value"
+        );
+    }
 
-/// 2026-08-16 (Phase 3e, SPEC §17.1): the Data reflective floor — a value
-/// observes as raw storage via compile-time descriptor reflection
-/// (`.^^Type`/`.^^Bytes`/`.^^Alignment`). A `coll struct` value and a Blob
-/// both reflect; `Blob.^Length` is the byte header.
-#[test]
-fn data_reflective_floor_typechecks() {
-    let ok = r#"
+    /// 2026-08-16 (Phase 3e, SPEC §17.1): the Data reflective floor — a value
+    /// observes as raw storage via compile-time descriptor reflection
+    /// (`.^^Type`/`.^^Bytes`/`.^^Alignment`). A `coll struct` value and a Blob
+    /// both reflect; `Blob.^Length` is the byte header.
+    #[test]
+    fn data_reflective_floor_typechecks() {
+        let ok = r#"
 coll struct Fixed { data: Int[4]; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11673,21 +12214,21 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "Data-floor reflection must type (descriptor reflection + Blob stored length)"
-    );
-}
+        assert!(
+            check(ok).is_ok(),
+            "Data-floor reflection must type (descriptor reflection + Blob stored length)"
+        );
+    }
 
-/// 2026-08-16 (hashmap redesign, plan 2026-08-16-hashmap-redesign.md): a
-/// hand-written `obj` (no `coll` keyword) gets the collection op surface via
-/// declared ops — `op Count` makes `Count#` type, `op Init` makes the seed
-/// construction (`let m: MiniMap = 0`) type, and member methods type. LITERAL
-/// construction is opt-in: an obj declaring the construction ops accepts
-/// `[...]`.
-#[test]
-fn hashmap_op_surface_and_literal_construction_typechecks() {
-    let ok = r#"
+    /// 2026-08-16 (hashmap redesign, plan 2026-08-16-hashmap-redesign.md): a
+    /// hand-written `obj` (no `coll` keyword) gets the collection op surface via
+    /// declared ops — `op Count` makes `Count#` type, `op Init` makes the seed
+    /// construction (`let m: MiniMap = 0`) type, and member methods type. LITERAL
+    /// construction is opt-in: an obj declaring the construction ops accepts
+    /// `[...]`.
+    #[test]
+    fn hashmap_op_surface_and_literal_construction_typechecks() {
+        let ok = r#"
 struct Pair { key: Int; val: Int; };
 obj MiniMap {
     keys: Ptr<Int>;
@@ -11737,11 +12278,11 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "obj seed init + op Count + member methods must type (op-driven surface)"
-    );
-    let lit = r#"
+        assert!(
+            check(ok).is_ok(),
+            "obj seed init + op Count + member methods must type (op-driven surface)"
+        );
+        let lit = r#"
 struct Pair { key: Int; val: Int; };
 obj MiniMap {
     keys: Ptr<Int>;
@@ -11774,43 +12315,42 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(lit).is_ok(),
-        "an obj declaring construction ops must accept a list literal (opt-in)"
-    );
-}
+        assert!(
+            check(lit).is_ok(),
+            "an obj declaring construction ops must accept a list literal (opt-in)"
+        );
+    }
 
-/// 2026-08-15 (coll plan §3.2, ambiguity #2): `op Grow`/`op Shrink` bindings
-/// take the collection handle only (`#Lh`); a two-arg form is an error.
-#[test]
-fn coll_grow_binding_is_handle_only() {
-    let ok = r#"
+    /// 2026-08-15 (coll plan §3.2, ambiguity #2): `op Grow`/`op Shrink` bindings
+    /// take the collection handle only (`#Lh`); a two-arg form is an error.
+    #[test]
+    fn coll_grow_binding_is_handle_only() {
+        let ok = r#"
 coll obj MyQueue {
     data: Ptr<Int>;
     op Grow: grow(#Lh);
 };
 node start [true][false] { term; };
 "#;
-    assert!(check(ok).is_ok(), "handle-only op Grow must type");
-    let bad = r#"
+        assert!(check(ok).is_ok(), "handle-only op Grow must type");
+        let bad = r#"
 coll obj MyQueue {
     data: Ptr<Int>;
     op Grow: grow(#Lh, #Rh);
 };
 node start [true][false] { term; };
 "#;
-    assert!(
-        check(bad).is_err(),
-        "two-arg op Grow must error (handle-only)"
-    );
-}
+        assert!(
+            check(bad).is_err(),
+            "two-arg op Grow must error (handle-only)"
+        );
+    }
 
-
-/// 2026-08-17 (tuple correctness): tuple destructure and numeric field access
-/// typecheck; a tuple value flows through a defn param/return.
-#[test]
-fn tuple_destructure_and_field_access_typechecks() {
-    let ok = r#"
+    /// 2026-08-17 (tuple correctness): tuple destructure and numeric field access
+    /// typecheck; a tuple value flows through a defn param/return.
+    #[test]
+    fn tuple_destructure_and_field_access_typechecks() {
+        let ok = r#"
 defn add(p: (Int, Int)) -> Int { term p.0 + p.1; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
@@ -11821,18 +12361,18 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "tuple destructure + numeric field access + tuple param must type"
-    );
-}
+        assert!(
+            check(ok).is_ok(),
+            "tuple destructure + numeric field access + tuple param must type"
+        );
+    }
 
-/// 2026-08-17 (hashmap tuple core): the HashMap op surface — seed init,
-/// tuple insert, get/contains/remove by key, Count# — typechecks. The map is
-/// declared INLINE (the typechecker test harness has no stdlib).
-#[test]
-fn hashmap_tuple_core_typechecks() {
-    let ok = r#"
+    /// 2026-08-17 (hashmap tuple core): the HashMap op surface — seed init,
+    /// tuple insert, get/contains/remove by key, Count# — typechecks. The map is
+    /// declared INLINE (the typechecker test harness has no stdlib).
+    #[test]
+    fn hashmap_tuple_core_typechecks() {
+        let ok = r#"
 obj MiniMap<K, V> {
     keys: Ptr<K>;
     vals: Ptr<V>;
@@ -11879,17 +12419,17 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
-    assert!(
-        check(ok).is_ok(),
-        "HashMap tuple insert + get/contains/Count# must type"
-    );
-}
+        assert!(
+            check(ok).is_ok(),
+            "HashMap tuple insert + get/contains/Count# must type"
+        );
+    }
 
-// ── 2026-08-22 (spec-conformance plan Phase 4): match semantics ──────────
+    // ── 2026-08-22 (spec-conformance plan Phase 4): match semantics ──────────
 
-#[test]
-fn exhaustive_sum_match_without_wildcard_typechecks() {
-    let src = r#"
+    #[test]
+    fn exhaustive_sum_match_without_wildcard_typechecks() {
+        let src = r#"
 defn pick(v: Int | String) -> Int {
     term match v {
         n: Int => n,
@@ -11897,26 +12437,30 @@ defn pick(v: Int | String) -> Int {
     };
 };
 "#;
-    check(src).expect("closed sum covered member-for-member must typecheck");
-}
+        check(src).expect("closed sum covered member-for-member must typecheck");
+    }
 
-#[test]
-fn non_exhaustive_sum_match_lists_missing_member() {
-    let src = r#"
+    #[test]
+    fn non_exhaustive_sum_match_lists_missing_member() {
+        let src = r#"
 defn pick(v: Int | String) -> Int {
     term match v {
         n: Int => n,
     };
 };
 "#;
-    let errs = check(src).expect_err("missing String arm must fail");
-    let text = format!("{:?}", errs);
-    assert!(text.contains("String"), "must name the uncovered member: {}", text);
-}
+        let errs = check(src).expect_err("missing String arm must fail");
+        let text = format!("{:?}", errs);
+        assert!(
+            text.contains("String"),
+            "must name the uncovered member: {}",
+            text
+        );
+    }
 
-#[test]
-fn duplicate_typed_binding_is_unreachable() {
-    let src = r#"
+    #[test]
+    fn duplicate_typed_binding_is_unreachable() {
+        let src = r#"
 defn pick(v: Int | String) -> Int {
     term match v {
         n: Int => n,
@@ -11925,14 +12469,14 @@ defn pick(v: Int | String) -> Int {
     };
 };
 "#;
-    let errs = check(src).expect_err("second Int binding is dead");
-    let text = format!("{:?}", errs);
-    assert!(text.contains("unreachable"), "{}", text);
-}
+        let errs = check(src).expect_err("second Int binding is dead");
+        let text = format!("{:?}", errs);
+        assert!(text.contains("unreachable"), "{}", text);
+    }
 
-#[test]
-fn typed_binding_of_non_member_rejected() {
-    let src = r#"
+    #[test]
+    fn typed_binding_of_non_member_rejected() {
+        let src = r#"
 defn pick(v: Int | String) -> Int {
     term match v {
         f: Float => 1,
@@ -11940,14 +12484,14 @@ defn pick(v: Int | String) -> Int {
     };
 };
 "#;
-    let errs = check(src).expect_err("Float is not a member of Int | String");
-    let text = format!("{:?}", errs);
-    assert!(text.contains("not a member"), "{}", text);
-}
+        let errs = check(src).expect_err("Float is not a member of Int | String");
+        let text = format!("{:?}", errs);
+        assert!(text.contains("not a member"), "{}", text);
+    }
 
-#[test]
-fn open_scrutinee_requires_fallback() {
-    let src = r#"
+    #[test]
+    fn open_scrutinee_requires_fallback() {
+        let src = r#"
 defn pick(v: Int) -> Int {
     term match v {
         0 => 10,
@@ -11955,14 +12499,14 @@ defn pick(v: Int) -> Int {
     };
 };
 "#;
-    let errs = check(src).expect_err("int domain is open; `_` required");
-    let text = format!("{:?}", errs);
-    assert!(text.contains("`_ =>`"), "{}", text);
-}
+        let errs = check(src).expect_err("int domain is open; `_` required");
+        let text = format!("{:?}", errs);
+        assert!(text.contains("`_ =>`"), "{}", text);
+    }
 
-#[test]
-fn arm_result_types_must_be_compatible() {
-    let src = r#"
+    #[test]
+    fn arm_result_types_must_be_compatible() {
+        let src = r#"
 defn pick(v: Bool) -> Int {
     term match v {
         true => 1,
@@ -11970,16 +12514,16 @@ defn pick(v: Bool) -> Int {
     };
 };
 "#;
-    let errs = check(src).expect_err("Int vs String arm results");
-    let text = format!("{:?}", errs);
-    assert!(text.contains("compatible"), "{}", text);
-}
+        let errs = check(src).expect_err("Int vs String arm results");
+        let text = format!("{:?}", errs);
+        assert!(text.contains("compatible"), "{}", text);
+    }
 
-// ── 2026-08-22 (spec-conformance plan Phase 5): dyn trait objects ─────────
+    // ── 2026-08-22 (spec-conformance plan Phase 5): dyn trait objects ─────────
 
-#[test]
-fn dyn_coercion_requires_asserted_trait() {
-    let src = r#"
+    #[test]
+    fn dyn_coercion_requires_asserted_trait() {
+        let src = r#"
 trait Greeter {
     defn greet(self_name: Int) -> Int;
 };
@@ -11988,12 +12532,12 @@ impl Dog { defn greet(self_name: Int) -> Int { term self_name; } };
 let d: Dog = Dog { sound: 1 };
 let g: dyn Greeter = d;
 "#;
-    check(src).expect("Dog asserts Greeter; explicit dyn coercion must typecheck");
-}
+        check(src).expect("Dog asserts Greeter; explicit dyn coercion must typecheck");
+    }
 
-#[test]
-fn dyn_coercion_without_asserted_trait_rejected() {
-    let src = r#"
+    #[test]
+    fn dyn_coercion_without_asserted_trait_rejected() {
+        let src = r#"
 trait Greeter {
     defn greet(x: Int) -> Int;
 };
@@ -12001,23 +12545,23 @@ type Cat { sound: Int; };
 let c: Cat = Cat { sound: 1 };
 let g: dyn Greeter = c;
 "#;
-    let errs = check(src).expect_err("Cat does not assert Greeter");
-    let text = format!("{:?}", errs);
-    assert!(text.contains("dyn") || text.contains("Greeter"), "{}", text);
-}
+        let errs = check(src).expect_err("Cat does not assert Greeter");
+        let text = format!("{:?}", errs);
+        assert!(text.contains("dyn") || text.contains("Greeter"), "{}", text);
+    }
 
-#[test]
-fn implicit_dyn_coercion_never_happens() {
-    let src = r#"
+    #[test]
+    fn implicit_dyn_coercion_never_happens() {
+        let src = r#"
 trait Greeter { defn greet(x: Int) -> Int; };
 type Dog: Greeter { sound: Int; };
 defn take(g: Greeter) -> Int { term 0; };
 let d: Dog = Dog { sound: 1 };
 let r: Int = take(d);
 "#;
-    let errs = check(src).expect_err("bare trait name is not a type; dyn required");
-    let _ = errs;
-}
+        let errs = check(src).expect_err("bare trait name is not a type; dyn required");
+        let _ = errs;
+    }
 }
 
 // ── 2026-08-26 (Phase B2): cell member bodies typecheck ────────────────
@@ -12067,23 +12611,21 @@ defn poke(m: Meter) -> Bool { term m.bump(3); };
         check(good).expect("well-formed cell + method call must pass");
     }
 
-
     /// 2026-08-27 (Slice B): assigning to an @-addressed trigger is an
     /// input-pin violation with the house what/fix diagnostic.
     #[test]
     fn test_mmio_pin_assignment_is_input_pin_error() {
-        let err = check("trg sensor @ 0x1000;\n\
+        let err = check(
+            "trg sensor @ 0x1000;\n\
                          txn tick [sensor < 9][sensor <= 9] {\n\
                              sensor = 1;\n\
-                         }\n").expect_err("pin write must fail");
+                         }\n",
+        )
+        .expect_err("pin write must fail");
         let msg = format!("{}", err.first().unwrap());
         assert!(msg.contains("input pin"), "{msg}");
         assert!(msg.contains("observe it"), "{msg}");
     }
-
-
-
-
 }
 
 #[cfg(test)]
@@ -12134,10 +12676,12 @@ mod fundamental_parent_membership_tests {
     /// `declared_category_of` to the protocols-only walk.
     #[test]
     fn bare_fundamental_parent_confers_protocol_ops() {
-        check(r#"
+        check(
+            r#"
 type MyInt : Int { };
 defn f(a: MyInt, b: MyInt) -> MyInt { term a + b; };
-"#)
+"#,
+        )
         .expect("derived Int membership must authorize +");
     }
 
@@ -12145,11 +12689,13 @@ defn f(a: MyInt, b: MyInt) -> MyInt { term a + b; };
     /// fundamental — multi-level chains derive too.
     #[test]
     fn multi_level_chain_reaches_the_fundamental() {
-        check(r#"
+        check(
+            r#"
 type MyInt : Int { };
 type MyDerived : MyInt { };
 defn f(a: MyDerived, b: MyDerived) -> MyDerived { term a + b; };
-"#)
+"#,
+        )
         .expect("chain MyDerived:MyInt:Int must derive Int");
     }
 
@@ -12157,10 +12703,12 @@ defn f(a: MyDerived, b: MyDerived) -> MyDerived { term a + b; };
     /// for the existing hashword spelling.
     #[test]
     fn explicit_hashword_declaration_still_binds() {
-        check(r#"
+        check(
+            r#"
 type MyNum : Int { };
 defn f(a: MyNum, b: MyNum) -> MyNum { term a + b; };
-"#)
+"#,
+        )
         .expect("explicit Int declaration must keep binding");
     }
 
@@ -12168,13 +12716,18 @@ defn f(a: MyNum, b: MyNum) -> MyNum { term a + b; };
     /// category, so undeclared arithmetic stays an error.
     #[test]
     fn bits_parent_gains_no_numeric_membership() {
-        let err = check(r#"
+        let err = check(
+            r#"
 type V4 : Bits { spec MaxBits: 128; };
 defn f(a: V4, b: V4) -> V4 { term a + b; };
-"#)
+"#,
+        )
         .expect_err("Bits parent must not derive Float/Int membership");
         let msg = format!("{}", err.first().unwrap());
-        assert!(msg.contains("'+'") || msg.contains("invalid operation"), "{msg}");
+        assert!(
+            msg.contains("'+'") || msg.contains("invalid operation"),
+            "{msg}"
+        );
     }
 
     /// A Float literal within the target width constructs the type — the
@@ -12182,15 +12735,19 @@ defn f(a: V4, b: V4) -> V4 { term a + b; };
     /// fresh universe cannot see (width from the collected `spec MaxBits`).
     #[test]
     fn float_literal_admission_derived_membership() {
-        check(r#"
+        check(
+            r#"
 type MyHalf : Float { spec MaxBits: 16; };
 let x: MyHalf = 0.0;
-"#)
+"#,
+        )
         .expect("exact f16 literal must construct");
-        check(r#"
+        check(
+            r#"
 type MyHalf : Float { spec MaxBits: 16; };
 let x: MyHalf = -2048.0;
-"#)
+"#,
+        )
         .expect("negated exact literal must construct");
     }
 
@@ -12199,44 +12756,63 @@ let x: MyHalf = -2048.0;
     /// construction path admitted EVERY f32 literal silently.
     #[test]
     fn float_literal_precision_violation_rejected() {
-        let err = check(r#"
+        let err = check(
+            r#"
 type MyHalf : Float { spec MaxBits: 16; };
 let x: MyHalf = 3.14159265;
-"#)
+"#,
+        )
         .expect_err("mantissa-loss literal must be rejected");
         let msg = format!("{}", err.first().unwrap());
         assert!(msg.contains("MyHalf"), "{msg}");
 
-        let err = check(r#"
+        let err = check(
+            r#"
 type MyHalf : Float { spec MaxBits: 16; };
 let x: MyHalf = 65536.0;
-"#)
+"#,
+        )
         .expect_err("overflow literal must be rejected");
-        assert!(format!("{}", err.first().unwrap()).contains("MyHalf"), "{err:?}");
+        assert!(
+            format!("{}", err.first().unwrap()).contains("MyHalf"),
+            "{err:?}"
+        );
 
-        let err = check(r#"
+        let err = check(
+            r#"
 type MyHalf : Float { spec MaxBits: 16; };
 let x: MyHalf = 0.0001;
-"#)
+"#,
+        )
         .expect_err("mantissa-loss literal must be rejected");
-        assert!(format!("{}", err.first().unwrap()).contains("MyHalf"), "{err:?}");
+        assert!(
+            format!("{}", err.first().unwrap()).contains("MyHalf"),
+            "{err:?}"
+        );
 
         // 2026-09-02 (plan exponent-notation): the subnormal boundary —
         // unwritable before exponent literals — is now exercised. f16
         // subnormals start at 2^-24: 6.0e-8 underflows (rejected);
         // 2^-24 = 5.9604644775390625e-8 is the smallest EXACT f16 value
         // (admitted).
-        let err = check(r#"
+        let err = check(
+            r#"
 type MyHalf : Float { spec MaxBits: 16; };
 let x: MyHalf = 6.0e-8;
-"#)
+"#,
+        )
         .expect_err("subnormal-underflow literal must be rejected");
-        assert!(format!("{}", err.first().unwrap()).contains("MyHalf"), "{err:?}");
+        assert!(
+            format!("{}", err.first().unwrap()).contains("MyHalf"),
+            "{err:?}"
+        );
 
-        check(r#"
+        check(
+            r#"
 type MyHalf : Float { spec MaxBits: 16; };
 let x: MyHalf = 5.9604644775390625e-8;
-"#)
+"#,
+        )
         .expect("the smallest exact f16 subnormal (2^-24) must be admitted");
     }
 }
@@ -12266,8 +12842,14 @@ mod section_proof_tests {
         let e = check(src);
         assert!(e.is_err(), "direct alloc in a sectioned defn must error");
         let msg = format!("{:?}", e);
-        assert!(msg.contains("startup -> Malloc#"), "path in error, got: {msg}");
-        assert!(msg.contains("must not allocate"), "fix in error, got: {msg}");
+        assert!(
+            msg.contains("startup -> Malloc#"),
+            "path in error, got: {msg}"
+        );
+        assert!(
+            msg.contains("must not allocate"),
+            "fix in error, got: {msg}"
+        );
     }
 
     #[test]
@@ -12288,8 +12870,10 @@ mod section_proof_tests {
         let e = check(src);
         assert!(e.is_err(), "transitive alloc must error");
         let msg = format!("{:?}", e);
-        assert!(msg.contains("startup -> mid -> helper -> Malloc#"),
-            "full reachable path in error, got: {msg}");
+        assert!(
+            msg.contains("startup -> mid -> helper -> Malloc#"),
+            "full reachable path in error, got: {msg}"
+        );
     }
 
     #[test]
@@ -12310,116 +12894,121 @@ mod section_proof_tests {
     }
 }
 
-
-
-    #[test]
-    fn bootstrap_without_contract_is_allowed() {
-        // 2026-09-14 (machine-entry plan): a bootstrap node's single bracket
-        // group is an OPTIONAL handoff postcondition — absence declares no
-        // obligation.
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = "let armed: Bool = false;\n\
+#[test]
+fn bootstrap_without_contract_is_allowed() {
+    // 2026-09-14 (machine-entry plan): a bootstrap node's single bracket
+    // group is an OPTIONAL handoff postcondition — absence declares no
+    // obligation.
+    fn check(src: &str) -> Result<(), Vec<TypeError>> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe)
+    }
+    let src = "let armed: Bool = false;\n\
                    bootstrap node reset { armed = true; };\n";
-        let e = check(src);
-        assert!(e.is_ok(), "bracket-less bootstrap must be allowed, got: {:?}", e);
-    }
+    let e = check(src);
+    assert!(
+        e.is_ok(),
+        "bracket-less bootstrap must be allowed, got: {:?}",
+        e
+    );
+}
 
-    #[test]
-    fn bootstrap_written_true_handoff_is_rejected() {
-        // A written `[true]` handoff asserts nothing — tautology rules apply
-        // even though the bracket-less form is fine.
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = "let armed: Bool = false;\n\
+#[test]
+fn bootstrap_written_true_handoff_is_rejected() {
+    // A written `[true]` handoff asserts nothing — tautology rules apply
+    // even though the bracket-less form is fine.
+    fn check(src: &str) -> Result<(), Vec<TypeError>> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe)
+    }
+    let src = "let armed: Bool = false;\n\
                    bootstrap node reset [true] { armed = true; };\n";
-        let e = check(src);
-        assert!(
-            matches!(e, Err(ref errs) if errs.iter().any(|er| matches!(er, TypeError::TautologicalContract))),
-            "expected TautologicalContract, got: {:?}",
-            e
-        );
-    }
+    let e = check(src);
+    assert!(
+        matches!(e, Err(ref errs) if errs.iter().any(|er| matches!(er, TypeError::TautologicalContract))),
+        "expected TautologicalContract, got: {:?}",
+        e
+    );
+}
 
-    #[test]
-    fn bootstrap_handoff_must_be_provable_from_body() {
-        // The handoff postcondition is the state AFTER the body — the
-        // convergence proof must hold (body never touches `armed`).
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-let src = "let armed: Bool = false;\n\
+#[test]
+fn bootstrap_handoff_must_be_provable_from_body() {
+    // The handoff postcondition is the state AFTER the body — the
+    // convergence proof must hold (body never touches `armed`).
+    fn check(src: &str) -> Result<(), Vec<TypeError>> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe)
+    }
+    let src = "let armed: Bool = false;\n\
                    bootstrap node reset [armed == true] { };\n";
-        let e = check(src);
-        assert!(e.is_err(), "unprovable handoff must error, got: {:?}", e);
-    }
+    let e = check(src);
+    assert!(e.is_err(), "unprovable handoff must error, got: {:?}", e);
+}
 
-    #[test]
-    fn chained_plugin_undefined_receiver_errors() {
-        // 2026-09-16 (Bug A): a chained plugin call's receiver is a real
-        // expression — an undefined receiver is caught at typecheck time.
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = r#"
+#[test]
+fn chained_plugin_undefined_receiver_errors() {
+    // 2026-09-16 (Bug A): a chained plugin call's receiver is a real
+    // expression — an undefined receiver is caught at typecheck time.
+    fn check(src: &str) -> Result<(), Vec<TypeError>> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe)
+    }
+    let src = r#"
 let base: Int = 0;
 txn go [base == 0][base == 0] {
     bogus.print!(1);
 };
 "#;
-        let e = check(src);
-        assert!(e.is_err(), "an undefined chained-plugin receiver must error");
-    }
+    let e = check(src);
+    assert!(
+        e.is_err(),
+        "an undefined chained-plugin receiver must error"
+    );
+}
 
-    #[test]
-    fn chained_plugin_defined_receiver_typechecks() {
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = r#"
+#[test]
+fn chained_plugin_defined_receiver_typechecks() {
+    fn check(src: &str) -> Result<(), Vec<TypeError>> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe)
+    }
+    let src = r#"
 let base: Int = 0;
 txn go [base == 0][base == 0] {
     base.print!(1);
 };
 "#;
-        check(src).expect("a valid chained plugin receiver must typecheck");
+    check(src).expect("a valid chained plugin receiver must typecheck");
+}
+
+#[cfg(test)]
+mod trait_generics_tests {
+    use super::*;
+
+    fn check(src: &str) -> Result<(), Vec<TypeError>> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        let mut items = parser.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe)
     }
 
-    #[cfg(test)]
-    mod trait_generics_tests {
-        use super::*;
-
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut parser = crate::parser::Parser::new(tokens, src);
-            let mut items = parser.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-
-        // ── Static trait-constrained generics (SPEC §8.6) ───────────────────
+    // ── Static trait-constrained generics (SPEC §8.6) ───────────────────
     // 2026-10-13: the behavioral gates for the trait-generics feature. These
     // test the CONTRACT (a trait method on a bound/conforming type resolves to
     // the member's result type, not the Int fallback; a non-conformer is
@@ -12477,7 +13066,8 @@ node entry [beginprogram][true] {
     endprogram Print#(t2.total);
 };
 "#;
-        check(method_form).expect("a trait default must resolve on a conforming type (method form)");
+        check(method_form)
+            .expect("a trait default must resolve on a conforming type (method form)");
 
         let free_form = method_form.replace("t.bump_twice(5)", "bump_twice(t, 5)");
         check(&free_form).expect("a trait default must resolve on a conforming type (free form)");
@@ -12506,8 +13096,20 @@ node entry [beginprogram][true] {
 };
 "#;
         let e = check(src);
-        assert!(e.is_err(), "a non-conforming type at a T: Counter call must be rejected, got: {:?}", e);
-        let msg = e.err().map(|errs| errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+        assert!(
+            e.is_err(),
+            "a non-conforming type at a T: Counter call must be rejected, got: {:?}",
+            e
+        );
+        let msg = e
+            .err()
+            .map(|errs| {
+                errs.iter()
+                    .map(|e| format!("{e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
         assert!(
             msg.contains("Counter") && msg.contains("Widget") && msg.contains("bump"),
             "the diagnostic must name the trait, the type, and the missing op, got: {msg}"

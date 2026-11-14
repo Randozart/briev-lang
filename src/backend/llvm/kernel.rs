@@ -57,12 +57,16 @@ impl super::LlvmBackend {
                     "warning: accel '{}': no TypeUniverse — staying CPU",
                     name
                 ));
-                blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes: Vec::new(), opencl: Vec::new() });
+                blobs.push(AccelKernelBlob {
+                    txn_name: name.clone(),
+                    bytes: Vec::new(),
+                    opencl: Vec::new(),
+                });
                 continue;
             };
             let int_bits = self.ctx.int_bits;
-            let mut sb = crate::backend::spirv::SpirvBuilder::new()
-                .with_universe(&universe, int_bits);
+            let mut sb =
+                crate::backend::spirv::SpirvBuilder::new().with_universe(&universe, int_bits);
             // Entry is "main" (each offload module is self-contained; the
             // device drivers look up "main" — kernel.rs's own header note).
             // 2026-09-02: no image plans here — the .bv offload lane keeps
@@ -75,11 +79,7 @@ impl super::LlvmBackend {
             // width — one decision, two consumers.
             let idiom_lane = shape.idiom_lane;
             if idiom_lane {
-                let op = match shape
-                    .reduction
-                    .as_ref()
-                    .map(|r| &r.kind)
-                {
+                let op = match shape.reduction.as_ref().map(|r| &r.kind) {
                     Some(crate::analysis::accel::ReductionKind::Product) => "mul",
                     Some(crate::analysis::accel::ReductionKind::Min) => "min",
                     Some(crate::analysis::accel::ReductionKind::Max) => "max",
@@ -133,7 +133,9 @@ impl super::LlvmBackend {
                 // fold-SHAPED foreach. Name the failed structural fact so the
                 // author does not have to guess (disclosure both directions,
                 // §12.2 gate 4).
-                if let Some(reason) = crate::analysis::accel::diagnose_idiom_fold(&shape.kernel_stmts) {
+                if let Some(reason) =
+                    crate::analysis::accel::diagnose_idiom_fold(&shape.kernel_stmts)
+                {
                     self.warnings.push(format!(
                         "info: fold-idiom not applied for accel '{}' — {} (general lowering)",
                         name, reason
@@ -149,7 +151,11 @@ impl super::LlvmBackend {
                 ));
             }
             let emitted = crate::backend::spirv::kernel::emit_kernel(
-                &mut sb, "main", &shape, items, idiom_lane,
+                &mut sb,
+                "main",
+                &shape,
+                items,
+                idiom_lane,
                 &crate::backend::spirv::kernel::KernelSurface::default(),
             )
             .and_then(|_| sb.build());
@@ -159,7 +165,11 @@ impl super::LlvmBackend {
                 let mut osb = crate::backend::spirv::SpirvBuilder::new_opencl()
                     .with_universe(&universe, int_bits);
                 match crate::backend::spirv::kernel::emit_kernel(
-                    &mut osb, "main", &shape, items, idiom_lane,
+                    &mut osb,
+                    "main",
+                    &shape,
+                    items,
+                    idiom_lane,
                     &crate::backend::spirv::kernel::KernelSurface::default(),
                 )
                 .and_then(|_| osb.build())
@@ -174,13 +184,21 @@ impl super::LlvmBackend {
                 }
             };
             match emitted {
-                Ok(bytes) => blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes, opencl }),
+                Ok(bytes) => blobs.push(AccelKernelBlob {
+                    txn_name: name.clone(),
+                    bytes,
+                    opencl,
+                }),
                 Err(e) => {
                     self.warnings.push(format!(
                         "warning: accel '{}': kernel emission failed — {} (staying CPU)",
                         name, e
                     ));
-                    blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes: Vec::new(), opencl: Vec::new() });
+                    blobs.push(AccelKernelBlob {
+                        txn_name: name.clone(),
+                        bytes: Vec::new(),
+                        opencl: Vec::new(),
+                    });
                 }
             }
         }
@@ -255,10 +273,7 @@ impl super::LlvmBackend {
         self.fun.reset();
 
         let mut out = String::new();
-        out.push_str(&format!(
-            "; Accel kernel: {}\n",
-            txn_name
-        ));
+        out.push_str(&format!("; Accel kernel: {}\n", txn_name));
         out.push_str("target datalayout = \"e-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024\"\n");
         out.push_str("target triple = \"spirv64-unknown-unknown\"\n\n");
         out.push_str("declare i64 @_Z13get_global_idj(i32) #0\n\n");
@@ -283,7 +298,10 @@ impl super::LlvmBackend {
                 cname, cty_llvm, lit
             ));
         }
-        out.push_str(&format!("%State = type {{ {} }}\n", struct_fields.join(", ")));
+        out.push_str(&format!(
+            "%State = type {{ {} }}\n",
+            struct_fields.join(", ")
+        ));
         // Entry point is `main`: each kernel module is self-contained (one
         // function), and both device drivers (Vulkan pipeline entry + OpenCL
         // clCreateKernel) expect "main".
@@ -411,11 +429,10 @@ fn kernel_field_table(
     // name-sorted — field_index_map additionally carries internal fields
     // (trg epfd, cycle_count) that must NOT appear in the projection, or the
     // member count/offsets diverge from the kernel's SSBO layout.
-    let names: Vec<String> =
-        crate::backend::spirv::lower::collect_state_fields(items)
-            .into_iter()
-            .map(|f| f.name)
-            .collect();
+    let names: Vec<String> = crate::backend::spirv::lower::collect_state_fields(items)
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
     let write_set: std::collections::HashSet<&str> =
         shape.write_buffers.iter().map(|s| s.as_str()).collect();
 
@@ -423,13 +440,17 @@ fn kernel_field_table(
     // Device projection offsets from the ONE shared rule (mirrors the
     // kernel's setup_state_buffer walk; 2026-09-01 vec4-projection-layout).
     let proj_offsets = {
-        let mut sb = crate::backend::spirv::SpirvBuilder::new()
-            .with_universe(backend.ctx.type_universe.as_ref().expect("type universe"), backend.ctx.int_bits);
+        let mut sb = crate::backend::spirv::SpirvBuilder::new().with_universe(
+            backend.ctx.type_universe.as_ref().expect("type universe"),
+            backend.ctx.int_bits,
+        );
         let mut sfields = crate::backend::spirv::lower::collect_state_fields(items);
         sfields.sort_by(|a, b| a.name.cmp(&b.name));
         let pinned = crate::backend::spirv::lower::FnLowerer::seq_layout_fields(items);
-        crate::backend::spirv::lower::FnLowerer::projection_offsets(&mut sb, &sfields, None, &pinned)
-            .unwrap_or_default()
+        crate::backend::spirv::lower::FnLowerer::projection_offsets(
+            &mut sb, &sfields, None, &pinned,
+        )
+        .unwrap_or_default()
     };
     let mut fields = Vec::new();
     for (pos, name) in names.iter().enumerate() {
@@ -642,8 +663,8 @@ pub(crate) fn compile_to_spirv(ir: &str) -> Result<Vec<u8>, String> {
         ));
     }
 
-    let binary = std::fs::read(&spv_path)
-        .map_err(|e| format!("failed to read SPIR-V output: {}", e))?;
+    let binary =
+        std::fs::read(&spv_path).map_err(|e| format!("failed to read SPIR-V output: {}", e))?;
     let _ = std::fs::remove_file(&ir_path);
     let _ = std::fs::remove_file(&spv_path);
     Ok(binary)
@@ -689,8 +710,14 @@ mod tests {
     fn embed_blob_over_32_bytes_is_single_token() {
         let blob: Vec<u8> = (0..100u8).cycle().take(257).collect();
         let out = embed_spirv_blob(&blob, "big");
-        assert!(out.contains("[257 x i8]"), "declared length must match: {out}");
-        assert!(!out.contains("\"\""), "no juxtaposed string segments allowed");
+        assert!(
+            out.contains("[257 x i8]"),
+            "declared length must match: {out}"
+        );
+        assert!(
+            !out.contains("\"\""),
+            "no juxtaposed string segments allowed"
+        );
         let hex_start = out.find("c\"").expect("constant string") + 2;
         let hex_end = out.find("\", align").expect("constant end");
         let hex = &out[hex_start..hex_end];
@@ -705,9 +732,7 @@ mod tests {
     /// `-filetype=asm` produces. Probe-gated on llc presence.
     #[test]
     fn compile_to_spirv_emits_binary_magic() {
-        let llc_version = std::process::Command::new("llc")
-            .arg("--version")
-            .output();
+        let llc_version = std::process::Command::new("llc").arg("--version").output();
         let Ok(llc_version) = llc_version else {
             eprintln!("llc not found — skipping");
             return;

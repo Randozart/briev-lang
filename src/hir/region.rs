@@ -127,7 +127,8 @@ impl RegionAnalyzer {
         for txn in transaction_callables(program) {
             let mut txn_read_vars = HashSet::new();
             let mut txn_write_vars = HashSet::new();
-            self.txn_bodies.insert(txn.name.clone(), txn.body.statements.clone());
+            self.txn_bodies
+                .insert(txn.name.clone(), txn.body.statements.clone());
 
             if let Some(contract) = &txn.contract {
                 self.collect_identifiers(&contract.pre, &txn.name);
@@ -137,12 +138,18 @@ impl RegionAnalyzer {
             for stmt in &txn.body.statements {
                 match &stmt.kind {
                     HirStmtKind::Assign(lhs, expr) => {
-                        let Some(writer) = as_var_name(lhs) else { continue };
+                        let Some(writer) = as_var_name(lhs) else {
+                            continue;
+                        };
                         txn_write_vars.insert(writer.to_string());
                         txn_read_vars.extend(expr_to_var_set(expr));
                         self.collect_identifiers(expr, writer);
                     }
-                    HirStmtKind::Let { name, expr: Some(e), .. } => {
+                    HirStmtKind::Let {
+                        name,
+                        expr: Some(e),
+                        ..
+                    } => {
                         txn_write_vars.insert(name.clone());
                         txn_read_vars.extend(expr_to_var_set(e));
                         self.collect_identifiers(e, name);
@@ -151,8 +158,14 @@ impl RegionAnalyzer {
                 }
             }
 
-            self.txn_reads.entry(txn.name.clone()).or_default().extend(txn_read_vars);
-            self.txn_writes.entry(txn.name.clone()).or_default().extend(txn_write_vars);
+            self.txn_reads
+                .entry(txn.name.clone())
+                .or_default()
+                .extend(txn_read_vars);
+            self.txn_writes
+                .entry(txn.name.clone())
+                .or_default()
+                .extend(txn_write_vars);
         }
     }
 
@@ -165,8 +178,14 @@ impl RegionAnalyzer {
         while let Some(e) = work.pop() {
             match &e.kind {
                 HirExprKind::Identifier(name) => {
-                    self.deps.entry(rf.clone()).or_default().insert(name.clone());
-                    self.rev_deps.entry(name.clone()).or_default().insert(rf.clone());
+                    self.deps
+                        .entry(rf.clone())
+                        .or_default()
+                        .insert(name.clone());
+                    self.rev_deps
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(rf.clone());
                 }
                 HirExprKind::Call { args, .. } => work.extend(args.iter().rev()),
                 HirExprKind::Tuple(elems) | HirExprKind::List(elems) => {
@@ -227,9 +246,13 @@ impl RegionAnalyzer {
 
         while let Some(frontier_var) = queue.pop_front() {
             let frontier_class = self.var_info[&frontier_var].classification.clone();
-            let Some(readers) = self.rev_deps.get(&frontier_var).cloned() else { continue };
+            let Some(readers) = self.rev_deps.get(&frontier_var).cloned() else {
+                continue;
+            };
             for reader in readers {
-                let Some(reader_info) = self.var_info.get(&reader) else { continue };
+                let Some(reader_info) = self.var_info.get(&reader) else {
+                    continue;
+                };
                 let Some(updated) = tighten(&reader_info.classification, &frontier_class) else {
                     continue;
                 };
@@ -348,9 +371,13 @@ impl RegionAnalyzer {
                 let v = if *b { 1 } else { 0 };
                 Some(Interval { lo: v, hi: v })
             }
-            HirExprKind::Unary { op: UnaryOpKind::Neg, inner } => {
-                Self::expr_to_interval(inner).map(|iv| Interval { lo: -iv.hi, hi: -iv.lo })
-            }
+            HirExprKind::Unary {
+                op: UnaryOpKind::Neg,
+                inner,
+            } => Self::expr_to_interval(inner).map(|iv| Interval {
+                lo: -iv.hi,
+                hi: -iv.lo,
+            }),
             _ => None,
         }
     }
@@ -362,8 +389,14 @@ impl RegionAnalyzer {
         match ty {
             Type::Custom(name) if name == "Bool" => Some(Interval { lo: 0, hi: 1 }),
             Type::Custom(name) if name == "Int" => None,
-            Type::Custom(name) if name == "UInt" => Some(Interval { lo: 0, hi: i64::MAX }),
-            Type::Custom(name) if name == "Char" => Some(Interval { lo: 0, hi: 0x10FFFF }),
+            Type::Custom(name) if name == "UInt" => Some(Interval {
+                lo: 0,
+                hi: i64::MAX,
+            }),
+            Type::Custom(name) if name == "Char" => Some(Interval {
+                lo: 0,
+                hi: 0x10FFFF,
+            }),
             _ => None,
         }
     }
@@ -407,7 +440,9 @@ impl RegionAnalyzer {
 
     fn extend_chain(&self, chain: &mut Vec<String>, txn_names: &[String]) {
         loop {
-            let Some(last) = chain.last().cloned() else { break };
+            let Some(last) = chain.last().cloned() else {
+                break;
+            };
             let cur_writes = self.txn_writes.get(&last).cloned().unwrap_or_default();
             let mut extended = false;
             for cw in &cur_writes {
@@ -415,7 +450,11 @@ impl RegionAnalyzer {
                     .iter()
                     .filter(|tn| {
                         !chain.contains(tn)
-                            && self.txn_reads.get(*tn).map(|r| r.contains(cw)).unwrap_or(false)
+                            && self
+                                .txn_reads
+                                .get(*tn)
+                                .map(|r| r.contains(cw))
+                                .unwrap_or(false)
                     })
                     .cloned()
                     .collect();
@@ -473,7 +512,9 @@ impl RegionAnalyzer {
     fn resolve_iteration_bounds(&mut self, program: &HirProgram) {
         self.iter_bounds.clear();
         for txn in transaction_callables(program) {
-            let Some(contract) = &txn.contract else { continue };
+            let Some(contract) = &txn.contract else {
+                continue;
+            };
             let Some((_, bound)) = Self::extract_bound_from_pre(&contract.pre) else {
                 continue;
             };
@@ -484,7 +525,9 @@ impl RegionAnalyzer {
     }
 
     fn extract_bound_from_pre(pre: &HirExpr) -> Option<(String, String)> {
-        let HirExprKind::Binary { op, left, right } = &pre.kind else { return None };
+        let HirExprKind::Binary { op, left, right } = &pre.kind else {
+            return None;
+        };
         if !matches!(op, BinaryOpKind::Le | BinaryOpKind::Lt) {
             return None;
         }
@@ -518,7 +561,8 @@ impl RegionAnalyzer {
     }
 
     fn has_ffi_or_trigger_refs(&self, body: &[HirStmt]) -> bool {
-        body.iter().any(|stmt| has_ffi_or_trigger_stmt(stmt, &self.trigger_vars))
+        body.iter()
+            .any(|stmt| has_ffi_or_trigger_stmt(stmt, &self.trigger_vars))
     }
 
     // ── Region scoring ──────────────────────────────────────────────────
@@ -565,8 +609,12 @@ impl RegionAnalyzer {
         if self.has_txn_trigger_refs(tn) {
             acc.all_pure_and_nop_term = false;
         }
-        acc.max_iter = acc.max_iter.max(self.iter_bounds.get(tn).copied().unwrap_or(1));
-        let Some(reads) = self.txn_reads.get(tn) else { return };
+        acc.max_iter = acc
+            .max_iter
+            .max(self.iter_bounds.get(tn).copied().unwrap_or(1));
+        let Some(reads) = self.txn_reads.get(tn) else {
+            return;
+        };
         for r in reads.iter().filter(|r| self.trigger_vars.contains(*r)) {
             let size = self.value_set_size_of(r);
             acc.combined_vset_size = match (acc.combined_vset_size, size) {
@@ -610,7 +658,11 @@ impl RegionAnalyzer {
             }
             let cost = score.value_set_size.unwrap_or(u64::MAX);
             if cost == u64::MAX || cost > remaining {
-                skipped.push((score.region_id, score.complexity.clone(), cost.min(remaining)));
+                skipped.push((
+                    score.region_id,
+                    score.complexity.clone(),
+                    cost.min(remaining),
+                ));
             } else {
                 remaining = remaining.saturating_sub(cost);
                 allocated.push((
@@ -887,12 +939,21 @@ fn has_term_or_unify_escape(body: &[HirStmt]) -> bool {
 }
 
 fn is_counter_bump_stmt(stmt: &HirStmt, counter_var: &str) -> bool {
-    let HirStmtKind::Assign(lhs, expr) = &stmt.kind else { return false };
-    let Some(name) = as_var_name(lhs) else { return false };
+    let HirStmtKind::Assign(lhs, expr) = &stmt.kind else {
+        return false;
+    };
+    let Some(name) = as_var_name(lhs) else {
+        return false;
+    };
     if name != counter_var {
         return false;
     }
-    let HirExprKind::Binary { op: BinaryOpKind::Add, left, right } = &expr.kind else {
+    let HirExprKind::Binary {
+        op: BinaryOpKind::Add,
+        left,
+        right,
+    } = &expr.kind
+    else {
         return false;
     };
     bump_shape(left, right, counter_var)
@@ -900,9 +961,18 @@ fn is_counter_bump_stmt(stmt: &HirStmt, counter_var: &str) -> bool {
 
 fn find_counter_var(body: &[HirStmt]) -> Option<String> {
     for s in body {
-        let HirStmtKind::Assign(lhs, expr) = &s.kind else { continue };
-        let Some(name) = as_var_name(lhs) else { continue };
-        let HirExprKind::Binary { op: BinaryOpKind::Add, left, right } = &expr.kind else {
+        let HirStmtKind::Assign(lhs, expr) = &s.kind else {
+            continue;
+        };
+        let Some(name) = as_var_name(lhs) else {
+            continue;
+        };
+        let HirExprKind::Binary {
+            op: BinaryOpKind::Add,
+            left,
+            right,
+        } = &expr.kind
+        else {
             continue;
         };
         if bump_shape(left, right, name) {
@@ -915,7 +985,8 @@ fn find_counter_var(body: &[HirStmt]) -> Option<String> {
 fn bump_shape(left: &HirExpr, right: &HirExpr, counter_var: &str) -> bool {
     let lhs_in_left = matches!(&left.kind, HirExprKind::Identifier(n) if n == counter_var);
     let lhs_in_right = matches!(&right.kind, HirExprKind::Identifier(n) if n == counter_var);
-    let pos_int = |e: &HirExpr| matches!(&e.kind, HirExprKind::Literal(HirLiteral::Int(d)) if *d > 0);
+    let pos_int =
+        |e: &HirExpr| matches!(&e.kind, HirExprKind::Literal(HirLiteral::Int(d)) if *d > 0);
     (lhs_in_left && pos_int(right)) || (lhs_in_right && pos_int(left))
 }
 
@@ -934,7 +1005,9 @@ fn apply_trigger_values(
     mut stmts: Vec<HirStmt>,
     trigger_values: Option<&[(String, i64)]>,
 ) -> Vec<HirStmt> {
-    let Some(values) = trigger_values else { return stmts };
+    let Some(values) = trigger_values else {
+        return stmts;
+    };
     for (name, value) in values {
         stmts = substitute_var(&stmts, name, &int_expr(*value));
     }
@@ -942,7 +1015,9 @@ fn apply_trigger_values(
 }
 
 fn filter_counter(stmts: Vec<HirStmt>, index: usize, counter_var: Option<&str>) -> Vec<HirStmt> {
-    let Some(counter) = counter_var else { return stmts };
+    let Some(counter) = counter_var else {
+        return stmts;
+    };
     if index == 0 {
         return stmts;
     }
@@ -953,7 +1028,9 @@ fn filter_counter(stmts: Vec<HirStmt>, index: usize, counter_var: Option<&str>) 
 }
 
 fn substitute_var(body: &[HirStmt], old_var: &str, new_expr: &HirExpr) -> Vec<HirStmt> {
-    body.iter().map(|s| substitute_stmt(s, old_var, new_expr)).collect()
+    body.iter()
+        .map(|s| substitute_stmt(s, old_var, new_expr))
+        .collect()
 }
 
 fn substitute_stmt(stmt: &HirStmt, old_var: &str, new_expr: &HirExpr) -> HirStmt {
@@ -965,9 +1042,7 @@ fn substitute_stmt(stmt: &HirStmt, old_var: &str, new_expr: &HirExpr) -> HirStmt
             name: name.clone(),
             names: vec![],
             ty: None,
-            expr: expr
-                .as_ref()
-                .map(|e| substitute_expr(e, old_var, new_expr)),
+            expr: expr.as_ref().map(|e| substitute_expr(e, old_var, new_expr)),
             modifiers: vec![],
         },
         HirStmtKind::Guarded(condition, statements) => HirStmtKind::Guarded(
@@ -993,7 +1068,11 @@ fn substitute_stmt(stmt: &HirStmt, old_var: &str, new_expr: &HirExpr) -> HirStmt
         HirStmtKind::SyncBlock(body) => HirStmtKind::SyncBlock(body.clone()),
         other => other.clone(),
     };
-    HirStmt { id: stmt.id, span: stmt.span, kind }
+    HirStmt {
+        id: stmt.id,
+        span: stmt.span,
+        kind,
+    }
 }
 
 /// Post-order substitution work item. Module-scoped so the n-ary helpers can
@@ -1057,40 +1136,62 @@ fn substitute_expr(expr: &HirExpr, old_var: &str, new_expr: &HirExpr) -> HirExpr
                 let right = results.pop().expect("binary: right");
                 let left = results.pop().expect("binary: left");
                 results.push(HirExpr {
-                    kind: HirExprKind::Binary { op, left: Box::new(left), right: Box::new(right) },
+                    kind: HirExprKind::Binary {
+                        op,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
                     ..e
                 });
             }
             SubstWork::Unary(e, op) => {
                 let inner = results.pop().expect("unary: operand");
                 results.push(HirExpr {
-                    kind: HirExprKind::Unary { op, inner: Box::new(inner) },
+                    kind: HirExprKind::Unary {
+                        op,
+                        inner: Box::new(inner),
+                    },
                     ..e
                 });
             }
             SubstWork::Cast(e, to) => {
                 let inner = results.pop().expect("cast: operand");
                 results.push(HirExpr {
-                    kind: HirExprKind::Cast { inner: Box::new(inner), to, via: None },
+                    kind: HirExprKind::Cast {
+                        inner: Box::new(inner),
+                        to,
+                        via: None,
+                    },
                     ..e
                 });
             }
             SubstWork::Call(e, callee, n) => {
                 let args = drain_n(&mut results, n);
                 results.push(HirExpr {
-                    kind: HirExprKind::Call { callee, args, analysis_id: None },
+                    kind: HirExprKind::Call {
+                        callee,
+                        args,
+                        analysis_id: None,
+                    },
                     ..e
                 });
             }
             SubstWork::Nary(e, is_list, n) => {
                 let items = drain_n(&mut results, n);
-                let kind = if is_list { HirExprKind::List(items) } else { HirExprKind::Tuple(items) };
+                let kind = if is_list {
+                    HirExprKind::List(items)
+                } else {
+                    HirExprKind::Tuple(items)
+                };
                 results.push(HirExpr { kind, ..e });
             }
             SubstWork::Field(e, name) => {
                 let receiver = results.pop().expect("field: receiver");
                 results.push(HirExpr {
-                    kind: HirExprKind::Field { receiver: Box::new(receiver), name },
+                    kind: HirExprKind::Field {
+                        receiver: Box::new(receiver),
+                        name,
+                    },
                     ..e
                 });
             }
@@ -1123,7 +1224,6 @@ fn drain_n(results: &mut Vec<HirExpr>, n: usize) -> Vec<HirExpr> {
 // ── Chain composition ───────────────────────────────────────────────────
 
 impl RegionAnalyzer {
-
     /// 2026-11-11: deterministic fingerprint of the consumer-visible facts —
     /// the debug oracle for the HIR consumer flip (HashMaps are sorted).
     pub fn consumer_fingerprint(&self) -> String {
@@ -1133,8 +1233,11 @@ impl RegionAnalyzer {
         chains.sort();
         let mut triggers: Vec<&String> = self.trigger_vars.iter().collect();
         triggers.sort();
-        let bounds: std::collections::BTreeMap<&str, u64> =
-            self.iter_bounds.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let bounds: std::collections::BTreeMap<&str, u64> = self
+            .iter_bounds
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect();
         format!(
             "{regions:?}|{chains:?}|{triggers:?}|{bounds:?}|{:?}|{:?}|{:?}",
             self.region_scores, self.budget_plan, self.composed_chains
@@ -1169,7 +1272,11 @@ impl RegionAnalyzer {
             let all_internal = link_vars
                 .iter()
                 .all(|lv| self.var_is_chain_internal(lv, chain, &all_txn_names));
-            let plan = ComposedPlan { chain, link_vars: &link_vars, root_triggers: &root_triggers };
+            let plan = ComposedPlan {
+                chain,
+                link_vars: &link_vars,
+                root_triggers: &root_triggers,
+            };
             self.emit_chain_variants(plan, all_internal);
         }
 
@@ -1182,7 +1289,10 @@ impl RegionAnalyzer {
             return;
         }
         let trg = &plan.root_triggers[0];
-        let interval = self.var_info.get(trg).and_then(|info| info.interval.clone());
+        let interval = self
+            .var_info
+            .get(trg)
+            .and_then(|info| info.interval.clone());
         let Some(iv) = interval else {
             self.push_composed_chain(plan, None, all_internal);
             return;
@@ -1277,22 +1387,24 @@ impl RegionAnalyzer {
     fn eval_stmt(stmt: &HirStmt, bindings: &mut HashMap<String, i64>) -> bool {
         match &stmt.kind {
             HirStmtKind::Assign(lhs, expr) => match &lhs.kind {
-                HirExprKind::Identifier(name) => {
-                    match Self::eval_expr_simple(expr, bindings) {
-                        Some(val) => {
-                            bindings.insert(name.clone(), val);
-                            true
-                        }
-                        None => false,
+                HirExprKind::Identifier(name) => match Self::eval_expr_simple(expr, bindings) {
+                    Some(val) => {
+                        bindings.insert(name.clone(), val);
+                        true
                     }
-                }
+                    None => false,
+                },
                 HirExprKind::Index(..) => false,
                 _ => {
                     let _ = Self::eval_expr_simple(expr, bindings);
                     true
                 }
             },
-            HirStmtKind::Let { name, expr: Some(e), .. } => {
+            HirStmtKind::Let {
+                name,
+                expr: Some(e),
+                ..
+            } => {
                 if let Some(val) = Self::eval_expr_simple(e, bindings) {
                     bindings.insert(name.clone(), val);
                 }
@@ -1313,7 +1425,9 @@ impl RegionAnalyzer {
                 }
                 true
             }
-            HirStmtKind::Term(None) | HirStmtKind::EndProgram(None) | HirStmtKind::InlineAsm { .. } => false,
+            HirStmtKind::Term(None)
+            | HirStmtKind::EndProgram(None)
+            | HirStmtKind::InlineAsm { .. } => false,
             _ => true,
         }
     }
@@ -1373,8 +1487,12 @@ impl RegionAnalyzer {
     fn chain_links_single_writer(&self, chain: &[String]) -> bool {
         for i in 0..chain.len().saturating_sub(1) {
             let a = &chain[i];
-            let Some(writes_a) = self.txn_writes.get(a) else { continue };
-            let Some(reads_next) = self.txn_reads.get(&chain[i + 1]) else { continue };
+            let Some(writes_a) = self.txn_writes.get(a) else {
+                continue;
+            };
+            let Some(reads_next) = self.txn_reads.get(&chain[i + 1]) else {
+                continue;
+            };
             for sv in writes_a.iter().filter(|w| reads_next.contains(*w)) {
                 if self.is_chain_counter_var(chain, sv) {
                     continue;
@@ -1401,7 +1519,9 @@ impl RegionAnalyzer {
         let mut common_bound_var: Option<String> = None;
         for tn in chain {
             if let Some(body) = self.txn_bodies.get(tn) {
-                let Some(cv) = find_counter_var(body) else { return false };
+                let Some(cv) = find_counter_var(body) else {
+                    return false;
+                };
                 if !merge_common(&mut common_pre_var, cv) {
                     return false;
                 }
@@ -1462,7 +1582,8 @@ impl RegionAnalyzer {
         let mut links = Vec::new();
         for i in 0..chain.len().saturating_sub(1) {
             let (a, b) = (&chain[i], &chain[i + 1]);
-            if let (Some(writes_a), Some(reads_b)) = (self.txn_writes.get(a), self.txn_reads.get(b)) {
+            if let (Some(writes_a), Some(reads_b)) = (self.txn_writes.get(a), self.txn_reads.get(b))
+            {
                 let mut shared: Vec<&String> =
                     writes_a.iter().filter(|w| reads_b.contains(*w)).collect();
                 shared.sort();
@@ -1482,9 +1603,15 @@ impl RegionAnalyzer {
     ) -> Vec<HirStmt> {
         let mut result = Vec::new();
         for (i, txn_name) in chain.iter().enumerate() {
-            let Some(body) = self.txn_bodies.get(txn_name) else { continue };
+            let Some(body) = self.txn_bodies.get(txn_name) else {
+                continue;
+            };
             let counter_var = find_counter_var(body);
-            let spec = LinkSpec { chain, link_vars, index: i };
+            let spec = LinkSpec {
+                chain,
+                link_vars,
+                index: i,
+            };
             let stmts = self.composed_stmts(body, spec, trigger_values);
             result.extend(filter_counter(stmts, i, counter_var.as_deref()));
         }
@@ -1513,7 +1640,9 @@ impl RegionAnalyzer {
         let Some(prev_body) = self.txn_bodies.get(&spec.chain[spec.index - 1]) else {
             return stmts;
         };
-        let Some(link_var) = spec.link_vars.get(spec.index - 1) else { return stmts };
+        let Some(link_var) = spec.link_vars.get(spec.index - 1) else {
+            return stmts;
+        };
         let mut write_expr = find_write_expr(prev_body, link_var);
         if spec.index == 1 {
             if let (Some(tv), Some(we)) = (trigger_values, write_expr.as_ref()) {
@@ -1540,10 +1669,20 @@ impl RegionAnalyzer {
             if chain.contains(txn) {
                 continue;
             }
-            if self.txn_reads.get(txn).map(|r| r.contains(var)).unwrap_or(false) {
+            if self
+                .txn_reads
+                .get(txn)
+                .map(|r| r.contains(var))
+                .unwrap_or(false)
+            {
                 return false;
             }
-            if self.txn_writes.get(txn).map(|w| w.contains(var)).unwrap_or(false) {
+            if self
+                .txn_writes
+                .get(txn)
+                .map(|w| w.contains(var))
+                .unwrap_or(false)
+            {
                 return false;
             }
         }
@@ -1576,10 +1715,17 @@ fn int_expr(value: i64) -> HirExpr {
 /// not possible (division-by-zero is preserved as an AST-parity panic path).
 fn fold_frame(e: &HirExpr, results: &mut Vec<i64>) -> bool {
     match &e.kind {
-        HirExprKind::Binary { op: BinaryOpKind::Concat, .. } => true,
+        HirExprKind::Binary {
+            op: BinaryOpKind::Concat,
+            ..
+        } => true,
         HirExprKind::Binary { op, .. } => {
-            let Some(right) = results.pop() else { return false };
-            let Some(left) = results.pop() else { return false };
+            let Some(right) = results.pop() else {
+                return false;
+            };
+            let Some(left) = results.pop() else {
+                return false;
+            };
             let value = match op {
                 BinaryOpKind::Add => left.wrapping_add(right),
                 BinaryOpKind::Sub => left.wrapping_sub(right),

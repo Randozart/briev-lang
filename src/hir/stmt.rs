@@ -68,7 +68,10 @@ pub enum HirStmtKind {
     /// Not source syntax — the HIR/AST body seam consumes no AST statement
     /// for it and emission expands to `Free#(name)` (Str) or
     /// `coll_destroy(name)` (List).
-    ReleaseOwned { storage: StorageKind, name: String },
+    ReleaseOwned {
+        storage: StorageKind,
+        name: String,
+    },
     /// 2026-11-12 (owned-storage pass): temp-transfer for a fresh return
     /// expression that borrows owned locals. Expands to
     /// `let name = expr; <releases>; term name;` so the operands free after

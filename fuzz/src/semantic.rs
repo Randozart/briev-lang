@@ -24,9 +24,13 @@ pub fn program(data: &[u8], tuples: bool) -> Option<(String, i64, String)> {
         let flag = bytes[2] & 1 != 0;
         let body = body(op, operand, flag);
         state = model(op, state, operand, flag) % 97;
-        source.push_str(&format!("defn operation_{index}(s: Int) -> Int {{ {body} }};\n"));
+        source.push_str(&format!(
+            "defn operation_{index}(s: Int) -> Int {{ {body} }};\n"
+        ));
         let next = format!("sample_{}", index + 1);
-        source.push_str(&format!("let {next}: Int = operation_{index}({last}) % 97;\n"));
+        source.push_str(&format!(
+            "let {next}: Int = operation_{index}({last}) % 97;\n"
+        ));
         last = next;
     }
     Some((source, state, last))
@@ -41,8 +45,13 @@ fn body(op: u8, operand: i64, flag: bool) -> String {
         3 => format!("term s / {divisor};"),
         4 => format!("term s % {divisor};"),
         5 => format!("when s > ({operand}) {{ term s + ({operand}); }}; term s - ({operand});"),
-        6 => format!("let pair = (s + ({operand}), s - ({operand})); term pair.{};", u8::from(flag)),
-        7 => format!("let pair = (s + ({operand}), s - ({operand})); let (left, right) = pair; term left - right;"),
+        6 => format!(
+            "let pair = (s + ({operand}), s - ({operand})); term pair.{};",
+            u8::from(flag)
+        ),
+        7 => format!(
+            "let pair = (s + ({operand}), s - ({operand})); let (left, right) = pair; term left - right;"
+        ),
         _ => panic!("invalid internal operation {op}"),
     }
 }
@@ -65,16 +74,22 @@ fn model(op: u8, state: i64, operand: i64, flag: bool) -> i64 {
 
 fn interpret(source: &str, result: &str) -> Result<i64, String> {
     let tokens = tokenize(source).map_err(|e| format!("generated source lex error: {e}"))?;
-    let items = Parser::new(tokens, source).parse_program()
+    let items = Parser::new(tokens, source)
+        .parse_program()
         .map_err(|e| format!("generated source parse error: {e}"))?;
     let mut interpreter = Interpreter::new();
     interpreter.load_program(&items);
     for item in &items {
         if let TopLevel::Statement(stmt) = item {
-            interpreter.exec_stmt(stmt).map_err(|e| format!("reference runtime error: {e}"))?;
+            interpreter
+                .exec_stmt(stmt)
+                .map_err(|e| format!("reference runtime error: {e}"))?;
         }
     }
-    interpreter.state.get(result).and_then(|value| value.as_i64())
+    interpreter
+        .state
+        .get(result)
+        .and_then(|value| value.as_i64())
         .ok_or_else(|| format!("missing integer result {result}"))
 }
 
@@ -85,7 +100,11 @@ pub fn check(data: &[u8], tuples: bool) {
         return;
     };
     let actual = interpret(&source, &result);
-    assert_eq!(actual, Ok(expected), "semantic disagreement; input={data:?}\n{source}");
+    assert_eq!(
+        actual,
+        Ok(expected),
+        "semantic disagreement; input={data:?}\n{source}"
+    );
 }
 
 #[cfg(test)]

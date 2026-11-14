@@ -31,9 +31,11 @@ impl DefnLiveness {
         b.index_program(program);
         b.seed_roots(program, extra_roots);
         b.drain();
-        DefnLiveness { live: b.live, keep_all: b.keep_all }
+        DefnLiveness {
+            live: b.live,
+            keep_all: b.keep_all,
+        }
     }
-
 }
 
 struct Builder<'a> {
@@ -93,7 +95,8 @@ impl<'a> Builder<'a> {
         for name in &program.always_stateful {
             self.roots.insert(name.clone());
         }
-        self.roots.extend(program.protocol_binding_fns.iter().cloned());
+        self.roots
+            .extend(program.protocol_binding_fns.iter().cloned());
         self.roots.extend(extra_roots.iter().cloned());
     }
 
@@ -323,20 +326,32 @@ impl<'a> Builder<'a> {
     fn walk_expr(&mut self, expr: &'a HirExpr, queue: &mut Vec<String>) {
         match &expr.kind {
             HirExprKind::Call { callee, args, .. } => self.walk_call(callee, args, queue),
-            HirExprKind::MethodCall { receiver, name, args, .. } => {
-                self.walk_method_call(receiver, name, args, queue)
-            }
+            HirExprKind::MethodCall {
+                receiver,
+                name,
+                args,
+                ..
+            } => self.walk_method_call(receiver, name, args, queue),
             HirExprKind::PluginIntercept { args, .. } => self.walk_lists(args, queue),
-            HirExprKind::Spawn { type_name, args, .. } => self.walk_spawn(type_name, args, queue),
-            HirExprKind::Reflect { receiver, name, kind } => {
-                self.walk_reflect(receiver, name, *kind, queue)
-            }
+            HirExprKind::Spawn {
+                type_name, args, ..
+            } => self.walk_spawn(type_name, args, queue),
+            HirExprKind::Reflect {
+                receiver,
+                name,
+                kind,
+            } => self.walk_reflect(receiver, name, *kind, queue),
             HirExprKind::Binary { op, left, right } => self.walk_binary(*op, left, right, queue),
             HirExprKind::Index(obj, idx) => self.walk_index(obj, idx, queue),
-            HirExprKind::Slice { array, start, end, stride } => {
-                self.walk_slice(array, (start, end, stride), queue)
-            }
-            HirExprKind::StructLiteral { type_name, fields, .. } => {
+            HirExprKind::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => self.walk_slice(array, (start, end, stride), queue),
+            HirExprKind::StructLiteral {
+                type_name, fields, ..
+            } => {
                 self.on_construction(type_name, queue);
                 for (_, e) in fields {
                     self.walk_expr(e, queue);
@@ -349,14 +364,20 @@ impl<'a> Builder<'a> {
             | HirExprKind::AddrOf(inner)
             | HirExprKind::Consume(inner)
             | HirExprKind::Await(inner)
-            | HirExprKind::Field { receiver: inner, .. }
+            | HirExprKind::Field {
+                receiver: inner, ..
+            }
             | HirExprKind::Lambda { body: inner, .. } => self.walk_expr(inner, queue),
             HirExprKind::Range { start, end, .. } => {
                 self.walk_expr(start, queue);
                 self.walk_expr(end, queue);
             }
             HirExprKind::Block(stmts) => self.walk_stmts(stmts, queue),
-            HirExprKind::If { condition, then_branch, else_branch } => {
+            HirExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 self.walk_expr(condition, queue);
                 self.walk_expr(then_branch, queue);
                 if let Some(e) = else_branch {
@@ -369,9 +390,7 @@ impl<'a> Builder<'a> {
                     self.walk_expr(&a.body, queue);
                 }
             }
-            HirExprKind::Tuple(items) | HirExprKind::List(items) => {
-                self.walk_lists(items, queue)
-            }
+            HirExprKind::Tuple(items) | HirExprKind::List(items) => self.walk_lists(items, queue),
             HirExprKind::Other(_) => self.keep_all = true,
             _ => {}
         }
@@ -552,20 +571,29 @@ fn collect_call_names_expr(expr: &HirExpr, out: &mut Vec<String>) {
                 collect_call_names_expr(a, out);
             }
         }
-        HirExprKind::MethodCall { receiver, name, args, .. } => {
+        HirExprKind::MethodCall {
+            receiver,
+            name,
+            args,
+            ..
+        } => {
             out.push(name.clone());
             collect_call_names_expr(receiver, out);
             for a in args {
                 collect_call_names_expr(a, out);
             }
         }
-        HirExprKind::Spawn { type_name, args, .. } => {
+        HirExprKind::Spawn {
+            type_name, args, ..
+        } => {
             out.push(type_name.clone());
             for a in args {
                 collect_call_names_expr(a, out);
             }
         }
-        HirExprKind::StructLiteral { type_name, fields, .. } => {
+        HirExprKind::StructLiteral {
+            type_name, fields, ..
+        } => {
             out.push(type_name.clone());
             for (_, e) in fields {
                 collect_call_names_expr(e, out);
@@ -576,7 +604,9 @@ fn collect_call_names_expr(expr: &HirExpr, out: &mut Vec<String>) {
             collect_call_names_expr(right, out);
         }
         HirExprKind::Unary { inner, .. }
-        | HirExprKind::Field { receiver: inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
         | HirExprKind::Deref(inner)
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
@@ -588,7 +618,12 @@ fn collect_call_names_expr(expr: &HirExpr, out: &mut Vec<String>) {
             collect_call_names_expr(a, out);
             collect_call_names_expr(b, out);
         }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_call_names_expr(array, out);
             if let Some(s) = start {
                 collect_call_names_expr(s, out);
@@ -604,7 +639,11 @@ fn collect_call_names_expr(expr: &HirExpr, out: &mut Vec<String>) {
             collect_call_names_expr(start, out);
             collect_call_names_expr(end, out);
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_call_names_expr(condition, out);
             collect_call_names_expr(then_branch, out);
             if let Some(e) = else_branch {

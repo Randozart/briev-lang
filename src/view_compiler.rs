@@ -24,8 +24,19 @@ use crate::ast::{self, Contract, Expr, TopLevel};
 use std::collections::{HashMap, HashSet};
 
 const KNOWN_DIRECTIVES: &[&str] = &[
-    "b-text", "b-show", "b-hide", "b-when", "b-on:", "b-trigger:", "b-window:",
-    "b-class", "b-attr", "b-style", "b-each", "b-key", "b-bind",
+    "b-text",
+    "b-show",
+    "b-hide",
+    "b-when",
+    "b-on:",
+    "b-trigger:",
+    "b-window:",
+    "b-class",
+    "b-attr",
+    "b-style",
+    "b-each",
+    "b-key",
+    "b-bind",
 ];
 
 #[derive(Debug, Clone)]
@@ -307,7 +318,11 @@ impl ViewCompiler {
             }
             if let Some(end_rel) = bytes[start..].find('>') {
                 let end = start + end_rel;
-                let insert_at = if bytes.as_bytes()[end - 1] == b'/' { end - 1 } else { end };
+                let insert_at = if bytes.as_bytes()[end - 1] == b'/' {
+                    end - 1
+                } else {
+                    end
+                };
                 let marker = format!(" data-instance=\"{}\"", id);
                 return format!("{}{}{}", &bytes[..insert_at], marker, &bytes[insert_at..]);
             }
@@ -326,7 +341,10 @@ impl ViewCompiler {
             let pos = scan + rel;
             let window_start = pos.saturating_sub(32);
             let window = &html[window_start..pos];
-            let attr_name = &window[window.rfind([' ', '<', '>', '\n', '\t']).map(|i| i + 1).unwrap_or(0)..];
+            let attr_name = &window[window
+                .rfind([' ', '<', '>', '\n', '\t'])
+                .map(|i| i + 1)
+                .unwrap_or(0)..];
             if attr_name.starts_with("b-") {
                 out.push_str(&html[scan..pos + 2]);
                 let after = &html[pos + 2..];
@@ -356,7 +374,10 @@ impl ViewCompiler {
 
     /// Validate that user-triggered transactions have appropriate preconditions
     /// For RBV, preconditions should NOT be too strict since user input is unpredictable
-    pub fn validate_user_triggered_preconditions(&self, preconditions: &HashMap<String, String>) -> Vec<String> {
+    pub fn validate_user_triggered_preconditions(
+        &self,
+        preconditions: &HashMap<String, String>,
+    ) -> Vec<String> {
         let mut warnings = Vec::new();
 
         for txn_name in &self.user_triggered_txns {
@@ -368,8 +389,16 @@ impl ViewCompiler {
 
                 // Check if precondition mentions any variable that's likely user-controlled or external
                 let strict_patterns = [
-                    "network", "api", "server", "fetch", "http",
-                    "database", "db_", "file", "disk", "filesystem",
+                    "network",
+                    "api",
+                    "server",
+                    "fetch",
+                    "http",
+                    "database",
+                    "db_",
+                    "file",
+                    "disk",
+                    "filesystem",
                 ];
 
                 let pre_lower = pre.to_lowercase();
@@ -476,7 +505,11 @@ impl ViewCompiler {
     /// `<Name />` tag names a `render Name { ... }` fragment, the fragment's
     /// HTML is spliced in and processed (shared id_counter → unique element
     /// IDs). `in_progress` guards render cycles (A→B→A → compile error).
-    fn inject_ids_inner(&mut self, html: &str, in_progress: &mut std::collections::HashSet<String>) -> String {
+    fn inject_ids_inner(
+        &mut self,
+        html: &str,
+        in_progress: &mut std::collections::HashSet<String>,
+    ) -> String {
         let mut result = String::new();
         let mut pos = 0;
         let bytes = html.as_bytes();
@@ -557,11 +590,7 @@ impl ViewCompiler {
                                 continue;
                             }
                             in_progress.insert(comp.clone());
-                            let raw = self
-                                .render_blocks
-                                .get(&comp)
-                                .cloned()
-                                .unwrap_or_default();
+                            let raw = self.render_blocks.get(&comp).cloned().unwrap_or_default();
                             // The raw fragment, rewritten for this mount.
                             let fragment = self.apply_mount_spec(&raw, &spec);
                             // Self-closing `<Name />` skips just the tag; the
@@ -768,7 +797,12 @@ impl ViewCompiler {
                             // the inner template (data-itm markers injected).
                             let mut item_bindings: Vec<ItemBinding> = Vec::new();
                             let mut marker_counter: usize = 1;
-                            self.capture_item_directives(&tag_str, 0, &item_name, &mut item_bindings);
+                            self.capture_item_directives(
+                                &tag_str,
+                                0,
+                                &item_name,
+                                &mut item_bindings,
+                            );
                             let template_html = self.capture_template_bindings(
                                 &inner_html,
                                 &item_name,
@@ -819,7 +853,10 @@ impl ViewCompiler {
             if attr.starts_with("b-text") {
                 if let Some(signal) = self.extract_attr_value(tag, "b-text") {
                     match self.check_item_expr(&signal, item_name) {
-                        Ok(()) => out.push(ItemBinding { marker, directive: ItemDirective::Text { signal } }),
+                        Ok(()) => out.push(ItemBinding {
+                            marker,
+                            directive: ItemDirective::Text { signal },
+                        }),
                         Err(msg) => self.validation_errors.push(msg),
                     }
                 }
@@ -838,25 +875,38 @@ impl ViewCompiler {
                         }
                     });
                     if ok {
-                        out.push(ItemBinding { marker, directive: ItemDirective::Class { pairs } });
+                        out.push(ItemBinding {
+                            marker,
+                            directive: ItemDirective::Class { pairs },
+                        });
                     }
                 }
             } else if attr.starts_with("b-show") {
                 if let Some(expr) = self.extract_attr_value(tag, "b-show") {
                     match self.check_item_expr(&expr, item_name) {
-                        Ok(()) => out.push(ItemBinding { marker, directive: ItemDirective::Show { expr } }),
+                        Ok(()) => out.push(ItemBinding {
+                            marker,
+                            directive: ItemDirective::Show { expr },
+                        }),
                         Err(msg) => self.validation_errors.push(msg),
                     }
                 }
             } else if attr.starts_with("b-when") {
                 if let Some(expr) = self.extract_attr_value(tag, "b-when") {
                     match self.check_item_expr(&expr, item_name) {
-                        Ok(()) => out.push(ItemBinding { marker, directive: ItemDirective::When { expr } }),
+                        Ok(()) => out.push(ItemBinding {
+                            marker,
+                            directive: ItemDirective::When { expr },
+                        }),
                         Err(msg) => self.validation_errors.push(msg),
                     }
                 }
             } else if attr.starts_with("b-trigger:") || attr.starts_with("b-on:") {
-                let prefix = if attr.starts_with("b-trigger:") { "b-trigger:" } else { "b-on:" };
+                let prefix = if attr.starts_with("b-trigger:") {
+                    "b-trigger:"
+                } else {
+                    "b-on:"
+                };
                 if let Some((txn, params)) = self.extract_trigger_attribute(tag, attr, prefix) {
                     let event = self
                         .extract_event_suffix(attr, prefix.trim_end_matches(':'))
@@ -867,7 +917,10 @@ impl ViewCompiler {
                             self.validation_errors.push(message);
                         }
                     }
-                    out.push(ItemBinding { marker, directive: ItemDirective::Trigger { event, txn, params } });
+                    out.push(ItemBinding {
+                        marker,
+                        directive: ItemDirective::Trigger { event, txn, params },
+                    });
                 }
             } else if attr.starts_with("b-window:") {
                 // 2026-10-08 (popstate, container case): a `b-window:` on a
@@ -908,8 +961,12 @@ impl ViewCompiler {
     /// violation.
     fn check_item_expr(&self, expr: &str, item_name: &str) -> Result<(), String> {
         let e = expr.trim();
-        if e == item_name || Self::is_item_field(e, item_name)
-            || e.parse::<f64>().is_ok() || e == "true" || e == "false" {
+        if e == item_name
+            || Self::is_item_field(e, item_name)
+            || e.parse::<f64>().is_ok()
+            || e == "true"
+            || e == "false"
+        {
             return Ok(());
         }
         // Find the operator by scanning for its first character (no loop —
@@ -946,10 +1003,7 @@ impl ViewCompiler {
         expr.strip_prefix(item_name)
             .and_then(|rest| rest.strip_prefix('.'))
             .map(|field| {
-                !field.is_empty()
-                    && field
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_')
+                !field.is_empty() && field.chars().all(|c| c.is_alphanumeric() || c == '_')
             })
             .unwrap_or(false)
     }
@@ -1114,9 +1168,9 @@ impl ViewCompiler {
                 // The old `starts_with(k.trim_end_matches(':'))` was too loose:
                 // it matched `b-windowX…` as a prefix of `b-window`, so a
                 // typo'd window directive silently passed the known check.
-                let is_known = KNOWN_DIRECTIVES.iter().any(|k| {
-                    prefix == *k || prefix.starts_with(k)
-                });
+                let is_known = KNOWN_DIRECTIVES
+                    .iter()
+                    .any(|k| prefix == *k || prefix.starts_with(k));
                 if !is_known {
                     self.diagnostics.push(format!(
                         "warning[RBV001]: unknown directive '{}' in tag '{}'",
@@ -1130,7 +1184,7 @@ impl ViewCompiler {
         for attr in tag_lower.split_whitespace().skip(1) {
             let attr = attr.trim_end_matches('>').trim_end_matches('/');
 
-if attr.starts_with("b-text") {
+            if attr.starts_with("b-text") {
                 if let Some(expr) = self.extract_attr_value(tag, "b-text") {
                     self.bindings.push(Binding {
                         element_id: elem_id.to_string(),
@@ -1271,7 +1325,8 @@ if attr.starts_with("b-text") {
     }
 
     fn extract_trigger_value(&self, attr: &str) -> Option<(String, Vec<(String, String)>)> {
-        let after_colon = attr.strip_prefix("b-trigger:")
+        let after_colon = attr
+            .strip_prefix("b-trigger:")
             .or_else(|| attr.strip_prefix("b-on:"))
             .or_else(|| attr.strip_prefix("b-window:"))?;
         let after_event = after_colon.find('=')?;
@@ -1285,7 +1340,7 @@ if attr.starts_with("b-text") {
         } else if value.starts_with('\'') {
             let end = value[1..].find('\'')?;
             value[1..end + 1].to_string()
-} else if value.contains('(') {
+        } else if value.contains('(') {
             // Function call: extract up to the matching closing paren
             let open_pos = value.find('(')?;
             let rest = &value[open_pos..];
@@ -1424,7 +1479,9 @@ if attr.starts_with("b-text") {
         if e.is_empty() {
             return true;
         }
-        let has_op = e.contains(['=', '!', '<', '>', '+', '-', '*', '/', '(', ')', '?', ':', ',']);
+        let has_op = e.contains([
+            '=', '!', '<', '>', '+', '-', '*', '/', '(', ')', '?', ':', ',',
+        ]);
         has_op || e.chars().any(|c| c.is_whitespace())
     }
 
@@ -1461,8 +1518,12 @@ if attr.starts_with("b-text") {
     // 2026-10-25: select the current event attribute, not the first trigger
     // with its scope prefix. Multiple window/element events must remain
     // independent. Retire this slice when attributes have a parsed AST.
-    fn extract_trigger_attribute(&self, tag: &str, attribute: &str, prefix: &str)
-        -> Option<(String, Vec<(String, String)>)> {
+    fn extract_trigger_attribute(
+        &self,
+        tag: &str,
+        attribute: &str,
+        prefix: &str,
+    ) -> Option<(String, Vec<(String, String)>)> {
         let name = attribute.split('=').next()?;
         let start = tag.to_lowercase().find(name)?;
         self.extract_trigger_value_from_tag(&tag[start..], prefix)
@@ -1500,7 +1561,9 @@ if attr.starts_with("b-text") {
         let value_raw = &after_prefix[value_start..];
 
         // Extract the full quoted value
-        let value = if value_raw.trim_start().starts_with('"') || value_raw.trim_start().starts_with('\'') {
+        let value = if value_raw.trim_start().starts_with('"')
+            || value_raw.trim_start().starts_with('\'')
+        {
             let rest = value_raw.trim_start();
             let quote_char = if rest.starts_with('"') { '"' } else { '\'' };
             // 2026-08-11: find_closing_quote expects the string to BEGIN with
@@ -1641,17 +1704,22 @@ if attr.starts_with("b-text") {
         }
         let is_identifier = |s: &str| {
             !s.is_empty()
-                && s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
-                && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                && s.chars()
+                    .next()
+                    .map_or(false, |c| c.is_alphabetic() || c == '_')
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
         };
         let is_literal = |s: &str| {
             let s = s.trim();
             s.parse::<f64>().is_ok()
                 || s == "true"
                 || s == "false"
-                || (s.starts_with('\'') && s.len() >= 2
+                || (s.starts_with('\'')
+                    && s.len() >= 2
                     && s[1..].find('\'').map_or(false, |i| i == s.len() - 2))
-                || (s.starts_with('"') && s.len() >= 2
+                || (s.starts_with('"')
+                    && s.len() >= 2
                     && s[1..].find('"').map_or(false, |i| i == s.len() - 2))
         };
         // 2026-08-12 (2b3): a bare identifier INCLUDING dotted instance slots
@@ -1675,7 +1743,10 @@ if attr.starts_with("b-text") {
             } else if e[i..].starts_with('>') {
                 ">"
             } else {
-                return Err(format!("view expression '{}' is unsupported (Phase 2 directives) — only `field`, `field <op> <literal>`, or a literal", expr));
+                return Err(format!(
+                    "view expression '{}' is unsupported (Phase 2 directives) — only `field`, `field <op> <literal>`, or a literal",
+                    expr
+                ));
             };
             let (l, r) = (e[..i].trim(), e[i + op.len()..].trim());
             if is_identifier(l) && is_literal(r) {
@@ -1829,7 +1900,8 @@ pub fn condition_root_signal<'a>(expr: &'a str) -> (&'a str, Vec<&'a str>) {
 /// frontend (view-bound fields protect %State slots from dead-field
 /// elimination). The `.^X` suffix is a projection on top of the field's
 /// value, never a separate signal.
-pub fn root_signal<'a>(signal: &'a str) -> (&'a str, Vec<&'a str>) {    let signal = signal.trim();
+pub fn root_signal<'a>(signal: &'a str) -> (&'a str, Vec<&'a str>) {
+    let signal = signal.trim();
     // 2026-08-14 (§6b.5): `Count#(field)` binds the field, projecting its
     // element count (the web generator maps it to `.length`).
     if let Some(rest) = signal.strip_prefix("Count#(") {
@@ -1845,9 +1917,7 @@ pub fn root_signal<'a>(signal: &'a str) -> (&'a str, Vec<&'a str>) {    let sign
     loop {
         if let Some(dot) = head.rfind(".^") {
             let suffix = &head[dot + 2..];
-            if !suffix.is_empty()
-                && suffix.chars().all(|c| c.is_ascii_alphabetic() || c == '_')
-            {
+            if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_alphabetic() || c == '_') {
                 proj.push(suffix);
                 head = &head[..dot];
             } else {
@@ -1865,10 +1935,7 @@ pub fn root_signal<'a>(signal: &'a str) -> (&'a str, Vec<&'a str>) {    let sign
 /// isomorphism: every signal/transaction referenced in the view bindings must
 /// exist and carry non-trivial contracts (not `[true]` on both sides).
 /// Returns list of verification errors.
-pub fn verify_srbv(
-    bindings: &[Binding],
-    program: &[ast::TopLevel],
-) -> Vec<String> {
+pub fn verify_srbv(bindings: &[Binding], program: &[ast::TopLevel]) -> Vec<String> {
     let mut errors = Vec::new();
 
     // Build lookup maps from the program
@@ -1966,7 +2033,9 @@ pub fn verify_srbv(
             }
             Directive::Class { pairs } => {
                 for (_, expr) in pairs {
-                    if !state_vars.contains(expr.as_str()) && !txn_contracts.contains_key(expr.as_str()) {
+                    if !state_vars.contains(expr.as_str())
+                        && !txn_contracts.contains_key(expr.as_str())
+                    {
                         errors.push(format!(
                             "error[SRBV006]: view class expression references undefined '{}'",
                             expr
@@ -1975,7 +2044,9 @@ pub fn verify_srbv(
                 }
             }
             Directive::Attr { value, .. } => {
-                if !state_vars.contains(value.as_str()) && !txn_contracts.contains_key(value.as_str()) {
+                if !state_vars.contains(value.as_str())
+                    && !txn_contracts.contains_key(value.as_str())
+                {
                     errors.push(format!(
                         "error[SRBV007]: view attribute references undefined '{}'",
                         value
@@ -1983,7 +2054,9 @@ pub fn verify_srbv(
                 }
             }
             Directive::Style { value, .. } => {
-                if !state_vars.contains(value.as_str()) && !txn_contracts.contains_key(value.as_str()) {
+                if !state_vars.contains(value.as_str())
+                    && !txn_contracts.contains_key(value.as_str())
+                {
                     errors.push(format!(
                         "error[SRBV008]: view style references undefined '{}'",
                         value
@@ -2003,7 +2076,9 @@ pub fn verify_srbv(
                 }
             }
             Directive::Each { iterable, .. } => {
-                if !state_vars.contains(iterable.as_str()) && !txn_contracts.contains_key(iterable.as_str()) {
+                if !state_vars.contains(iterable.as_str())
+                    && !txn_contracts.contains_key(iterable.as_str())
+                {
                     errors.push(format!(
                         "error[SRBV009]: view b-each references undefined '{}'",
                         iterable
@@ -2040,7 +2115,9 @@ pub fn verify_srbv(
 
 fn strip_surrounding_quotes(s: &str) -> String {
     let trimmed = s.trim();
-    if (trimmed.starts_with('\'') && trimmed.ends_with('\'')) || (trimmed.starts_with('"') && trimmed.ends_with('"')) {
+    if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+    {
         trimmed[1..trimmed.len() - 1].to_string()
     } else {
         trimmed.to_string()
@@ -2093,7 +2170,10 @@ mod tests {
             html.contains("<p id=\"rbv-p-1\" b-text=\"status\">Ready</p>"),
             "later directive tag was corrupted: {html}"
         );
-        assert!(html.ends_with("</main>"), "closing markup was corrupted: {html}");
+        assert!(
+            html.ends_with("</main>"),
+            "closing markup was corrupted: {html}"
+        );
     }
 
     #[test]
@@ -2101,7 +2181,9 @@ mod tests {
         let mut vc = ViewCompiler::new();
         let (bindings, html, _) = vc.compile(r#"<div b-text="name">text</div>"#);
         assert!(!bindings.is_empty(), "Should create text binding");
-        let has_text = bindings.iter().any(|b| matches!(&b.directive, Directive::Text { .. }));
+        let has_text = bindings
+            .iter()
+            .any(|b| matches!(&b.directive, Directive::Text { .. }));
         assert!(has_text, "Should have Text directive");
     }
 
@@ -2109,7 +2191,9 @@ mod tests {
     fn test_compile_b_show_directive() {
         let mut vc = ViewCompiler::new();
         let (bindings, html, _) = vc.compile(r#"<div b-show="isVisible">text</div>"#);
-        let has_show = bindings.iter().any(|b| matches!(&b.directive, Directive::Show { .. }));
+        let has_show = bindings
+            .iter()
+            .any(|b| matches!(&b.directive, Directive::Show { .. }));
         assert!(has_show, "Should have Show directive");
     }
 
@@ -2117,7 +2201,9 @@ mod tests {
     fn test_compile_b_hide_directive() {
         let mut vc = ViewCompiler::new();
         let (bindings, html, _) = vc.compile(r#"<div b-hide="isHidden">text</div>"#);
-        let has_hide = bindings.iter().any(|b| matches!(&b.directive, Directive::Hide { .. }));
+        let has_hide = bindings
+            .iter()
+            .any(|b| matches!(&b.directive, Directive::Hide { .. }));
         assert!(has_hide, "Should have Hide directive");
     }
 
@@ -2125,7 +2211,10 @@ mod tests {
     fn test_compile_inject_ids_adds_id_attr() {
         let mut vc = ViewCompiler::new();
         let (_, html, _) = vc.compile(r#"<div b-text="x">text</div>"#);
-        assert!(html.contains("id=\""), "Should inject id for directive elements");
+        assert!(
+            html.contains("id=\""),
+            "Should inject id for directive elements"
+        );
     }
 
     #[test]
@@ -2141,9 +2230,7 @@ mod tests {
     #[test]
     fn b_if_is_rejected() {
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<div b-if="x > 0">hi</div>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<div b-if="x > 0">hi</div>"#);
         assert!(
             diagnostics.iter().any(|d| d.contains("`b-if` is invalid")),
             "{:?}",
@@ -2154,11 +2241,11 @@ mod tests {
     #[test]
     fn b_each_requires_b_key() {
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<li b-each:item="items">x</li>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<li b-each:item="items">x</li>"#);
         assert!(
-            diagnostics.iter().any(|d| d.contains("requires a stable `b-key`")),
+            diagnostics
+                .iter()
+                .any(|d| d.contains("requires a stable `b-key`")),
             "{:?}",
             diagnostics
         );
@@ -2167,9 +2254,7 @@ mod tests {
     #[test]
     fn b_each_with_b_key_is_valid() {
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<li b-each:item="items" b-key="item.id">x</li>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<li b-each:item="items" b-key="item.id">x</li>"#);
         assert!(
             !diagnostics.iter().any(|d| d.contains("`b-key`")),
             "{:?}",
@@ -2180,11 +2265,11 @@ mod tests {
     #[test]
     fn b_bind_value_must_be_assignable_field() {
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<input b-bind:value="count + 1">"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<input b-bind:value="count + 1">"#);
         assert!(
-            diagnostics.iter().any(|d| d.contains("`b-bind:value` accepts only an assignable field")),
+            diagnostics
+                .iter()
+                .any(|d| d.contains("`b-bind:value` accepts only an assignable field")),
             "{:?}",
             diagnostics
         );
@@ -2221,11 +2306,11 @@ mod tests {
         // SPEC 21.5: b-when is a view expression — mutation is rejected there
         // just like b-text.
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<div b-when="count = 5">panel</div>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<div b-when="count = 5">panel</div>"#);
         assert!(
-            diagnostics.iter().any(|d| d.contains("not pure") && d.contains("assignment")),
+            diagnostics
+                .iter()
+                .any(|d| d.contains("not pure") && d.contains("assignment")),
             "{:?}",
             diagnostics
         );
@@ -2237,11 +2322,12 @@ mod tests {
         // outright (no ID, no binding) because inject_ids bailed on `/>`.
         // Void elements legitimately carry directives.
         let mut vc = ViewCompiler::new();
-        let (bindings, modified_html, diagnostics) =
-            vc.compile(r#"<input b-show="show" />"#);
+        let (bindings, modified_html, diagnostics) = vc.compile(r#"<input b-show="show" />"#);
         assert!(diagnostics.is_empty(), "{:?}", diagnostics);
         assert!(
-            bindings.iter().any(|b| matches!(&b.directive, Directive::Show { .. })),
+            bindings
+                .iter()
+                .any(|b| matches!(&b.directive, Directive::Show { .. })),
             "self-closing tag's b-show must extract: {bindings:?}"
         );
         assert!(
@@ -2255,8 +2341,7 @@ mod tests {
     #[test]
     fn b_bind_extracts_target() {
         let mut vc = ViewCompiler::new();
-        let (bindings, modified_html, diagnostics) =
-            vc.compile(r#"<input b-bind:value="name" />"#);
+        let (bindings, modified_html, diagnostics) = vc.compile(r#"<input b-bind:value="name" />"#);
         assert!(diagnostics.is_empty(), "{:?}", diagnostics);
         assert!(
             modified_html.contains("id=\"") && modified_html.contains("/>"),
@@ -2296,9 +2381,19 @@ mod tests {
             r#"<ul><li b-each:item="numbers" b-key="item"><span b-text="item">x</span></li></ul>
                <ul><li b-each:item="tasks" b-key="item.title"><span b-text="item.title">x</span></li></ul>"#,
         );
-        let each_count = bindings.iter().filter(|b| matches!(b.directive, Directive::Each { .. })).count();
-        assert_eq!(each_count, 2, "both each bindings must exist: {bindings:?}\n{html}");
-        assert_eq!(html.matches("id=\"rbv-li-").count(), 2, "both each containers need ids:\n{html}");
+        let each_count = bindings
+            .iter()
+            .filter(|b| matches!(b.directive, Directive::Each { .. }))
+            .count();
+        assert_eq!(
+            each_count, 2,
+            "both each bindings must exist: {bindings:?}\n{html}"
+        );
+        assert_eq!(
+            html.matches("id=\"rbv-li-").count(),
+            2,
+            "both each containers need ids:\n{html}"
+        );
     }
 
     // ── 2026-08-11 (Phase 2a3): b-each + b-key ────────────────────────
@@ -2323,11 +2418,22 @@ mod tests {
         let mut compiler = ViewCompiler::new();
         let (bindings, _, _) = compiler.compile(
             r#"<section b-window:first="receive(1)" b-window:second="retry(2)" b-trigger:click="choose" b-trigger:input="edit"></section>"#);
-        let events: Vec<_> = bindings.iter().filter_map(|binding| match &binding.directive {
-            Directive::Trigger { event, txn, .. } => Some((event.as_str(), txn.as_str())),
-            _ => None,
-        }).collect();
-        assert_eq!(events, [("first", "receive"), ("second", "retry"), ("click", "choose"), ("input", "edit")]);
+        let events: Vec<_> = bindings
+            .iter()
+            .filter_map(|binding| match &binding.directive {
+                Directive::Trigger { event, txn, .. } => Some((event.as_str(), txn.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            events,
+            [
+                ("first", "receive"),
+                ("second", "retry"),
+                ("click", "choose"),
+                ("input", "edit")
+            ]
+        );
     }
 
     #[test]
@@ -2363,7 +2469,11 @@ mod tests {
         assert_eq!(iterable.as_str(), "items");
         assert_eq!(item_name.as_str(), "item");
         assert_eq!(key_expr, "item");
-        assert_eq!(item_bindings.len(), 2, "container class + inner text: {item_bindings:?}");
+        assert_eq!(
+            item_bindings.len(),
+            2,
+            "container class + inner text: {item_bindings:?}"
+        );
         assert!(
             template_html.contains("data-itm=\""),
             "inner template must carry data-itm markers: {template_html}"
@@ -2382,9 +2492,8 @@ mod tests {
         // A state-field comparison (`item == selected`) is not evaluable by the
         // scalar item renderer — it must be a hard error, never silent dead DOM.
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<li b-each:item="items" b-key="item" b-class="item == selected">x</li>"#,
-        );
+        let (_, _, diagnostics) =
+            vc.compile(r#"<li b-each:item="items" b-key="item" b-class="item == selected">x</li>"#);
         assert!(
             diagnostics
                 .iter()
@@ -2405,8 +2514,7 @@ mod tests {
             r#"<span b-text="count">0</span>"#.to_string(),
         );
         vc.set_render_blocks(blocks);
-        let (bindings, modified_html, diagnostics) =
-            vc.compile(r#"<div><Counter /></div>"#);
+        let (bindings, modified_html, diagnostics) = vc.compile(r#"<div><Counter /></div>"#);
         assert!(
             diagnostics.is_empty(),
             "known component must not warn: {:?}",
@@ -2425,7 +2533,9 @@ mod tests {
             "fragment root carries its instance marker for the shim: {modified_html}"
         );
         assert!(
-            bindings.iter().any(|b| matches!(&b.directive, Directive::Text { signal } if signal == "count")),
+            bindings
+                .iter()
+                .any(|b| matches!(&b.directive, Directive::Text { signal } if signal == "count")),
             "fragment bindings extracted: {bindings:?}"
         );
     }
@@ -2434,10 +2544,7 @@ mod tests {
     fn component_tag_paired_form_mounts() {
         let mut vc = ViewCompiler::new();
         let mut blocks = HashMap::new();
-        blocks.insert(
-            "Counter".to_string(),
-            "<span>hi</span>".to_string(),
-        );
+        blocks.insert("Counter".to_string(), "<span>hi</span>".to_string());
         vc.set_render_blocks(blocks);
         let (_, modified_html, _) = vc.compile(r#"<Counter></Counter>"#);
         assert!(
@@ -2450,12 +2557,17 @@ mod tests {
     fn component_multiple_mounts_unique_ids() {
         let mut vc = ViewCompiler::new();
         let mut blocks = HashMap::new();
-        blocks.insert("Counter".to_string(), r#"<span b-text="count">0</span>"#.to_string());
+        blocks.insert(
+            "Counter".to_string(),
+            r#"<span b-text="count">0</span>"#.to_string(),
+        );
         vc.set_render_blocks(blocks);
-        let (bindings, modified_html, _) =
-            vc.compile(r#"<Counter /><Counter />"#);
+        let (bindings, modified_html, _) = vc.compile(r#"<Counter /><Counter />"#);
         let id_count = modified_html.matches("rbv-").count();
-        assert_eq!(id_count, 2, "each mount gets its own element: {modified_html}");
+        assert_eq!(
+            id_count, 2,
+            "each mount gets its own element: {modified_html}"
+        );
         // Both mounts bind the same state handle → both must register (the
         // per-handle effect list fans out).
         assert_eq!(
@@ -2488,7 +2600,9 @@ mod tests {
         let mut vc = ViewCompiler::new();
         let (_, _, diagnostics) = vc.compile("<Mystery />");
         assert!(
-            diagnostics.iter().any(|d| d.contains("component tag '<Mystery>'")),
+            diagnostics
+                .iter()
+                .any(|d| d.contains("component tag '<Mystery>'")),
             "{:?}",
             diagnostics
         );
@@ -2504,9 +2618,15 @@ mod tests {
         );
         assert!(diagnostics.is_empty(), "{:?}", diagnostics);
         assert!(
-            bindings.iter().any(|b| matches!(&b.directive, Directive::Class { .. }))
-                && bindings.iter().any(|b| matches!(&b.directive, Directive::Style { .. }))
-                && bindings.iter().any(|b| matches!(&b.directive, Directive::Attr { .. })),
+            bindings
+                .iter()
+                .any(|b| matches!(&b.directive, Directive::Class { .. }))
+                && bindings
+                    .iter()
+                    .any(|b| matches!(&b.directive, Directive::Style { .. }))
+                && bindings
+                    .iter()
+                    .any(|b| matches!(&b.directive, Directive::Attr { .. })),
             "class/style/attr bindings extracted: {bindings:?}"
         );
     }
@@ -2548,9 +2668,7 @@ mod tests {
     #[test]
     fn pure_view_expression_passes() {
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<span b-text="count + 1">0</span>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<span b-text="count + 1">0</span>"#);
         assert!(
             !diagnostics.iter().any(|d| d.contains("not pure")),
             "{:?}",
@@ -2561,11 +2679,11 @@ mod tests {
     #[test]
     fn mutation_in_view_expression_rejected() {
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<span b-text="count = 5">0</span>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<span b-text="count = 5">0</span>"#);
         assert!(
-            diagnostics.iter().any(|d| d.contains("not pure") && d.contains("assignment")),
+            diagnostics
+                .iter()
+                .any(|d| d.contains("not pure") && d.contains("assignment")),
             "{:?}",
             diagnostics
         );
@@ -2574,11 +2692,11 @@ mod tests {
     #[test]
     fn ffi_in_view_expression_rejected() {
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<span b-text="Malloc#(64)">0</span>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<span b-text="Malloc#(64)">0</span>"#);
         assert!(
-            diagnostics.iter().any(|d| d.contains("not pure") && d.contains("allocation")),
+            diagnostics
+                .iter()
+                .any(|d| d.contains("not pure") && d.contains("allocation")),
             "{:?}",
             diagnostics
         );
@@ -2588,9 +2706,7 @@ mod tests {
     fn comparison_in_view_expression_is_pure() {
         // `==`/`>=` are comparisons, not assignments — they must pass purity.
         let mut vc = ViewCompiler::new();
-        let (_, _, diagnostics) = vc.compile(
-            r#"<div b-show="count == 5">x</div>"#,
-        );
+        let (_, _, diagnostics) = vc.compile(r#"<div b-show="count == 5">x</div>"#);
         assert!(
             !diagnostics.iter().any(|d| d.contains("not pure")),
             "{:?}",
@@ -2608,7 +2724,10 @@ mod tests {
         let mut vc = ViewCompiler::new();
         let (bindings, _, diagnostics) =
             vc.compile(r#"<div b-window:recommender-live="live_event"></div>"#);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
         let t = bindings
             .iter()
             .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
@@ -2633,7 +2752,9 @@ mod tests {
             .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
             .expect("window trigger binding");
         match &t.directive {
-            Directive::Trigger { event, txn, scope, .. } => {
+            Directive::Trigger {
+                event, txn, scope, ..
+            } => {
                 assert_eq!(event, "popstate", "event name");
                 assert_eq!(txn, "sync_route", "txn name");
                 assert_eq!(*scope, TriggerScope::Window, "window scope");
@@ -2672,7 +2793,8 @@ mod tests {
     #[test]
     fn b_window_in_b_each_is_a_window_trigger() {
         let mut vc = ViewCompiler::new();
-        let (bindings, _, _) = vc.compile(r#"<div b-each="items, item"><li b-window:popstate="sync">i</li></div>"#);
+        let (bindings, _, _) =
+            vc.compile(r#"<div b-each="items, item"><li b-window:popstate="sync">i</li></div>"#);
         let t = bindings
             .iter()
             .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
@@ -2732,9 +2854,8 @@ mod tests {
     #[test]
     fn b_trigger_on_b_each_container_still_works() {
         let mut vc = ViewCompiler::new();
-        let (bindings, _, diagnostics) = vc.compile(
-            r#"<div b-each:item="items" b-key="item" b-trigger:click="go">i</div>"#,
-        );
+        let (bindings, _, diagnostics) =
+            vc.compile(r#"<div b-each:item="items" b-key="item" b-trigger:click="go">i</div>"#);
         let each = bindings
             .iter()
             .find(|b| matches!(&b.directive, Directive::Each { .. }))
@@ -2767,7 +2888,9 @@ mod tests {
         let items: Vec<ast::TopLevel> = Vec::new();
         let errors = verify_srbv(&bindings, &items);
         assert!(
-            errors.iter().any(|e| e.contains("SRBV004") && e.contains("nonexistent")),
+            errors
+                .iter()
+                .any(|e| e.contains("SRBV004") && e.contains("nonexistent")),
             "undefined window trigger txn must fail SRBV004: {errors:?}"
         );
     }

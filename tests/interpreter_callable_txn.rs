@@ -31,10 +31,14 @@ fn run(src: &str, name: &str) -> Result<Value, String> {
             .map_err(|e| format!("pipeline: {e}"))?;
     let mut interp = Interpreter::new();
     interp.load_program(&resolved);
-    interp.seed_inits(&resolved).map_err(|e| format!("seed: {e:?}"))?;
+    interp
+        .seed_inits(&resolved)
+        .map_err(|e| format!("seed: {e:?}"))?;
     for item in &resolved {
         if let briev_compiler::ast::TopLevel::Statement(s) = item {
-            interp.exec_stmt(s).map_err(|err| format!("seed stmt: {err:?}"))?;
+            interp
+                .exec_stmt(s)
+                .map_err(|err| format!("seed stmt: {err:?}"))?;
         }
     }
     let mut reactor = Reactor::new();
@@ -53,7 +57,11 @@ fn run(src: &str, name: &str) -> Result<Value, String> {
                 });
                 let mut detail = format!(
                     "; reactor txns={:?} dirty={:?}",
-                    reactor.transactions.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+                    reactor
+                        .transactions
+                        .iter()
+                        .map(|t| t.name.clone())
+                        .collect::<Vec<_>>(),
                     reactor.dirty_preconditions
                 );
                 if let Some(body) = body {
@@ -370,7 +378,11 @@ node entry [beginprogram][true] {
         "growbuf_growth",
     )
     .expect("growbuf growth runs");
-    assert_eq!(v.as_i64(), Some(20), "20 puts append 20 bytes across two growth steps");
+    assert_eq!(
+        v.as_i64(),
+        Some(20),
+        "20 puts append 20 bytes across two growth steps"
+    );
 }
 
 #[test]
@@ -457,7 +469,6 @@ node entry [beginprogram][true] {
     .expect("grow_to_fit runs");
     assert_eq!(b.as_i64(), Some(8), "no growth needed for 1 <= 8");
 }
-
 
 /// 2026-10-28: the reactor's Product-only foreach silently skipped integer
 /// ranges, so the 7000-byte source stayed zero-filled and the copy eventually

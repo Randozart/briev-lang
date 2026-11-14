@@ -19,7 +19,11 @@ fn lua_bin() -> Option<std::path::PathBuf> {
     if let Ok(entries) = std::fs::read_dir(&tools) {
         for entry in entries.flatten() {
             let dir = entry.path();
-            if dir.is_dir() && dir.file_name().map_or(false, |n| n.to_string_lossy().starts_with("lua-")) {
+            if dir.is_dir()
+                && dir
+                    .file_name()
+                    .map_or(false, |n| n.to_string_lossy().starts_with("lua-"))
+            {
                 let bin = dir.join("src/lua");
                 if bin.exists() {
                     return Some(bin);
@@ -50,12 +54,19 @@ fn lua_roundtrip() {
     let bv = format!("{}/examples/glue-host/boundary.bv", PROJECT_ROOT);
     let ext = Command::new(brievc)
         .args(["extension", &bv, "lua", "--out", &base.to_string_lossy()])
-        .output().expect("failed brievc extension lua");
-    assert!(ext.status.success(), "lua ext failed: {}", String::from_utf8_lossy(&ext.stderr));
+        .output()
+        .expect("failed brievc extension lua");
+    assert!(
+        ext.status.success(),
+        "lua ext failed: {}",
+        String::from_utf8_lossy(&ext.stderr)
+    );
     assert!(base.join("boundary.so").exists(), "boundary.so missing");
 
     let script = base.join("check.lua");
-    std::fs::write(&script, r#"
+    std::fs::write(
+        &script,
+        r#"
 package.cpath = package.cpath .. ';' .. arg[1] .. '/?.so'
 local b = require('boundary')
 assert(b.echo('hello') == 'hello', 'echo')
@@ -63,12 +74,19 @@ assert(b.greet('world') == 'world', 'greet')
 assert(b.identity(3.5) == 3.5, 'identity')
 assert(b.join('foo', 'bar') == 'foobar', 'join')
 print('LUA OK')
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let run = Command::new(&lua)
         .arg(&script)
         .arg(base.to_string_lossy().to_string())
-        .output().expect("failed lua");
-    assert!(run.status.success(), "lua failed: {}", String::from_utf8_lossy(&run.stderr));
+        .output()
+        .expect("failed lua");
+    assert!(
+        run.status.success(),
+        "lua failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert!(String::from_utf8_lossy(&run.stdout).contains("LUA OK"));
 }

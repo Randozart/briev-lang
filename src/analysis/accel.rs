@@ -23,8 +23,8 @@
 //! and purity (no observable/FFI side effects in kernel statements).
 
 use crate::ast::*;
-use crate::type_universe::operators::protocol_category;
 use crate::type_universe::TypeUniverse;
+use crate::type_universe::operators::protocol_category;
 use std::collections::{HashMap, HashSet};
 
 /// Offload policy selected by the compiler (`--accel=<value>`).
@@ -2203,11 +2203,13 @@ mod tests {
         let map = analyze(&items, Some(&universe()), None);
         assert!(entry(&map, "ok").shape.eligible);
         assert!(!entry(&map, "bad").shape.eligible);
-        assert!(entry(&map, "bad")
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("[i < N]")));
+        assert!(
+            entry(&map, "bad")
+                .shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("[i < N]"))
+        );
     }
 
     #[test]
@@ -2242,11 +2244,12 @@ mod tests {
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(!e.shape.eligible, "undeclared counter must be rejected");
-        assert!(e
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("not a state counter")));
+        assert!(
+            e.shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("not a state counter"))
+        );
     }
 
     #[test]
@@ -2273,11 +2276,12 @@ mod tests {
             !e.shape.eligible,
             "never-incremented counter must be rejected"
         );
-        assert!(e
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("never incremented")));
+        assert!(
+            e.shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("never incremented"))
+        );
     }
 
     // ── eligibility: write disjointness ───────────────────────────
@@ -2441,11 +2445,13 @@ mod tests {
         ));
         let map = analyze(&items, Some(&universe()), None);
         assert!(!entry(&map, "t").shape.eligible);
-        assert!(entry(&map, "t")
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("no offloadable statements")));
+        assert!(
+            entry(&map, "t")
+                .shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("no offloadable statements"))
+        );
     }
 
     // ── eligibility: flat types ───────────────────────────────────
@@ -2475,11 +2481,12 @@ mod tests {
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(!e.shape.eligible);
-        assert!(e
-            .shape
-            .reasons
-            .iter()
-            .any(|r| r.contains("not a flat scalar")));
+        assert!(
+            e.shape
+                .reasons
+                .iter()
+                .any(|r| r.contains("not a flat scalar"))
+        );
     }
 
     // ── decisions ─────────────────────────────────────────────────

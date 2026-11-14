@@ -350,11 +350,7 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
 fn extract_valid_bounded_pre(pre: &Expr, inc: &Option<IncrementInfo>) -> Option<BoundedPre> {
     let bp = extract_bounded_pre(pre)?;
     let is_mutated = inc.as_ref().map_or(false, |i| i.var == bp.var);
-    if is_mutated {
-        Some(bp)
-    } else {
-        None
-    }
+    if is_mutated { Some(bp) } else { None }
 }
 
 fn simplify_expr(expr: &Expr) -> Expr {
@@ -824,11 +820,7 @@ fn detect_lexicographic_ranking(pre: &Expr, body: &[Statement]) -> Vec<String> {
                 } else {
                     false
                 };
-                if is_decrement {
-                    Some(name)
-                } else {
-                    None
-                }
+                if is_decrement { Some(name) } else { None }
             } else {
                 None
             }
@@ -836,11 +828,7 @@ fn detect_lexicographic_ranking(pre: &Expr, body: &[Statement]) -> Vec<String> {
         .collect();
 
     vars.retain(|v| decremented.contains(v));
-    if vars.len() < 2 {
-        vec![]
-    } else {
-        vars
-    }
+    if vars.len() < 2 { vec![] } else { vars }
 }
 
 fn is_pure_body(

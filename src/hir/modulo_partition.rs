@@ -74,9 +74,8 @@ fn extract_mod_guard(expr: &HirExpr, counter: &str, divisor: i64) -> Option<i64>
         return None;
     };
     match op {
-        BinaryOpKind::And => {
-            extract_mod_guard(left, counter, divisor).or_else(|| extract_mod_guard(right, counter, divisor))
-        }
+        BinaryOpKind::And => extract_mod_guard(left, counter, divisor)
+            .or_else(|| extract_mod_guard(right, counter, divisor)),
         BinaryOpKind::Eq => {
             let HirExprKind::Binary {
                 op: BinaryOpKind::Mod,
@@ -111,7 +110,9 @@ mod tests {
 
     fn compare(source: &str) -> Option<ModuloPartition> {
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
         let ast = crate::analysis::modulo_partition::detect_modulo_partition(&items);
         let hir = detect_modulo_partition(&lower_program(&items));
         assert_eq!(hir, ast, "HIR/AST modulo-partition drift");
@@ -138,18 +139,24 @@ mod tests {
 
     #[test]
     fn single_txn_and_divergent_are_not_partitions() {
-        assert!(compare("let count: Int = 0;\nnode t0 [count % 8 == 0][true] { term; };").is_none());
-        assert!(compare(
-            "let count: Int = 0; let total: Int = 8;\n\
+        assert!(
+            compare("let count: Int = 0;\nnode t0 [count % 8 == 0][true] { term; };").is_none()
+        );
+        assert!(
+            compare(
+                "let count: Int = 0; let total: Int = 8;\n\
              node t0 [count % 8 == 0][true] { term; };\n\
              node t1 [count < total][true] { term; };"
-        )
-        .is_none());
-        assert!(compare(
-            "let count: Int = 0;\n\
+            )
+            .is_none()
+        );
+        assert!(
+            compare(
+                "let count: Int = 0;\n\
              node t0 [count % 8 == 0][true] { term; };\n\
              node t1 [count % 4 == 1][true] { term; };"
-        )
-        .is_none());
+            )
+            .is_none()
+        );
     }
 }

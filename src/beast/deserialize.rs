@@ -2,10 +2,10 @@
 // 2026-07-14: Read .beast S-expression text → Vec<TopLevel> + TypeUniverse.
 // Every function is max 2 levels. Extract helpers.
 
-use std::collections::HashMap;
+use super::sexpr::{Atom, SExpr};
 use crate::ast::*;
 use crate::type_universe::{ResolvedType, TypeUniverse};
-use super::sexpr::{Atom, SExpr};
+use std::collections::HashMap;
 
 /// Deserialize BEAST text back into a compiled program.
 pub fn from_beast(text: &str) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
@@ -20,17 +20,39 @@ pub fn from_beast(text: &str) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
     for child in list {
         match child {
             SExpr::List(parts) => {
-                if parts.is_empty() { continue; }
-                let tag = match sexpr_str(&parts[0]) { Ok(t) => t, Err(_) => continue };
+                if parts.is_empty() {
+                    continue;
+                }
+                let tag = match sexpr_str(&parts[0]) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
                 match tag {
-                    "universe" => { let rt = parse_universe(parts)?; universe.types.insert(rt.name.clone(), rt); }
-                    "typedef" => { items.push(TopLevel::TypeDef(parse_typedef(parts)?)); }
-                    "defn" => { items.push(TopLevel::Definition(parse_definition(parts)?)); }
-                    "txn" => { items.push(TopLevel::Transaction(parse_transaction(parts)?)); }
-                    "state" => { items.push(parse_statedecl(parts)?); }
-                    "trigger" => { items.push(parse_trigger(parts)?); }
-                    "constant" => { items.push(parse_constant(parts)?); }
-                    "init" => { items.push(parse_init(parts)?); }
+                    "universe" => {
+                        let rt = parse_universe(parts)?;
+                        universe.types.insert(rt.name.clone(), rt);
+                    }
+                    "typedef" => {
+                        items.push(TopLevel::TypeDef(parse_typedef(parts)?));
+                    }
+                    "defn" => {
+                        items.push(TopLevel::Definition(parse_definition(parts)?));
+                    }
+                    "txn" => {
+                        items.push(TopLevel::Transaction(parse_transaction(parts)?));
+                    }
+                    "state" => {
+                        items.push(parse_statedecl(parts)?);
+                    }
+                    "trigger" => {
+                        items.push(parse_trigger(parts)?);
+                    }
+                    "constant" => {
+                        items.push(parse_constant(parts)?);
+                    }
+                    "init" => {
+                        items.push(parse_init(parts)?);
+                    }
                     _ => {}
                 }
             }
@@ -47,7 +69,9 @@ fn parse_toplevel(expr: &SExpr) -> Result<TopLevel, String> {
     let SExpr::List(parts) = expr else {
         return Err("expected top-level list".into());
     };
-    if parts.is_empty() { return Err("empty top-level list".into()); }
+    if parts.is_empty() {
+        return Err("empty top-level list".into());
+    }
     let tag = sexpr_str(&parts[0])?;
     match tag {
         "defn" => Ok(TopLevel::Definition(parse_definition(parts)?)),
@@ -76,12 +100,21 @@ fn sexpr_int(expr: &SExpr) -> Result<i64, String> {
 }
 
 fn tag(parts: &[SExpr], i: usize) -> Result<&str, String> {
-    sexpr_str(parts.get(i).ok_or_else(|| format!("missing tag at index {}", i))?)
+    sexpr_str(
+        parts
+            .get(i)
+            .ok_or_else(|| format!("missing tag at index {}", i))?,
+    )
 }
 
 fn assert_tag(parts: &[SExpr], i: usize, expected: &str) -> Result<(), String> {
     let t = tag(parts, i)?;
-    if t != expected { return Err(format!("expected '{}' at index {}, got '{}'", expected, i, t)); }
+    if t != expected {
+        return Err(format!(
+            "expected '{}' at index {}, got '{}'",
+            expected, i, t
+        ));
+    }
     Ok(())
 }
 
@@ -118,8 +151,14 @@ fn parse_universe(parts: &[SExpr]) -> Result<ResolvedType, String> {
     while i < parts.len() {
         let key = tag(parts, i)?;
         match key {
-            "maxbits" => { rt.bytes = sexpr_int(&parts[i + 1])? as u64 / 8; i += 2; }
-            "alignment" => { rt.alignment = sexpr_int(&parts[i + 1])? as u64; i += 2; }
+            "maxbits" => {
+                rt.bytes = sexpr_int(&parts[i + 1])? as u64 / 8;
+                i += 2;
+            }
+            "alignment" => {
+                rt.alignment = sexpr_int(&parts[i + 1])? as u64;
+                i += 2;
+            }
             "properties" => {
                 let mut j = i + 1;
                 while j < parts.len() {
@@ -135,7 +174,9 @@ fn parse_universe(parts: &[SExpr]) -> Result<ResolvedType, String> {
                 }
                 i = j;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     Ok(rt)
@@ -161,7 +202,9 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         if entry.is_empty() {
             continue;
         }
-        let Ok(t) = sexpr_str(&entry[0]) else { continue };
+        let Ok(t) = sexpr_str(&entry[0]) else {
+            continue;
+        };
         match t {
             "slots" => {
                 for sub in entry.iter().skip(1) {
@@ -223,14 +266,32 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         }
     }
     Ok(Box::new(TypeDef {
-        name, type_params: vec![], parent: None, protocol: None,
+        name,
+        type_params: vec![],
+        parent: None,
+        protocol: None,
         traits: vec![],
-        bit_range: None, span: None, coll: false, seq: false,
+        bit_range: None,
+        span: None,
+        coll: false,
+        seq: false,
         ports_in: Vec::new(),
         ports_out: Vec::new(),
-        body: TypeDefBody { slots, pins, reference: None, metadata, projections: vec![], bindings: vec![],
-            operators: vec![], op_bindings: vec![],
-            constraints: vec![], members, hold_laws: vec![], modes: vec![], span: None },
+        body: TypeDefBody {
+            slots,
+            pins,
+            reference: None,
+            metadata,
+            projections: vec![],
+            bindings: vec![],
+            operators: vec![],
+            op_bindings: vec![],
+            constraints: vec![],
+            members,
+            hold_laws: vec![],
+            modes: vec![],
+            span: None,
+        },
     }))
 }
 
@@ -238,8 +299,14 @@ fn parse_definition(parts: &[SExpr]) -> Result<Definition, String> {
     let name = tag(parts, 1)?.to_string();
     let mut params = Vec::new();
     let mut outputs = Vec::new();
-    let mut contract = Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true),
-        watchdog: None, span: None, explicit: false, post_authority: false };
+    let mut contract = Contract {
+        pre_condition: Expr::Bool(true),
+        post_condition: Expr::Bool(true),
+        watchdog: None,
+        span: None,
+        explicit: false,
+        post_authority: false,
+    };
     let mut body = Vec::new();
     let mut metadata = HashMap::new();
     let mut i = 2;
@@ -247,9 +314,18 @@ fn parse_definition(parts: &[SExpr]) -> Result<Definition, String> {
     while i < parts.len() {
         let key = child_tag(&parts[i])?;
         match key {
-            "params" => { params = parse_params(&parts[i])?; i += 1; }
-            "outputs" => { outputs = parse_outputs(&parts[i])?; i += 1; }
-            "contract" => { contract = parse_contract(&parts[i])?; i += 1; }
+            "params" => {
+                params = parse_params(&parts[i])?;
+                i += 1;
+            }
+            "outputs" => {
+                outputs = parse_outputs(&parts[i])?;
+                i += 1;
+            }
+            "contract" => {
+                contract = parse_contract(&parts[i])?;
+                i += 1;
+            }
             "metadata" => {
                 if let SExpr::List(pair) = &parts[i] {
                     if pair.len() >= 3 {
@@ -260,23 +336,44 @@ fn parse_definition(parts: &[SExpr]) -> Result<Definition, String> {
                 }
                 i += 1;
             }
-            "body" => { i += 1; }
+            "body" => {
+                i += 1;
+            }
             _ => {
                 body.push(parse_statement(&parts[i])?);
                 i += 1;
             }
         }
     }
-    Ok(Definition { name, parameters: params, outputs, body, type_params: vec![],
-        output_type: None, contract, metadata, annotations: vec![],
-        derivation: None, modifiers: vec![], variadic_param: None, span: None, doc: None })
+    Ok(Definition {
+        name,
+        parameters: params,
+        outputs,
+        body,
+        type_params: vec![],
+        output_type: None,
+        contract,
+        metadata,
+        annotations: vec![],
+        derivation: None,
+        modifiers: vec![],
+        variadic_param: None,
+        span: None,
+        doc: None,
+    })
 }
 
 fn parse_transaction(parts: &[SExpr]) -> Result<Transaction, String> {
     let name = tag(parts, 1)?.to_string();
     let mut params = Vec::new();
-    let mut contract = Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true),
-        watchdog: None, span: None, explicit: false, post_authority: false };
+    let mut contract = Contract {
+        pre_condition: Expr::Bool(true),
+        post_condition: Expr::Bool(true),
+        watchdog: None,
+        span: None,
+        explicit: false,
+        post_authority: false,
+    };
     let mut body = Vec::new();
     let mut metadata = HashMap::new();
     let mut is_reactive = false;
@@ -286,10 +383,22 @@ fn parse_transaction(parts: &[SExpr]) -> Result<Transaction, String> {
     while i < parts.len() {
         let key = child_tag(&parts[i])?;
         match key {
-            ":reactive" => { is_reactive = true; i += 1; }
-            ":async" => { is_async = true; i += 1; }
-            "params" => { params = parse_params(&parts[i])?; i += 1; }
-            "contract" => { contract = parse_contract(&parts[i])?; i += 1; }
+            ":reactive" => {
+                is_reactive = true;
+                i += 1;
+            }
+            ":async" => {
+                is_async = true;
+                i += 1;
+            }
+            "params" => {
+                params = parse_params(&parts[i])?;
+                i += 1;
+            }
+            "contract" => {
+                contract = parse_contract(&parts[i])?;
+                i += 1;
+            }
             "metadata" => {
                 if let SExpr::List(pair) = &parts[i] {
                     if pair.len() >= 3 {
@@ -300,20 +409,39 @@ fn parse_transaction(parts: &[SExpr]) -> Result<Transaction, String> {
                 }
                 i += 1;
             }
-            "body" => { i += 1; }
+            "body" => {
+                i += 1;
+            }
             _ => {
                 body.push(parse_statement(&parts[i])?);
                 i += 1;
             }
         }
     }
-    Ok(Transaction { name, parameters: params, type_params: vec![], is_reactive, is_async,
-        contract, body, outputs: vec![], output_type: None, metadata,
-        derivation: None, modifiers: vec![], span: None, variadic_param: None, doc: None })
+    Ok(Transaction {
+        name,
+        parameters: params,
+        type_params: vec![],
+        is_reactive,
+        is_async,
+        contract,
+        body,
+        outputs: vec![],
+        output_type: None,
+        metadata,
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        variadic_param: None,
+        doc: None,
+    })
 }
 
 fn parse_contract(expr: &SExpr) -> Result<Contract, String> {
-    let parts = match expr { SExpr::List(p) => p, _ => return Err("expected list for contract".into()) };
+    let parts = match expr {
+        SExpr::List(p) => p,
+        _ => return Err("expected list for contract".into()),
+    };
     let mut pre = Expr::Bool(true);
     let mut post = Expr::Bool(true);
     let mut post_authority = false;
@@ -323,12 +451,18 @@ fn parse_contract(expr: &SExpr) -> Result<Contract, String> {
         match key {
             "pre" => {
                 // (pre <expr>) — expr is at index 1 inside this sub-list
-                let sub = match &parts[i] { SExpr::List(p) => p, _ => return Err("expected list for pre".into()) };
+                let sub = match &parts[i] {
+                    SExpr::List(p) => p,
+                    _ => return Err("expected list for pre".into()),
+                };
                 pre = parse_expr(&sub[1])?;
                 i += 1;
             }
             "post" => {
-                let sub = match &parts[i] { SExpr::List(p) => p, _ => return Err("expected list for post".into()) };
+                let sub = match &parts[i] {
+                    SExpr::List(p) => p,
+                    _ => return Err("expected list for post".into()),
+                };
                 post = parse_expr(&sub[1])?;
                 i += 1;
             }
@@ -336,16 +470,29 @@ fn parse_contract(expr: &SExpr) -> Result<Contract, String> {
                 post_authority = true;
                 i += 1;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
-    Ok(Contract { pre_condition: pre, post_condition: post, watchdog: None, span: None, explicit: false, post_authority: false})
+    Ok(Contract {
+        pre_condition: pre,
+        post_condition: post,
+        watchdog: None,
+        span: None,
+        explicit: false,
+        post_authority: false,
+    })
 }
 
 fn parse_statedecl(parts: &[SExpr]) -> Result<TopLevel, String> {
     let name = tag(parts, 1)?.to_string();
     let ty = parse_type(&parts[2])?;
-    Ok(TopLevel::StateDecl(StateDecl { name, ty, span: None }))
+    Ok(TopLevel::StateDecl(StateDecl {
+        name,
+        ty,
+        span: None,
+    }))
 }
 
 fn parse_trigger(parts: &[SExpr]) -> Result<TopLevel, String> {
@@ -356,14 +503,23 @@ fn parse_trigger(parts: &[SExpr]) -> Result<TopLevel, String> {
         let key = tag(parts, i)?;
         i += 1;
     }
-    Ok(TopLevel::Trigger(Trigger { name, instance: Expr::Identifier("".into()), span: None }))
+    Ok(TopLevel::Trigger(Trigger {
+        name,
+        instance: Expr::Identifier("".into()),
+        span: None,
+    }))
 }
 
 fn parse_constant(parts: &[SExpr]) -> Result<TopLevel, String> {
     let name = tag(parts, 1)?.to_string();
     let ty = parse_type(&parts[2])?;
     let expr = parse_expr(&parts[3])?;
-    Ok(TopLevel::Constant(Constant { name, ty, expr, section: None }))
+    Ok(TopLevel::Constant(Constant {
+        name,
+        ty,
+        expr,
+        section: None,
+    }))
 }
 
 /// 2026-08-09: `(init NAME (:bound ...)? TYPE (=expr EXPR)? STMT*)`
@@ -502,7 +658,10 @@ fn parse_bound_term(node: Option<&SExpr>) -> Result<crate::ast::BoundTerm, Strin
 }
 
 fn parse_params(expr: &SExpr) -> Result<Vec<(String, Type)>, String> {
-    let parts = match expr { SExpr::List(p) => p, _ => return Ok(Vec::new()) };
+    let parts = match expr {
+        SExpr::List(p) => p,
+        _ => return Ok(Vec::new()),
+    };
     let mut params = Vec::new();
     for i in 1..parts.len() {
         if let SExpr::List(p) = &parts[i] {
@@ -517,7 +676,10 @@ fn parse_params(expr: &SExpr) -> Result<Vec<(String, Type)>, String> {
 }
 
 fn parse_outputs(expr: &SExpr) -> Result<Vec<Type>, String> {
-    let parts = match expr { SExpr::List(p) => p, _ => return Ok(Vec::new()) };
+    let parts = match expr {
+        SExpr::List(p) => p,
+        _ => return Ok(Vec::new()),
+    };
     let mut outputs = Vec::new();
     for i in 1..parts.len() {
         outputs.push(parse_type(&parts[i])?);
@@ -526,22 +688,48 @@ fn parse_outputs(expr: &SExpr) -> Result<Vec<Type>, String> {
 }
 
 fn parse_statement(expr: &SExpr) -> Result<Statement, String> {
-    let parts = match expr { SExpr::List(p) => p, _ => return Err("expected list for statement".into()) };
-    if parts.is_empty() { return Err("empty statement".into()); }
+    let parts = match expr {
+        SExpr::List(p) => p,
+        _ => return Err("expected list for statement".into()),
+    };
+    if parts.is_empty() {
+        return Err("empty statement".into());
+    }
     let tag = sexpr_str(&parts[0])?;
     match tag {
-        "assign" => Ok(Statement::Assign(parse_expr(&parts[1])?, parse_expr(&parts[2])?)),
+        "assign" => Ok(Statement::Assign(
+            parse_expr(&parts[1])?,
+            parse_expr(&parts[2])?,
+        )),
         "let" => {
             let name = sexpr_str(&parts[1])?.to_string();
-            let expr = if parts.len() > 2 { Some(parse_expr(&parts[2])?) } else { None };
-             Ok(Statement::Let { names: vec![], name, ty: None, expr, modifiers: vec![] })
+            let expr = if parts.len() > 2 {
+                Some(parse_expr(&parts[2])?)
+            } else {
+                None
+            };
+            Ok(Statement::Let {
+                names: vec![],
+                name,
+                ty: None,
+                expr,
+                modifiers: vec![],
+            })
         }
         "term" => {
-            let e = if parts.len() > 1 { Some(parse_expr(&parts[1])?) } else { None };
+            let e = if parts.len() > 1 {
+                Some(parse_expr(&parts[1])?)
+            } else {
+                None
+            };
             Ok(Statement::Term(e))
         }
         "term!" => {
-            let e = if parts.len() > 1 { Some(parse_expr(&parts[1])?) } else { None };
+            let e = if parts.len() > 1 {
+                Some(parse_expr(&parts[1])?)
+            } else {
+                None
+            };
             Ok(Statement::EndProgram(e))
         }
         "yield" => Ok(Statement::Yield),
@@ -549,7 +737,9 @@ fn parse_statement(expr: &SExpr) -> Result<Statement, String> {
         "guarded" => {
             let cond = parse_expr(&parts[1])?;
             let mut body = Vec::new();
-            for i in 2..parts.len() { body.push(parse_statement(&parts[i])?); }
+            for i in 2..parts.len() {
+                body.push(parse_statement(&parts[i])?);
+            }
             Ok(Statement::Guarded(cond, body))
         }
         "gate" => {
@@ -558,7 +748,9 @@ fn parse_statement(expr: &SExpr) -> Result<Statement, String> {
         }
         "block" => {
             let mut body = Vec::new();
-            for i in 1..parts.len() { body.push(parse_statement(&parts[i])?); }
+            for i in 1..parts.len() {
+                body.push(parse_statement(&parts[i])?);
+            }
             Ok(Statement::Block(body))
         }
         "metadata" => {
@@ -579,30 +771,43 @@ pub(crate) fn parse_expr(expr: &SExpr) -> Result<Expr, String> {
             Atom::String(s) => Ok(Expr::Identifier(s.clone())),
         },
         SExpr::List(parts) => {
-            if parts.is_empty() { return Err("empty expression list".into()); }
+            if parts.is_empty() {
+                return Err("empty expression list".into());
+            }
             let tag = sexpr_str(&parts[0])?;
             match tag {
                 "ident" => Ok(Expr::Identifier(sexpr_str(&parts[1])?.to_string())),
                 "call" => {
                     let name = sexpr_str(&parts[1])?.to_string();
                     let mut args = Vec::new();
-                    for i in 2..parts.len() { args.push(parse_expr(&parts[i])?); }
+                    for i in 2..parts.len() {
+                        args.push(parse_expr(&parts[i])?);
+                    }
                     Ok(Expr::Call(name, args, None))
                 }
                 "binop" => {
                     let kind = parse_binop(sexpr_str(&parts[1])?)?;
-                    Ok(Expr::BinaryOp(kind, Box::new(parse_expr(&parts[2])?), Box::new(parse_expr(&parts[3])?)))
+                    Ok(Expr::BinaryOp(
+                        kind,
+                        Box::new(parse_expr(&parts[2])?),
+                        Box::new(parse_expr(&parts[3])?),
+                    ))
                 }
                 "unop" => {
                     let kind = parse_unop(sexpr_str(&parts[1])?)?;
                     Ok(Expr::UnaryOp(kind, Box::new(parse_expr(&parts[2])?)))
                 }
-                "field" => Ok(Expr::Field(Box::new(parse_expr(&parts[1])?), sexpr_str(&parts[2])?.to_string())),
+                "field" => Ok(Expr::Field(
+                    Box::new(parse_expr(&parts[1])?),
+                    sexpr_str(&parts[2])?.to_string(),
+                )),
                 "method" => {
                     let recv = Box::new(parse_expr(&parts[1])?);
                     let name = sexpr_str(&parts[2])?.to_string();
                     let mut args = Vec::new();
-                    for i in 3..parts.len() { args.push(parse_expr(&parts[i])?); }
+                    for i in 3..parts.len() {
+                        args.push(parse_expr(&parts[i])?);
+                    }
                     Ok(Expr::MethodCall(recv, name, args, None))
                 }
                 "plugin" => {
@@ -612,7 +817,9 @@ pub(crate) fn parse_expr(expr: &SExpr) -> Result<Expr, String> {
                         other => Some(Box::new(parse_expr(other)?)),
                     };
                     let mut args = Vec::new();
-                    for i in 3..parts.len() { args.push(parse_expr(&parts[i])?); }
+                    for i in 3..parts.len() {
+                        args.push(parse_expr(&parts[i])?);
+                    }
                     Ok(Expr::PluginIntercept {
                         name,
                         args,
@@ -620,18 +827,28 @@ pub(crate) fn parse_expr(expr: &SExpr) -> Result<Expr, String> {
                         receiver,
                     })
                 }
-                "index" => Ok(Expr::Index(Box::new(parse_expr(&parts[1])?), Box::new(parse_expr(&parts[2])?))),
+                "index" => Ok(Expr::Index(
+                    Box::new(parse_expr(&parts[1])?),
+                    Box::new(parse_expr(&parts[2])?),
+                )),
                 "tuple" => {
                     let mut items = Vec::new();
-                    for i in 1..parts.len() { items.push(parse_expr(&parts[i])?); }
+                    for i in 1..parts.len() {
+                        items.push(parse_expr(&parts[i])?);
+                    }
                     Ok(Expr::Tuple(items))
                 }
                 "list" => {
                     let mut items = Vec::new();
-                    for i in 1..parts.len() { items.push(parse_expr(&parts[i])?); }
+                    for i in 1..parts.len() {
+                        items.push(parse_expr(&parts[i])?);
+                    }
                     Ok(Expr::List(items))
                 }
-                "cast" => Ok(Expr::Cast(Box::new(parse_expr(&parts[1])?), parse_type(&parts[2])?)),
+                "cast" => Ok(Expr::Cast(
+                    Box::new(parse_expr(&parts[1])?),
+                    parse_type(&parts[2])?,
+                )),
                 "deref" => Ok(Expr::Deref(Box::new(parse_expr(&parts[1])?))),
                 "addrof" => Ok(Expr::AddrOf(Box::new(parse_expr(&parts[1])?))),
                 "string" => Ok(Expr::Quoted(sexpr_str(&parts[1])?.as_bytes().to_vec())),
@@ -652,24 +869,31 @@ fn parse_type(expr: &SExpr) -> Result<Type, String> {
         "String" => Type::string(),
         "Char" => Type::char_(),
         "Void" => Type::void(),
-        _ if s.starts_with('"') && s.ends_with('"') => {
-            Type::Custom(s[1..s.len()-1].to_string())
-        }
+        _ if s.starts_with('"') && s.ends_with('"') => Type::Custom(s[1..s.len() - 1].to_string()),
         _ => Type::Custom(s.to_string()),
     })
 }
 
 fn parse_binop(s: &str) -> Result<BinaryOpKind, String> {
     Ok(match s {
-        "Add" => BinaryOpKind::Add, "Sub" => BinaryOpKind::Sub,
-        "Mul" => BinaryOpKind::Mul, "Div" => BinaryOpKind::Div,
-        "Mod" => BinaryOpKind::Mod, "Eq" => BinaryOpKind::Eq,
-        "Neq" => BinaryOpKind::Neq, "Lt" => BinaryOpKind::Lt,
-        "Le" => BinaryOpKind::Le, "Gt" => BinaryOpKind::Gt,
-        "Ge" => BinaryOpKind::Ge, "And" => BinaryOpKind::And,
-        "Or" => BinaryOpKind::Or, "BitAnd" => BinaryOpKind::BitAnd,
-        "BitOr" => BinaryOpKind::BitOr, "BitXor" => BinaryOpKind::BitXor,
-        "Shl" => BinaryOpKind::Shl, "Shr" => BinaryOpKind::Shr,
+        "Add" => BinaryOpKind::Add,
+        "Sub" => BinaryOpKind::Sub,
+        "Mul" => BinaryOpKind::Mul,
+        "Div" => BinaryOpKind::Div,
+        "Mod" => BinaryOpKind::Mod,
+        "Eq" => BinaryOpKind::Eq,
+        "Neq" => BinaryOpKind::Neq,
+        "Lt" => BinaryOpKind::Lt,
+        "Le" => BinaryOpKind::Le,
+        "Gt" => BinaryOpKind::Gt,
+        "Ge" => BinaryOpKind::Ge,
+        "And" => BinaryOpKind::And,
+        "Or" => BinaryOpKind::Or,
+        "BitAnd" => BinaryOpKind::BitAnd,
+        "BitOr" => BinaryOpKind::BitOr,
+        "BitXor" => BinaryOpKind::BitXor,
+        "Shl" => BinaryOpKind::Shl,
+        "Shr" => BinaryOpKind::Shr,
         "Concat" => BinaryOpKind::Concat,
         _ => return Err(format!("unknown BinaryOpKind '{}'", s)),
     })
@@ -677,7 +901,8 @@ fn parse_binop(s: &str) -> Result<BinaryOpKind, String> {
 
 fn parse_unop(s: &str) -> Result<UnaryOpKind, String> {
     Ok(match s {
-        "Neg" => UnaryOpKind::Neg, "Not" => UnaryOpKind::Not,
+        "Neg" => UnaryOpKind::Neg,
+        "Not" => UnaryOpKind::Not,
         "BitNot" => UnaryOpKind::BitNot,
         _ => return Err(format!("unknown UnaryOpKind '{}'", s)),
     })
@@ -731,11 +956,15 @@ fn sexpr_to_pv(expr: &SExpr) -> Result<PropertyValue, String> {
         SExpr::Atom(Atom::Float(f)) => Ok(PropertyValue::Float(*f)),
         SExpr::Atom(Atom::Bool(b)) => Ok(PropertyValue::Bool(*b)),
         SExpr::List(parts) => {
-            if parts.is_empty() { return Err("empty list in property value".into()); }
+            if parts.is_empty() {
+                return Err("empty list in property value".into());
+            }
             let tag = sexpr_str(&parts[0])?;
             if tag == "list" {
                 let mut items = Vec::new();
-                for i in 1..parts.len() { items.push(sexpr_to_pv(&parts[i])?); }
+                for i in 1..parts.len() {
+                    items.push(sexpr_to_pv(&parts[i])?);
+                }
                 Ok(PropertyValue::List(items))
             } else if tag == "quantity" {
                 // 2026-09-23 (quantities plan): `(quantity <si> <dimension>)`.

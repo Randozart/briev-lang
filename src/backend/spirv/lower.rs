@@ -927,7 +927,7 @@ impl<'a> FnLowerer<'a> {
                                     "negation of {}-bit int — kernels negate 32/64-bit \
                                      values (cast the operand first)",
                                     other
-                                ))
+                                ));
                             }
                         };
                         let res = self.builder.gen_id();
@@ -1716,7 +1716,7 @@ impl<'a> FnLowerer<'a> {
             Eq => spirv::Op::FOrdEqual,
             Neq => spirv::Op::FOrdNotEqual,
             BitAnd | BitOr | BitXor | Shl | Shr => {
-                return self.err("bitwise ops on floats are not kernel operations")
+                return self.err("bitwise ops on floats are not kernel operations");
             }
             And | Or => return self.err("logical ops need Bool operands, not floats"),
             Concat => return self.err("string concat is not a kernel operation"),
@@ -1861,7 +1861,7 @@ impl<'a> FnLowerer<'a> {
                     "cast {:?} → {:?} is not a kernel scalar conversion — bool mixes \
                  materialize explicitly (0/1 arithmetic)",
                     src, dst
-                ))
+                ));
             }
         })
     }

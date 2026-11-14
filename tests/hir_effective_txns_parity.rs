@@ -3,7 +3,7 @@
 //! `analysis::effective_txns` (direct + sync<group>-wrapped + export-wrapped).
 
 use briev_compiler::ast::TopLevel;
-use briev_compiler::hir::{lower_program, HirCallableKind};
+use briev_compiler::hir::{HirCallableKind, lower_program};
 use std::path::{Path, PathBuf};
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -42,10 +42,20 @@ fn hir_transactions_match_effective_txns() {
     let mut mismatches = Vec::new();
     for (label, src) in files
         .iter()
-        .map(|p| (p.display().to_string(), std::fs::read_to_string(p).unwrap_or_default()))
-        .chain(std::iter::once(("curated".to_string(), curated.to_string())))
+        .map(|p| {
+            (
+                p.display().to_string(),
+                std::fs::read_to_string(p).unwrap_or_default(),
+            )
+        })
+        .chain(std::iter::once((
+            "curated".to_string(),
+            curated.to_string(),
+        )))
     {
-        let Ok(items) = std::panic::catch_unwind(|| parse(&src)) else { continue };
+        let Ok(items) = std::panic::catch_unwind(|| parse(&src)) else {
+            continue;
+        };
         let program = lower_program(&items);
         let mut ast: Vec<&str> = briev_compiler::analysis::effective_txns(&items)
             .iter()
@@ -63,5 +73,9 @@ fn hir_transactions_match_effective_txns() {
             mismatches.push(format!("{label}: ast={ast:?} hir={hir:?}"));
         }
     }
-    assert!(mismatches.is_empty(), "effective-txn mismatches:\n{}", mismatches.join("\n"));
+    assert!(
+        mismatches.is_empty(),
+        "effective-txn mismatches:\n{}",
+        mismatches.join("\n")
+    );
 }

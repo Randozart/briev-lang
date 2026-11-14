@@ -32,8 +32,7 @@ impl LinkageConfig {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, LinkageError> {
         let content = std::fs::read_to_string(path.as_ref())
             .map_err(|e| LinkageError::IoError(e.to_string()))?;
-        toml::from_str(&content)
-            .map_err(|e| LinkageError::ParseError(e.to_string()))
+        toml::from_str(&content).map_err(|e| LinkageError::ParseError(e.to_string()))
     }
 
     pub fn resolve_sv(&self, name: &str) -> Option<&str> {
@@ -76,20 +75,29 @@ mod tests {
     fn test_linkage_parsing() {
         let config = LinkageConfig {
             links: HashMap::from([
-                ("weight_valid".to_string(), LinkMapping {
-                    sv: Some("fpga_weight_valid_wire".to_string()),
-                    rust: Some("0x8000A040".to_string()),
-                    c: Some("0x8000A040".to_string()),
-                }),
-                ("result_data".to_string(), LinkMapping {
-                    sv: Some("fpga_result_data_wire".to_string()),
-                    rust: Some("0x8000A050".to_string()),
-                    c: Some("0x8000A050".to_string()),
-                }),
+                (
+                    "weight_valid".to_string(),
+                    LinkMapping {
+                        sv: Some("fpga_weight_valid_wire".to_string()),
+                        rust: Some("0x8000A040".to_string()),
+                        c: Some("0x8000A040".to_string()),
+                    },
+                ),
+                (
+                    "result_data".to_string(),
+                    LinkMapping {
+                        sv: Some("fpga_result_data_wire".to_string()),
+                        rust: Some("0x8000A050".to_string()),
+                        c: Some("0x8000A050".to_string()),
+                    },
+                ),
             ]),
         };
 
-        assert_eq!(config.resolve_sv("weight_valid"), Some("fpga_weight_valid_wire"));
+        assert_eq!(
+            config.resolve_sv("weight_valid"),
+            Some("fpga_weight_valid_wire")
+        );
         assert_eq!(config.resolve_rust("weight_valid"), Some("0x8000A040"));
         assert_eq!(config.resolve_c("result_data"), Some("0x8000A050"));
         assert_eq!(config.resolve_sv("nonexistent"), None);

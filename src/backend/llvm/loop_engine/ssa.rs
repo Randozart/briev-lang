@@ -66,9 +66,7 @@ impl LlvmBackend {
             }
         }
         let graph = self.ctx.transition_graph.as_ref();
-        let node_of = |name: &str| {
-            graph.and_then(|g| g.nodes.iter().find(|n| n.name == name))
-        };
+        let node_of = |name: &str| graph.and_then(|g| g.nodes.iter().find(|n| n.name == name));
         let any_bounded = reactive_names
             .iter()
             .any(|n| node_of(n).map_or(false, |node| node.bounded_pre.is_some()));
@@ -87,17 +85,36 @@ impl LlvmBackend {
                 Some(b) => b,
                 None => return false,
             };
-            let cases_ref: Vec<(i64, &str)> = partition.cases.iter()
-                .map(|(r, n)| (*r, n.as_str())).collect();
-            let txns_ref: Vec<(String, &crate::ast::Transaction)> = reactive_txns.iter()
-                .map(|(n, t)| (n.clone(), *t)).collect();
-            self.emit_modulo_rotated(out, &txns_ref, &partition.counter, partition.divisor, &cases_ref, &bound_var);
+            let cases_ref: Vec<(i64, &str)> = partition
+                .cases
+                .iter()
+                .map(|(r, n)| (*r, n.as_str()))
+                .collect();
+            let txns_ref: Vec<(String, &crate::ast::Transaction)> =
+                reactive_txns.iter().map(|(n, t)| (n.clone(), *t)).collect();
+            self.emit_modulo_rotated(
+                out,
+                &txns_ref,
+                &partition.counter,
+                partition.divisor,
+                &cases_ref,
+                &bound_var,
+            );
             return true;
         }
         if !any_increments {
-            let cases_ref: Vec<(i64, &str)> = partition.cases.iter()
-                .map(|(r, n)| (*r, n.as_str())).collect();
-            self.emit_modulo_switch_main(out, reactive_txns, &partition.counter, partition.divisor, &cases_ref);
+            let cases_ref: Vec<(i64, &str)> = partition
+                .cases
+                .iter()
+                .map(|(r, n)| (*r, n.as_str()))
+                .collect();
+            self.emit_modulo_switch_main(
+                out,
+                reactive_txns,
+                &partition.counter,
+                partition.divisor,
+                &cases_ref,
+            );
             return true;
         }
         false
@@ -116,7 +133,12 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
-        let counter_idx = self.ctx.field_index_map.get(counter_name).copied().unwrap_or(0);
+        let counter_idx = self
+            .ctx
+            .field_index_map
+            .get(counter_name)
+            .copied()
+            .unwrap_or(0);
         let (c_val, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
         let mod_val = self.fun.next_reg_with_prefix("msm");
         writeln!(out, "  {} = srem i64 {}, {}", mod_val, c_val, divisor).ok();
@@ -170,16 +192,30 @@ impl LlvmBackend {
         self.emit_inline_init_stores(out, "%state");
         writeln!(out, "  br label %.mr_loop").ok();
         writeln!(out, ".mr_loop:").ok();
-        let counter_idx = self.ctx.field_index_map.get(counter_name).copied().unwrap_or(0);
+        let counter_idx = self
+            .ctx
+            .field_index_map
+            .get(counter_name)
+            .copied()
+            .unwrap_or(0);
         // 2026-07-20: Keep GEP for counter (reused by store at mr_latch).
         let c_gep = self.fun.next_reg_with_prefix("mrp");
-        writeln!(out, "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-            c_gep, counter_idx).ok();
+        writeln!(
+            out,
+            "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+            c_gep, counter_idx
+        )
+        .ok();
         let c_val = self.fun.next_reg_with_prefix("mrv");
         writeln!(out, "  {} = load i64, ptr {}, align 8", c_val, c_gep).ok();
         // 2026-07-17: Bound check — exit when counter >= bound.
         // The bound field name may not be directly after counter; find by name.
-        let total_idx = self.ctx.field_index_map.get(bound_var).copied().unwrap_or(counter_idx + 1);
+        let total_idx = self
+            .ctx
+            .field_index_map
+            .get(bound_var)
+            .copied()
+            .unwrap_or(counter_idx + 1);
         let (bound_val, _) = self.emit_state_load_i64_by_idx(out, "  ", total_idx);
         let done = self.fun.next_reg_with_prefix("mrd");
         writeln!(out, "  {} = icmp sge i64 {}, {}", done, c_val, bound_val).ok();
@@ -191,7 +227,12 @@ impl LlvmBackend {
             let eq = self.fun.next_reg_with_prefix("mre");
             let next_label = format!(".mr_next_{}", i);
             writeln!(out, "  {} = icmp eq i64 {}, {}", eq, mod_val, val).ok();
-            writeln!(out, "  br i1 {}, label %{}, label %{}", eq, name, next_label).ok();
+            writeln!(
+                out,
+                "  br i1 {}, label %{}, label %{}",
+                eq, name, next_label
+            )
+            .ok();
             writeln!(out, "{}:", name).ok();
             writeln!(out, "  call void @txn_{}(ptr %state)", name).ok();
             writeln!(out, "  br label %.mr_latch").ok();
@@ -233,8 +274,12 @@ impl LlvmBackend {
         writeln!(out, "  br label %.ss_loop").ok();
         writeln!(out, ".ss_loop:").ok();
         let counter = self.fun.next_reg_with_prefix("ssc");
-        writeln!(out, "  {} = phi i64 [ {}, %.ss_loop ], [ {}, %.ss_latch ]",
-            counter, init, bound).ok();
+        writeln!(
+            out,
+            "  {} = phi i64 [ {}, %.ss_loop ], [ {}, %.ss_latch ]",
+            counter, init, bound
+        )
+        .ok();
         let done = self.fun.next_reg_with_prefix("ssd");
         writeln!(out, "  {} = icmp sgt i64 {}, {}", done, counter, bound).ok();
         writeln!(out, "  br i1 {}, label %.ss_body, label %.ss_end", done).ok();
@@ -267,7 +312,12 @@ impl LlvmBackend {
         let body_label = format!(".spb{}", self.fun.txn_counter);
         let next_label = format!(".spn{}", self.fun.txn_counter);
         self.fun.txn_counter += 1;
-        writeln!(out, "  br i1 {}, label %{}, label %{}", bool_reg, body_label, next_label).ok();
+        writeln!(
+            out,
+            "  br i1 {}, label %{}, label %{}",
+            bool_reg, body_label, next_label
+        )
+        .ok();
         writeln!(out, "{}:", body_label).ok();
         for stmt in body_stmts {
             self.emit_statement(out, stmt, "  ");
@@ -336,8 +386,8 @@ impl LlvmBackend {
         // Checks if all reactive txns have counter % K == N preconditions and
         // emits an optimized modulo-rotated loop that branches directly to the
         // correct body without evaluating K preconditions per iteration.
-        let reactive_txns: Vec<&(String, &crate::ast::Transaction)> = txns.iter()
-            .filter(|(_, t)| t.is_reactive).collect();
+        let reactive_txns: Vec<&(String, &crate::ast::Transaction)> =
+            txns.iter().filter(|(_, t)| t.is_reactive).collect();
         if self.try_modulo_switch_dispatch(out, &reactive_txns) {
             return;
         }
@@ -352,7 +402,9 @@ impl LlvmBackend {
         // separately.
         if let Some(bt) = bootstrap {
             for stmt in &bt.body {
-                if self.fun.terminated { break; }
+                if self.fun.terminated {
+                    break;
+                }
                 self.emit_statement(out, stmt, "  ");
             }
         }
@@ -403,9 +455,8 @@ impl LlvmBackend {
             // Sorted by name: the collected map is a HashMap and unsorted
             // iteration assigns the entry-alloca register numbers in
             // per-process random order (house rule §4, .ll determinism).
-            let mut reassigned: Vec<(String, Option<crate::ast::Type>)> = reassigned
-                .into_iter()
-                .collect();
+            let mut reassigned: Vec<(String, Option<crate::ast::Type>)> =
+                reassigned.into_iter().collect();
             reassigned.sort_by(|a, b| a.0.cmp(&b.0));
             self.fun.reassigned_lets = reassigned
                 .iter()
@@ -420,12 +471,14 @@ impl LlvmBackend {
                 writeln!(out, "  {} = alloca {}, align 8", slot, slot_ty).ok();
                 self.fun.let_bindings.insert(name.clone(), slot.clone());
                 self.fun.let_binding_allocas.insert(slot.clone());
-                self.fun
-                    .let_binding_types
-                    .insert(name.clone(), ty.clone().unwrap_or_else(crate::ast::Type::int));
-                self.fun
-                    .let_original_types
-                    .insert(name.clone(), ty.clone().unwrap_or_else(crate::ast::Type::int));
+                self.fun.let_binding_types.insert(
+                    name.clone(),
+                    ty.clone().unwrap_or_else(crate::ast::Type::int),
+                );
+                self.fun.let_original_types.insert(
+                    name.clone(),
+                    ty.clone().unwrap_or_else(crate::ast::Type::int),
+                );
             }
         }
         // 2026-08-17 (Phase B reactor fix): buffer the loop construction so a
@@ -438,176 +491,205 @@ impl LlvmBackend {
         self.fun.defer_struct_allocas = true;
         let mut loop_buf = String::new();
         {
-        let out = &mut loop_buf;
-        // 2026-10-17 (readiness gate 1): a watchdog `within N ms` deadline
-        // needs the loop-entry clock — capture it in the preheader when any
-        // reactive txn carries one (the gate itself runs per-txn below).
-        let deadline_start: Option<String> = {
-            let any_deadline = txns.iter().any(|(_, t)| {
-                t.is_reactive && t.contract.watchdog.as_ref().map_or(false, |w| w.deadline_ns.is_some())
-            });
-            if any_deadline {
-                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-                let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
-                let s = self.fun.gen_reg();
-                writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
-                Some(s)
-            } else {
-                None
-            }
-        };
-        writeln!(out, "  br label %.ss_main_loop").ok();
-        writeln!(out, ".ss_main_loop:").ok();
-        // Per-tick arena rewind: arena images are non-escaping (escaping
-        // allocations are heap by strategy), so reclaiming them each tick is
-        // sound and bounds memory.
-        self.emit_arena_reset(out, "  ");
-        // Reset active flag each iteration
-        if let Some(ref slot) = active_slot {
-            writeln!(out, "  store i64 0, ptr {}", slot).ok();
-        }
-        // Check each txn's precondition, execute body if true
-        for (name, txn) in txns {
-            if txn.is_reactive {
-                let pre = &txn.contract.pre_condition;
-                // 2026-08-06 (beginprogram plan): the precondition may read the
-                // node's `@briev_begin_<name>` entry flag — bind the txn name.
-                self.fun.txn_name = name.clone();
-                // 2026-10-16 (term-semantics plan §1): the body's bare `term;`
-                // is P-gated against THIS txn's postcondition.
-                self.fun.item_post = Some(txn.contract.post_condition.clone());
-                // 2026-10-25: reset the terminated latch before lazy
-                // precondition evaluation. A stale true from the previous
-                // body folds `beginprogram && ...` to 0 (nbody init dropped).
-                self.fun.terminated = false;
-                self.fun.cur_block = Some(".ss_main_loop".to_string());
-                let cond_val = self.emit_expr(out, pre, "  ");
-                let bool_reg = self.as_bool_reg(out, "  ", &cond_val);
-                let body_label = format!(".ssb_{}", name);
-                let next_label = format!(".ssn_{}", name);
-                self.fun.txn_counter += 1;
-                writeln!(out, "  br i1 {}, label %{}, label %{}", bool_reg, body_label, next_label).ok();
-                writeln!(out, "{}:", body_label).ok();
-                // 2026-08-04 (term-termination-diagnostics): a value-form term
-                // in this txn's body unwinds to the next txn's label, skipping
-                // the rest of THIS body — interpreter TermReturn semantics.
-                // Reset per-txn so a terminated previous txn does not leak into
-                // this one's body loop.
-                self.fun.terminated = false;
-                self.fun.void_txn_abort_label = Some(next_label.clone());
-                if let Some(ref slot) = active_slot {
-                    writeln!(out, "  store i64 1, ptr {}", slot).ok();
+            let out = &mut loop_buf;
+            // 2026-10-17 (readiness gate 1): a watchdog `within N ms` deadline
+            // needs the loop-entry clock — capture it in the preheader when any
+            // reactive txn carries one (the gate itself runs per-txn below).
+            let deadline_start: Option<String> = {
+                let any_deadline = txns.iter().any(|(_, t)| {
+                    t.is_reactive
+                        && t.contract
+                            .watchdog
+                            .as_ref()
+                            .map_or(false, |w| w.deadline_ns.is_some())
+                });
+                if any_deadline {
+                    let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+                        "rt_now_ns"
+                    } else {
+                        "__briev_now"
+                    };
+                    let nst = if self.ctx.defn_takes_state(nsym) {
+                        "%state"
+                    } else {
+                        ""
+                    };
+                    let s = self.fun.gen_reg();
+                    writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
+                    Some(s)
+                } else {
+                    None
                 }
-                // 2026-08-16 (multi-node internal fold, Direction 3): a node
-                // whose whole bounded pass is folded into @txn_<name> (a
-                // noinline countdown) is CALLED once per pass — the pass runs
-                // internally (the counter lives in a phi register) instead of
-                // this inline per-firing body. The precondition branch above
-                // still gates the call.
-                if self.ctx.internal_fold_txns.contains(name) {
-                    writeln!(out, "  call void @txn_{}(ptr %state)", name).ok();
-                    if !self.fun.terminated {
-                        self.emit_beginprogram_goal_check(out, txn);
-                        // 2026-10-17 (readiness gate 1): the folded pass ran
-                        // inside @txn_<name> — its watchdog gates here too.
-                        let _gated = self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
-                        writeln!(out, "  br label %{}", next_label).ok();
-                    }
-                    writeln!(out, "{}:", next_label).ok();
-                    continue;
-                }
-                // 2026-08-31 (plan abv-gpu-by-default): an ACCEL kernel node
-                // dispatches through its wrapper (@txn_<name> — lazy runtime
-                // init + device/verdict gate + one launch of N work-items +
-                // counter fast-forward), never an inlined per-firing body.
-                // Inlining made every kernel CPU-only with the GPU lane dead
-                // in the module. The pre-condition branch above still gates
-                // the call; after the launch the fast-forwarded counter makes
-                // this pre false, so the loop advances exactly like the
-                // internal fold below.
-                if self.accel_kernel_idx.contains_key(name) {
-                    writeln!(out, "  call void @txn_{}(ptr %state)", name).ok();
-                    if !self.fun.terminated {
-                        self.emit_beginprogram_goal_check(out, txn);
-                        // 2026-10-17 (readiness gate 1): watchdog gates after
-                        // the kernel launch, same as the folded pass.
-                        let _gated = self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
-                        writeln!(out, "  br label %{}", next_label).ok();
-                    }
-                    writeln!(out, "{}:", next_label).ok();
-                    continue;
-                }
-                for stmt in &txn.body {
-                    if self.fun.terminated { break; }
-                    self.emit_statement(out, stmt, "  ");
-                }
-                self.fun.void_txn_abort_label = None;
-                if !self.fun.terminated {
-                    // 2026-11-09 (H5 seam refactor / defer LIFO): a firing that
-                    // ends by fallthrough must run its deferred cleanup too; the
-                    // explicit exits flush inside emit_statement.
-                    self.flush_defer_cleanup(out, "  ");
-                    // 2026-08-06 (beginprogram plan): clear the entry flag when
-                    // the entry loop's goal is met.
-                    self.emit_beginprogram_goal_check(out, txn);
-                    // 2026-10-17 (readiness gate 1): the watchdog liveness gate
-                    // — continue while ?[cond] holds; on false fire the handler
-                    // and exit the dispatch loop. Previously this path DROPPED
-                    // the watchdog silently (BUGS.md; closed by this gate).
-                    let _gated = self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
-                    writeln!(out, "  br label %{}", next_label).ok();
-                }
-                writeln!(out, "{}:", next_label).ok();
-            }
-        }
-        if let Some(ref slot) = active_slot {
-            // Check if any txn ran this iteration
-            let check_reg = self.fun.gen_reg();
-            writeln!(out, "  {} = load i64, ptr {}", check_reg, slot).ok();
-            let done_reg = self.fun.gen_reg();
-            writeln!(out, "  {} = icmp eq i64 {}, 0", done_reg, check_reg).ok();
-            writeln!(out, "  br i1 {}, label %.end, label %.ss_main_loop", done_reg).ok();
-        } else {
+            };
             writeln!(out, "  br label %.ss_main_loop").ok();
-        }
-        writeln!(out, ".end:").ok();
-        // 2026-09-13 (Phase 3, rv64 capability kernel): embedded EQUILIBRIUM.
-        // On bare metal, "no node can fire" is not program exit — the reactor
-        // parks (wfi) and re-evaluates when a trap wakes the core. The
-        // `~{memory}` clobber is load-bearing: interrupt wrappers are called
-        // by hardware, invisibly to LLVM's interprocedural analysis, so
-        // without it the precondition loads hoist out of the loop and the
-        // ISR-written fields read stale forever (silent deadlock). With it,
-        // every pass after the wfi re-reads state memory. Same family
-        // dispatch as `halt`: wfi only assembles on ARM/RISC-V — other
-        // embedded triples take the trap abort (x86 has no wfi). To undo:
-        // restore the unconditional `ret i32 0`.
-        let triple = self.ctx.target_triple.clone();
-        let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
-            .iter().any(|fam| triple.contains(fam));
-        // 2026-09-14 (rv64-finish plan Phase 4b): frontier-driven equilibrium.
-        // An address-wired (reactor-pass) node — `node n @ *ptr` — polls a
-        // memory-mapped value that changes WITHOUT an interrupt: parking in
-        // `wfi` would sleep through its eligibility forever. The external
-        // frontier must re-read every pass: spin (no wfi). Only a program
-        // whose frontiers are vectored (machine-serviced) or state-sequenced
-        // may park. The marker is parser-set metadata on the Transaction.
-        let has_address_wired = txns.iter()
-            .any(|(_, t)| t.metadata.contains_key("address_wired"));
-        if self.ctx.is_embedded && wait_family {
-            if has_address_wired {
-                writeln!(out, "  br label %.ss_main_loop").ok();
+            writeln!(out, ".ss_main_loop:").ok();
+            // Per-tick arena rewind: arena images are non-escaping (escaping
+            // allocations are heap by strategy), so reclaiming them each tick is
+            // sound and bounds memory.
+            self.emit_arena_reset(out, "  ");
+            // Reset active flag each iteration
+            if let Some(ref slot) = active_slot {
+                writeln!(out, "  store i64 0, ptr {}", slot).ok();
+            }
+            // Check each txn's precondition, execute body if true
+            for (name, txn) in txns {
+                if txn.is_reactive {
+                    let pre = &txn.contract.pre_condition;
+                    // 2026-08-06 (beginprogram plan): the precondition may read the
+                    // node's `@briev_begin_<name>` entry flag — bind the txn name.
+                    self.fun.txn_name = name.clone();
+                    // 2026-10-16 (term-semantics plan §1): the body's bare `term;`
+                    // is P-gated against THIS txn's postcondition.
+                    self.fun.item_post = Some(txn.contract.post_condition.clone());
+                    // 2026-10-25: reset the terminated latch before lazy
+                    // precondition evaluation. A stale true from the previous
+                    // body folds `beginprogram && ...` to 0 (nbody init dropped).
+                    self.fun.terminated = false;
+                    self.fun.cur_block = Some(".ss_main_loop".to_string());
+                    let cond_val = self.emit_expr(out, pre, "  ");
+                    let bool_reg = self.as_bool_reg(out, "  ", &cond_val);
+                    let body_label = format!(".ssb_{}", name);
+                    let next_label = format!(".ssn_{}", name);
+                    self.fun.txn_counter += 1;
+                    writeln!(
+                        out,
+                        "  br i1 {}, label %{}, label %{}",
+                        bool_reg, body_label, next_label
+                    )
+                    .ok();
+                    writeln!(out, "{}:", body_label).ok();
+                    // 2026-08-04 (term-termination-diagnostics): a value-form term
+                    // in this txn's body unwinds to the next txn's label, skipping
+                    // the rest of THIS body — interpreter TermReturn semantics.
+                    // Reset per-txn so a terminated previous txn does not leak into
+                    // this one's body loop.
+                    self.fun.terminated = false;
+                    self.fun.void_txn_abort_label = Some(next_label.clone());
+                    if let Some(ref slot) = active_slot {
+                        writeln!(out, "  store i64 1, ptr {}", slot).ok();
+                    }
+                    // 2026-08-16 (multi-node internal fold, Direction 3): a node
+                    // whose whole bounded pass is folded into @txn_<name> (a
+                    // noinline countdown) is CALLED once per pass — the pass runs
+                    // internally (the counter lives in a phi register) instead of
+                    // this inline per-firing body. The precondition branch above
+                    // still gates the call.
+                    if self.ctx.internal_fold_txns.contains(name) {
+                        writeln!(out, "  call void @txn_{}(ptr %state)", name).ok();
+                        if !self.fun.terminated {
+                            self.emit_beginprogram_goal_check(out, txn);
+                            // 2026-10-17 (readiness gate 1): the folded pass ran
+                            // inside @txn_<name> — its watchdog gates here too.
+                            let _gated =
+                                self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
+                            writeln!(out, "  br label %{}", next_label).ok();
+                        }
+                        writeln!(out, "{}:", next_label).ok();
+                        continue;
+                    }
+                    // 2026-08-31 (plan abv-gpu-by-default): an ACCEL kernel node
+                    // dispatches through its wrapper (@txn_<name> — lazy runtime
+                    // init + device/verdict gate + one launch of N work-items +
+                    // counter fast-forward), never an inlined per-firing body.
+                    // Inlining made every kernel CPU-only with the GPU lane dead
+                    // in the module. The pre-condition branch above still gates
+                    // the call; after the launch the fast-forwarded counter makes
+                    // this pre false, so the loop advances exactly like the
+                    // internal fold below.
+                    if self.accel_kernel_idx.contains_key(name) {
+                        writeln!(out, "  call void @txn_{}(ptr %state)", name).ok();
+                        if !self.fun.terminated {
+                            self.emit_beginprogram_goal_check(out, txn);
+                            // 2026-10-17 (readiness gate 1): watchdog gates after
+                            // the kernel launch, same as the folded pass.
+                            let _gated =
+                                self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
+                            writeln!(out, "  br label %{}", next_label).ok();
+                        }
+                        writeln!(out, "{}:", next_label).ok();
+                        continue;
+                    }
+                    for stmt in &txn.body {
+                        if self.fun.terminated {
+                            break;
+                        }
+                        self.emit_statement(out, stmt, "  ");
+                    }
+                    self.fun.void_txn_abort_label = None;
+                    if !self.fun.terminated {
+                        // 2026-11-09 (H5 seam refactor / defer LIFO): a firing that
+                        // ends by fallthrough must run its deferred cleanup too; the
+                        // explicit exits flush inside emit_statement.
+                        self.flush_defer_cleanup(out, "  ");
+                        // 2026-08-06 (beginprogram plan): clear the entry flag when
+                        // the entry loop's goal is met.
+                        self.emit_beginprogram_goal_check(out, txn);
+                        // 2026-10-17 (readiness gate 1): the watchdog liveness gate
+                        // — continue while ?[cond] holds; on false fire the handler
+                        // and exit the dispatch loop. Previously this path DROPPED
+                        // the watchdog silently (BUGS.md; closed by this gate).
+                        let _gated =
+                            self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
+                        writeln!(out, "  br label %{}", next_label).ok();
+                    }
+                    writeln!(out, "{}:", next_label).ok();
+                }
+            }
+            if let Some(ref slot) = active_slot {
+                // Check if any txn ran this iteration
+                let check_reg = self.fun.gen_reg();
+                writeln!(out, "  {} = load i64, ptr {}", check_reg, slot).ok();
+                let done_reg = self.fun.gen_reg();
+                writeln!(out, "  {} = icmp eq i64 {}, 0", done_reg, check_reg).ok();
+                writeln!(
+                    out,
+                    "  br i1 {}, label %.end, label %.ss_main_loop",
+                    done_reg
+                )
+                .ok();
             } else {
-                writeln!(out, "  call void asm sideeffect \"wfi\", \"~{{memory}}\"()").ok();
                 writeln!(out, "  br label %.ss_main_loop").ok();
             }
-        } else {
-            // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
-            // (sub-CAP output was lost at ret; see emit_modulo_switch_main).
-            // The embedded lane above parks instead of exiting — no flush.
-            self.emit_stdout_flush_tail(out);
-            writeln!(out, "  ret i32 0").ok();
-        }
+            writeln!(out, ".end:").ok();
+            // 2026-09-13 (Phase 3, rv64 capability kernel): embedded EQUILIBRIUM.
+            // On bare metal, "no node can fire" is not program exit — the reactor
+            // parks (wfi) and re-evaluates when a trap wakes the core. The
+            // `~{memory}` clobber is load-bearing: interrupt wrappers are called
+            // by hardware, invisibly to LLVM's interprocedural analysis, so
+            // without it the precondition loads hoist out of the loop and the
+            // ISR-written fields read stale forever (silent deadlock). With it,
+            // every pass after the wfi re-reads state memory. Same family
+            // dispatch as `halt`: wfi only assembles on ARM/RISC-V — other
+            // embedded triples take the trap abort (x86 has no wfi). To undo:
+            // restore the unconditional `ret i32 0`.
+            let triple = self.ctx.target_triple.clone();
+            let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
+                .iter()
+                .any(|fam| triple.contains(fam));
+            // 2026-09-14 (rv64-finish plan Phase 4b): frontier-driven equilibrium.
+            // An address-wired (reactor-pass) node — `node n @ *ptr` — polls a
+            // memory-mapped value that changes WITHOUT an interrupt: parking in
+            // `wfi` would sleep through its eligibility forever. The external
+            // frontier must re-read every pass: spin (no wfi). Only a program
+            // whose frontiers are vectored (machine-serviced) or state-sequenced
+            // may park. The marker is parser-set metadata on the Transaction.
+            let has_address_wired = txns
+                .iter()
+                .any(|(_, t)| t.metadata.contains_key("address_wired"));
+            if self.ctx.is_embedded && wait_family {
+                if has_address_wired {
+                    writeln!(out, "  br label %.ss_main_loop").ok();
+                } else {
+                    writeln!(out, "  call void asm sideeffect \"wfi\", \"~{{memory}}\"()").ok();
+                    writeln!(out, "  br label %.ss_main_loop").ok();
+                }
+            } else {
+                // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
+                // (sub-CAP output was lost at ret; see emit_modulo_switch_main).
+                // The embedded lane above parks instead of exiting — no flush.
+                self.emit_stdout_flush_tail(out);
+                writeln!(out, "  ret i32 0").ok();
+            }
         } // end loop_buf scope
         self.fun.defer_struct_allocas = prev_defer;
         self.flush_pending_struct_allocas(out);
@@ -686,8 +768,12 @@ impl LlvmBackend {
         writeln!(out, ".fm_loop:").ok();
         // 2026-07-20: Intentionally hand-rolled — single GEP serves both load (above) and store (fm_loop latch).
         let c_gep = self.fun.next_reg_with_prefix("fmg");
-        writeln!(out, "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-            c_gep, counter_idx).ok();
+        writeln!(
+            out,
+            "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+            c_gep, counter_idx
+        )
+        .ok();
         let c_val = self.fun.next_reg_with_prefix("fmv");
         writeln!(out, "  {} = load i64, ptr {}, align 8", c_val, c_gep).ok();
         let done = self.fun.next_reg_with_prefix("fmd");
@@ -742,7 +828,10 @@ impl LlvmBackend {
                     // 2026-07-17: The frontend swan-song hoist (analysis/swan_song.rs)
                     // wraps the swan song as Statement::Expression(swan_song_expr).
                     // Also handle TermBang/Term in case other paths produce those variants.
-                    Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Expression(e) => {
+                    Statement::EndProgram(Some(e))
+                    | Statement::Term(Some(e))
+                    | Statement::Tail(e)
+                    | Statement::Expression(e) => {
                         self.emit_expr(out, e, "  ");
                     }
                     // 2026-07-19: Emit let bindings inside the hoisted guard
@@ -771,7 +860,11 @@ impl LlvmBackend {
         _dep_graph: &crate::analysis::dependency_graph::DependencyGraph,
         trigger_names: &[String],
     ) {
-        writeln!(out, "define void @trg_step(ptr %state) local_unnamed_addr {{").ok();
+        writeln!(
+            out,
+            "define void @trg_step(ptr %state) local_unnamed_addr {{"
+        )
+        .ok();
         for trg_name in trigger_names {
             let trg_name_clone = trg_name.clone();
             // 2026-08-27 (cbv-HW plan Slice B): a VALUE-PIN trigger (numeric
@@ -787,7 +880,12 @@ impl LlvmBackend {
                 let bool_reg = self.as_bool_reg(out, "  ", &cond_val);
                 let body_label = format!(".trg_{}", trg_name);
                 let next_label = format!(".trg_next_{}", trg_name);
-                writeln!(out, "  br i1 {}, label %{}, label %{}", bool_reg, body_label, next_label).ok();
+                writeln!(
+                    out,
+                    "  br i1 {}, label %{}, label %{}",
+                    bool_reg, body_label, next_label
+                )
+                .ok();
                 writeln!(out, "  {}:", body_label).ok();
                 writeln!(out, "  call void @txn_{}(ptr %state)", trg_name).ok();
                 writeln!(out, "  br label %{}", next_label).ok();
@@ -800,21 +898,14 @@ impl LlvmBackend {
     }
 
     /// Emit a trigger event via epoll_wait.
-    pub(crate) fn emit_trg_event_epoll_wait(
-        _backend: &mut LlvmBackend,
-        _out: &mut String,
-    ) {
+    pub(crate) fn emit_trg_event_epoll_wait(_backend: &mut LlvmBackend, _out: &mut String) {
         // Placeholder: epoll-based trigger wait is platform-specific
     }
 
     /// Emit a cycle count increment.
-    pub(crate) fn emit_cycle_count_increment(
-        _backend: &mut LlvmBackend,
-        _out: &mut String,
-    ) {
+    pub(crate) fn emit_cycle_count_increment(_backend: &mut LlvmBackend, _out: &mut String) {
         // Placeholder: cycle counting is architecture-specific
     }
-
 }
 
 impl LlvmBackend {

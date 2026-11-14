@@ -13,8 +13,8 @@
 // v1 scope (plan §Scope exclusions): defn + txn only (isr / op member
 // reject the rest at parse); the rest name is rewritten at its USE SITES
 // (`xs[i]`, `xs.Count#()`, bare `xs`) — no splice-apply into intrinsics.
-use crate::ast::top::{Definition, TopLevel, Transaction, VariadicParam};
 use crate::ast::Type;
+use crate::ast::top::{Definition, TopLevel, Transaction, VariadicParam};
 use crate::ast::{Expr, Statement};
 use std::collections::HashMap;
 
@@ -1037,8 +1037,8 @@ fn as_identifier(e: &Expr) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::top::Contract;
     use crate::ast::BinaryOpKind;
+    use crate::ast::top::Contract;
     use std::collections::HashMap;
 
     fn contract() -> Contract {

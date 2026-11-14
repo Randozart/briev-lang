@@ -7,7 +7,7 @@
 
 use crate::ast::{DerivationExample, TopLevel};
 use crate::errors::RuntimeError;
-use crate::interpreter::{Atom, values_within_tolerance, Interpreter, Value};
+use crate::interpreter::{Atom, Interpreter, Value, values_within_tolerance};
 
 /// 2026-07-28: Phase B.0 — Verify all derivation examples against their
 /// function bodies. Called after type-check, before codegen.
@@ -25,7 +25,11 @@ pub fn verify_derivation_assertions(
         }
     }
 
-    if errors.is_empty() { Ok(()) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Verify a single top-level item's derivation block against its body.
@@ -60,7 +64,11 @@ fn verify_item(item: &TopLevel, interp: &mut Interpreter) -> Result<(), Vec<Stri
         }
     }
 
-    if errors.is_empty() { Ok(()) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Verify a single derivation example against the function body.
@@ -71,34 +79,47 @@ fn verify_example(
     interp: &mut Interpreter,
 ) -> Result<(), String> {
     // Evaluate inputs
-    let args: Result<Vec<Value>, RuntimeError> = example.inputs
+    let args: Result<Vec<Value>, RuntimeError> = example
+        .inputs
         .iter()
         .map(|input| interp.eval_expr(input))
         .collect();
     let args = match args {
         Ok(a) => a,
-        Err(e) => return Err(format!(
-            "{} example {}: input evaluation failed: {}",
-            name, index + 1, e
-        )),
+        Err(e) => {
+            return Err(format!(
+                "{} example {}: input evaluation failed: {}",
+                name,
+                index + 1,
+                e
+            ));
+        }
     };
 
     // Evaluate body with those arguments
     let result = match interp.call_function(name, &args) {
         Ok(r) => r,
-        Err(e) => return Err(format!(
-            "{} example {}: body execution failed: {}",
-            name, index + 1, e
-        )),
+        Err(e) => {
+            return Err(format!(
+                "{} example {}: body execution failed: {}",
+                name,
+                index + 1,
+                e
+            ));
+        }
     };
 
     // Evaluate expected output
     let expected = match interp.eval_expr(&example.output) {
         Ok(v) => v,
-        Err(e) => return Err(format!(
-            "{} example {}: expected output evaluation failed: {}",
-            name, index + 1, e
-        )),
+        Err(e) => {
+            return Err(format!(
+                "{} example {}: expected output evaluation failed: {}",
+                name,
+                index + 1,
+                e
+            ));
+        }
     };
 
     // Compare with tolerance if applicable
@@ -109,7 +130,10 @@ fn verify_example(
     if !match_ok {
         return Err(format!(
             "{} example {}: expected {:?}, got {:?}",
-            name, index + 1, expected, result
+            name,
+            index + 1,
+            expected,
+            result
         ));
     }
 
@@ -126,23 +150,32 @@ fn verify_postcondition(
     example: &DerivationExample,
     interp: &mut Interpreter,
 ) -> Result<(), String> {
-    let args: Result<Vec<Value>, _> = example.inputs
+    let args: Result<Vec<Value>, _> = example
+        .inputs
         .iter()
         .map(|input| interp.eval_expr(input))
         .collect();
     let args = match args {
         Ok(a) => a,
-        Err(e) => return Err(format!(
-            "{} example {}: input evaluation failed: {}",
-            name, index + 1, e
-        )),
+        Err(e) => {
+            return Err(format!(
+                "{} example {}: input evaluation failed: {}",
+                name,
+                index + 1,
+                e
+            ));
+        }
     };
     let result = match interp.call_function(name, &args) {
         Ok(r) => r,
-        Err(e) => return Err(format!(
-            "{} example {}: body execution failed: {}",
-            name, index + 1, e
-        )),
+        Err(e) => {
+            return Err(format!(
+                "{} example {}: body execution failed: {}",
+                name,
+                index + 1,
+                e
+            ));
+        }
     };
     interp.state.insert("#Term".into(), result.clone());
     let post_result = match interp.eval_expr(post) {
@@ -151,7 +184,9 @@ fn verify_postcondition(
             interp.state.remove("#Term");
             return Err(format!(
                 "{} example {}: postcondition evaluation failed: {}",
-                name, index + 1, e
+                name,
+                index + 1,
+                e
             ));
         }
     };
@@ -166,7 +201,9 @@ fn verify_postcondition(
     } else {
         Err(format!(
             "{} example {}: postcondition violated (result={:?})",
-            name, index + 1, result
+            name,
+            index + 1,
+            result
         ))
     }
 }
@@ -178,11 +215,7 @@ mod tests {
     use crate::interpreter::{Atom, Value};
 
     /// Build a simple definition with body and derivation for testing.
-    fn make_defn(
-        name: &str,
-        body: Vec<Statement>,
-        derivation: DerivationBlock,
-    ) -> TopLevel {
+    fn make_defn(name: &str, body: Vec<Statement>, derivation: DerivationBlock) -> TopLevel {
         TopLevel::Definition(crate::ast::Definition {
             variadic_param: None,
             name: name.to_string(),
@@ -204,7 +237,9 @@ mod tests {
         })
     }
 
-    fn dummy_span() -> crate::errors::Span { crate::errors::Span::dummy() }
+    fn dummy_span() -> crate::errors::Span {
+        crate::errors::Span::dummy()
+    }
 
     fn make_example(inputs: Vec<Expr>, output: Expr) -> DerivationExample {
         DerivationExample {
@@ -318,7 +353,11 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.load_program(&program);
         let result = verify_derivation_assertions(&program, &mut interp);
-        assert!(result.is_ok(), "tolerance assertion should pass: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "tolerance assertion should pass: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -432,7 +471,11 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.load_program(&program);
         let result = verify_derivation_assertions(&program, &mut interp);
-        assert!(result.is_ok(), "no derivation should be skipped: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "no derivation should be skipped: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -448,7 +491,10 @@ mod tests {
             examples: vec![
                 make_example(vec![Expr::Decimal(2), Expr::Decimal(3)], Expr::Decimal(5)),
                 make_example(vec![Expr::Decimal(0), Expr::Decimal(0)], Expr::Decimal(0)),
-                make_example(vec![Expr::Decimal(10), Expr::Decimal(20)], Expr::Decimal(30)),
+                make_example(
+                    vec![Expr::Decimal(10), Expr::Decimal(20)],
+                    Expr::Decimal(30),
+                ),
             ],
             synthesized: None,
             postcondition: None,
