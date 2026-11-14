@@ -43,15 +43,44 @@ if grep -Eq 'sorryAx|declaration uses .sorry.|Lean.ofReduceBool' "$artifact_dir/
     echo "The model uses an unaccepted proof placeholder or native reduction axiom." >&2
     exit 1
 fi
+python3 - "$artifact_dir/model.log" "$artifact_dir/axioms.json" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+expected = {
+    "unsat_iff_exact", "sat_iff_exact", "first_nonempty_decides",
+    "leading_sat_dominates", "leading_unsat_dominates",
+    "malformed_head_cannot_prove",
+}
+pattern = r"'BrievAssurance\.(\w+)' (?:depends on axioms: \[([^]]*)\]|does not depend on any axioms)"
+reports = {}
+for line in Path(sys.argv[1]).read_text().splitlines():
+    match = re.fullmatch(pattern, line)
+    if match is None:
+        continue
+    name, dependencies = match.groups()
+    axioms = set(dependencies.split(", ")) if dependencies else set()
+    if name in reports or axioms - {"propext"}:
+        sys.exit("Duplicate axiom report or unapproved theorem dependency.")
+    reports[name] = sorted(axioms)
+if set(reports) != expected:
+    sys.exit("Expected an axiom report for every named model theorem.")
+Path(sys.argv[2]).write_text(json.dumps(reports, indent=2) + "\n")
+PY
 
 if LEAN_PATH="$artifact_dir${LEAN_PATH:+:$LEAN_PATH}" \
     "$lean_bin" negative/FalseSat.lean > "$artifact_dir/negative.log" 2>&1; then
     echo "The intentionally false SAT-to-UNSAT theorem was accepted." >&2
     exit 1
+else
+    negative_status=$?
 fi
-if ! grep -Fq "tactic 'decide' proved that the proposition" "$artifact_dir/negative.log" \
+if [[ "$negative_status" -ne 1 ]] \
+    || ! grep -Fq 'Tactic `decide` proved that the proposition' "$artifact_dir/negative.log" \
     || ! grep -Fq 'is false' "$artifact_dir/negative.log"; then
     echo "The negative control failed for an unexpected reason; inspect negative.log." >&2
     exit 1
 fi
-echo "Lean model checked; false theorem rejected. Review axiom reports in model.log."
+echo "Lean model checked (6 named theorems); axioms approved; false theorem rejected."

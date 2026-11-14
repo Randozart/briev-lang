@@ -34,6 +34,26 @@ theorem sat_iff_exact (line : String) :
   · simp_all
   · split <;> simp_all
 
+theorem first_nonempty_decides (line : String) (tail : List String)
+    (notEmpty : line ≠ "") :
+    classifyLines (line :: tail) = classify line := by
+  simp [classifyLines, notEmpty]
+
+theorem leading_sat_dominates (tail : List String) :
+    classifyLines ("sat" :: tail) = .sat := by
+  simp [classifyLines, classify]
+
+theorem leading_unsat_dominates (tail : List String) :
+    classifyLines ("unsat" :: tail) = .unsat := by
+  simp [classifyLines, classify]
+
+theorem malformed_head_cannot_prove (line : String) (tail : List String)
+    (notEmpty : line ≠ "") (notUnsat : line ≠ "unsat") :
+    classifyLines (line :: tail) ≠ .unsat := by
+  rw [first_nonempty_decides line tail notEmpty]
+  intro claimed
+  exact notUnsat ((unsat_iff_exact line).mp claimed)
+
 -- Model text cannot override the leading status.
 example : classifyLines ["sat", "(define-fun unsat () Int 1)"] = .sat := by
   decide
@@ -50,5 +70,9 @@ example : classifyLines ["", "unsat", "(error model-unavailable)"] = .unsat := b
 
 #print axioms unsat_iff_exact
 #print axioms sat_iff_exact
+#print axioms first_nonempty_decides
+#print axioms leading_sat_dominates
+#print axioms leading_unsat_dominates
+#print axioms malformed_head_cannot_prove
 
 end BrievAssurance

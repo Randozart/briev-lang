@@ -39,17 +39,24 @@ bash verification/lean/check.sh /path/outside/repository/lean-check
 
 The gate uses Lean on PATH or the standard user Elan installation; `LEAN_BIN`
 can name an explicit executable. It checks version 4.24.0, compiles the model
-into the external directory and requires `negative/FalseSat.lean` to fail because
-`decide` refutes its false SAT-to-UNSAT theorem. A missing import, tool error or
-accepted false theorem cannot satisfy that control. Inspect the printed axiom
-reports in `model.log`; the gate also rejects reported proof placeholders and
-native reduction axioms.
+into the external directory and requires `negative/FalseSat.lean` to exit 1
+because `decide` refutes its false SAT-to-UNSAT theorem. A missing import, tool
+error or accepted false theorem cannot satisfy that control. All six named
+model theorems must report their axiom dependencies; the gate accepts no
+reported dependencies beyond Lean's foundational `propext`, and writes
+`axioms.json` alongside the full log. Missing or duplicate reports fail closed.
 
-**Current Lean status: unavailable, gate unexecuted beyond tool discovery.**
-The host installation is pending; this session cannot resolve GitHub to download
-Lean. No Lean correctness result is claimed. The model begins after whitespace
-normalization and has no extracted implementation or Rust refinement theorem.
-The successful bounded Kani kernel proof above does not close that gap.
+**Current Lean status: checked under Lean 4.24.0.** The six named theorems prove
+exact SAT/UNSAT recognition, first-nonempty selection, leading SAT/UNSAT
+preservation for arbitrary tails, and rejection of nonempty non-UNSAT heads as
+proofs. All six currently depend only on `propext`; the false-theorem control
+was rejected for the intended logical reason. Unlike the bounded Rust proof,
+these model properties quantify over arbitrary strings and normalized line lists.
+
+The model starts after whitespace normalization. An extracted implementation or
+Rust refinement theorem is still needed to connect it to the real adapter.
+The successful bounded Kani kernel proof above is separate evidence about the
+actual production function; it does not close that refinement gap.
 
 ## Export acceptance boundary
 
