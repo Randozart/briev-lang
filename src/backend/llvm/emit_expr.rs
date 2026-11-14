@@ -14,13 +14,13 @@
 //   - Index: the helper threads the index expression into `emit_method_call`
 //     for tier-2 `op At` inlining, and `MaskIndexOperands` stores the AST
 //     receiver. Porting needs the method-call family first.
-//   - MethodCall: dispatch reads receiver AST identity
-//     (`Expr::Index` collection-element detection, dynamic-dispatch
-//     `resolve_dyn_concrete`), and member bodies take AST argument slices.
-//     `emit_member_body` is the shared AST-shaped consumer. Reflect is
-//     CONVERTED (2026-11-13): `emit_reflection` takes an `ExprView` and
-//     probes via `identifier()` / `is_semantic_string_ident` / a native
-//     AddrOf view, gated by `hir_expr_lossless`.
+//   - MethodCall: CONVERTED (2026-11-13): receiver crosses as `ExprView`
+//     (prefix/deref/field probes read the view; dyn collection-element and
+//     concrete recovery use `index_object_identifier` /
+//     `struct_literal_type_name`), args cross as `ArgsView`. The UFCS
+//     desugar leaf converts via `as_ast_leaf`/`as_ast` (documented: the
+//     desugared `Expr::Call` is AST-shaped). Reflect is CONVERTED:
+//     `emit_reflection` takes an `ExprView`, gated by `hir_expr_lossless`.
 //   - Call: intrinsic / enum-constructor / struct-constructor / frgn callee
 //     surfaces take AST argument slices. Ordinary user-call arguments are
 //     already emitted through the HIR operand path; the eager slice is the
@@ -248,6 +248,61 @@ impl ExprView<'_> {
                 ..
             }) => Some(n.as_str()),
             _ => None,
+        }
+    }
+
+    /// 2026-11-13 (H5 phase C, receiver slice): the identifier an Index's
+    /// object names, if any (dyn collection-element detection).
+    fn index_object_identifier(&self) -> Option<&str> {
+        match self {
+            ExprView::Ast(Expr::Index(obj, _)) => match obj.as_ref() {
+                Expr::Identifier(n) => Some(n.as_str()),
+                _ => None,
+            },
+            ExprView::Hir(crate::hir::expr::HirExpr {
+                kind: crate::hir::expr::HirExprKind::Index(obj, _),
+                ..
+            }) => match &obj.kind {
+                crate::hir::expr::HirExprKind::Identifier(n) => Some(n.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// 2026-11-13 (H5 phase C, receiver slice): the declared type name of a
+    /// struct-literal receiver (dyn vtable concrete recovery).
+    fn struct_literal_type_name(&self) -> Option<&str> {
+        match self {
+            ExprView::Ast(Expr::StructLiteral { type_name, .. }) => Some(type_name.as_str()),
+            ExprView::Hir(crate::hir::expr::HirExpr {
+                kind: crate::hir::expr::HirExprKind::StructLiteral { type_name, .. },
+                ..
+            }) => Some(type_name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// True when this view is a Deref receiver (pure shape probe).
+    fn is_deref(&self) -> bool {
+        matches!(
+            self,
+            ExprView::Ast(Expr::Deref(_))
+                | ExprView::Hir(crate::hir::expr::HirExpr {
+                    kind: crate::hir::expr::HirExprKind::Deref(_),
+                    ..
+                })
+        )
+    }
+
+    /// The receiver as AST for the UFCS desugar leaf (documented exception —
+    /// the desugared `Expr::Call`/`emit_user_call` surface is AST-shaped;
+    /// the HIR caller's losslessness gate makes the conversion infallible).
+    fn as_ast_leaf(&self) -> Expr {
+        match self {
+            ExprView::Ast(e) => (*e).clone(),
+            ExprView::Hir(h) => crate::hir::to_ast::expr(h)
+                .expect("lossless UFCS receiver (caller-gated)"),
         }
     }
 }
@@ -807,10 +862,7 @@ impl LlvmBackend {
                 if !hir_expr_lossless(receiver) || !args.iter().all(hir_expr_lossless) {
                     return None;
                 }
-                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
-                    return None;
-                };
-                self.emit_method_call(out, &v, &ast_recv, name, ArgsView::Hir(args), indent)
+                self.emit_method_call(out, &v, ExprView::Hir(receiver), name, ArgsView::Hir(args), indent)
             }
             HirExprKind::IsType { .. } => {
                 writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
@@ -2016,7 +2068,7 @@ impl LlvmBackend {
                 // 2026-07-31 (A5): self-bound member emission. Emit the
                 // receiver's struct address, bind `self`, bind the params,
                 // emit the member body inline, restore the previous binding.
-                return self.emit_method_call(out, v, recv, name, ArgsView::Ast(args), indent);
+                return self.emit_method_call(out, v, ExprView::Ast(recv), name, ArgsView::Ast(args), indent);
             }
             Expr::DerivationBlock(_) | Expr::FormattingAnnotation(_) => {
                 writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -2696,7 +2748,7 @@ pub(crate) fn emit_index_with_obj(
                         self.fun.current_dyn_collection = Some(name.clone());
                     }
                     let out_tmp = self.fun.gen_reg();
-                    let r = self.emit_method_call(out, &out_tmp, obj, "At", ArgsView::Ast(&[index.clone()]), indent);
+                    let r = self.emit_method_call(out, &out_tmp, ExprView::Ast(obj), "At", ArgsView::Ast(&[index.clone()]), indent);
                     self.fun.current_dyn_collection = saved_dyn_coll;
                     return r;
                 }
@@ -4175,7 +4227,7 @@ pub(crate) fn emit_index_with_obj(
         &mut self,
         out: &mut String,
         v: &str,
-        recv: &Expr,
+        recv: ExprView<'_>,
         name: &str,
         args: ArgsView<'_>,
         indent: &str,
@@ -4210,12 +4262,12 @@ pub(crate) fn emit_index_with_obj(
                 // 2026-08-14 (UOL §6b): keep the `#` — `a.Add#(b)` dispatches
                 // through the intrinsic signature (`Add#`) or generative op
                 // identity, NOT a bare top-level function named `Add`.
-                let mut all = vec![(*recv).clone()];
+                let mut all = vec![recv.as_ast_leaf()];
                 all.extend(args.as_ast());
                 return self.emit_expr_inner(out, v, &Expr::Call(name.to_string(), all, None), indent);
             }
             if self.ctx.defn_params.contains_key(name) {
-                let mut all = vec![(*recv).clone()];
+                let mut all = vec![recv.as_ast_leaf()];
                 all.extend(args.as_ast());
                 return self.emit_user_call(out, v, name, &all, indent);
             }
@@ -4248,47 +4300,90 @@ pub(crate) fn emit_index_with_obj(
         &mut self,
         out: &mut String,
         indent: &str,
-        recv: &Expr,
+        recv: ExprView<'_>,
     ) -> (TypedRegister, Option<(String, String)>, String) {
-        let recv_tmp = self.fun.gen_reg();
-        let recv_prefix = match recv {
-            Expr::Identifier(n) => self.instance_prefix_for(n),
-            _ => None,
-        };
-        let (recv_reg, mut type_name) = if let Some((prefix, _row)) = &recv_prefix {
-            let base = self.ctx.obj_instance_inits.get(prefix)
-                .map(|(b, _)| b.clone())
-                .unwrap_or_else(|| prefix.clone());
-            let dummy = self.fun.gen_reg();
-            writeln!(out, "{}{} = add i64 0, 0", indent, dummy).ok();
-            (
-                TypedRegister {
-                    name: dummy,
-                    ty: Type::Custom(base.clone()),
-                },
-                base,
-            )
-        } else {
-            let recv_reg = match self.deref_struct_receiver(out, indent, recv) {
-                Some(r) => r,
-                None => self.emit_expr_inner(out, &recv_tmp, recv, indent),
-            };
-            let type_name = match self.resolve_obj_key(&recv_reg.ty) {
-                Some(n) => n,
-                None => String::new(),
-            };
-            (recv_reg, type_name)
+        // 2026-11-13 (H5 phase C, receiver slice): probes read the view
+        // (`identifier`, deref shape) with no AST reconstruction. The
+        // instance-prefix lookup is pure, so running it before any allocation
+        // preserves today's register numbering; the branch helpers mirror the
+        // old `recv_tmp`-first sequence exactly (see each helper).
+        let recv_prefix = recv.identifier().and_then(|n| self.instance_prefix_for(n));
+        let (recv_reg, mut type_name) = match &recv_prefix {
+            Some((prefix, _row)) => self.resolve_instance_receiver(out, indent, prefix),
+            None => {
+                let recv_reg = self.resolve_evaluated_receiver(out, indent, recv);
+                let type_name = self.resolve_obj_key(&recv_reg.ty).unwrap_or_default();
+                (recv_reg, type_name)
+            }
         };
         if type_name.is_empty() {
-            if let Expr::Identifier(rname) = recv {
-                if let Some(&ridx) = self.ctx.field_index_map.get(rname) {
-                    if let Some(Type::Custom(n)) = self.ctx.field_briev_types.get(ridx) {
-                        type_name = n.clone();
-                    }
-                }
-            }
+            type_name = self.recover_field_type_name(recv.identifier()).unwrap_or_default();
         }
         (recv_reg, recv_prefix, type_name)
+    }
+
+    /// An unpacked-instance receiver: no slot is emitted (its members are
+    /// unpacked); the base obj type comes from the recorded instance Init.
+    /// The wasted `recv_tmp` mirrors the old allocation order (recv_tmp
+    /// before the dummy), keeping register numbering identical.
+    fn resolve_instance_receiver(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        prefix: &str,
+    ) -> (TypedRegister, String) {
+        let base = self.ctx.obj_instance_inits.get(prefix)
+            .map(|(b, _)| b.clone())
+            .unwrap_or_else(|| prefix.to_string());
+        let recv_tmp = self.fun.gen_reg();
+        let _ = recv_tmp;
+        let dummy = self.fun.gen_reg();
+        writeln!(out, "{}{} = add i64 0, 0", indent, dummy).ok();
+        (
+            TypedRegister { name: dummy, ty: Type::Custom(base.clone()) },
+            base,
+        )
+    }
+
+    /// A deref or plain receiver, evaluated through its own path. The deref
+    /// branch wastes `recv_tmp` first (old numbering); the plain Ast branch
+    /// writes into `recv_tmp`; the plain Hir branch lets the operand path
+    /// allocate its result in `recv_tmp`'s position — all three preserve the
+    /// old `recv_tmp`-first sequence.
+    fn resolve_evaluated_receiver(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        recv: ExprView<'_>,
+    ) -> TypedRegister {
+        if recv.is_deref() {
+            let recv_tmp = self.fun.gen_reg();
+            let _ = recv_tmp;
+            return self
+                .deref_struct_receiver_view(out, indent, recv)
+                .expect("deref probed above");
+        }
+        match recv {
+            ExprView::Ast(e) => {
+                let recv_tmp = self.fun.gen_reg();
+                self.emit_expr_inner(out, &recv_tmp, e, indent)
+            }
+            ExprView::Hir(h) => self
+                .emit_hir_operand(out, h, indent)
+                .expect("lossless method receiver (caller-gated)"),
+        }
+    }
+
+    /// 2026-10-09 (dyn derive-don't-fix, Phase B): recover a struct-typed
+    /// state field's Briev type from the field index (the field loads as
+    /// i64; its declared type names the obj for member lookup).
+    fn recover_field_type_name(&self, rname: Option<&str>) -> Option<String> {
+        let rname = rname?;
+        let ridx = *self.ctx.field_index_map.get(rname)?;
+        match self.ctx.field_briev_types.get(ridx) {
+            Some(Type::Custom(n)) => Some(n.clone()),
+            _ => None,
+        }
     }
 
     /// 2026-10-09 (dyn derive-don't-fix, Phase B): the `dyn <Trait>` dispatch
@@ -4314,7 +4409,7 @@ pub(crate) fn emit_index_with_obj(
         &mut self,
         out: &mut String,
         v: &str,
-        recv: &Expr,
+        recv: ExprView<'_>,
         name: &str,
         args: ArgsView<'_>,
         recv_reg: &TypedRegister,
@@ -4384,16 +4479,10 @@ pub(crate) fn emit_index_with_obj(
         // competitive with the vtable's load + indirect call). The Vtable
         // fallback never fires for elements: resolve_dyn_concrete cannot name
         // an Index receiver's concrete (it panicked — the 5-concrete crash).
-        let is_collection_element = match recv {
-            Expr::Index(obj, _) => match obj.as_ref() {
-                Expr::Identifier(n) => {
-                    self.ctx.dyn_collection_info.contains_key(n)
-                        || self.fun.dyn_boxed_bindings.contains_key(n)
-                }
-                _ => false,
-            },
-            _ => false,
-        };
+        let is_collection_element = recv.index_object_identifier().is_some_and(|n| {
+            self.ctx.dyn_collection_info.contains_key(n)
+                || self.fun.dyn_boxed_bindings.contains_key(n)
+        });
         // Switch form: a small known set of concretes (2..=threshold) → a
         // `switch` on the tag, each arm inlines its impl body. Collection
         // elements: any cardinality (always boxed, tag always sound).
@@ -4440,12 +4529,12 @@ pub(crate) fn emit_index_with_obj(
     /// struct-literal receiver's type name; else panic (an unresolvable open set).
     fn resolve_dyn_concrete(
         &self,
-        recv: &Expr,
+        recv: ExprView<'_>,
         trait_name: &str,
         concretes: &[String],
         tag_reg: &str,
     ) -> String {
-        if let Expr::Identifier(rname) = recv {
+        if let Some(rname) = recv.identifier() {
             if let Some(c) = self.ctx.dyn_concrete_of.get(rname).cloned() {
                 return c;
             }
@@ -4455,8 +4544,8 @@ pub(crate) fn emit_index_with_obj(
                 return c;
             }
         }
-        if let Expr::StructLiteral { type_name: tn, .. } = recv {
-            return tn.clone();
+        if let Some(tn) = recv.struct_literal_type_name() {
+            return tn.to_string();
         }
         panic!(
             "dyn receiver: cannot resolve the concrete type for member '{}.{}()'",

@@ -363,6 +363,21 @@ Remaining C-4: Index + MethodCall (emit_member_body ArgsView), Call eager-arg
 gate, Block-children splice, mod.rs closure fallback (accepted leaf
 fallback), Match-List constructor exception (accepted).
 
+### C-4 step 4 done (2026-11-13): MethodCall receiver via ExprView
+
+`emit_method_call`/`resolve_method_receiver`/`emit_dyn_method_call`/
+`resolve_dyn_concrete` take `ExprView`; the HIR arm drops its `to_ast`
+receiver gate (losslessness remains). New view probes:
+`index_object_identifier` (dyn collection-element), `struct_literal_type_name`
+(vtable concrete), `is_deref`. Register numbering preserved exactly: the
+prefix/deref branches waste `recv_tmp` first (old order), the plain-Hir branch
+lets the operand path allocate in `recv_tmp`'s position — `resolve_method_receiver`
+split into three flat helpers to stay Praetor-clean (83 = baseline).
+Remaining emit_expr to_ast code refs: Index obj/index (2), Call eager-arg
+gate (1), Block-children splice (1), UFCS/Match-List/closure fallbacks
+(accepted leaves). Gates: quick 42/42, full A/B BYTE-IDENTICAL,
+determinism clean, Praetor 83 = baseline.
+
 ### C-4 step 3 done (2026-11-13): MethodCall arguments via ArgsView
 
 `ArgsView` (mirrors `SpawnArgs`) threads call-site arguments through
@@ -371,6 +386,6 @@ arg loops evaluate through `emit_arg`: AST keeps gen_reg + emit_expr_inner,
 HIR goes through the operand path). The HIR arm gates receiver+args
 losslessness up front; the UFCS desugar leaf converts via `as_ast()`
 (documented exception — the desugared `Expr::Call` is AST-shaped).
-10 external callers wrapped in `ArgsView::Ast`. Receiver still crosses as
-AST (receiver-view slice is the remaining step). Gates: quick 42/42,
-full A/B BYTE-IDENTICAL, determinism clean.
+10 external callers wrapped in `ArgsView::Ast`. Gates: quick 42/42,
+full A/B BYTE-IDENTICAL, determinism clean. (Receiver slice followed in
+step 4.)
