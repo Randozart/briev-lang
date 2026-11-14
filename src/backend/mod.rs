@@ -644,7 +644,13 @@ pub fn analyze_program(
     } else {
         crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe)
     };
-    if hir_emit_enabled() {
+    // 2026-11-14 (A/B byte-identity, recommender): owned-storage releases are
+    // statements (`ReleaseOwned`/`TempTransfer`) that the HIR statement walk
+    // emits natively in BOTH modes; gating the insertion on HIR mode made the
+    // AST-expression path skip every release, so the two emissions diverged
+    // (HIR freed a consumed substring, AST leaked it). The insertion is an
+    // analysis result, not an emission choice: run it unconditionally.
+    {
         let escapes = crate::analysis::allocation::summarize_escapes(items);
         crate::hir::owned_storage::insert_releases(&mut hir, &escapes);
     }

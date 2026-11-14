@@ -2856,11 +2856,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         self.hir_stmts_seen = 0;
         self.hir_stmts_native = 0;
         self.hir_stmts_fallback = 0;
-        let hir_stmt_bodies = if crate::backend::hir_emit_enabled() {
-            build_hir_stmt_bodies(&analysis.hir)
-        } else {
-            HashMap::new()
-        };
+        // 2026-11-14 (A/B byte-identity): built in BOTH modes. The statement
+        // walk runs in both modes (it owns the compiler-inserted releases and
+        // temp transfers); an empty map here made `BRIEV_HIR_EMIT=0` fall back
+        // to plain AST bodies and skip every release.
+        let hir_stmt_bodies = build_hir_stmt_bodies(&analysis.hir);
         let hir_body_for = |name: &str| -> Option<&[crate::hir::stmt::HirStmt]> {
             hir_stmt_bodies.get(name).map(Vec::as_slice)
         };
