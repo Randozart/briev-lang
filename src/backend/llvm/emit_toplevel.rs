@@ -5186,6 +5186,14 @@ impl LlvmBackend {
             if param_llvm_ty == "ptr" {
                 let conv = format!("%ac{}", i);
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", conv, raw).ok();
+                // 2026-11-13 (aggregate-arg ABI): `%ac{i}` is a genuine i64 SSA
+                // value. Record it, or a later outbound call marshalling sees
+                // the register typed by its Briev type (a struct/aggregate
+                // whose llvm_type is `ptr`) and forwards the i64 operand as a
+                // `ptr` operand — invalid IR (`%ac0` defined i64, expected ptr;
+                // BUGS.md). Downstream call sites read reg_llvm_ty to choose the
+                // ptr/i64 conversion, so this must match the emitted value.
+                self.fun.reg_llvm_ty.insert(conv.clone(), "i64".to_string());
                 // 2026-11-14 (#96): ABI pointer parameters use i64 handles
                 // even on wasm32; cast-width adaptation needs the emitted type.
                 self.fun.reg_value_ll.insert(conv.clone(), "i64".to_string());
@@ -8002,6 +8010,10 @@ impl LlvmBackend {
             if param_llvm_ty == "ptr" {
                 let ac = format!("%ac{}", i);
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", ac, raw).ok();
+                // 2026-11-13 (aggregate-arg ABI): the handle is a real i64 SSA
+                // value — record it so outbound call marshalling converts it
+                // back to ptr instead of forwarding an i64 as a ptr operand.
+                self.fun.reg_llvm_ty.insert(ac.clone(), "i64".to_string());
                 self.fun.reg_value_ll.insert(ac.clone(), "i64".to_string());
                 conv = ac;
             } else if param_llvm_ty == "i64" {

@@ -167,6 +167,35 @@ fn callable_transaction_local_slots_are_inside_the_function() {
     assert_unique_ssa_definitions(&ir);
 }
 
+#[test]
+fn aggregate_value_arguments_marshal_handle_to_ptr() {
+    // 2026-11-13 (BUGS.md aggregate-arg ABI): a struct/obj VALUE whose field
+    // includes a collection/pointer (List, String) is an i{int_bits} handle in
+    // SSA, but its Briev type's ABI is `ptr`. Passing such a value to a defn
+    // used to forward the i64 handle as a `ptr` operand — invalid LLVM
+    // (`%ac0` defined i64, expected ptr). Both the parameter handle and the
+    // struct-literal handle are now recorded so the call boundary inttoptrs.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
+    let str_source = r#"
+        struct Named { n: Int; label: String; };
+        defn double_n(x: Named) -> Int { term x.n * 2; };
+        defn wrap(x: Named) -> Int { term double_n(x) + x.label .^Length; };
+        out let res: Int = 0;
+        out let t: Int = 0;
+        node main [t == 0][t == 1] {
+            let x: Named = Named { n: 3, label: "hi" };
+            res = wrap(x);
+            t = 1;
+            term;
+        };
+    "#;
+    let (items, universe) = normalized_program(str_source);
+    let ir = LlvmBackend::new().with_type_universe(universe).generate(&items, None);
+    for optimization in ["-O0", "-O2"] {
+        super::logical_tests::clang_ir(&ir, optimization, true);
+    }
+}
+
 fn assert_unique_ssa_definitions(ir: &str) {
     let mut names = std::collections::HashSet::new();
     for line in ir.lines().map(str::trim) {
