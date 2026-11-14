@@ -1,27 +1,30 @@
 pub mod assembler;
 pub mod bad;
 pub(crate) mod bld;
+
+// The counsel contract layer: inert identity attributes, checked by counsel-check.
+use counsel::pre;
 pub mod capabilities;
-pub mod register_types;
 pub mod circt;
 pub mod electronics;
+pub mod gpu_lowering;
 pub mod llvm;
 pub mod metadata;
 pub mod normalizer;
+pub mod ptx;
+pub mod register_types;
+pub mod spirv;
 pub mod vm;
 pub mod webstack;
-pub mod spirv;
-pub mod ptx;
-pub mod gpu_lowering;
 
 use crate::analysis::call_graph::CallGraph;
+use crate::analysis::dataflow::DataflowError;
 use crate::analysis::dependency_graph::DependencyGraph;
 use crate::analysis::loop_shape::LoopShape;
 use crate::analysis::range::ParameterRanges;
-use crate::analysis::dataflow::DataflowError;
-use crate::hir::region::RegionAnalyzer;
 use crate::analysis::transition_graph::ReactorTransitionGraph;
-use crate::ast::{Annotation, Expr, Statement, TopLevel, Transaction, Definition};
+use crate::ast::{Annotation, Definition, Expr, Statement, TopLevel, Transaction};
+use crate::hir::region::RegionAnalyzer;
 use std::collections::HashMap;
 
 /// Intent: Container for all shared analysis results that backends can consume.
@@ -120,7 +123,8 @@ pub struct AnalysisResults {
     /// 2026-08-07 (object instance pools): bases whose spawn count is bounded
     /// by a RUNTIME value — their member columns are runtime-sized heap
     /// buffers (dependent capacity, SPEC §16.6).
-    pub dependent_pools: std::collections::HashMap<String, Vec<crate::analysis::spawn_pool::DependentTerm>>,
+    pub dependent_pools:
+        std::collections::HashMap<String, Vec<crate::analysis::spawn_pool::DependentTerm>>,
     /// 2026-08-09 (Phase 5): storage class of non-pooled spawn bases — `box`
     /// (per-instance-heap) or `spill` (growable buffer). The backend skips the
     /// static `[capacity x T]` column for these.
@@ -137,14 +141,12 @@ pub struct AnalysisResults {
     /// convention, defaulted to c_abi here since the glue config is not
     /// available in analyze_program; the GLUE wiring refines lto/wasm). See
     /// docs/plans/2026-08-31-boundary-ownership-inference.md.
-    pub boundary_ownership:
-        crate::analysis::boundary_ownership::BoundaryOwnershipResult,
+    pub boundary_ownership: crate::analysis::boundary_ownership::BoundaryOwnershipResult,
     /// 2026-10-29 (destination ownership Phase R1): frontend semantic value
     /// facts, call summaries, escape sinks, and conservative destination
     /// classes. Analysis-only; backend lowering does not consume it yet. See
     /// docs/plans/2026-10-29-destination-ownership-reconciliation.md.
-    pub destination_ownership:
-        crate::analysis::destination_ownership::DestinationOwnershipPlan,
+    pub destination_ownership: crate::analysis::destination_ownership::DestinationOwnershipPlan,
     /// 2026-09-13 (defn-liveness emission): the call-reachable defn/txn set.
     /// The backend emits ONLY these (plus keep_all when live code uses `.^^`
     /// reflection). Imports grant capability; liveness gates emission cost.
@@ -255,9 +257,8 @@ pub fn analyze_program(
     // 2026-11-05 (H4.1): one typed-HIR lowering per analysis run. The HIR
     // consumer flip below and every later family reads this tree.
     let mut hir = build_hir(items, type_universe);
-    let transition_graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
-        items, &None, &vec![],
-    );
+    let transition_graph =
+        crate::analysis::transition_graph::ReactorTransitionGraph::build(items, &None, &vec![]);
     let empty_dependency_graph = || crate::analysis::dependency_graph::DependencyGraph {
         topo_order: Vec::new(),
         bit_index: std::collections::HashMap::new(),
@@ -271,8 +272,8 @@ pub fn analyze_program(
     let dependency_graph = if hir_emit_enabled() {
         let ast = crate::analysis::dependency_graph::DependencyGraph::build(items)
             .unwrap_or_else(|_| empty_dependency_graph());
-        let h = crate::hir::dependency_graph::build(&hir)
-            .unwrap_or_else(|_| empty_dependency_graph());
+        let h =
+            crate::hir::dependency_graph::build(&hir).unwrap_or_else(|_| empty_dependency_graph());
         debug_assert_eq!(h, ast, "HIR/AST dependency-graph drift");
         h
     } else {
@@ -328,7 +329,12 @@ pub fn analyze_program(
                     && !c.exported
                     && c.sync_domains.is_empty()
             })
-            .map(|c| (c.name.clone(), crate::hir::inline_cost::node_inline_decision_hir(c)))
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    crate::hir::inline_cost::node_inline_decision_hir(c),
+                )
+            })
             .collect();
         if h != ast {
             if let Ok(dir) = std::env::var("BRIEV_DRIFT_DIR") {
@@ -366,7 +372,9 @@ pub fn analyze_program(
     let mut field_inits: HashMap<String, crate::ast::Expr> = HashMap::new();
     for item in items {
         if let TopLevel::StateDecl(s) = item {
-            field_inits.entry(s.name.clone()).or_insert(crate::ast::Expr::Decimal(0));
+            field_inits
+                .entry(s.name.clone())
+                .or_insert(crate::ast::Expr::Decimal(0));
         } else if let TopLevel::Statement(stmt) = item {
             if let crate::ast::Statement::Let { name, expr, .. } = stmt.as_ref() {
                 if let Some(e) = expr {
@@ -375,7 +383,11 @@ pub fn analyze_program(
             }
         }
     }
-    let node_order: Vec<String> = transition_graph.nodes.iter().map(|n| n.name.clone()).collect();
+    let node_order: Vec<String> = transition_graph
+        .nodes
+        .iter()
+        .map(|n| n.name.clone())
+        .collect();
     // 2026-08-06 (fix): only foldable txns (with a bounded_pre) are scheduled
     // for frees — a non-bounded reactive last consumer has no sound free point.
     let foldable: std::collections::HashSet<String> = transition_graph
@@ -394,22 +406,26 @@ pub fn analyze_program(
         let mut field_inits_hir: HashMap<String, crate::hir::expr::HirExpr> = HashMap::new();
         for g in &hir.globals {
             if g.is_state_decl {
-                field_inits_hir
-                    .entry(g.name.clone())
-                    .or_insert_with(|| crate::hir::expr::HirExpr {
+                field_inits_hir.entry(g.name.clone()).or_insert_with(|| {
+                    crate::hir::expr::HirExpr {
                         id: crate::hir::ids::NodeId(0),
                         span: None,
                         ty: None,
                         kind: crate::hir::expr::HirExprKind::Literal(
                             crate::hir::expr::HirLiteral::Int(0),
                         ),
-                    });
+                    }
+                });
             } else if let Some(e) = &g.expr {
-                field_inits_hir.entry(g.name.clone()).or_insert_with(|| e.clone());
+                field_inits_hir
+                    .entry(g.name.clone())
+                    .or_insert_with(|| e.clone());
             }
         }
-        let ast = crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable);
-        let hir_lt = crate::hir::global_lifetime::analyze(&hir, &field_inits_hir, &node_order, &foldable);
+        let ast =
+            crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable);
+        let hir_lt =
+            crate::hir::global_lifetime::analyze(&hir, &field_inits_hir, &node_order, &foldable);
         debug_assert_eq!(hir_lt, ast, "HIR/AST global-lifetime drift");
         hir_lt
     } else {
@@ -456,8 +472,7 @@ pub fn analyze_program(
     let (spawn_pools, dependent_pools, _spawn_errors, spawn_storage) = if hir_emit_enabled() {
         let (ast_pools, ast_dep, ast_err, ast_storage) =
             crate::analysis::spawn_pool::analyze(items);
-        let (hir_pools, hir_dep, hir_err, hir_storage) =
-            crate::hir::spawn_pool::analyze(&hir);
+        let (hir_pools, hir_dep, hir_err, hir_storage) = crate::hir::spawn_pool::analyze(&hir);
         debug_assert_eq!(hir_pools, ast_pools, "HIR/AST spawn capacity drift");
         debug_assert_eq!(hir_dep, ast_dep, "HIR/AST dependent-term drift");
         debug_assert_eq!(hir_err, ast_err, "HIR/AST spawn-error drift");
@@ -538,12 +553,11 @@ pub fn analyze_program(
     // Phase 3: array layout metadata feeds the slot-reuse greedy (same
     // total bytes) AND the epilogue-fusion gate (element width — the runner
     // fuses f32 producers only). Computed via the shared layout rule.
-    let array_meta: std::collections::HashMap<
-        String,
-        crate::analysis::gpu_schedule::ArrayMeta,
-    > = {
-        let mut sb = crate::backend::spirv::SpirvBuilder::new()
-            .with_universe(type_universe.unwrap_or(&crate::type_universe::TypeUniverse::new()), 64);
+    let array_meta: std::collections::HashMap<String, crate::analysis::gpu_schedule::ArrayMeta> = {
+        let mut sb = crate::backend::spirv::SpirvBuilder::new().with_universe(
+            type_universe.unwrap_or(&crate::type_universe::TypeUniverse::new()),
+            64,
+        );
         crate::backend::spirv::lower::collect_state_fields(items)
             .iter()
             .filter_map(|f| {
@@ -556,13 +570,17 @@ pub fn analyze_program(
                     other => other.clone(),
                 };
                 let elem = sb.scalar_storage_bytes(&inner).ok()? as u64;
-                Some((f.name.clone(), crate::analysis::gpu_schedule::ArrayMeta { bytes, elem }))
+                Some((
+                    f.name.clone(),
+                    crate::analysis::gpu_schedule::ArrayMeta { bytes, elem },
+                ))
             })
             .collect()
     };
     let gpu_schedule = if hir_emit_enabled() {
         let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
-        let ast = crate::analysis::gpu_schedule::build_schedule(items, &accel, &array_meta, f16_acc);
+        let ast =
+            crate::analysis::gpu_schedule::build_schedule(items, &accel, &array_meta, f16_acc);
         let h = crate::hir::gpu_schedule::build_schedule(&hir, &accel, &array_meta, f16_acc);
         debug_assert_eq!(h, ast, "HIR/AST GPU schedule drift");
         h
@@ -606,7 +624,10 @@ pub fn analyze_program(
         let h = crate::hir::defn_liveness::DefnLiveness::build(&hir);
         debug_assert_eq!(h.live, ast.live, "HIR/AST defn-liveness drift");
         debug_assert_eq!(h.keep_all, ast.keep_all, "HIR/AST keep_all drift");
-        crate::analysis::defn_liveness::DefnLiveness { live: h.live, keep_all: h.keep_all }
+        crate::analysis::defn_liveness::DefnLiveness {
+            live: h.live,
+            keep_all: h.keep_all,
+        }
     } else {
         crate::analysis::defn_liveness::DefnLiveness::build(items)
     };
@@ -654,8 +675,7 @@ pub fn analyze_program(
         let escapes = crate::analysis::allocation::summarize_escapes(items);
         crate::hir::owned_storage::insert_releases(&mut hir, &escapes);
     }
-    let mut destination_ownership =
-        crate::analysis::destination_ownership::analyze(items);
+    let mut destination_ownership = crate::analysis::destination_ownership::analyze(items);
     // D6: LoopShape.local_fields is the canonical Local proof and joins the
     // destination plan directly; no body is re-walked and no duplicate map is
     // carried through AnalysisResults.
@@ -663,7 +683,7 @@ pub fn analyze_program(
         &mut destination_ownership.generalized,
         &loop_shapes,
     );
-        AnalysisResults {
+    AnalysisResults {
         reclamation,
         call_graph: CallGraph::new(),
         param_ranges: ParameterRanges::new(),
@@ -787,9 +807,7 @@ fn verify_or_report(
 /// 2026-08-06 (accel plan): merge `TopLevel::ModuleMetadata` nodes into one
 /// module map (SPEC §8.9). Last binding wins per key, matching the parser's
 /// merge semantics across consecutive top-level `attr` lines.
-fn collect_module_metadata(
-    items: &[TopLevel],
-) -> HashMap<String, crate::ast::PropertyValue> {
+fn collect_module_metadata(items: &[TopLevel]) -> HashMap<String, crate::ast::PropertyValue> {
     let mut out = HashMap::new();
     for item in items {
         if let TopLevel::ModuleMetadata(map) = item {
@@ -831,9 +849,9 @@ fn collect_observable_names(items: &[TopLevel]) -> std::collections::HashSet<Str
 /// variable names to the observable set. Walks blocks and guards.
 fn collect_let_observable_names(stmt: &Statement, names: &mut std::collections::HashSet<String>) {
     match stmt {
-        Statement::Let { name, modifiers, .. }
-            if modifiers.iter().any(|m| m.name == "out" || m.name == "vol") =>
-        {
+        Statement::Let {
+            name, modifiers, ..
+        } if modifiers.iter().any(|m| m.name == "out" || m.name == "vol") => {
             names.insert(name.clone());
         }
         Statement::Block(body) => {
@@ -856,11 +874,16 @@ fn collect_let_observable_names(stmt: &Statement, names: &mut std::collections::
 /// `inline_decisions[name]` in emit_callable_txn instead of re-deriving the
 /// `params < 8 && body < 20` heuristic. Only callable txns (non-reactive)
 /// consult the map, but computing for all transactions is harmless.
-fn build_inline_decisions(items: &[TopLevel]) -> HashMap<String, crate::analysis::inline_cost::InlineDecision> {
+fn build_inline_decisions(
+    items: &[TopLevel],
+) -> HashMap<String, crate::analysis::inline_cost::InlineDecision> {
     let mut out = HashMap::new();
     for item in items {
         if let TopLevel::Transaction(t) = item {
-            out.insert(t.name.clone(), crate::analysis::inline_cost::callable_inline_decision(t));
+            out.insert(
+                t.name.clone(),
+                crate::analysis::inline_cost::callable_inline_decision(t),
+            );
         }
     }
     out
@@ -872,11 +895,16 @@ fn build_inline_decisions(items: &[TopLevel]) -> HashMap<String, crate::analysis
 /// fallback consumes this instead of always inlining acyclic node bodies.
 /// Weighted cost only — see `node_inline_decision` for why FFI-calling node
 /// bodies stay eligible.
-fn build_node_inline_decisions(items: &[TopLevel]) -> HashMap<String, crate::analysis::inline_cost::InlineDecision> {
+fn build_node_inline_decisions(
+    items: &[TopLevel],
+) -> HashMap<String, crate::analysis::inline_cost::InlineDecision> {
     let mut out = HashMap::new();
     for item in items {
         if let TopLevel::Transaction(t) = item {
-            out.insert(t.name.clone(), crate::analysis::inline_cost::node_inline_decision(t));
+            out.insert(
+                t.name.clone(),
+                crate::analysis::inline_cost::node_inline_decision(t),
+            );
         }
     }
     out
@@ -937,7 +965,15 @@ fn ast_swan_songs(
 fn hir_raw_swan_songs(
     program: &crate::hir::HirProgram,
     items: &[TopLevel],
-) -> Option<HashMap<String, (Vec<crate::hir::stmt::HirStmt>, Vec<Vec<crate::hir::stmt::HirStmt>>)>> {
+) -> Option<
+    HashMap<
+        String,
+        (
+            Vec<crate::hir::stmt::HirStmt>,
+            Vec<Vec<crate::hir::stmt::HirStmt>>,
+        ),
+    >,
+> {
     let state_fields = crate::analysis::loop_shape::collect_state_fields(items);
     let mut songs = HashMap::new();
     for c in program.callables.iter().filter(|c| {
@@ -991,8 +1027,18 @@ pub fn run_peephole(items: &[TopLevel], analysis: &AnalysisResults) -> Vec<TopLe
 pub fn supported_hashtags(backend: &str) -> Vec<&'static str> {
     match backend {
         "llvm" => {
-            vec!["volatile", "sfence", "lfence", "mfence", "aligned", "packed",
-                 "inline", "unroll", "vectorize", "gpu"]
+            vec![
+                "volatile",
+                "sfence",
+                "lfence",
+                "mfence",
+                "aligned",
+                "packed",
+                "inline",
+                "unroll",
+                "vectorize",
+                "gpu",
+            ]
         }
         "webstack" => {
             vec!["volatile", "aligned"]
@@ -1083,12 +1129,20 @@ pub fn validate_hashtags_in_program(items: &[TopLevel], backend: &str, strict: b
         match result {
             HashtagValidation::Supported => {}
             HashtagValidation::UnsupportedAdvisory(name) => {
-                eprintln!("warning: Hashtag #{} is not supported by {} backend (advisory, ignored)", name, backend);
+                eprintln!(
+                    "warning: Hashtag #{} is not supported by {} backend (advisory, ignored)",
+                    name, backend
+                );
             }
             HashtagValidation::UnsupportedMandatory(name) => {
-                eprintln!("error: Mandatory hashtag #!{} is not supported by {} backend", name, backend);
+                eprintln!(
+                    "error: Mandatory hashtag #!{} is not supported by {} backend",
+                    name, backend
+                );
                 if strict {
-                    eprintln!("  Hint: Use a different backend, remove the tag, or add fallbacks with #!A|B|C");
+                    eprintln!(
+                        "  Hint: Use a different backend, remove the tag, or add fallbacks with #!A|B|C"
+                    );
                 }
                 has_errors = true;
             }
@@ -1118,10 +1172,7 @@ pub fn collect_expr_identifiers(expr: &Expr, ids: &mut std::collections::HashSet
             collect_expr_identifiers(l, ids);
             collect_expr_identifiers(r, ids);
         }
-        Expr::UnaryOp(_, e)
-        | Expr::Cast(e, _)
-        | Expr::IsType(e, _)
-        | Expr::Field(e, _) => {
+        Expr::UnaryOp(_, e) | Expr::Cast(e, _) | Expr::IsType(e, _) | Expr::Field(e, _) => {
             collect_expr_identifiers(e, ids);
         }
         Expr::Call(_, args, _) | Expr::Spawn { args, .. } => {
@@ -1186,26 +1237,51 @@ pub fn collect_expr_identifiers(expr: &Expr, ids: &mut std::collections::HashSet
         }
         Expr::MethodCall(recv, _, args, _) => {
             collect_expr_identifiers(recv, ids);
-            for a in args { collect_expr_identifiers(a, ids); }
+            for a in args {
+                collect_expr_identifiers(a, ids);
+            }
         }
         Expr::FormattingAnnotation(_) | Expr::StructLiteral { .. } => {}
-        Expr::Decimal(_) | Expr::TaggedLiteral(_, _) | Expr::Bool(_) | Expr::Float(_) | Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) => {}
+        Expr::Decimal(_)
+        | Expr::TaggedLiteral(_, _)
+        | Expr::Bool(_)
+        | Expr::Float(_)
+        | Expr::Quoted(_)
+        | Expr::TaggedQuotedLiteral(_, _) => {}
         Expr::PluginIntercept { args, .. } => {
-            for a in args { collect_expr_identifiers(a, ids); }
+            for a in args {
+                collect_expr_identifiers(a, ids);
+            }
         }
-        Expr::Exists(name) => { panic!("compile-time existence check '{}' reached codegen", name) },
+        Expr::Exists(name) => {
+            panic!("compile-time existence check '{}' reached codegen", name)
+        }
         Expr::UnitLiteral { .. } => {}
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_expr_identifiers(array, ids);
-            if let Some(e) = start.as_deref() { collect_expr_identifiers(e, ids); }
-            if let Some(e) = end.as_deref() { collect_expr_identifiers(e, ids); }
-            if let Some(e) = stride.as_deref() { collect_expr_identifiers(e, ids); }
+            if let Some(e) = start.as_deref() {
+                collect_expr_identifiers(e, ids);
+            }
+            if let Some(e) = end.as_deref() {
+                collect_expr_identifiers(e, ids);
+            }
+            if let Some(e) = stride.as_deref() {
+                collect_expr_identifiers(e, ids);
+            }
         }
-        Expr::Range { start, end, inclusive: _ } => {
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
             collect_expr_identifiers(start, ids);
             collect_expr_identifiers(end, ids);
         }
-
     }
 }
 
@@ -1283,7 +1359,9 @@ pub fn detect_fusable_pairs(items: &[TopLevel]) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for i in 0..txns.len() {
         for j in 0..txns.len() {
-            if i == j { continue; }
+            if i == j {
+                continue;
+            }
             let fusable = all_writes[i].iter().any(|w| all_pre_ids[j].contains(w))
                 || all_post_ids[i].iter().any(|id| all_reads[j].contains(id));
             if fusable {
@@ -1469,7 +1547,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(
                     Expr::Identifier("escapes".into()),
@@ -1521,8 +1600,11 @@ mod tests {
         let Statement::Expression(Expr::Call(_, args, _)) = &song[0] else {
             panic!("hoisted swan song should be an Expression call");
         };
-        assert!(matches!(&args[0], Expr::Identifier(n) if n == "escapes"),
-            "top-level let state field must enable remap: {:?}", args[0]);
+        assert!(
+            matches!(&args[0], Expr::Identifier(n) if n == "escapes"),
+            "top-level let state field must enable remap: {:?}",
+            args[0]
+        );
     }
 
     #[test]
@@ -1666,14 +1748,8 @@ mod tests {
     #[test]
     fn test_collect_assigned_identifiers_simple() {
         let body = vec![
-            Statement::Assign(
-                Expr::Identifier("x".to_string()),
-                Expr::Decimal(1),
-            ),
-            Statement::Assign(
-                Expr::Identifier("y".to_string()),
-                Expr::Decimal(2),
-            ),
+            Statement::Assign(Expr::Identifier("x".to_string()), Expr::Decimal(1)),
+            Statement::Assign(Expr::Identifier("y".to_string()), Expr::Decimal(2)),
         ];
         let ids = collect_assigned_identifiers(&body);
         assert!(ids.contains(&"x".to_string()));
@@ -1687,19 +1763,27 @@ mod tests {
         // `attr` metadata; multiple ModuleMetadata nodes merge, last wins.
         use crate::ast::PropertyValue;
         let mut m1 = std::collections::HashMap::new();
-        m1.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));
+        m1.insert(
+            "accel".to_string(),
+            PropertyValue::Identifier("try_all".into()),
+        );
         let mut m2 = std::collections::HashMap::new();
-        m2.insert("accel".to_string(), PropertyValue::Identifier("force".into()));
-        m2.insert("target".to_string(), PropertyValue::Identifier("spirv".into()));
-        let items = vec![
-            TopLevel::ModuleMetadata(m1),
-            TopLevel::ModuleMetadata(m2),
-        ];
+        m2.insert(
+            "accel".to_string(),
+            PropertyValue::Identifier("force".into()),
+        );
+        m2.insert(
+            "target".to_string(),
+            PropertyValue::Identifier("spirv".into()),
+        );
+        let items = vec![TopLevel::ModuleMetadata(m1), TopLevel::ModuleMetadata(m2)];
         let merged = collect_module_metadata(&items);
         assert_eq!(merged.len(), 2);
-        assert!(matches!(merged.get("accel"),
+        assert!(
+            matches!(merged.get("accel"),
             Some(PropertyValue::Identifier(s)) if s == "force"),
-            "last ModuleMetadata node must win");
+            "last ModuleMetadata node must win"
+        );
         assert!(matches!(merged.get("target"),
             Some(PropertyValue::Identifier(s)) if s == "spirv"));
     }

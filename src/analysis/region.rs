@@ -2,6 +2,9 @@ use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Type, UnaryOpKind};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+// The counsel contract layer: inert identity attributes, checked by counsel-check.
+use counsel::pre;
+
 /// Classification of a transaction body by computational weight.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ComplexityClass {
@@ -70,6 +73,9 @@ pub struct Interval {
 }
 
 impl Interval {
+    /// Returns true iff `val` is in the closed interval [lo, hi].
+    /// The interval must be valid (lo <= hi) — callers are responsible for this.
+    #[pre(self.lo <= self.hi)]
     pub fn contains(&self, val: i64) -> bool {
         val >= self.lo && val <= self.hi
     }
@@ -471,11 +477,7 @@ impl RegionAnalyzer {
                 // Pure variables: if constant → size 1, if interval → size of interval
                 if let Some(ref iv) = info.interval {
                     let s = iv.size();
-                    if s > 0 {
-                        Some(s)
-                    } else {
-                        None
-                    }
+                    if s > 0 { Some(s) } else { None }
                 } else {
                     None
                 }

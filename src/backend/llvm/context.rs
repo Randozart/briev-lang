@@ -1,5 +1,8 @@
 // ── Backend Context Architecture ───────────────────────────────────────
 //
+// The counsel contract layer: inert identity attributes, checked by counsel-check.
+use counsel::{post, pre};
+//
 // 2026-06-29: Three-tier context separation to eliminate the fragile
 // "save/restore" anti-pattern that previously required manual cloning of
 // 7+ fields at every inline txn boundary (see dispatch.rs emit_inline_txn_body).
@@ -18,12 +21,11 @@
 //   outweighs the overhead. If profiling shows this is a bottleneck, switch
 //   to an arena-backed HashMap or an indexed slot approach.
 
+use crate::analysis::FieldMode;
 use crate::analysis::dependency_graph::DependencyGraph;
 use crate::analysis::pgo::PgoProfile;
-use crate::analysis::FieldMode;
 use crate::ast::{
-    CellDef, EnumDefinition, Expr, ForeignSignature, Statement,
-    TriggerDeclaration, Type,
+    CellDef, EnumDefinition, Expr, ForeignSignature, Statement, TriggerDeclaration, Type,
 };
 use crate::backend::llvm::directive::OptimizationRemark;
 use crate::backend::llvm::{AllocStrategy, ChimeraInfo};
@@ -157,8 +159,7 @@ pub struct CompilerContext {
     /// invent fallback semantics when this is false.
     pub destination_plan_attached: bool,
     /// Precomputed owner/type pairs proven safe for a function-frame image.
-    pub stack_object_types:
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    pub stack_object_types: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// 2026-10-29 (enum value model groundwork): concrete value-class planner
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
     /// with #13 (full memory(readwrite)) instead of the argmemonly #8 lie.
@@ -350,11 +351,11 @@ pub struct CompilerContext {
     /// element block.
     pub coll_storage: HashMap<String, crate::backend::llvm::coll_scaffold::CollStorage>,
     /// 2026-08-13 (layout-keywords plan Phase 5): atomic field slots, keyed
-/// `"<type>.<field>"` → ordering ("seq", "relaxed", "acquire", "release",
-/// "bartered"). Populated at registration from the parser's
-/// metadata["atomic_fields"] carrier; field load/store emitters query
-/// membership and ordering to emit `load atomic`/`store atomic` (SPEC §8.2).
-pub atomic_fields: std::collections::HashMap<String, String>,
+    /// `"<type>.<field>"` → ordering ("seq", "relaxed", "acquire", "release",
+    /// "bartered"). Populated at registration from the parser's
+    /// metadata["atomic_fields"] carrier; field load/store emitters query
+    /// membership and ordering to emit `load atomic`/`store atomic` (SPEC §8.2).
+    pub atomic_fields: std::collections::HashMap<String, String>,
     /// 2026-08-13 (layout-keywords plan Phase 6): `union` type names — all
     /// fields overlay at offset 0; the type materializes as a byte array of
     /// the largest aligned field storage (SPEC §8.2).
@@ -437,10 +438,6 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// 2026-08-23 (Phase 5d): variant constructor registry from TypeDef
     /// enums — variant name → (enum name, tag index). Built during the
     /// definition walk; read by construction calls + match dispatch.
-
-
-
-
     // Optimization
     pub optimize_budget: u64,
     /// 2026-07-22: Initial arena buffer size in bytes. Default 65536 (64KB).
@@ -472,7 +469,8 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// (malloc'd at init to the sum of the terms + 1, SPEC §16.6 dependent
     /// bounds). Keys that also appear in `spawn_pools` still include the
     /// static capacity as a minimum (rows = static_cap + sum(terms)).
-    pub dependent_pools: std::collections::HashMap<String, Vec<crate::analysis::spawn_pool::DependentTerm>>,
+    pub dependent_pools:
+        std::collections::HashMap<String, Vec<crate::analysis::spawn_pool::DependentTerm>>,
     /// 2026-08-09 (Phase 5): storage class of non-pooled spawn bases — `box`
     /// (per-instance-heap) or `spill` (growable). Bases here never get a
     /// static `[capacity x T]` column; their spawns allocate per instance.
@@ -481,7 +479,10 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// → member → (byte offset within the instance block, Briev type). The boxed
     /// block is one instance's worth of member storage laid out like the static
     /// instance columns; member access inttoptrs the handle + GEPs the offset.
-    pub boxed_offsets: std::collections::HashMap<String, std::collections::HashMap<String, (u64, crate::ast::Type)>>,
+    pub boxed_offsets: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, (u64, crate::ast::Type)>,
+    >,
     /// 2026-08-07 (object instance pools): state-field indices whose column is
     /// a DEPENDENT heap buffer → the LLVM element type string of one row (the
     /// static column's `load_ty`). Member access GEPs through the buffer
@@ -623,7 +624,9 @@ impl CompilerContext {
             let seg = seg.trim();
             if let Some(rest) = seg.strip_prefix('p') {
                 if let Some(abi) = rest.split(':').nth(1).and_then(|s| s.parse::<u64>().ok()) {
-                    if abi > max_abi { max_abi = abi; }
+                    if abi > max_abi {
+                        max_abi = abi;
+                    }
                 }
             }
         }
@@ -632,6 +635,9 @@ impl CompilerContext {
 
     /// Get the pointer width in bytes for the current target.
     /// Derived from int_bits (set by data layout or CLI override).
+    /// Pointer width in bytes = int_bits / 8.  The postcondition (term >= 0) is
+    /// provable because u64 division never produces a negative value.
+    #[post(term >= 0)]
     pub fn pointer_bytes(&self) -> u64 {
         self.int_bits / 8
     }
@@ -672,7 +678,8 @@ impl CompilerContext {
             tail_recursive: std::collections::HashSet::new(),
             tail_loop: crate::analysis::tail_recursion::TailLoopPlan::default(),
             enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan::default(),
-            generalized_destination_ownership: crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
+            generalized_destination_ownership:
+                crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
             destination_plan_attached: false,
             stack_object_types: std::collections::BTreeMap::new(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
@@ -894,7 +901,12 @@ fn collect_free_expr(
             collect_free_expr(o, bound, free);
             collect_free_expr(i, bound, free);
         }
-        crate::ast::Expr::Slice { array, start, end, stride } => {
+        crate::ast::Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_free_expr(array, bound, free);
             for b in [start, end, stride].into_iter().flatten() {
                 collect_free_expr(b, bound, free);
@@ -955,9 +967,9 @@ fn collect_free_stmts(
                 }
                 bound.insert(name.clone());
             }
-            crate::ast::Statement::Term(Some(v)) | crate::ast::Statement::EndProgram(Some(v)) | crate::ast::Statement::Tail(v) => {
-                collect_free_expr(v, bound, free)
-            }
+            crate::ast::Statement::Term(Some(v))
+            | crate::ast::Statement::EndProgram(Some(v))
+            | crate::ast::Statement::Tail(v) => collect_free_expr(v, bound, free),
             crate::ast::Statement::Expression(v) | crate::ast::Statement::Gate(v) => {
                 collect_free_expr(v, bound, free)
             }
@@ -968,11 +980,11 @@ fn collect_free_stmts(
 }
 
 #[derive(Debug, Clone)]
-pub struct FunctionContext {    // SSA register counters — NEVER rewound (prevents %t{N} collisions)
+pub struct FunctionContext {
+    // SSA register counters — NEVER rewound (prevents %t{N} collisions)
     /// D6: the active bounded-loop destination plan. All phi/state decisions
     /// query this instead of a propagated name set.
-    pub current_loop_engine:
-        Option<crate::analysis::destination_model::LoopEnginePlan>,
+    pub current_loop_engine: Option<crate::analysis::destination_model::LoopEnginePlan>,
     pub txn_counter: usize,
     pub within_counter: usize,
     /// Arena bump counter for unique per-allocation register names
@@ -1160,8 +1172,7 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// 2026-10-29 (enum value model groundwork): representation of registers
     /// known to carry a concrete enum value rather than a legacy handle.
     /// Groundwork only; codegen does not consume this yet.
-    pub enum_register_reprs:
-        HashMap<String, crate::analysis::enum_layout::EnumValueRepr>,
+    pub enum_register_reprs: HashMap<String, crate::analysis::enum_layout::EnumValueRepr>,
     /// Declared Briev return type of the current defn, used to seed
     /// `expected_enum_type` for term/tail expressions.
     pub item_return_type: Option<crate::ast::Type>,
@@ -1478,7 +1489,8 @@ impl FunctionContext {
             plain_ptr: None,
             effect_carry: false,
             volatile_raw_ptr_params: false,
-            enum_inline_slots: HashMap::new(), enum_register_reprs: HashMap::new(),
+            enum_inline_slots: HashMap::new(),
+            enum_register_reprs: HashMap::new(),
             enum_construct_slot: None,
             enum_out_slot: None,
             enum_out_type: None,
@@ -1824,11 +1836,13 @@ mod tests {
 
     #[test]
     fn test_compiler_context_wasm_data_layout() {
-        let wasm_dl =
-            "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20".to_string();
+        let wasm_dl = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20".to_string();
         assert_eq!(CompilerContext::parse_pointer_width(&wasm_dl), 32);
-        assert_eq!(CompilerContext::parse_pointer_width(
-            &"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"),
-            64);
+        assert_eq!(
+            CompilerContext::parse_pointer_width(
+                &"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+            ),
+            64
+        );
     }
 }
