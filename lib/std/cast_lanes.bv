@@ -1144,7 +1144,13 @@ defn coll_destroy(handle: Int)
             Free#(data as Ptr<Bit<8>>);
         };
     };
-    Free#(handle as Ptr<Bit<8>>);
+    // 2026-11-14: the OBJECT can also be arena-allocated — the scaffold init
+    // routes through Alloc#, which may pick the request arena. Freeing an
+    // arena interior pointer corrupts the heap ("double free or corruption
+    // (out)" via coll_destroy on the env list). Owns-check it like data.
+    when coll_arena_owns(handle) == 0 {
+        Free#(handle as Ptr<Bit<8>>);
+    };
     term 0;
 };
 
