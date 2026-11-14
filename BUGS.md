@@ -13627,3 +13627,23 @@ Regression coverage: `solver_response` unit tests and the two explicit real-Z3
 [solver response contract](docs/architecture/solver-response.md) for the exact
 trust boundary and test commands. The bounded Kani harness is not an accepted
 proof: its initial verification attempt timed out.
+
+## 2026-11-14 — symbolic arithmetic panics on valid wrapping integer expressions
+
+Both symbolic entry points folded integer literals with host Rust `+`, `-`, `*`
+and `/`. `MAX + 1` panicked in debug builds; `MIN / -1` panicked in both profiles.
+The interpreter wraps add/sub/mul and the SMT encoder uses 64-bit bitvectors.
+The fold now wraps those three operators explicitly and uses `checked_div`,
+retaining exceptional divisions as symbolic terms. Boundary regressions failed
+on the old source. See [the arithmetic contract](docs/architecture/verifier-arithmetic.md)
+for implementation harnesses and remaining semantic boundaries.
+
+## 2026-11-14 — native arithmetic no-wrap flags conflict with interpreter wrapping
+
+**Status: discovered; native repair and full Briev reproduction pending.**
+General integer expression emission uses `add nuw nsw`, `sub nsw`, `mul nsw`
+without a per-operation overflow proof. At an overflow boundary this differs
+from the interpreter and SMT model. An isolated IR reproduction using the
+emitter's addition flags lets LLVM O3 replace `(x + 1) > x` by constant true,
+which is false for wrapping signed MAX. The arithmetic contract above records
+the source mapping and prevents treating verifier results as native guarantees.

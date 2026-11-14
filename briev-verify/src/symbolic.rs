@@ -298,21 +298,10 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
 
 /// Try to simplify a binary operation on symbolic values
 fn simplify_binary(op: &str, left: &SymbolicValue, right: &SymbolicValue) -> Option<SymbolicValue> {
+    if let (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) = (left, right) {
+        return fold_integer(op, *a, *b).map(SymbolicValue::int_literal);
+    }
     match (op, left, right) {
-        // Arithmetic on literals
-        ("+", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => {
-            Some(SymbolicValue::int_literal(a + b))
-        }
-        ("-", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => {
-            Some(SymbolicValue::int_literal(a - b))
-        }
-        ("*", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => {
-            Some(SymbolicValue::int_literal(a * b))
-        }
-        ("/", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) if *b != 0 => {
-            Some(SymbolicValue::int_literal(a / b))
-        }
-
         // Identity and absorption rules for addition
         ("+", SymbolicValue::Literal(0, _), x) => Some(x.clone()),
         ("+", x, SymbolicValue::Literal(0, _)) => Some(x.clone()),
@@ -343,6 +332,55 @@ fn simplify_binary(op: &str, left: &SymbolicValue, right: &SymbolicValue) -> Opt
 
         // Can't simplify further
         _ => None,
+    }
+}
+
+/// Match interpreter/SMT wrapping arithmetic without host-profile overflow panics.
+/// Exceptional division stays symbolic: native division is not a total operation.
+fn fold_integer(op: &str, a: i64, b: i64) -> Option<i64> {
+    match op {
+        "+" => Some(a.wrapping_add(b)),
+        "-" => Some(a.wrapping_sub(b)),
+        "*" => Some(a.wrapping_mul(b)),
+        "/" => a.checked_div(b),
+        _ => None,
+    }
+}
+
+#[cfg(kani)]
+mod arithmetic_proofs {
+    use super::fold_integer;
+
+    /// The production folds equal exact widened arithmetic reduced to 64 bits.
+    #[kani::proof]
+    fn integer_add_sub_folds_are_modular() {
+        let a: i64 = kani::any();
+        let b: i64 = kani::any();
+        let wide_a = i128::from(a);
+        let wide_b = i128::from(b);
+        assert_eq!(fold_integer("+", a, b), Some((wide_a + wide_b) as i64));
+        assert_eq!(fold_integer("-", a, b), Some((wide_a - wide_b) as i64));
+        kani::cover!(a == i64::MAX && b == 1);
+        kani::cover!(a == i64::MIN && b == -1);
+    }
+
+    /// Multiplication has its own solver budget; a timeout is not a proof.
+    #[kani::proof]
+    fn integer_mul_fold_is_modular() {
+        let a: i64 = kani::any();
+        let b: i64 = kani::any();
+        assert_eq!(
+            fold_integer("*", a, b),
+            Some((i128::from(a) * i128::from(b)) as i64)
+        );
+    }
+
+    /// Exceptional native divisions must never become invented literal results.
+    #[kani::proof]
+    fn exceptional_division_is_not_folded() {
+        let a: i64 = kani::any();
+        assert_eq!(fold_integer("/", a, 0), None);
+        assert_eq!(fold_integer("/", i64::MIN, -1), None);
     }
 }
 

@@ -39,6 +39,8 @@ if ! grep -Fq 'version 4.24.0,' "$artifact_dir/version.log"; then
 fi
 "$lean_bin" -o "$artifact_dir/SolverResponse.olean" SolverResponse.lean \
     > "$artifact_dir/model.log" 2>&1
+"$lean_bin" -o "$artifact_dir/IntegerVC.olean" IntegerVC.lean \
+    >> "$artifact_dir/model.log" 2>&1
 if grep -Eq 'sorryAx|declaration uses .sorry.|Lean.ofReduceBool' "$artifact_dir/model.log"; then
     echo "The model uses an unaccepted proof placeholder or native reduction axiom." >&2
     exit 1
@@ -52,9 +54,10 @@ import sys
 expected = {
     "unsat_iff_exact", "sat_iff_exact", "first_nonempty_decides",
     "leading_sat_dominates", "leading_unsat_dominates",
-    "malformed_head_cannot_prove",
+    "malformed_head_cannot_prove", "substitution_preserves_evaluation",
+    "assertion_substitution", "assignment_vc_sound",
 }
-pattern = r"'BrievAssurance\.(\w+)' (?:depends on axioms: \[([^]]*)\]|does not depend on any axioms)"
+pattern = r"'(?:BrievAssurance|BrievIntegerVC)\.(\w+)' (?:depends on axioms: \[([^]]*)\]|does not depend on any axioms)"
 reports = {}
 for line in Path(sys.argv[1]).read_text().splitlines():
     match = re.fullmatch(pattern, line)
@@ -70,17 +73,19 @@ if set(reports) != expected:
 Path(sys.argv[2]).write_text(json.dumps(reports, indent=2) + "\n")
 PY
 
-if LEAN_PATH="$artifact_dir${LEAN_PATH:+:$LEAN_PATH}" \
-    "$lean_bin" negative/FalseSat.lean > "$artifact_dir/negative.log" 2>&1; then
-    echo "The intentionally false SAT-to-UNSAT theorem was accepted." >&2
-    exit 1
-else
-    negative_status=$?
-fi
-if [[ "$negative_status" -ne 1 ]] \
-    || ! grep -Fq "Tactic \`decide\` proved that the proposition" "$artifact_dir/negative.log" \
-    || ! grep -Fq 'is false' "$artifact_dir/negative.log"; then
-    echo "The negative control failed for an unexpected reason; inspect negative.log." >&2
-    exit 1
-fi
-echo "Lean model checked (6 named theorems); axioms approved; false theorem rejected."
+for control in FalseSat UnboundedAddition; do
+    if LEAN_PATH="$artifact_dir${LEAN_PATH:+:$LEAN_PATH}" \
+        "$lean_bin" "negative/$control.lean" > "$artifact_dir/$control.log" 2>&1; then
+        echo "The intentionally false theorem $control was accepted." >&2
+        exit 1
+    else
+        negative_status=$?
+    fi
+    if [[ "$negative_status" -ne 1 ]] \
+        || ! grep -Fq "Tactic \`decide\` proved that the proposition" "$artifact_dir/$control.log" \
+        || ! grep -Fq 'is false' "$artifact_dir/$control.log"; then
+        echo "Unexpected negative-control failure; inspect $control.log." >&2
+        exit 1
+    fi
+done
+echo "Lean models checked (9 named theorems); axioms approved; 2 false theorems rejected."

@@ -58,3 +58,31 @@ fn a_sat_model_named_unsat_cannot_prove_a_false_body_contract() {
     assert_eq!(report.unproven.len(), 1);
     assert!(report.skipped.is_empty());
 }
+
+#[test]
+#[ignore = "requires a working Z3 executable; run explicitly for the solver-boundary gate"]
+fn wrapping_addition_cannot_prove_unbounded_monotonicity() {
+    assert!(is_z3_available(), "solver-boundary gate requires Z3");
+    // x + 1 > x fails at MAX. This must stay unproven despite holding over Int.
+    let x = Expr::Identifier("x".into());
+    let mut definition = Definition::prover_defn(
+        "increment",
+        Contract::proven(
+            Expr::Bool(true),
+            Expr::BinaryOp(
+                BinaryOpKind::Gt,
+                Box::new(Expr::Identifier("term".into())),
+                Box::new(x.clone()),
+            ),
+        ),
+        vec![Statement::Term(Some(Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(x),
+            Box::new(Expr::Decimal(1)),
+        )))],
+    );
+    definition.parameters.push(("x".into(), Type::int()));
+    let report = verify_bodies(&[TopLevel::Definition(definition)]);
+    assert!(report.proven.is_empty(), "false proof: {:?}", report.proven);
+    assert_eq!(report.unproven.len(), 1);
+}
