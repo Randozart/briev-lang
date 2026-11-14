@@ -915,7 +915,15 @@ fn rewrite_list(
                 // result to a synthetic local, release the operands, return
                 // the binding. Not-fresh returns keep the conservative drop.
                 let ret_fresh = is_fresh(e, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh, &fn_freed);
-                let borrows_owned = transferred.is_none()
+                // 2026-11-14: a SELF tail call must NOT be temp-transferred.
+                // The binding would emit the recursive call, and tail-loop
+                // lowering turns that call into the loop-back `br` INSIDE the
+                // binding — stranding the transfer's releases after a
+                // terminator (invalid IR: `expected instruction opcode` on
+                // the wasm dashboard, strip_frac_zeros). The recursion
+                // already carries the value; stay conservative (leak).
+                let self_tail = matches!(&e.kind, HirExprKind::Call { callee, .. } if *callee == ctx.function);
+                let borrows_owned = !self_tail && transferred.is_none()
                     && ids.iter().any(|n| owned.contains_key(n));
                 if ret_fresh && borrows_owned {
                     let mut tname = format!("__ot{}", ctx.next);
