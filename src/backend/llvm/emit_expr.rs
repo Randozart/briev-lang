@@ -323,6 +323,60 @@ impl SpawnArgs<'_> {
     }
 }
 
+/// 2026-11-13 (H5 phase C, MethodCall slice): call-site arguments by view.
+/// Mirrors `SpawnArgs`: each arg evaluates at the same point as before; HIR
+/// args prefer the operand path and fall back to the reconstructed AST leaf.
+/// The HIR caller gates whole-expression losslessness first (receiver AND
+/// args), so the operand path's fallback cannot fire mid-list.
+#[derive(Clone, Copy)]
+pub(crate) enum ArgsView<'a> {
+    Ast(&'a [Expr]),
+    Hir(&'a [crate::hir::expr::HirExpr]),
+}
+
+impl ArgsView<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            ArgsView::Ast(args) => args.len(),
+            ArgsView::Hir(args) => args.len(),
+        }
+    }
+
+    /// Emit argument `index` at the same point the AST loop did (one result
+    /// register per argument, allocated before its emission).
+    pub(crate) fn emit_arg(
+        &self,
+        backend: &mut LlvmBackend,
+        out: &mut String,
+        indent: &str,
+        index: usize,
+    ) -> TypedRegister {
+        match self {
+            ArgsView::Ast(args) => {
+                let arg_tmp = backend.fun.gen_reg();
+                backend.emit_expr_inner(out, &arg_tmp, &args[index], indent)
+            }
+            ArgsView::Hir(args) => backend
+                .emit_hir_operand(out, &args[index], indent)
+                .expect("lossless method-call argument"),
+        }
+    }
+
+    /// The argument list as AST — for the UFCS desugar leaf, which builds an
+    /// AST-shaped `Expr::Call` (documented exception; the HIR caller's
+    /// losslessness gate makes the conversion infallible here).
+    pub(crate) fn as_ast(&self) -> Vec<Expr> {
+        match self {
+            ArgsView::Ast(args) => args.to_vec(),
+            ArgsView::Hir(args) => args
+                .iter()
+                .map(crate::hir::to_ast::expr)
+                .collect::<Option<Vec<_>>>()
+                .expect("lossless UFCS argument list"),
+        }
+    }
+}
+
 impl LlvmBackend {
     /// Emit LLVM IR for an expression. Returns the result register and type.
     /// This is the entry point for all expression codegen.
@@ -745,17 +799,18 @@ impl LlvmBackend {
                 self.emit_reflection(out, &v, ExprView::Hir(receiver), name, *kind, indent)
             }
             HirExprKind::MethodCall { receiver, name, args, .. } => {
+                // 2026-11-13 (H5 phase C): arguments cross as a view (the
+                // operand path emits each; losslessness of receiver AND args
+                // is gated first, so neither the UFCS desugar leaf nor the
+                // operand fallback can fire mid-list). The receiver still
+                // crosses as AST pending the receiver-view slice.
+                if !hir_expr_lossless(receiver) || !args.iter().all(hir_expr_lossless) {
+                    return None;
+                }
                 let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
                     return None;
                 };
-                let Some(ast_args) = args
-                    .iter()
-                    .map(crate::hir::to_ast::expr)
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    return None;
-                };
-                self.emit_method_call(out, &v, &ast_recv, name, &ast_args, indent)
+                self.emit_method_call(out, &v, &ast_recv, name, ArgsView::Hir(args), indent)
             }
             HirExprKind::IsType { .. } => {
                 writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
@@ -1961,7 +2016,7 @@ impl LlvmBackend {
                 // 2026-07-31 (A5): self-bound member emission. Emit the
                 // receiver's struct address, bind `self`, bind the params,
                 // emit the member body inline, restore the previous binding.
-                return self.emit_method_call(out, v, recv, name, args, indent);
+                return self.emit_method_call(out, v, recv, name, ArgsView::Ast(args), indent);
             }
             Expr::DerivationBlock(_) | Expr::FormattingAnnotation(_) => {
                 writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -2641,7 +2696,7 @@ pub(crate) fn emit_index_with_obj(
                         self.fun.current_dyn_collection = Some(name.clone());
                     }
                     let out_tmp = self.fun.gen_reg();
-                    let r = self.emit_method_call(out, &out_tmp, obj, "At", &[index.clone()], indent);
+                    let r = self.emit_method_call(out, &out_tmp, obj, "At", ArgsView::Ast(&[index.clone()]), indent);
                     self.fun.current_dyn_collection = saved_dyn_coll;
                     return r;
                 }
@@ -4122,7 +4177,7 @@ pub(crate) fn emit_index_with_obj(
         v: &str,
         recv: &Expr,
         name: &str,
-        args: &[Expr],
+        args: ArgsView<'_>,
         indent: &str,
     ) -> TypedRegister {
         // 2026-10-09 (dyn derive-don't-fix, Phase B): receiver resolution
@@ -4148,25 +4203,27 @@ pub(crate) fn emit_index_with_obj(
             // `#`-suffixed name, strip `#` and dispatch as a call (reaching the
             // generative op dispatch or a registered intrinsic); for a plain
             // name, call the top-level function with the receiver prepended.
+            // The desugared `Expr::Call` is AST-shaped (documented leaf
+            // exception); the HIR caller's losslessness gate makes
+            // `as_ast` infallible here.
             if name.ends_with('#') {
                 // 2026-08-14 (UOL §6b): keep the `#` — `a.Add#(b)` dispatches
                 // through the intrinsic signature (`Add#`) or generative op
                 // identity, NOT a bare top-level function named `Add`.
                 let mut all = vec![(*recv).clone()];
-                all.extend(args.iter().cloned());
+                all.extend(args.as_ast());
                 return self.emit_expr_inner(out, v, &Expr::Call(name.to_string(), all, None), indent);
             }
             if self.ctx.defn_params.contains_key(name) {
                 let mut all = vec![(*recv).clone()];
-                all.extend(args.iter().cloned());
+                all.extend(args.as_ast());
                 return self.emit_user_call(out, v, name, &all, indent);
             }
             panic!("method call '.{}()': no member '{}' on '{}'", name, name, type_name);
         };
         let mut arg_regs: Vec<(String, Type)> = Vec::new();
-        arg_regs.extend(args.iter().map(|a| {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        arg_regs.extend((0..args.len()).map(|i| {
+            let r = args.emit_arg(self, out, indent, i);
             (r.name, r.ty)
         }));
         self.emit_member_body(out, v, MemberInvocation { recv_reg: &recv_reg, type_name: &type_name, member: &member, arg_regs: &arg_regs, prefix: recv_prefix }, indent)
@@ -4259,7 +4316,7 @@ pub(crate) fn emit_index_with_obj(
         v: &str,
         recv: &Expr,
         name: &str,
-        args: &[Expr],
+        args: ArgsView<'_>,
         recv_reg: &TypedRegister,
         recv_prefix: Option<(String, String)>,
         indent: &str,
@@ -4422,7 +4479,7 @@ pub(crate) fn emit_index_with_obj(
         recv_reg: &TypedRegister,
         concretes: &[String],
         lookup_name: &str,
-        args: &[Expr],
+        args: ArgsView<'_>,
         recv_prefix: Option<(String, String)>,
         tag_reg: String,
         indent: &str,
@@ -4438,9 +4495,8 @@ pub(crate) fn emit_index_with_obj(
         // Pre-emit the call args (after the Self) once — shared by every arm
         // (SSA registers are valid in any block that dominates their def).
         let mut arg_regs: Vec<(String, Type)> = Vec::new();
-        for a in args {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        for i in 0..args.len() {
+            let r = args.emit_arg(self, out, indent, i);
             arg_regs.push((r.name, r.ty));
         }
         // Labels: one per arm, plus the default and the end (phi) block.
@@ -4554,7 +4610,7 @@ pub(crate) fn emit_index_with_obj(
         recv_reg: &TypedRegister,
         concrete: &str,
         member: &crate::ast::TopLevel,
-        args: &[Expr],
+        args: ArgsView<'_>,
         recv_prefix: Option<(String, String)>,
         indent: &str,
     ) -> TypedRegister {
@@ -4571,9 +4627,8 @@ pub(crate) fn emit_index_with_obj(
         // then the call-site args, each in its Briev type.
         let self_ty = Type::Custom(concrete.to_string());
         let mut arg_regs: Vec<(String, Type)> = vec![(data_v, self_ty)];
-        for a in args {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        for i in 0..args.len() {
+            let r = args.emit_arg(self, out, indent, i);
             arg_regs.push((r.name, r.ty));
         }
         // The receiver register is the fat pointer (typed as the concrete so
@@ -4600,7 +4655,7 @@ pub(crate) fn emit_index_with_obj(
         lookup_name: &str,
         slots: &[String],
         recv_reg: &TypedRegister,
-        args: &[Expr],
+        args: ArgsView<'_>,
         indent: &str,
     ) -> TypedRegister {
         // Requirement slot index = the member's position in the trait's
@@ -4652,9 +4707,8 @@ pub(crate) fn emit_index_with_obj(
         writeln!(out, "{}{} = load i64, ptr {}", indent, data_v, data_p).ok();
         // Emit the call args (after the Self).
         let mut arg_regs: Vec<String> = Vec::new();
-        for a in args {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        for i in 0..args.len() {
+            let r = args.emit_arg(self, out, indent, i);
             // The thunk fn's params are declared in their native LLVM types
             // (i64 for Int, etc.). adapt_to_i64 the boxed scalars.
             arg_regs.push(self.adapt_to_i64(out, indent, &r));

@@ -362,3 +362,15 @@ Gates: quick 42/42, logical 4/4, full A/B BYTE-IDENTICAL, determinism clean.
 Remaining C-4: Index + MethodCall (emit_member_body ArgsView), Call eager-arg
 gate, Block-children splice, mod.rs closure fallback (accepted leaf
 fallback), Match-List constructor exception (accepted).
+
+### C-4 step 3 done (2026-11-13): MethodCall arguments via ArgsView
+
+`ArgsView` (mirrors `SpawnArgs`) threads call-site arguments through
+`emit_method_call` and the whole dyn family (MethodCall/switch/inline/vtable
+arg loops evaluate through `emit_arg`: AST keeps gen_reg + emit_expr_inner,
+HIR goes through the operand path). The HIR arm gates receiver+args
+losslessness up front; the UFCS desugar leaf converts via `as_ast()`
+(documented exception — the desugared `Expr::Call` is AST-shaped).
+10 external callers wrapped in `ArgsView::Ast`. Receiver still crosses as
+AST (receiver-view slice is the remaining step). Gates: quick 42/42,
+full A/B BYTE-IDENTICAL, determinism clean.

@@ -5,6 +5,7 @@
 // Flat code: max 2 nesting depth.
 
 use crate::ast::{Expr, Type};
+use crate::backend::llvm::emit_expr::ArgsView;
 use crate::backend::llvm::{AllocStrategy, LlvmBackend, TypedRegister as BTypedRegister};
 use crate::config::AllocConfig;
 use std::fmt::Write;
@@ -666,7 +667,7 @@ pub fn emit_intrinsic_call(
             let recv = &args[0];
             let rest: Vec<Expr> = args.iter().skip(1).cloned().collect();
             let out_tmp = backend.fun.gen_reg();
-            return backend.emit_method_call(out, &out_tmp, recv, op_name, &rest, indent);
+            return backend.emit_method_call(out, &out_tmp, recv, op_name, ArgsView::Ast(&rest), indent);
         }
     }
 
