@@ -83,7 +83,11 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
     let mut next = program
         .callables
         .iter()
-        .map(|c| max_node(&c.body.statements) + 1)
+        // 2026-11-14 (#96): lowering allocates the callable header AFTER
+        // its body. Starting at body_max+1 reused the header's identity for
+        // the first release. Include both owning headers in the high-water
+        // mark; keep scanning bodies for releases inserted by earlier passes.
+        .map(|c| max_node(&c.body.statements).max(c.node.0).max(c.body.node.0) + 1)
         .max()
         .unwrap_or(0);
     for callable in &mut program.callables {

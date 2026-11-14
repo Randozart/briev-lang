@@ -1,3 +1,40 @@
+## 2026-11-14 — Follow-on CI failures after enabling Z3 (#96)
+
+Run `43583290955` passed library tests and exposed failures in the all-target
+gate. Root causes and repairs:
+
+- Core casting preludes declared C request-arena bindings using an unresolved
+  `std/c/coll_arena.c` path. This also violated the core foreign-binding gate
+  and made portable/browser emission unsupported. Share the same bump-block
+  policy as pure Briev in `std/coll_arena.bv`; preserve alignment, overflow
+  fallback, retired-buffer ownership and reuse semantics.
+- Plain-global readers/writers were tagged LLVM argmem-only. Optimizing the
+  request-arena regression reused an ownership result across `arena_end`.
+  Consume the frontend's plain-global access facts for memory attributes.
+- `prove_contract` checks satisfiability but negated its condition and treated
+  a satisfying counterexample as a rejection. Assert the positive condition,
+  accept SAT, reject UNSAT, and retain the separate body-proof obligations.
+- Inline interpreter strings were not materialized by the String→Data door;
+  copying the bytes in `fresh_string` read an invalid address. Materialize
+  `[length][bytes][NUL]` storage for that conversion.
+- The HIR plumbing test compared post-ownership HIR with pre-pass lowering.
+  Assert the release obligation and compare the remaining original program.
+  Its verifier also exposed release IDs reusing callable-header IDs; include
+  the owning header IDs when reserving fresh release identities.
+- Pointer-to-integer casts assumed 64-bit handles. Preserve the actual
+  recorded handle width (or target pointer width) and widen/narrow integers
+  instead of applying `ptrtoint` to wasm32 allocation results.
+- Ownership temp-transfers added cleanup after AST tail calls. Loop lowering
+  still converted those calls to backedges and then emitted frees after the
+  terminator. Calls with pending post-call releases now return normally before
+  cleanup; genuine tail calls retain loop lowering.
+- `tests/saltpetre/conformance.bv` was absent and covered by `tests/*` ignores.
+  Track a session-API driver and unignore the fixture directory.
+- The SPIR-V image-partition test counted scalar members against a fixed
+  prelude size. Check the named buffer/image partition and require the emitted
+  struct to match the image-excluding layout; retain SPIR-V validation and
+  image-write checks.
+
 ## 2026-11-14 — CI omits Z3 required by body-verification tests
 
 **Symptom.** Main CI runs `43574215730` and `43575881264` fail the same

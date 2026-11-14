@@ -26,6 +26,10 @@ request via `sp_request_reset`, and run inferences through `sp_run` (which
 resets the inference arena per run and returns an owned copy of the
 output). `sp_end` closes the request coll arena on shutdown.
 
+The collection block is implemented by `std/coll_arena.bv`, shared by the
+native and portable preludes. It uses explicitly owned allocation, aligned
+bump offsets, and a high-water mark to recognize retired buffers after reset.
+
 ## Gates — two tiers
 
 1. **Library conformance** (in-repo, fast): `tests/saltpetre_conformance.rs`

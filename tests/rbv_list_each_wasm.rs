@@ -17,7 +17,10 @@ fn has(cmd: &str) -> bool {
 fn build_fixture(brievc: &str, stem: &str, out: &Path) {
     let fixture = Path::new(ROOT).join(format!("tests/fixtures/{stem}.rbv"));
     let build = Command::new(brievc)
+        .current_dir(ROOT)
+        .env("BRIEV_HOME", ROOT)
         .args(["build", &fixture.to_string_lossy(), "--split", "--out", &out.to_string_lossy()])
+        .args(["--stdlib-path", "lib", "--config-dir", "config"])
         .output()
         .expect("spawn brievc");
     assert!(build.status.success(), "{stem} build failed:\n{}", String::from_utf8_lossy(&build.stderr));
@@ -73,6 +76,7 @@ fn per_instantiation_list_each_builds_for_wasm() {
     // Int64 cast/arithmetic must widen before the i64 multiply (wasm32
     // flexible Int is i32; the identity cast path used to return i32).
     build_fixture(brievc, "int64_cast_wasm", &out);
+    build_fixture(brievc, "pointer_cast_wasm", &out);
 
     // Portable browser stdlib surface: async HTTP, WebSocket, timers and
     // secure nonces must compile through the generated host module.
