@@ -13640,10 +13640,21 @@ for implementation harnesses and remaining semantic boundaries.
 
 ## 2026-11-14 — native arithmetic no-wrap flags conflict with interpreter wrapping
 
-**Status: discovered; native repair and full Briev reproduction pending.**
+**Initial status: discovered; native repair and full Briev reproduction pending.**
 General integer expression emission uses `add nuw nsw`, `sub nsw`, `mul nsw`
 without a per-operation overflow proof. At an overflow boundary this differs
 from the interpreter and SMT model. An isolated IR reproduction using the
 emitter's addition flags lets LLVM O3 replace `(x + 1) > x` by constant true,
 which is false for wrapping signed MAX. The arithmetic contract above records
 the source mapping and prevents treating verifier results as native guarantees.
+
+### 2026-11-14 — native arithmetic repair
+
+The full `integer_wrapping.bv` executable reproduces the old O3 failure at signed
+MAX: arithmetic values wrap, but `x + 1 > x` prints 1 instead of 0. Shared
+intrinsic templates and general expression emission now use flag-free integer
+add/sub/mul; the shared negation template also drops `nsw`. Legacy bindings agree.
+Instruction-shape tests still assert the same operations/register dataflow,
+without demanding invalid overflow promises. Specialized loop-counter assertions
+are retained. The new runtime-input regression covers O0/O3 and both AST/HIR,
+including MIN negation and add/sub/mul overflow; the quick gate runs it.

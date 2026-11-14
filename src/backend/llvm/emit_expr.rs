@@ -11333,6 +11333,7 @@ impl LlvmBackend {
         }
     }
 
+    /// Integer arithmetic wraps; no-wrap flags require a per-operation overflow proof.
     pub(super) fn emit_binary_op(
         &mut self,
         out: &mut String,
@@ -11504,7 +11505,7 @@ impl LlvmBackend {
                     let op_bits = self.binop_int_type();
                     writeln!(
                         out,
-                        "{}{} = add nuw nsw {} {}, {}",
+                        "{}{} = add {} {}, {}",
                         indent, v, op_bits, l.name, r.name
                     )
                     .ok();
@@ -11529,7 +11530,7 @@ impl LlvmBackend {
                     let op_bits = self.binop_int_type();
                     writeln!(
                         out,
-                        "{}{} = sub nsw {} {}, {}",
+                        "{}{} = sub {} {}, {}",
                         indent, v, op_bits, l.name, r.name
                     )
                     .ok();
@@ -11553,7 +11554,7 @@ impl LlvmBackend {
                     let op_bits = self.binop_int_type();
                     writeln!(
                         out,
-                        "{}{} = mul nsw {} {}, {}",
+                        "{}{} = mul {} {}, {}",
                         indent, v, op_bits, l.name, r.name
                     )
                     .ok();

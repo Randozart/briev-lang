@@ -7,6 +7,49 @@ fn empty_program() -> Vec<TopLevel> {
     vec![]
 }
 
+#[test]
+fn integer_arithmetic_templates_preserve_wrapping_at_each_width() {
+    for bits in [8, 16, 32, 64] {
+        let ty = format!("i{bits}");
+        use super::intrinsics::template_for_op;
+        assert_eq!(
+            template_for_op("Add", &ty, bits / 8),
+            Some(format!("%v = add {ty} %a, %b"))
+        );
+        assert_eq!(
+            template_for_op("Sub", &ty, bits / 8),
+            Some(format!("%v = sub {ty} %a, %b"))
+        );
+        assert_eq!(
+            template_for_op("Mul", &ty, bits / 8),
+            Some(format!("%v = mul {ty} %a, %b"))
+        );
+        assert_eq!(
+            template_for_op("Neg", &ty, bits / 8),
+            Some(format!("%v = sub {ty} 0, %a"))
+        );
+    }
+}
+
+#[test]
+fn integer_expression_emission_does_not_promise_no_wrap() {
+    let program = parse_bv_source("defn ring(a: Int, b: Int) -> Int { term (a + b) * (a - b); };");
+    let ir = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .generate(&program, None);
+    let body = ir
+        .split("@ring(")
+        .nth(1)
+        .expect("ring emitted")
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(body.contains("= add i64"), "{body}");
+    assert!(body.contains("= sub i64"), "{body}");
+    assert!(body.contains("= mul i64"), "{body}");
+    assert!(!body.contains(" nsw ") && !body.contains(" nuw "), "{body}");
+}
+
 /// A minimal eligible accel kernel: `a[i] = i` under `[i < N]` with a host
 /// bookkeeping write (`count = count + 1`).
 fn accel_kernel_program() -> Vec<TopLevel> {
@@ -3160,7 +3203,7 @@ fn test_llvm_emits_sync_block_body() {
     // The body's increment must survive codegen — the silent-drop path
     // emitted no `add` for the SyncBlock's inner assignment.
     assert!(
-        output.contains("add nsw i64"),
+        output.contains(" = add i64 %"),
         "SyncBlock body was silently dropped:\n{}",
         output
     );
@@ -9500,7 +9543,7 @@ fn test_consumptive_ops_emit_normal_arithmetic() {
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
     assert!(
-        ir.contains("add nsw i64") || ir.contains("add i64"),
+        ir.contains("add i64"),
         "a ~+ b / a ~= b must emit the arithmetic; got:\n{ir}"
     );
     assert!(
@@ -9658,7 +9701,7 @@ fn test_consumptive_op_on_const_let_in_txn() {
         "the consumptive read must load the seeded plain global; got:\n{ir}"
     );
     assert!(
-        ir.contains("add nsw i64") || ir.contains("add i64"),
+        ir.contains("add i64"),
         "the consumptive add must be emitted; got:\n{ir}"
     );
 }
@@ -9894,7 +9937,7 @@ node go [done == 0][done == 1] {
     let seed_reg = seed_reg.expect("the member arg (600) must be emitted as a register");
     let add_results: Vec<String> = ir
         .lines()
-        .filter(|l| l.contains(&format!("add nsw i64 {}, ", seed_reg)))
+        .filter(|l| l.contains(&format!("add i64 {}, ", seed_reg)))
         .filter_map(|l| l.split('=').next().map(|s| s.trim().to_string()))
         .collect();
     assert!(
@@ -10059,7 +10102,7 @@ fn test_hashmap_capacity_seed_and_break_probe() {
         .expect("the seed-feeding phi must have a result register; got:\n{ir}");
     assert!(
         ir.lines()
-            .any(|l| l.contains("mul nsw i64") && l.contains(&phi_reg)),
+            .any(|l| l.contains("mul i64") && l.contains(&phi_reg)),
         "the capacity phi {phi_reg} must size the column mallocs (mul by 8); got:\n{ir}"
     );
     // 4. The linear probes must EARLY-EXIT: an unconditional `br label
@@ -10083,7 +10126,7 @@ fn test_hashmap_capacity_seed_and_break_probe() {
 /// NOTHING. The fix resolves the self-prefixed slot with the Vector column
 /// type peeled. Both pins: the printed values (`n`, `s`) must be LOADS of a
 /// List len field (i64 16 GEP) that was written by exactly `N` INCREMENT
-/// stores (`add nsw i64 %{..}, 1`, one per push) — never a constant-1 seed
+/// stores (`add i64 %{..}, 1`, one per push) — never a constant-1 seed
 /// store (bug a) and never an empty/absent field (bug b).
 const ARROW_PUSH_POOLED_MEMBER_SRC: &str = r#"
 coll obj MyList { data: Ptr<Int>; };
@@ -10174,10 +10217,24 @@ fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
     }
 }
 
+/// Recognize register plus one, including materialized literal-one operands.
+fn is_unit_add(definition: &str, target: &str, ones: &std::collections::HashSet<&str>) -> bool {
+    definition
+        .trim()
+        .strip_prefix(&format!("{target} = add i64 %"))
+        .and_then(|operands| operands.rsplit_once(", "))
+        .is_some_and(|(_, rhs)| ones.contains(rhs))
+}
+
 // 2026-11-03: keep SSA checks local to one emitted function; register names
 // are not globally unique. Retire this helper with native-only assertions.
 fn assert_arrow_push_caller_ir(ir: &str) {
     let lines: Vec<&str> = ir.lines().collect();
+    let ones: std::collections::HashSet<&str> = lines
+        .iter()
+        .filter_map(|line| line.trim().strip_suffix(" = add i64 0, 1"))
+        .chain(std::iter::once("1"))
+        .collect();
 
     // The transaction body is emitted twice (the alwaysinline @txn_go defn +
     // main's reactive replay). Apply the same assertions to both functions.
@@ -10186,8 +10243,8 @@ fn assert_arrow_push_caller_ir(ir: &str) {
     // was misrouted to the collection seed constructor, the RETURNED list was
     // wrapped in a NEW box whose len field was forced to the constant 1 (a
     // `store i64 {c}, ptr {len_gep}` with `{c} = add i64 0, 1`). The fixed
-    // code binds the returned list DIRECTLY: its len is built only by `add nsw`
-    // increments (one per scanned element), never by a constant-1 seed store.
+    // code binds the returned list DIRECTLY: its len is built by increments of its prior length
+    // (one per scanned element), never by a constant-1 seed store.
     let len_geps: Vec<String> = lines
         .iter()
         .filter(|l| l.contains("getelementptr i8, ptr") && l.contains("i64 16"))
@@ -10208,11 +10265,7 @@ fn assert_arrow_push_caller_ir(ir: &str) {
         let Some(gep) = l.split("ptr").nth(1).map(|s| s.trim().to_string()) else {
             return false;
         };
-        len_geps.contains(&gep)
-            && (v == "1"
-                || lines
-                    .iter()
-                    .any(|dl| dl.trim().starts_with(&format!("{v} = add i64 0, 1"))))
+        len_geps.contains(&gep) && ones.contains(v.as_str())
     });
     assert!(
         constant_one_seed_store.is_none(),
@@ -10220,7 +10273,7 @@ fn assert_arrow_push_caller_ir(ir: &str) {
     );
 
     // Bug (b) — the pooled member-field push. `items <- e` must emit the List
-    // push inline: the len field is INCREMENTED once per push (`add nsw i64
+    // push inline: the len field is INCREMENTED once per push (`add i64
     // {..}, 1`, stored to a len GEP). Each copy contains one keys-scan loop
     // body and three put calls. When the push was SILENTLY DROPPED the put
     // bodies emitted nothing (only the argument eval), leaving just the loop.
@@ -10241,7 +10294,7 @@ fn assert_arrow_push_caller_ir(ir: &str) {
             len_geps.contains(&gep)
                 && lines
                     .iter()
-                    .any(|dl| dl.trim().starts_with(&format!("{v} = add nsw i64")))
+                    .any(|definition| is_unit_add(definition, &v, &ones))
         })
         .collect();
     assert_eq!(
@@ -13816,11 +13869,11 @@ node run [i < 1][i == 1] {
     // handle) and threads it as the Self receiver into the inlined impl body.
     // The result is `7*100 + 3 = 703`.
     //
-    // Verify the inline form: the impl body's math (`mul nsw i64 <base>, <100>`
-    // then `add nsw i64 <mul>, <times>`) appears in the node body, and there is
+    // Verify the inline form: the impl body's math (`mul i64 <base>, <100>`
+    // then `add i64 <mul>, <times>`) appears in the node body, and there is
     // NO `load ptr, ptr` (no thunk-table fn-pointer load) at the call site.
     assert!(
-        ir.contains("mul nsw i64") && ir.contains("add nsw i64"),
+        ir.contains("mul i64") && ir.contains(" = add i64 %"),
         "inline form must emit the impl body's math (me.base*100 + times):\n{ir}"
     );
     assert!(
@@ -13991,7 +14044,7 @@ node run [i < 1][i == 1] {
     // Both impl bodies are inlined (Dog's `*100`, Cat's `*10`) — no indirect
     // call through a thunk table.
     assert!(
-        ir.contains("mul nsw i64"),
+        ir.contains("mul i64"),
         "the Switch form must inline both impl bodies (the math is present):\n{ir}"
     );
     // NOT the Vtable fallback: no thunk-table fn-pointer load.
@@ -14262,7 +14315,7 @@ node run [i < 1][i == 1] {
     // The Inline form fires (single concrete): the impl body's math is present
     // and there is no indirect call.
     assert!(
-        ir.contains("mul nsw i64"),
+        ir.contains("mul i64"),
         "the flowed dyn must dispatch (Inline form, the impl body's math present):\n{ir}"
     );
     assert!(

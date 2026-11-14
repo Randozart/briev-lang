@@ -4,6 +4,15 @@
 
 **Status:** Living document — updated as the backend evolves.
 
+2026-11-14 (compiler assurance): ordinary integer add/sub/mul and negation
+wrap at the selected carrier width. General expression emission and shared
+intrinsic templates must not attach unconditional `nsw`/`nuw` promises. LLVM can
+otherwise fold a wrapping-false signed comparison to true at O3. The maintained
+`tests/integer_wrapping.rs` regression covers full native executables at O0/O3
+under both AST and HIR emission; the quick gate includes it. See
+[the verifier arithmetic contract](verifier-arithmetic.md) for scope and remaining
+native/refinement obligations.
+
 2026-11-14: definition memory attributes consume the frontend's transitive
 plain-global access map in addition to raw-memory intrinsic reachability.
 Plain globals are not reachable exclusively through pointer arguments, so

@@ -774,9 +774,10 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
             float_llvm, float_llvm, float_llvm
         )),
 
-        ("Add", false) => Some(format!("%v = add nsw {} %a, %b", int_llvm)),
-        ("Sub", false) => Some(format!("%v = sub nsw {} %a, %b", int_llvm)),
-        ("Mul", false) => Some(format!("%v = mul nsw {} %a, %b", int_llvm)),
+        // Integer operators wrap. No-wrap flags need a per-operation proof.
+        ("Add", false) => Some(format!("%v = add {} %a, %b", int_llvm)),
+        ("Sub", false) => Some(format!("%v = sub {} %a, %b", int_llvm)),
+        ("Mul", false) => Some(format!("%v = mul {} %a, %b", int_llvm)),
         ("Div", false) => Some(format!("%v = sdiv {} %a, %b", int_llvm)),
         ("Rem", false) => Some(format!("%v = srem {} %a, %b", int_llvm)),
         ("Eq", false) => Some(format!("%v = icmp eq {} %a, %b", int_llvm)),
@@ -785,7 +786,7 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
         ("Gt", false) => Some(format!("%v = icmp sgt {} %a, %b", int_llvm)),
         ("Le", false) => Some(format!("%v = icmp sle {} %a, %b", int_llvm)),
         ("Ge", false) => Some(format!("%v = icmp sge {} %a, %b", int_llvm)),
-        ("Neg", false) => Some(format!("%v = sub nsw {} 0, %a", int_llvm)),
+        ("Neg", false) => Some(format!("%v = sub {} 0, %a", int_llvm)),
         ("Abs", false) => Some(format!(
             "%v = call {} @llvm.abs.{}({} %a, i1 false)",
             int_llvm, int_llvm, int_llvm
