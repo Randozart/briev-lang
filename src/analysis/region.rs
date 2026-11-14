@@ -3,7 +3,7 @@ use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Type, UnaryOpKind};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 // The counsel contract layer: inert identity attributes, checked by counsel-check.
-use counsel::pre;
+use counsel::{post, pre};
 
 /// Classification of a transaction body by computational weight.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -80,6 +80,8 @@ impl Interval {
         val >= self.lo && val <= self.hi
     }
 
+    /// Number of integers in the closed interval [lo, hi].
+    #[post(term >= 0)]
     pub fn size(&self) -> u64 {
         if self.hi < self.lo {
             0
@@ -1642,6 +1644,7 @@ fn collect_var_ids(expr: &Expr, vars: &mut HashSet<String>) {
 
 // 2026-06-27: iterative count — replaces recursive version to prevent
 // stack overflow on deep statement nesting (Oracle with nested Foreach).
+#[post(term >= 0)]
 fn count_statements_recursive(body: &[Statement]) -> usize {
     let mut count = 0;
     let mut work: Vec<&Statement> = body.iter().collect();
@@ -2342,6 +2345,7 @@ fn canonical_regions(
     (canon, var_map, rid_map)
 }
 
+#[post(term >= 0)]
 #[cfg(test)]
 fn canonical_rid(rid: usize, rid_map: &HashMap<usize, usize>) -> usize {
     if rid == 0 {
