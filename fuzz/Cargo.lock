@@ -115,6 +115,7 @@ dependencies = [
  "bincode",
  "blake3",
  "briev-verify",
+ "counsel",
  "dirs",
  "flate2",
  "js-sys",
@@ -238,6 +239,21 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "counsel"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4ec97e21812d9dbdc13310e2cc7dc2782474e7efbf6d0f9c8e00fad9d7f7264"
+dependencies = [
+ "counsel-macros",
+]
+
+[[package]]
+name = "counsel-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "555e0bfd1b7cb51ca132896e31590a88c32e9acb04f7c0665abf7eb7a9b0fd70"
 
 [[package]]
 name = "cpufeatures"
