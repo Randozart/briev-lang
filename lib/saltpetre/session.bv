@@ -2,11 +2,11 @@
 //
 // The library owns the two request-scoped arenas so service code stays RPC
 // glue: one tensor-arena block for activations (ml_arena_* in tensor.bv)
-// and one request coll block for generic coll backing stores (the C request
-// arena behind coll_alloc). Begin once at service start, reset per request,
-// end on shutdown. sp_run resets the inference arena per run and copies the
-// requested output out of the request arena, so a returned Tensor survives
-// the next reset.
+// and one request coll block for generic coll backing stores (the shared
+// std/coll_arena.bv policy behind coll_alloc). Begin once at service start,
+// reset per request, end on shutdown. sp_run resets the inference arena per
+// run and copies the requested output out of the request arena, so a returned
+// Tensor survives the next reset.
 
 import "./tensor.bv";
 import "./exec.bv";
@@ -33,7 +33,7 @@ defn sp_begin(tensor_cap: Int)
 };
 
 // sp_open_coll — open (or re-open) the request coll block. Per connection
-// in a service; idempotent while the capacity fits (the C runtime reuses
+// in a service; idempotent while the capacity fits (the stdlib reuses
 // the block). See the persistent-state rule on sp_begin.
 defn sp_open_coll(coll_cap: Int)
     [coll_cap >= 0][ml_arena_off_bytes() >= 0]

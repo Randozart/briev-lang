@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Tiny-model session driver for the tracked ORT goldens.
+import "saltpetre/session.bv";
+import "std/io.bv";
+
+node entry [beginprogram][true] {
+    let model_path: String = get_env!("ONNX_MODEL");
+    let model_file: Result<String, Int> = read_file(model_path);
+    let input_lines: Result<List<String>, Int> = read_lines(get_env!("ONNX_INPUT"));
+    when is_err(model_file) || is_err(input_lines) { endprogram 1; };
+    let graph: OnnxGraph = parse_model_at(unwrap(model_file), model_path);
+    let lines: List<String> = unwrap(input_lines);
+    when graph.ins.Count#() == 0 { endprogram 2; };
+    let input_info: OnnxValue = graph.ins[0];
+    let input: Tensor = tensor_named_owned(input_info.name, input_info.dims, lines.Count#());
+    foreach i in 0..lines.Count#() {
+        tensor_set(input, i, lines[i] as Float);
+    };
+    sp_begin(1048576);
+    sp_open_coll(1048576);
+    let result: Result<Tensor, String> = sp_run(graph, input, get_env_int!("ONNX_OUTPUT"));
+    when is_err(result) { endprogram 3; };
+    let output: Tensor = unwrap(result);
+    foreach i in 0..output.n {
+        let bits: Int = Load#(output.ptr + 4 * i, 4);
+        when bits > 2147483647 { bits = bits - 4294967296; };
+        print_int(bits);
+        print_str("\n");
+    };
+    tensor_free(output);
+    tensor_free(input);
+    sp_end();
+    endprogram 0;
+};

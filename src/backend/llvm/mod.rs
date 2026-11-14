@@ -98,7 +98,10 @@ fn compute_transitive_may_trap(items: &[TopLevel]) -> std::collections::HashSet<
     may_trap
 }
 
-fn compute_transitive_raw_memory(items: &[TopLevel]) -> std::collections::HashSet<String> {
+fn compute_transitive_raw_memory(
+    items: &[TopLevel],
+    plain_access: &std::collections::HashMap<String, bool>,
+) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
     fn gather<'a>(item: &'a TopLevel, out: &mut Vec<&'a crate::ast::Definition>) {
         match item {
@@ -129,7 +132,11 @@ fn compute_transitive_raw_memory(items: &[TopLevel]) -> std::collections::HashSe
         for stmt in &d.body {
             collect_called_names_stmt(stmt, &mut calls);
         }
-        if emit_toplevel::definition_touches_raw_memory_fn(&d.body) {
+        // 2026-11-14 (#96): inferred plain storage is a module global,
+        // not argmem. Consume the frontend's transitive access fact so LLVM
+        // cannot reuse a global-reading result across a global-writing call.
+        if plain_access.get(&d.name).copied().unwrap_or(false)
+            || emit_toplevel::definition_touches_raw_memory_fn(&d.body) {
             raw.insert(d.name.clone());
         }
         called.insert(d.name.as_str(), calls);
@@ -3135,7 +3142,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // its pointer args, and -O2 then deletes the stores that fill a buffer
         // before the write() syscall — every concat printed empty. Seed with
         // direct touchers, then close over calls (fixpoint, like needs_state).
-        self.ctx.defn_touches_raw_memory = compute_transitive_raw_memory(items);
+        self.ctx.defn_touches_raw_memory =
+            compute_transitive_raw_memory(items, &self.ctx.defn_needs_plain);
         self.ctx.defn_may_trap = compute_transitive_may_trap(items);
         // 2026-10-15 (type-dependent member statefulness): concrete types with
         // a state-taking member. A trait default/generic monomorphized onto

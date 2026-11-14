@@ -2885,16 +2885,28 @@ async node fill [i < N][i == N] {
             asm
         );
         assert!(asm.contains("OpImageWrite"), "image write:\n{}", asm);
-        // The SSBO keeps i + x — img is device-image resident, not a
-        // buffer member.
+        // 2026-11-14 (#96): check the storage partition, not a fixed
+        // scalar-member count: the prelude can introduce additional globals.
+        // The SSBO keeps i + x; img lives only in the image descriptor table.
+        let layout = runner::ssbo_layout(&items, &universe, 64, &analysis.image_storage, None)
+            .expect("image storage layout");
+        assert!(layout.fields.iter().any(|f| f.name == "i" && !f.is_array));
+        assert!(layout.fields.iter().any(|f| f.name == "x" && f.is_array));
+        assert!(layout.fields.iter().all(|f| f.name != "img"));
+        assert_eq!(layout.images.len(), 1);
+        assert_eq!(layout.images[0].name, "img");
+        assert_eq!(layout.images[0].count, 64 * 64);
+        assert_eq!(layout.images[0].elem_bytes, 4);
         let ssbo_members = asm
             .lines()
-            .find(|l| l.contains("OpTypeStruct"))
-            .map(|l| l.matches("%float").count() + l.matches("%long").count())
-            .unwrap_or(0);
-        assert!(
-            ssbo_members <= 3,
-            "SSBO must exclude the image array:\n{}",
+            .find_map(|l| l.split_once("OpTypeStruct"))
+            .expect("SSBO struct")
+            .1
+            .split_whitespace()
+            .count();
+        assert_eq!(
+            ssbo_members, layout.fields.len(),
+            "emitted SSBO must match the image-excluding layout:\n{}",
             asm
         );
     }

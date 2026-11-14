@@ -3132,6 +3132,10 @@ pub(crate) fn emit_index_with_obj(
                         // wasm32 i32.
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
                             if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
+                        // 2026-11-14 (#96): generic T can retain an i64
+                        // language carrier while this slot is i32 on wasm.
+                        // Forward the emitted width to subsequent stores.
+                        self.fun.reg_llvm_ty.insert(v.to_string(), slot_ty.clone());
                     }
                 } else if self.is_string_operand(&obj_reg.ty) {
                     // 2026-10-05 (json.bv): String indexing `s[i]` — the
@@ -10115,13 +10119,27 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
         }
 
-        // 2026-07-30: Ptr values stored as i64 internally — register is already
-        // i64 even though llvm_type(Ptr) returns "ptr". Skip the bitcast/ptrtoint.
-        if matches!(src.ty, Type::Ptr(_)) && target_ll == "i64" {
+        // 2026-07-30: Ptr values use integer handles internally even though
+        // llvm_type(Ptr) returns "ptr". 2026-11-14 (#96): Malloc# handles
+        // are target-width, including i32 on wasm; do not ptrtoint an integer.
+        if matches!(src.ty, Type::Ptr(_)) && target_ll.starts_with('i') {
             if let Some(first) = path.first() {
                 use crate::casting::graph::LaneKind;
                 if matches!(first.lane, LaneKind::Bitcast | LaneKind::PtrToInt) {
-                    return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
+                    let have = self.fun.reg_value_ll.get(&src.name)
+                        .cloned().unwrap_or_else(|| self.ptr_int_ty());
+                    if have == target_ll {
+                        return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
+                    }
+                    if let (Some(have), Some(want)) = (
+                        have.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()),
+                        target_ll.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()),
+                    ) {
+                        let op = if have < want { "zext" } else { "trunc" };
+                        writeln!(out, "{indent}{v} = {op} i{have} {} to {target_ll}", src.name).ok();
+                        self.fun.reg_value_ll.insert(v.to_string(), target_ll.clone());
+                        return Some(TypedRegister { name: v.to_string(), ty: target.clone() });
+                    }
                 }
             }
         }

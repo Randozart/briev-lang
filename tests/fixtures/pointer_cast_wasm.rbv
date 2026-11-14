@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Allocation handles are i32; pointer ABI parameters are widened to i64.
+defn address(p: Ptr<Bit<8>>) -> Int { term p as Int; };
+defn wide_address(p: Ptr<Bit<8>>) -> Int64 { term p as Int64; };
+let tick: Int = 0;
+let result: Int = 0;
+txn probe [tick == 0][tick == 1] {
+    let p: Ptr<Bit<8>> = Malloc#(8) as Ptr<Bit<8>>;
+    result = address(p) - (wide_address(p) as Int);
+    Free#(p);
+    tick = 1;
+    term;
+};
+<view><span b-text="result">0</span><button b-trigger:click="probe">Go</button></view>

@@ -1103,12 +1103,8 @@ defn slice_f32_strided_copy(data: Int, obuf: Int, l: Int, s: Int, len: Int, i: I
     term slice_f32_strided_copy(data, obuf, l, s, len, i + 1);
 };
 
-// request-scoped coll backing arena (generic coll storage policy)
-frgn coll_arena_begin(bytes: Int) -> Void from "std/c/coll_arena.c";
-frgn coll_arena_reset() -> Void from "std/c/coll_arena.c";
-frgn coll_arena_end() -> Void from "std/c/coll_arena.c";
-frgn coll_alloc(bytes: Int) -> Int from "std/c/coll_arena.c";
-frgn coll_arena_owns(ptr: Int) -> Int from "std/c/coll_arena.c";
+// Request-scoped coll backing arena (shared native/portable storage policy).
+import "std/coll_arena.bv";
 
 // fresh_string — an OWNED copy of any String (static literals included).
 // 2026-11-13 (owners census, §13 copy discipline): helpers with mixed
