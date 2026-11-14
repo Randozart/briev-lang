@@ -1125,7 +1125,7 @@ defn fresh_string(text: String) [true][CharCount#(term) == CharCount#(text)] -> 
     let owned: String = (buf as Data) as String;
     Free#(buf as Ptr<Bit<8>>);
     term owned;
-}
+};
 
 // coll_destroy — release a compiler-owned coll handle: the scaffold-allocated
 // object is always freed; the backing block is freed only when it does NOT

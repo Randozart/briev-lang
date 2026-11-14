@@ -6,15 +6,21 @@
 // ResNet-18. No model-specific branches: dispatch is by op type only.
 
 import "./onnx.bv";
+import "std/collections.bv";
 import "./tensor.bv";
 import "std/string.bv";
 
 
 defn attr_ints(node: OnnxNode, name: String, fallback: List<Int>) -> List<Int> {
     foreach i in 0..node.attrs.Count#() {
-        when node.attrs[i].name == name { term node.attrs[i].ints; };
+        // 2026-11-13 (owners census): return OWNED copies — the attr ints
+        // list lives in the (persistent) graph cache and the fallback is
+        // caller storage; mixed borrow/alloc returns kept this helper
+        // undecided. Attribute reads are per-run; the copies land in the
+        // request arena and die with it.
+        when node.attrs[i].name == name { term fresh_int_list(node.attrs[i].ints); };
     };
-    term fallback;
+    term fresh_int_list(fallback);
 };
 
 defn attr_int(node: OnnxNode, name: String, fallback: Int) -> Int {

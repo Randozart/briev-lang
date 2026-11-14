@@ -80,6 +80,50 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
     let ok_fresh = ok_fresh_callables(program, escapes, &param_return, &fresh, &freed);
     let borrow_returns = borrow_result_summaries(program);
     let consumed = consumed_params(program);
+    if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+        eprintln!("[owned-dbg] fresh: concat={} fresh_string={} fresh_int_list={} briev_str_substr={} read_file={}",
+            fresh.contains("concat"), fresh.contains("fresh_string"),
+            fresh.contains("fresh_int_list"), fresh.contains("briev_str_substr"),
+            fresh.contains("read_file"));
+        for n in ["attr_ints", "ints_or", "conv_attr4", "packed_ints", "parse_attr_loop", "parse_shape_loop", "arg", "json_get", "execute_env"] {
+            eprintln!("[owned-dbg] fresh {n}={} returns_owned={}", fresh.contains(n),
+                program.callables.iter().find(|c| c.name == n).map(returns_owned).unwrap_or(false));
+        }
+        eprintln!("[owned-dbg] program callables={} fresh_string defs={}",
+            program.callables.len(),
+            program.callables.iter().filter(|c| c.name == "fresh_string").count());
+        if let Some(fl_c) = program.callables.iter().find(|c| c.name == "fresh_int_list") {
+            let mut fvars: HashMap<String, bool> = fl_c.params.iter().map(|p| (p.name.clone(), false)).collect();
+            let fn_freed = freed.get("fresh_int_list").cloned().unwrap_or_default();
+            collect_fresh(&fl_c.body.statements, &mut fvars, &fresh, &param_return, &ok_fresh, &fn_freed);
+            eprintln!("[owned-dbg] fresh_int_list vars={fvars:?}");
+            let mut freturns = Vec::new();
+            collect_returns(&fl_c.body.statements, &mut freturns);
+            for e in &freturns {
+                eprintln!("[owned-dbg] fl ret fresh={} kind={}",
+                    is_fresh(e, &fvars, &param_return, &fresh, &ok_fresh, &fn_freed),
+                    match &e.kind { HirExprKind::Call { callee, .. } => format!("call {callee}"), HirExprKind::Identifier(n) => format!("id {n}"), o => format!("{o:?}") });
+            }
+        }
+        if let Some(fs_c) = program.callables.iter().find(|c| c.name == "fresh_string") {
+            let mut fvars: HashMap<String, bool> = fs_c.params.iter().map(|p| (p.name.clone(), false)).collect();
+            let fn_freed = freed.get("fresh_string").cloned().unwrap_or_default();
+            collect_fresh(&fs_c.body.statements, &mut fvars, &fresh, &param_return, &ok_fresh, &fn_freed);
+            eprintln!("[owned-dbg] fresh_string vars={fvars:?} returns_owned={} type_params={:?} result={:?}",
+                returns_owned(fs_c), fs_c.type_params, fs_c.result);
+            let mut freturns = Vec::new();
+            collect_returns(&fs_c.body.statements, &mut freturns);
+            for e in &freturns {
+                eprintln!("[owned-dbg] fs ret fresh={} kind={}",
+                    is_fresh(e, &fvars, &param_return, &fresh, &ok_fresh, &fn_freed),
+                    match &e.kind { HirExprKind::Call { callee, .. } => format!("call {callee}"), HirExprKind::Identifier(n) => format!("id {n}"), o => format!("{o:?}") });
+            }
+        }
+        eprintln!("[owned-dbg] ok: read_whole={} read_file={} execute_env_inputs={}",
+            ok_fresh.contains("read_whole"), ok_fresh.contains("read_file"), ok_fresh.contains("execute_env_inputs"));
+        eprintln!("[owned-dbg] escapes concat={:?} face_param={:?}",
+            escapes.get("concat"), escapes.get("face_param"));
+    }
     let mut next = program
         .callables
         .iter()
@@ -439,6 +483,11 @@ fn ok_fresh_callables(
                         // accumulator): the recursive path is exactly as
                         // Ok-side-fresh as the base paths. (Must precede the
                         // generic Call arm — it shadows a bare-call arm.)
+                        true
+                    } else if ok.contains(callee) {
+                        // 2026-11-13: a verbatim tail call to another
+                        // ok_fresh callable (execute_env →
+                        // execute_env_inputs) hands the same Result through.
                         true
                     } else { false }
                 }
@@ -805,7 +854,15 @@ fn rewrite_list(
                         continue;
                     }
                     if let Some(kind) = owned.get(n).copied() {
-                        if !rhs_ids.contains(n) {
+                        // 2026-11-13 (alias safety): release the OLD value only
+                        // when the RHS is a provably FRESH allocation (or has
+                        // no identifiers at all). A bare identifier RHS may
+                        // alias the old block through an untracked binding —
+                        // `env = next_env` where run_node returned the same
+                        // env handle — and releasing first would use-after-
+                        // free (daemon double-free on the JPEG path).
+                        let rhs_fresh = is_fresh(rhs, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh, &fn_freed);
+                        if !rhs_ids.contains(n) && (rhs_fresh || rhs_ids.is_empty()) {
                             out.push(release(n, kind, ctx));
                             owned.remove(n);
                         }
@@ -1218,6 +1275,42 @@ mod tests {
 
     fn has_destroy(c: &HirCallable, name: &str) -> bool {
         releases_of(c).iter().any(|(k, n)| *k == StorageKind::List && n == name)
+    }
+
+    #[test]
+    fn debug_fresh_int_list_derivation() {
+        let program = annotated(
+            r#"
+defn fresh_int_list(items: List<Int>) [true][true] -> List<Int> {
+    let copy: List<Int> = [];
+    foreach i in 0..items.Count#() {
+        copy <- items[i];
+    };
+    term copy;
+};
+"#,
+        );
+        let no_freed_map: HashMap<String, HashSet<String>> = HashMap::new();
+        let fresh = fresh_callables(&program, &HashMap::new(), &no_freed_map);
+        eprintln!("dbg fresh_int_list fresh={}", fresh.contains("fresh_int_list"));
+        let b = program.callables.iter().find(|c| c.name == "fresh_int_list").unwrap();
+        let mut vars: HashMap<String, bool> = b.params.iter().map(|p| (p.name.clone(), false)).collect();
+        let no_pr: HashMap<String, usize> = HashMap::new();
+        let no_ok: HashSet<String> = HashSet::new();
+        let no_freed: HashSet<String> = HashSet::new();
+        collect_fresh(&b.body.statements, &mut vars, &fresh, &no_pr, &no_ok, &no_freed);
+        eprintln!("dbg vars={vars:?}");
+        for s in &b.body.statements {
+            eprintln!("dbg stmt={:?}", s.kind);
+        }
+        let no_pr: HashMap<String, usize> = HashMap::new();
+        let no_ok: HashSet<String> = HashSet::new();
+        let no_freed: HashSet<String> = HashSet::new();
+        let mut returns = Vec::new();
+        collect_returns(&b.body.statements, &mut returns);
+        for e in &returns {
+            eprintln!("dbg ret={:?} fresh={}", e.kind, is_fresh(e, &vars, &no_pr, &fresh, &no_ok, &no_freed));
+        }
     }
 
     #[test]
