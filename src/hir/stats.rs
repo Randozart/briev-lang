@@ -8,6 +8,9 @@ use super::program::{HirCallable, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
 use std::collections::BTreeMap;
 
+// The counsel contract layer: inert identity attributes, checked by `counsel-check`.
+use counsel::{post, pre};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnsupportedCounts {
     pub expressions: usize,
@@ -17,6 +20,9 @@ pub struct UnsupportedCounts {
 }
 
 impl UnsupportedCounts {
+    // the unsupported-record total is the sum of two non-negative counts
+    #[pre(self.expressions >= 0 && self.statements >= 0)]
+    #[post(term >= 0)]
     pub fn total(&self) -> usize {
         self.expressions + self.statements
     }
@@ -126,10 +132,7 @@ fn count_opt_expr(expr: Option<&HirExpr>, counts: &mut UnsupportedCounts) {
     }
 }
 
-fn count_exprs<'a>(
-    exprs: impl IntoIterator<Item = &'a HirExpr>,
-    counts: &mut UnsupportedCounts,
-) {
+fn count_exprs<'a>(exprs: impl IntoIterator<Item = &'a HirExpr>, counts: &mut UnsupportedCounts) {
     for expr in exprs {
         count_expr(expr, counts);
     }
@@ -204,11 +207,15 @@ fn count_pattern(pattern: &HirPattern, counts: &mut UnsupportedCounts) {
         HirPatternKind::Range(_, second) | HirPatternKind::RangeInclusive(_, second) => {
             count_expr(second, counts);
         }
-        HirPatternKind::EnumVariant(_, pats) | HirPatternKind::Tuple(pats) | HirPatternKind::Multi(pats) => {
+        HirPatternKind::EnumVariant(_, pats)
+        | HirPatternKind::Tuple(pats)
+        | HirPatternKind::Multi(pats) => {
             for pat in pats {
                 count_pattern(pat, counts);
             }
         }
-        HirPatternKind::Wildcard | HirPatternKind::Binding(_) | HirPatternKind::TypedBinding(_, _) => {}
+        HirPatternKind::Wildcard
+        | HirPatternKind::Binding(_)
+        | HirPatternKind::TypedBinding(_, _) => {}
     }
 }
