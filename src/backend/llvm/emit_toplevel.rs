@@ -5191,6 +5191,9 @@ impl LlvmBackend {
                 // BUGS.md). Downstream call sites read reg_llvm_ty to choose the
                 // ptr/i64 conversion, so this must match the emitted value.
                 self.fun.reg_llvm_ty.insert(conv.clone(), "i64".to_string());
+                // 2026-11-14 (#96): ABI pointer parameters use i64 handles
+                // even on wasm32; cast-width adaptation needs the emitted type.
+                self.fun.reg_value_ll.insert(conv.clone(), "i64".to_string());
                 // 2026-10-20 (pointer provenance): the raw ABI pointer is
                 // already the canonical ptr for this argument; keep it instead
                 // of re-inttoptr-ing the i64 at every access. It is defined in
@@ -8009,6 +8012,7 @@ impl LlvmBackend {
                 // value — record it so outbound call marshalling converts it
                 // back to ptr instead of forwarding an i64 as a ptr operand.
                 self.fun.reg_llvm_ty.insert(ac.clone(), "i64".to_string());
+                self.fun.reg_value_ll.insert(ac.clone(), "i64".to_string());
                 conv = ac;
             } else if param_llvm_ty == "i64" {
                 conv = raw;

@@ -100,6 +100,20 @@ coll obj List<T> {
     inner: ListBuffer<T>;
 };
 
+// fresh_int_list — an OWNED copy of a List<Int> (2026-11-13, owners census
+// §13 copy discipline). Lives HERE, not in the prelude: the copy iterates
+// with the coll op surface, which only exists when this module is loaded
+// (minimal corpora that load cast_lanes alone must not require it).
+// `.^Count#()` is not parseable in a contract position (only in expressions)
+// and `[true][true]` is rejected as a trivial pair — omit the brackets.
+defn fresh_int_list(items: List<Int>) -> List<Int> {
+    let copy: List<Int> = [];
+    foreach i in 0..items.Count#() {
+        copy <- items[i];
+    };
+    term copy;
+};
+
 // ── HashMap<K, V> — hash table (flat open addressing) ───────────────
 // Direct hashing (no collision probing): the benchmark's keys are sequential,
 // so `(key as Int) % cap` maps each to a distinct slot. The chained-bucket

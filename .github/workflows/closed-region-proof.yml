@@ -25,7 +25,8 @@ jobs:
       - name: Install native test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm lld spirv-tools valgrind
+          sudo apt-get install -y --no-install-recommends clang llvm lld spirv-tools valgrind z3
+          z3 --version
           mkdir -p /tmp/opencode
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2

@@ -4,6 +4,15 @@
 
 **Status:** Living document — updated as the backend evolves.
 
+2026-11-14: definition memory attributes consume the frontend's transitive
+plain-global access map in addition to raw-memory intrinsic reachability.
+Plain globals are not reachable exclusively through pointer arguments, so
+their readers and writers cannot carry `memory(argmem: readwrite)`.
+`tests/tier1/coll_request_arena.bv` exercises reads across reset/end writes.
+Ownership temp-transfer expressions with pending releases are non-tail:
+evaluate the call, release its borrowed inputs, then return the saved result.
+AST tail-loop classification cannot bypass this post-call HIR obligation.
+
 2026-11-12: enum constructors resolve their own concrete enum before choosing
 an image destination. Allocation width, caller-result eligibility and payload
 stores consume that same resolved type. An absent/stale ambient expected type

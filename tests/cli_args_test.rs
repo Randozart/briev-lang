@@ -35,7 +35,7 @@ fn build_link_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, i32) {
             "--out",
             &out_dir.to_string_lossy(),
             "--stdlib-path",
-            &format!("{PROJECT_ROOT}/lib/std"),
+            &format!("{PROJECT_ROOT}/lib"),
         ])
         .output()
         .unwrap_or_else(|e| panic!("{name}: failed to spawn brievc build: {e}"));
@@ -47,7 +47,17 @@ fn build_link_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, i32) {
 
     let ll = out_dir.join(format!("{name}.ll"));
     let exe = out_dir.join(name);
-    let link = Command::new("clang")
+    // 2026-11-14: a program using Argc#/Args# carries its own `_start` (the
+    // owned machine entry); the CRT would duplicate it. Same guard as
+    // deterministic_transitions/interpreter_corpus_parity.
+    let owned_start = std::fs::read_to_string(&ll)
+        .map(|text| text.contains("define void @_start"))
+        .unwrap_or(false);
+    let mut linker = Command::new("clang");
+    if owned_start {
+        linker.arg("-nostartfiles");
+    }
+    let link = linker
         .args([
             "-O3",
             "-flto",

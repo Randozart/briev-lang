@@ -1867,17 +1867,31 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     // census instead of resolving as unknown calls.
     let has_fresh = items.iter().any(|i| matches!(i,
         briev_compiler::ast::TopLevel::Definition(d) if d.name == "fresh_string"));
+    if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+        eprintln!("[inline-dbg] has_fresh={has_fresh} stdlib_path={stdlib_path:?}");
+    }
     if !has_fresh {
         if let Some(sp) = &stdlib_path {
-            let cl_path = sp.join("cast_lanes.bv");
-            if let Ok(cl_src) = std::fs::read_to_string(&cl_path) {
-                let cl_tokens = briev_compiler::lexer::tokenize(&cl_src)
-                    .map_err(|e| format!("lex failed (cast_lanes): {}", e))?;
-                let mut cl_parser = briev_compiler::parser::Parser::new(cl_tokens, &cl_src);
-                let cl_items = cl_parser
-                    .parse_program()
-                    .map_err(|e| format!("parse failed (cast_lanes): {}", e))?;
-                items.extend(cl_items);
+            let cl_path = sp.join("std/cast_lanes.bv");
+            match std::fs::read_to_string(&cl_path) {
+                Ok(cl_src) => {
+                    let cl_tokens = briev_compiler::lexer::tokenize(&cl_src)
+                        .map_err(|e| format!("lex failed (cast_lanes): {}", e))?;
+                    let mut cl_parser = briev_compiler::parser::Parser::new(cl_tokens, &cl_src);
+                    let cl_items = cl_parser
+                        .parse_program()
+                        .map_err(|e| format!("parse failed (cast_lanes): {}", e))?;
+                    let n_cl = cl_items.len();
+                    items.extend(cl_items);
+                    if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+                        eprintln!("[inline-dbg] cast_lanes inlined: {n_cl} items");
+                    }
+                }
+                Err(e) => {
+                    if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+                        eprintln!("[inline-dbg] read failed: {e}");
+                    }
+                }
             }
         }
     }
@@ -1892,7 +1906,21 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     let universe = briev_compiler::type_universe::TypeUniverse::new();
     let graph = briev_compiler::casting::graph::CastingGraph::new();
     briev_compiler::hir::typing::annotate_types(&mut program, &universe, &graph);
+    if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+        let items_fresh = items.iter().filter(|i| matches!(i,
+            briev_compiler::ast::TopLevel::Definition(d) if d.name == "fresh_string")).count();
+        let items_coll = items.iter().filter(|i| matches!(i,
+            briev_compiler::ast::TopLevel::Definition(d) if d.name == "coll_destroy")).count();
+        eprintln!("[owned-dbg] items fresh_string defs={items_fresh} coll_destroy defs={items_coll} total={}",
+            items.len());
+    }
     let escapes = briev_compiler::analysis::allocation::summarize_escapes_pub(&items);
+    if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+        let names: Vec<String> = program.callables.iter().map(|c| c.name.clone()).collect();
+        let fresh: Vec<_> = names.iter().filter(|n| n.contains("fresh")).collect();
+        eprintln!("[owned-dbg] post-lower callables={} fresh-names={fresh:?} has_fresh_string={}",
+            names.len(), names.contains(&"fresh_string".to_string()));
+    }
     let events = briev_compiler::hir::owned_storage::memcheck_owned(&program, &escapes);
     let mut releases = 0usize;
     let mut undecided: Vec<&briev_compiler::hir::owned_storage::OwnedEvent> = Vec::new();

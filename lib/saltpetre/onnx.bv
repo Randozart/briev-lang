@@ -6,6 +6,7 @@
 // construction, keeping the walk free of field-level arrow mutation.
 
 import "./proto.bv";
+import "std/collections.bv";
 import { POW2_15, POW2_16, POW2_31, POW2_32 } from "std/constants.bv";
 import "./tensor.bv";
 import "std/string.bv";

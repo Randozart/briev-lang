@@ -38,6 +38,82 @@ is the struct. Both then marshalled the i64 register as a `ptr` operand
 
 **Status.** Fixed 2026-11-13.
 
+## 2026-11-14 — Follow-on CI failures after enabling Z3 (#96)
+
+Run `43583290955` passed library tests and exposed failures in the all-target
+gate. Root causes and repairs:
+
+- Core casting preludes declared C request-arena bindings using an unresolved
+  `std/c/coll_arena.c` path. This also violated the core foreign-binding gate
+  and made portable/browser emission unsupported. Share the same bump-block
+  policy as pure Briev in `std/coll_arena.bv`; preserve alignment, overflow
+  fallback, retired-buffer ownership and reuse semantics.
+- Plain-global readers/writers were tagged LLVM argmem-only. Optimizing the
+  request-arena regression reused an ownership result across `arena_end`.
+  Consume the frontend's plain-global access facts for memory attributes.
+- `prove_contract` checks satisfiability but negated its condition and treated
+  a satisfying counterexample as a rejection. Assert the positive condition,
+  accept SAT, reject UNSAT, and retain the separate body-proof obligations.
+- Inline interpreter strings were not materialized by the String→Data door;
+  copying the bytes in `fresh_string` read an invalid address. Materialize
+  `[length][bytes][NUL]` storage for that conversion.
+- The HIR plumbing test compared post-ownership HIR with pre-pass lowering.
+  Assert the release obligation and compare the remaining original program.
+  Its verifier also exposed release IDs reusing callable-header IDs; include
+  the owning header IDs when reserving fresh release identities.
+- Pointer-to-integer casts assumed 64-bit handles. Preserve the actual
+  recorded handle width (or target pointer width) and widen/narrow integers
+  instead of applying `ptrtoint` to wasm32 allocation results.
+- Ownership temp-transfers added cleanup after AST tail calls. Loop lowering
+  still converted those calls to backedges and then emitted frees after the
+  terminator. Calls with pending post-call releases now return normally before
+  cleanup; genuine tail calls retain loop lowering.
+- `tests/saltpetre/conformance.bv` was absent and covered by `tests/*` ignores.
+  Track a session-API driver and unignore the fixture directory.
+- The SPIR-V image-partition test counted scalar members against a fixed
+  prelude size. Check the named buffer/image partition and require the emitted
+  struct to match the image-excluding layout; retain SPIR-V validation and
+  image-write checks.
+
+## 2026-11-14 — CI omits Z3 required by body-verification tests
+
+**Symptom.** Main CI runs `43574215730` and `43575881264` fail the same
+seven library tests for call summaries, loop invariants, and decreasing variants.
+
+**Cause.** The workflows running the library suite install LLVM tooling but
+not Z3. These proofs need the SMT solver; without it they correctly remain
+unproven, so the positive proof assertions fail.
+
+**Repair.** Install the Ubuntu `z3` package and check `z3 --version` in the
+default, AST opt-out, and closed-region proof jobs that run library tests.
+Keep the proof assertions intact. A local verifier-test A/B with both solver
+lookup locations unavailable reproduces exactly the seven CI failures
+(17 pass, 7 fail); restoring Z3 yields 24 passing verifier tests.
+
+## 2026-11-14 — owned `_start` drops argc: Argc#/Args# read garbage
+
+**Symptom.** An Argc#/Args# program linked through the owned x86_64 `_start`
+(freestanding: no runtime symbols) exits with an undefined value —
+`endprogram arg_count()` returns 192 under clang -O0 and 0 through the
+release compiler with args `x y z` (expected 4). Non-freestanding builds are
+unaffected (crt1 passes argc to main).
+
+**Cause.** `main` is `main(i32 %argc, ptr %argv)`, but the `_start` asm
+loaded argc into `%rax` (only for the environ GEP) and argv into `%rsi`,
+never moving argc into `%edi` before `call main`. aarch64 already does
+`ldr x0, [sp]`; x86_64 omitted the equivalent.
+
+**Fix.** `movl %eax, %edi` right after `movq (%rsp), %rax`, keeping %rax
+intact for the environ computation. Regression:
+`cli_args_test::argc_intrinsic_exit_code_matches_process_argc` (fails 192 vs 4
+before, passes after). Also repaired in the same commit: that test passed
+`--stdlib-path lib/std` while every other test passes `lib` (frgn
+`from "std/c/..."` paths are relative to `lib/`), and its manual clang link
+lacked the `-nostartfiles` guard for owned-`_start` programs that
+`deterministic_transitions`/`interpreter_corpus_parity` already use.
+
+**Status.** Fixed 2026-11-14.
+
 ## 2026-11-12 — Nested enum constructor underallocates collection element images
 
 **Symptom.** A list containing an outer enum whose payload is another enum

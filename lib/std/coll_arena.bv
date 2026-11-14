@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// 2026-11-14 (#96): request-scoped collection storage in the stdlib.
+// The former C bindings broke clean-checkout builds and portable backends.
+// Keep the same reusable bump-block policy in Briev so every backend can
+// lower it. Explicit Malloc storage owns this block beyond compiler regions.
+let coll_arena_base: Int = 0;
+let coll_arena_cap: Int = 0;
+let coll_arena_off: Int = 0;
+let coll_arena_high: Int = 0;
+let coll_arena_active: Int = 0;
+
+defn coll_arena_begin(bytes: Int) -> Void {
+    let want: Int = 0;
+    when bytes > 0 { want = bytes; };
+    when coll_arena_base == 0 || want > coll_arena_cap {
+        when coll_arena_base != 0 { Free#(coll_arena_base as Ptr<Bit<8>>); };
+        coll_arena_base = Alloc#(want, Malloc) as Int;
+        coll_arena_cap = 0;
+        when coll_arena_base != 0 { coll_arena_cap = want; };
+    };
+    coll_arena_off = 0;
+    coll_arena_high = 0;
+    coll_arena_active = 0;
+    when coll_arena_base != 0 { coll_arena_active = 1; };
+    term;
+};
+
+defn coll_arena_reset() -> Void {
+    coll_arena_off = 0;
+    term;
+};
+
+defn coll_arena_end() -> Void {
+    coll_arena_off = 0;
+    coll_arena_active = 0;
+    term;
+};
+
+// Retired buffers remain owned until the request ends, even after reset.
+defn coll_arena_owns(ptr: Int) -> Int {
+    when coll_arena_active != 0 && ptr >= coll_arena_base {
+        when ptr - coll_arena_base < coll_arena_high { term 1; };
+    };
+    term 0;
+};
+
+defn coll_alloc(bytes: Int) -> Int {
+    let need: Int = 0;
+    when bytes > 0 { need = bytes; };
+    when coll_arena_active != 0 {
+        let padding: Int = (8 - coll_arena_off % 8) % 8;
+        let available: Int = coll_arena_cap - coll_arena_off;
+        when padding <= available && need <= available - padding {
+            let start: Int = coll_arena_off + padding;
+            coll_arena_off = start + need;
+            when coll_arena_off > coll_arena_high { coll_arena_high = coll_arena_off; };
+            term coll_arena_base + start;
+        };
+    };
+    term Alloc#(need, Malloc) as Int;
+};

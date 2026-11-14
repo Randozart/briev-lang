@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
-use super::emit_expr::ArgsView;
+use super::emit_expr::{ArgsView, ExprView};
 use super::{LlvmBackend, TypedRegister};
 use crate::ast::Expr;
 use std::fmt::Write;
@@ -35,7 +35,7 @@ pub(super) fn emit_collection_index_store(
         backend.fun.let_binding_types.insert(name.clone(), register.ty.clone());
     }
     let result = backend.fun.gen_reg();
-    backend.emit_method_call(out, &result, &Expr::Identifier(receiver_name.clone()),
+    backend.emit_method_call(out, &result, ExprView::Ast(&Expr::Identifier(receiver_name.clone())),
         "SetAt", ArgsView::Ast(&[index.clone(), Expr::Identifier(value_name.clone())]), indent);
     for name in [&receiver_name, &value_name] {
         backend.fun.let_bindings.remove(name);
