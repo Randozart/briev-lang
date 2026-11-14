@@ -1001,7 +1001,7 @@ defn fresh_string(text: String) [true][CharCount#(term) == CharCount#(text)] -> 
     term owned;
 }
 
-// coll_destroy — release a compiler-owned coll handle: the scaffold-allocated
+// fresh_string — an OWNED copy of any String: the scaffold-allocated
 // object is always freed; the backing block is freed only when it does NOT
 // live in an active request arena (coll_arena_owns covers retired buffers via
 // the block's high-water mark). If the scaffold ever allocates the object
@@ -1018,7 +1018,13 @@ defn coll_destroy(handle: Int)
             Free#(data as Ptr<Bit<8>>);
         };
     };
-    Free#(handle as Ptr<Bit<8>>);
+    // 2026-11-14: the OBJECT can also be arena-allocated — the scaffold init
+    // routes through Alloc#, which may pick the request arena. Freeing an
+    // arena interior pointer corrupts the heap ("double free or corruption
+    // (out)" via coll_destroy on the env list). Owns-check it like data.
+    when coll_arena_owns(handle) == 0 {
+        Free#(handle as Ptr<Bit<8>>);
+    };
     term 0;
 };
 

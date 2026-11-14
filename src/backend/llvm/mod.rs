@@ -6315,9 +6315,19 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // LTO renaming would dangle those references.
             writeln!(out, "@llvm.used = appending global [2 x ptr] [ptr @main, ptr @__briev_environ]").ok();
             if triple.starts_with("x86_64") {
+                // 2026-11-14 (BUGS.md argc dropped at owned _start): main's
+                // signature is main(i32 %argc, ptr %argv). The asm read argc
+                // into %rax (for the environ pointer) and argv into %rsi but
+                // never moved argc into %edi before `call main`, so Argc#/
+                // Args# saw an undefined register (exit 192 under -O0, 0 under
+                // -O3). aarch64 already loads x0 from the stack (see below);
+                // this mirrors it. Undo: delete the `movl %eax, %edi;` before
+                // `leaq 8(%rsp)` — it must stay after the argc load and
+                // before the call, and %rax must still hold argc for the
+                // environ GEP.
                 writeln!(out, "define void @_start() naked noinline {{").ok();
                 writeln!(out, "entry:").ok();
-                writeln!(out, "  call void asm sideeffect \"movq (%rsp), %rax; leaq 8(%rsp), %rsi; leaq 16(%rsp,%rax,8), %rdx; movq %rdx, __briev_environ(%rip); xorl %ebp, %ebp; call main; movl %eax, %edi; movl $$231, %eax; syscall\", \"~{{rdi}},~{{rsi}},~{{rdx}},~{{rax}},~{{rcx}},~{{r11}},~{{memory}}\" ()").ok();
+                writeln!(out, "  call void asm sideeffect \"movq (%rsp), %rax; movl %eax, %edi; leaq 8(%rsp), %rsi; leaq 16(%rsp,%rax,8), %rdx; movq %rdx, __briev_environ(%rip); xorl %ebp, %ebp; call main; movl %eax, %edi; movl $$231, %eax; syscall\", \"~{{rdi}},~{{rsi}},~{{rdx}},~{{rax}},~{{rcx}},~{{r11}},~{{memory}}\" ()").ok();
                 writeln!(out, "  unreachable").ok();
                 writeln!(out, "}}").ok();
             } else if triple.starts_with("aarch64") {
@@ -6649,7 +6659,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.stateless_body = true;
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
-            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", emit_expr::ArgsView::Ast(&[]), "  ");
+            let count = self.emit_method_call(out, &count_tmp, emit_expr::ExprView::Ast(&crate::ast::Expr::Identifier(field.clone())), "Count", emit_expr::ArgsView::Ast(&[]), "  ");
             // The Int width on wasm32 is i32; the At index + loop counter are
             // Int, so use i32 (the count register may be i32 already or i64 —
             // adapt).
@@ -6681,7 +6691,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.let_original_types.insert(cur_tmp.clone(), crate::ast::Type::int());
             let arg = crate::ast::Expr::Identifier(cur_tmp);
             let at_tmp = self.fun.gen_reg();
-            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", emit_expr::ArgsView::Ast(&[arg]), "  ");
+            let word = self.emit_method_call(out, &at_tmp, emit_expr::ExprView::Ast(&crate::ast::Expr::Identifier(field.clone())), "At", emit_expr::ArgsView::Ast(&[arg]), "  ");
             if row_size == 0 {
                 // Scalar/string element collection: one snapshot word per item.
                 let word64 = self.view_projection_word(out, "  ", &word);

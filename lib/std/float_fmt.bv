@@ -28,18 +28,20 @@ defn float_bits(f: Float) [true][term >= 0] -> Int {
 
 // digit_char - a single decimal digit 0-9 to its character string.
 defn digit_char(d: Int) [d >= 0 && d <= 9][term .^Length == 1] -> String {
-    when d == 0 { term "0"; };
-    when d == 1 { term "1"; };
-    when d == 2 { term "2"; };
-    when d == 3 { term "3"; };
-    when d == 4 { term "4"; };
-    when d == 5 { term "5"; };
-    when d == 6 { term "6"; };
-    when d == 7 { term "7"; };
-    when d == 8 { term "8"; };
-    term "9";
+    // 2026-11-13 (owners census): literal ladder — every path is static
+    // storage, so return OWNED copies (§13 copy discipline) and keep
+    // digits_of_int/pad_digits fresh for the derivation.
+    when d == 0 { term fresh_string("0"); };
+    when d == 1 { term fresh_string("1"); };
+    when d == 2 { term fresh_string("2"); };
+    when d == 3 { term fresh_string("3"); };
+    when d == 4 { term fresh_string("4"); };
+    when d == 5 { term fresh_string("5"); };
+    when d == 6 { term fresh_string("6"); };
+    when d == 7 { term fresh_string("7"); };
+    when d == 8 { term fresh_string("8"); };
+    term fresh_string("9");
 };
-
 // pow2 - 2^n for n in [0, 60] (2^60 = 1.15e18 <= i64 max).
 defn pow2(n: Int) [n >= 0 && n <= 60][term >= 1] -> Int {
     when n == 0 { term 1; };
@@ -446,7 +448,7 @@ defn float_format(f: Float, precision: Int)
         when sign == 1 {
             term "-0";
         };
-        term "0";
+        term fresh_string("0");
     };
     let m: Int = mantissa_val(exp8, mant);
     let e: Int = exponent_val(exp8);
