@@ -15,40 +15,41 @@ assurance component; it is not a proof of query generation or compiler soundness
 
 ## Bounded implementation proof
 
-The Kani harness `solver_response::proofs::sat_model_cannot_authorize_unsat`
-executes the production parser. Its domain is a leading `sat\n` followed by
-any eight ASCII bytes (including control characters). Its assertion requires
-SAT, not merely absence of UNSAT. The bound and ASCII restriction are explicit;
-this does not verify arbitrary-length or arbitrary-Unicode solver output.
+The [production classifier proof](solver-response.md) now checks exact token
+recognition over all byte strings of length 0–6. Kani verifies the actual Rust
+kernel, with explicit coverage for all result classes and both length endpoints.
+The restored-substring mutant fails on concrete `wunsat` and `ssat` inputs.
+This bounded implementation result is separate from the unexecuted Lean model.
 
-```bash
-cargo kani --manifest-path briev-verify/Cargo.toml --harness sat_model_cannot_authorize_unsat
-```
-
-A private copy restoring substring classification supplies the negative control;
-the harness must reject it on the SAT-preservation assertion. Check completed
-verification and unwinding assertions, not just Kani compilation. The existing
-local Kani is 0.67.0; no tool download is required for this first harness.
+The older `sat_model_cannot_authorize_unsat` harness still covers the larger
+whole-parser obligation (a leading SAT response plus eight arbitrary ASCII bytes).
+Its initial run timed out. Neither the new kernel proof nor shared examples
+prove that normalization refines the Lean model. Rust-to-Lean refinement and
+arbitrary-length coverage remain explicit work items.
 
 ## Lean model and current evidence limits
 
 `verification/lean/SolverResponse.lean` is an initial model, with Lean pinned by
 the adjacent `lean-toolchain`. It states exact-status recognition theorems and
-includes SAT-model/error/unknown controls. Run from that directory:
+includes SAT-model/error/unknown controls. From the repository root:
 
 ```bash
-lean --version
-lean SolverResponse.lean
+bash verification/lean/check.sh /path/outside/repository/lean-check
 ```
 
-**Status at introduction: not kernel-checked in this environment.** Lean is not
-installed and direct GitHub DNS resolution failed. No Lean correctness result is
-claimed. The model begins after whitespace normalization; it does not prove Rust
-string preprocessing or implementation refinement. Its axiom reports must be
-reviewed when checked. Kernel-checked statements, once available, establish only
-the stated model properties. An intentional false-theorem rejection and a
-production extraction/refinement experiment remain required before accepting
-the component as a verified Rust implementation.
+The gate uses Lean on PATH or the standard user Elan installation; `LEAN_BIN`
+can name an explicit executable. It checks version 4.24.0, compiles the model
+into the external directory and requires `negative/FalseSat.lean` to fail because
+`decide` refutes its false SAT-to-UNSAT theorem. A missing import, tool error or
+accepted false theorem cannot satisfy that control. Inspect the printed axiom
+reports in `model.log`; the gate also rejects reported proof placeholders and
+native reduction axioms.
+
+**Current Lean status: unavailable, gate unexecuted beyond tool discovery.**
+The host installation is pending; this session cannot resolve GitHub to download
+Lean. No Lean correctness result is claimed. The model begins after whitespace
+normalization and has no extracted implementation or Rust refinement theorem.
+The successful bounded Kani kernel proof above does not close that gap.
 
 ## Export acceptance boundary
 
