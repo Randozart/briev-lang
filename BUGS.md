@@ -22,6 +22,44 @@ string-content paths. Regression tests:
 `interpreter::eval::tests::test_float_relationals_compare_in_f64`,
 `test_float_relationals_promote_mixed_int`, `test_float_equality_is_value_based`.
 
+## 2026-11-13 — aggregate value passed to a defn forwards an i64 handle as `ptr`
+
+**Symptom.** A struct/obj VALUE whose fields include a collection/pointer
+(`List<T>`, `String`) is an i{int_bits} handle in SSA, but the callee's ABI
+parameter type is `ptr`. Calling a defn with such a value emitted invalid LLVM:
+`'%ac0' defined with type 'i64' but expected 'ptr'` at
+`call i64 @idx(ptr %ac0, i64 …)`. `opt -passes=verify` and clang both reject it.
+Repro:
+
+```briev
+struct Named { n: Int; label: String; };
+defn double_n(x: Named) -> Int { term x.n * 2; };
+defn wrap(x: Named) -> Int { term double_n(x) + x.label .^Length; };
+let res: Int = 0;
+let t: Int = 0;
+node main [t == 0][t == 1] {
+    let x: Named = Named { n: 3, label: "hi" };
+    res = wrap(x);
+    t = 1;
+    term;
+};
+```
+
+**Cause.** Call-argument marshalling reads `fun.reg_llvm_ty` to choose the
+ptr/i64 conversion, falling back to `llvm_type(reg.ty)` — which is `ptr` for a
+struct/obj. But two producers of aggregate handles never recorded their real
+SSA type: (a) the `ptr` parameter prologue emits `%ac{i} = ptrtoint ptr
+%arg{i} to i64` without recording `%ac{i}` as i64; (b) `emit_struct_literal`
+emits `%tN = ptrtoint ptr %alloca to i{int_bits}` while the `TypedRegister.ty`
+is the struct. Both then marshalled the i64 register as a `ptr` operand
+(`reg_llvm_ty` resolved to `ptr`, so the `ptr ← i64` branch was skipped).
+
+**Fix.** Record the emitted SSA width so the call boundary inttoptrs:
+`fun.reg_llvm_ty.insert(conv, "i64")` in the `ptr`-param prologue
+(`emit_toplevel.rs`, both the defn and callable-txn parameter loops) and in
+`emit_struct_literal` (`emit_expr.rs`). Regression:
+`backend::llvm::crash_regressions::aggregate_value_arguments_marshal_handle_to_ptr`.
+
 **Status.** Fixed 2026-11-13.
 
 ## 2026-11-14 — Follow-on CI failures after enabling Z3 (#96)
