@@ -266,3 +266,24 @@ sources, compare Praetor to baseline, and verify source identity after final
 commits. Preserve the standard runner's tracked-directory-symlink limitation.
 All logs remain in the external evidence directory. Future confirmed bug fixes
 should follow the same isolated-commit/backport/reconcile pattern.
+
+## 2026-11-14T20:59:07+01:00 — Progress committed and local main receives solver fix
+
+- `acd31193c`: isolated solver fix, real-Z3 regressions, bounded Kani harness
+  (still unaccepted), and self-contained solver-response architecture/bug record.
+- `884941768`: research checkpoint: this plan, the Lean assurance boundary and
+  pinned initial Lean model. Formal status remains unavailable/incomplete.
+- Local main merged only the solver fix as `6144c8635`, preserving main's newer
+  Float-division and counsel changes. No remote push was requested or performed.
+- During integration, hundreds of unrelated unstaged edits appeared in the
+  original main checkout. Only the reviewed seven-file merge index was committed;
+  unrelated edits and private untracked files were preserved. Do not validate or
+  edit that live dirty checkout as if it were an isolated source snapshot.
+- Validate committed main in a detached worktree at
+  `/home/randozart/Desktop/Projects/briev-assurance-main-validation`. The research
+  branch now merges `6144c8635`; source-level proof status is unchanged. Historical
+  test evidence remains historical until fresh checks on the integrated commit.
+- New reconciliation logs and source/commit identities belong under the private
+  external evidence directory's `reconciliation/` subdirectory. Future verified
+  bug fixes should remain separate commits so main can receive them without
+  importing pending Lean research. Continuous checkpoint commits are authorized.
