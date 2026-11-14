@@ -13606,3 +13606,24 @@ so proof-time values and runtime loads disagreed. The emitter now folds
 integer-arithmetic const expressions through the analysis-owned const table
 (`gemm_shape::fold_consts` + `lit`) before the literal-shape match;
 unresolved shapes keep the old behavior.
+
+## 2026-11-14 — SAT models and solver errors misclassified as UNSAT
+
+**Symptom.** A satisfiable SMT query declaring a variable named `unsat` returns
+`SmtResult::Unsat` when its model is requested. Error messages containing that
+word can also be accepted as a proof, including a rejected assertion followed
+by UNSAT for the remaining assertions. Reproduced with managed Z3 4.13.0.
+
+**Cause.** Both public solver entry points searched all stdout for the substring
+`unsat` before checking `sat`, so model identifiers and error text overrode the
+actual response. The body-prover regression confirms an actual false `Proven` verdict for
+`square(unsat)` with body `unsat * unsat` and postcondition `term == 1`
+(counterexample: `unsat = 0`).
+
+**Change.** Both use a shared exact-leading-status parser. Errors before a
+status remain unknown; trailing model text cannot override a completed answer.
+Regression coverage: `solver_response` unit tests and the two explicit real-Z3
+`solver_boundary` integration tests. See the
+[solver response contract](docs/architecture/solver-response.md) for the exact
+trust boundary and test commands. The bounded Kani harness is not an accepted
+proof: its initial verification attempt timed out.
