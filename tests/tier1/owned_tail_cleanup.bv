@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Ownership cleanup after a recursive result must run after the call returns.
+import "std/io.bv";
+defn peel(text: String) [true][term .^Length >= 0] -> String {
+    when text .^Length == 0 { term fresh_string(text); };
+    let rest: String = text[1:text .^Length];
+    term peel(rest);
+};
+node entry [beginprogram][true] {
+    let source: String = fresh_string("abcd");
+    let result: String = peel(source);
+    print_int(result .^Length); print_str("|");
+    print_int(source .^Length);
+    endprogram 0;
+};

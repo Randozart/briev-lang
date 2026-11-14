@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Request-block alignment, overflow fallback, retired ownership and reuse.
+import "std/io.bv";
+node entry [beginprogram][true] {
+    coll_arena_begin(32);
+    let first: Int = coll_alloc(3);
+    let second: Int = coll_alloc(8);
+    print_int(second - first); print_str("|");
+    print_int(coll_arena_owns(first)); print_str("|");
+    let fallback: Int = coll_alloc(64);
+    print_int(coll_arena_owns(fallback)); print_str("|");
+    Free#(fallback as Ptr<Bit<8>>);
+    coll_arena_reset();
+    print_int(coll_arena_owns(second)); print_str("|");
+    let reused: Int = coll_alloc(3);
+    print_int(reused - first); print_str("|");
+    coll_arena_end();
+    print_int(coll_arena_owns(first)); print_str("|");
+    let outside: Int = coll_alloc(8);
+    print_int(coll_arena_owns(outside));
+    Free#(outside as Ptr<Bit<8>>);
+    endprogram 0;
+};

@@ -119,6 +119,22 @@ pub fn eval_expr(
                 return Ok(eval_bits_cast(v, bits));
             }
             match target_protocol_category(ty).as_str() {
+                // 2026-11-14 (#96): the String→Data door exposes a real
+                // [length][bytes][NUL] block. Bits are inline interpreter
+                // strings, not pointer bits; fresh_string copies n+1 bytes.
+                "Blob" | "Data" => match &v {
+                    Value::Bits(bytes) => {
+                        let mut data = (bytes.len() as i64).to_le_bytes().to_vec();
+                        data.extend_from_slice(bytes);
+                        data.push(0);
+                        let addr = heap.allocate(data.len());
+                        heap.write(addr, &data).map_err(|_| {
+                            RuntimeError::HeapError("String→Data storage write failed".into())
+                        })?;
+                        Ok(i64_to_bits(addr as i64))
+                    }
+                    _ => Ok(v),
+                },
                 "Int" => match v {
                     Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Int(if b { 1 } else { 0 }))),
                     Value::Atom(Atom::Char(c)) => Ok(Value::Atom(Atom::Int(c as i64))),

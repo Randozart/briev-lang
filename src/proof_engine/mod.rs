@@ -17,12 +17,12 @@ use crate::errors::ProofError;
 /// If heuristics flag a violation or are inconclusive, Z3 is consulted as arbiter.
 /// Without Z3, heuristic verdict is final — violations deny, inconclusive allows.
 ///
-/// For protocol contracts, params should include ("Self", type) to
-/// declare #Self as a free variable.
+/// Free identifiers (including protocol `#Self`) are declared from the
+/// condition itself; the parameter list is retained for API compatibility.
 pub fn prove_contract(
     pre: &Expr,
     post: &Expr,
-    params: &[(String, Type)],
+    _params: &[(String, Type)],
     explicit: bool,
 ) -> Result<(), Vec<ProofError>> {
     let pre_is_true = matches!(pre, Expr::Bool(true));
@@ -59,61 +59,28 @@ pub fn prove_contract(
         }
     }
 
-    // If heuristic detected no violation, the contract passes basic sanity
-    if !has_violation {
-        // Still let Z3 verify deeply if available
-        if smt::is_z3_available() {
-            let query = smt::build_contract_query(&condition, params);
-            match smt::prove_smt_formula(&query, 1000) {
-                smt::SmtResult::Unsat => return Ok(()),
-                smt::SmtResult::Sat(model) => {
-                    let msg = if model.is_empty() {
-                        "SMT solver found a counterexample".into()
-                    } else {
-                        format!("SMT counterexample: {:?}", model)
-                    };
-                    return Err(vec![ProofError::PostconditionUnsatisfiable {
-                        transaction: "<contract>".into(),
-                        postcondition: format!("{}", condition),
-                        reason: msg,
-                        example_values: model.iter().map(|(k, v)| format!("{} = {}", k, v)).collect(),
-                        suggestion: "add a runtime guard or prove the input constraints".into(),
-                        span: crate::errors::Span::dummy(),
-                    }]);
-                }
-                smt::SmtResult::Unknown => {
-                    // Z3 couldn't prove either way — allow
-                    return Ok(());
-                }
-            }
-        }
-        // No Z3 — heuristic pass is sufficient
-        return Ok(());
-    }
-
-    // If heuristic found a violation or was inconclusive, consult Z3
+    // 2026-11-14 (#96): this API checks satisfiability, not universal
+    // validity. A counterexample to `len <= 4096` does not make that
+    // precondition impossible. Assert the condition itself; the VC builder
+    // declares its free identifiers and `not false` adds no constraint.
+    // Body verification separately checks that implementations meet contracts.
     if smt::is_z3_available() {
-        let query = smt::build_contract_query(&condition, params);
+        let query = smt::build_vc_query(&[condition.clone()], &Expr::Bool(false));
         match smt::prove_smt_formula(&query, 1000) {
-            smt::SmtResult::Unsat => return Ok(()),
-            smt::SmtResult::Sat(model) => {
-                let msg = if model.is_empty() {
-                    "SMT solver found a counterexample".into()
-                } else {
-                    format!("SMT counterexample: {:?}", model)
-                };
+            smt::SmtResult::Sat(_) => return Ok(()),
+            smt::SmtResult::Unsat => {
                 return Err(vec![ProofError::PostconditionUnsatisfiable {
                     transaction: "<contract>".into(),
                     postcondition: format!("{}", condition),
-                    reason: msg,
-                    example_values: model.iter().map(|(k, v)| format!("{} = {}", k, v)).collect(),
-                    suggestion: "add a runtime guard or prove the input constraints".into(),
+                    reason: "no values satisfy the combined precondition and postcondition".into(),
+                    example_values: vec![],
+                    suggestion: "remove the contradiction between the contract constraints".into(),
                     span: crate::errors::Span::dummy(),
                 }]);
             }
             smt::SmtResult::Unknown => {
-                eprintln!("warning: contract could not be proven (Z3 returned Unknown), allowing");
-                return Ok(());
+                // Preserve definite heuristic contradictions when the solver
+                // cannot encode or decide the condition.
             }
         }
     }

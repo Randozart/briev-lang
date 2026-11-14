@@ -24,10 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install LLVM + clang
+      - name: Install LLVM + clang + Z3
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential
+          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential z3
+          z3 --version
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.151

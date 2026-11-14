@@ -17,10 +17,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install LLVM + SPIR-V tools
+      - name: Install LLVM + SPIR-V tools + Z3
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential spirv-tools
+          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential spirv-tools z3
+          z3 --version
 
       - name: Prepare test directories
         run: mkdir -p /tmp/opencode
