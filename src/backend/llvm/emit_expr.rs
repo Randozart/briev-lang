@@ -11575,8 +11575,8 @@ impl LlvmBackend {
                     // %cmp = fcmp oeq %denom, 0.0; br i1 %cmp, label %divzero, label %divcont
                     writeln!(
                         out,
-                        "{}  {} = fcmp oeq{} {} {}, 0.0",
-                        indent, cmp, fast, ty_str, r.name
+                        "{}  {} = fcmp oeq {} {}, 0.0",
+                        indent, cmp, ty_str, r.name
                     )
                     .ok();
                     writeln!(
