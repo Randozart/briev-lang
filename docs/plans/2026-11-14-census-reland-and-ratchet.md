@@ -57,3 +57,27 @@ Baseline is recorded at the re-landed census. The remaining families
 (parser attr-fallbacks, `arg`, `method_name`/`json_get`,
 `select_path`/`dispatch` residuals) stay honest-undecided and are the
 follow-up worklist.
+
+## Outcome (2026-11-14)
+
+Re-landed. Blockers resolved:
+- **coll object owns-check**: the double free was the scaffold init routing list
+  OBJECTS through Alloc# into the request arena; coll_destroy freed the object
+  unconditionally. Now owns-checked like data (the intrinsic's own comment
+  predicted it). gdb backtrace + `keep env` bisect; ASAN did not reproduce.
+- **self tail calls**: strip_frac_zeros' `term strip_frac_zeros(trimmed)` was
+  TempTransfer-converted; the binding emitted the recursive call, which
+  tail-loop lowering turns into the loop-back `br` inside the binding —
+  releases stranded after a terminator (wasm dashboard IR verify).
+  Self tail calls are now excluded from temp-transfer (leak-safe).
+- **Census**: undecided 50 → 12, releases 58. Ratchet live
+  (harness/memcheck_ratchet.sh + baseline; CI step green).
+- **PTL runner flakiness**: ptl-baseline was marked Abandoned mid-step three
+  times (listener network drops then reconnects; job-level X despite all
+  step work completing). The self-diff ORACLE was verified manually on the
+  box against the reference clone: **MATCH (7 steps)**. Follow-up: run the
+  selfdiff from a host timer or add listener-health handling; the CI job is
+  unreliable on this host, the gate itself is green.
+- Soak 159→188 MB @300 stair-step (HWM 244) vs previous flat 177 — bounded,
+  follow-up (freed-object churn vs arena owns-check).
+- Avatar workloads killed per owner instruction; box quiet (load ≈2-9).
