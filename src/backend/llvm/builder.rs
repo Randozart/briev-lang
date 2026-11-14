@@ -1,5 +1,8 @@
 // ── LLVM IR Builder ──────────────────────────────────────────────────
 //
+// The counsel contract layer: inert identity attributes, checked by counsel-check.
+use counsel::{post, pre};
+//
 // 2026-06-29: Structured builder that replaces raw `writeln!` formatting
 // for LLVM IR instructions. Handles SSA register allocation, label
 // generation, and instruction formatting in one place.
@@ -485,11 +488,17 @@ impl LLVMBuilder {
     }
 
     /// Check if any instruction was emitted (for control flow decisions).
+    /// True iff no instructions have been emitted yet.
+    /// counsel skips this body (Vec method call) but the contract is honest.
+    #[post(term == 1 || term == 0)]
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty()
     }
 
     /// Number of instructions emitted.
+    /// Number of instructions emitted so far.
+    /// counsel skips this body (Vec method call) but the contract is honest.
+    #[post(term >= 0)]
     pub fn len(&self) -> usize {
         self.instructions.len()
     }
