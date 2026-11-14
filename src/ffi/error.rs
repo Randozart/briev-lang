@@ -22,6 +22,10 @@
 
 use std::collections::HashMap;
 
+// The counsel contract layer: these are inert identity attributes, checked by
+// `counsel-check` (the verification layer), not by brievc at runtime.
+use counsel::{post, pre};
+
 /// Error conventions from TOML profile
 #[derive(Debug, Clone)]
 pub struct ErrorConventions {
@@ -53,7 +57,7 @@ impl ErrorConventions {
     /// Parse from TOML table (from profile [conventions] section)
     pub fn from_toml(table: Option<&toml::Value>) -> Self {
         let mut conv = Self::default();
-        
+
         if let Some(t) = table {
             if let Some(v) = t.get("null_pointer").and_then(|v| v.as_integer()) {
                 conv.null_pointer = v;
@@ -70,7 +74,7 @@ impl ErrorConventions {
                 }
             }
         }
-        
+
         conv
     }
 
@@ -89,6 +93,8 @@ impl ErrorConventions {
     }
 
     /// Check if a pointer is null
+    #[pre(value == self.null_pointer)]
+    #[post(term == 1)]
     pub fn is_null(&self, value: i64) -> bool {
         value == self.null_pointer
     }
@@ -114,16 +120,28 @@ impl ErrVariant {
     pub fn generate_c(&self) -> String {
         match self {
             ErrVariant::IoError { code, message } => {
-                format!("(Err){{ .tag = IoError, .code = {}, .message = \"{}\" }}", code, message)
+                format!(
+                    "(Err){{ .tag = IoError, .code = {}, .message = \"{}\" }}",
+                    code, message
+                )
             }
             ErrVariant::MappingError { expected, got } => {
-                format!("(Err){{ .tag = MappingError, .expected = \"{}\", .got = \"{}\" }}", expected, got)
+                format!(
+                    "(Err){{ .tag = MappingError, .expected = \"{}\", .got = \"{}\" }}",
+                    expected, got
+                )
             }
             ErrVariant::BoundsError { min, max, value } => {
-                format!("(Err){{ .tag = BoundsError, .min = {}, .max = {}, .value = {} }}", min, max, value)
+                format!(
+                    "(Err){{ .tag = BoundsError, .min = {}, .max = {}, .value = {} }}",
+                    min, max, value
+                )
             }
             ErrVariant::VoidReturn { return_value } => {
-                format!("(Err){{ .tag = VoidReturn, .return_value = \"{}\" }}", return_value)
+                format!(
+                    "(Err){{ .tag = VoidReturn, .return_value = \"{}\" }}",
+                    return_value
+                )
             }
             ErrVariant::Generic { message } => {
                 format!("(Err){{ .tag = Generic, .message = \"{}\" }}", message)
@@ -140,7 +158,10 @@ pub fn generate_bounds_check(
 ) -> String {
     // Generate: if (is_error(result)) goto error_label;
     let check = if conventions.error_min <= conventions.error_max {
-        format!("({} >= {} && {} <= {})", result_var, conventions.error_min, result_var, conventions.error_max)
+        format!(
+            "({} >= {} && {} <= {})",
+            result_var, conventions.error_min, result_var, conventions.error_max
+        )
     } else if let Some(err_ret) = conventions.error_return {
         format!("({} == {})", result_var, err_ret)
     } else {
@@ -156,7 +177,10 @@ pub fn generate_null_check(
     ptr_var: &str,
     error_label: &str,
 ) -> String {
-    format!("    if ({} == {}) goto {};\n", ptr_var, conventions.null_pointer, error_label)
+    format!(
+        "    if ({} == {}) goto {};\n",
+        ptr_var, conventions.null_pointer, error_label
+    )
 }
 
 #[cfg(test)]
@@ -189,8 +213,8 @@ mod tests {
         // Set error_min > error_max to disable range check and use error_return
         let conv = ErrorConventions {
             null_pointer: 0,
-            error_min: 1,   // > error_max to skip range check
-            error_max: 0,   // 
+            error_min: 1, // > error_max to skip range check
+            error_max: 0, //
             error_return: Some(-1),
             error_variants: HashMap::new(),
         };

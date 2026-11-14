@@ -58,6 +58,9 @@ flate2 = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
 ureq = "2.12"
 rspirv = "0.12"
+# The counsel contract layer: `#[pre]`/`#[post]` are inert identity attributes here
+# (checked by `counsel-check` in CI/scripts), so brievc's behaviour is unchanged.
+counsel = { version = "0.5.0", default-features = false, features = ["macros"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
