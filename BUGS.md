@@ -1,3 +1,18 @@
+## 2026-11-14 — CI omits Z3 required by body-verification tests
+
+**Symptom.** Main CI runs `43574215730` and `43575881264` fail the same
+seven library tests for call summaries, loop invariants, and decreasing variants.
+
+**Cause.** The workflows running the library suite install LLVM tooling but
+not Z3. These proofs need the SMT solver; without it they correctly remain
+unproven, so the positive proof assertions fail.
+
+**Repair.** Install the Ubuntu `z3` package and check `z3 --version` in the
+default, AST opt-out, and closed-region proof jobs that run library tests.
+Keep the proof assertions intact. A local verifier-test A/B with both solver
+lookup locations unavailable reproduces exactly the seven CI failures
+(17 pass, 7 fail); restoring Z3 yields 24 passing verifier tests.
+
 ## 2026-11-12 — Nested enum constructor underallocates collection element images
 
 **Symptom.** A list containing an outer enum whose payload is another enum
