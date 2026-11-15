@@ -104,3 +104,12 @@ Record actual outcomes, affected contracts/docs, commits and evidence links as w
 - Export scope also rejects parameter mutation, binding shadowing, member-form
   operator behavior, custom protocol variants, range constraints and oversized
   storage metadata. Refinement of the exporter and native compiler is unproved.
+
+### 2026-11-15T09:08:00+01:00 — Final formatting correction
+
+The exhaustive changed-file formatting check found the new backend module
+out of alphabetical order. Reorder that declaration without changing behavior;
+include both module roots in rustfmt checks and inspect committed whitespace
+against the baseline rather than an empty working diff. Stop the first final run,
+commit the correction, reconcile main and restart final validation. Earlier
+attempts remain historical evidence, not the final source-bound result.
