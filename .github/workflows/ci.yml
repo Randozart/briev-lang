@@ -107,16 +107,16 @@ jobs:
       - name: Parity corpora
         run: bash benchmarks/parity/run.sh cast_cases float_cases float_fmt_cases int_cases parse_cases string_cases
 
-      - name: Counsel static verification (per-file over src/ — non-blocking)
+      - name: Counsel static verification (per-file over src/)
         # Clones counsel-crate, builds counsel-check (static half), runs it
         # per-file over src/. counsel-check is file-independent: a whole-tree
         # scan exits 2 on the first unadmittable file (glob imports, unexpanded
         # attribute macros) and produces no census, so we scan each .rs file
         # individually. Refused files are counted as skipped, not failures.
-        # Non-blocking: proven/unproven/skipped are logged; only a Violated
-        # result (a false proof) causes a non-zero exit. counsel-crate:
+        # Blocking since 2026-11-15: the per-file census has been 0 violated
+        # across all scannable files; a violated contract (a false proof)
+        # must fail the build. counsel-crate:
         # https://github.com/Randozart/counsel
-        continue-on-error: true
         run: |
           set -e
           git clone --depth 1 https://github.com/Randozart/counsel.git /tmp/counsel-crate
