@@ -184,3 +184,46 @@ would evade a correspondence check limited to the program's actual result; the
 precondition control catches a vacuous contract introduced by the emitter.
 Unsupported source forms remain covered by unit tests. These controls strengthen
 per-artifact evidence while leaving the AST-serialization refinement gap explicit.
+
+## Finite execution comparison
+
+`verification/lean/execution_gate.py` compares the same selected functions through
+the exporter, reference interpreter and native compiler. Build the sampling
+helper alongside the compiler and exporter:
+
+```bash
+cargo build --bin brievc --example lean_export --example lean_interpret
+python3 verification/lean/execution_gate.py /path/to/debug/brievc /path/to/debug/examples/lean_export /path/to/debug/examples/lean_interpret /tmp/new-execution-checks
+```
+
+The gate uses eight functions covering add/sub/mul, negation, copied locals,
+reassignment, a polynomial and an ordinary scalar alias. Nine signed-word
+boundary values form all 81 `(x, y)` pairs, with a deterministic third argument;
+this is not the full three-argument Cartesian product. An independent Python
+integer oracle reduces each result modulo `2^64` and interprets it as signed.
+For this add/sub/mul/neg subset, reducing intermediate values or only the final
+value yields the same word. The gate checks each exported contract, then asks
+Lean's kernel to check each concrete result with `decide` and requires an
+axiom-free report for every sample. `lean_interpret` runs the actual typechecked
+definition through `Interpreter::call_function`; it implements no arithmetic
+oracle of its own.
+
+The native wrapper reads runtime environment inputs, casts them to the selected
+parameter type, prints the result through an explicit word-to-`Int` cast, and is
+compiled through both AST and typed HIR.
+Each emitted IR program is linked with the installed Clang at `-O0` and `-O3`.
+Every result must match the oracle. Deliberately false Lean results must be
+logically refuted, and a separately compiled subtracting program must fail
+against the unchanged addition oracle at execution comparison. Tool/import or
+compilation failures cannot satisfy those controls. Missing tools are unavailable
+outcomes, not successful comparisons.
+
+The fresh output directory retains sources, inputs, expected values, compiled
+exports, Lean reports, native IR/binaries and execution logs. `results.json`
+records the finite coverage, tool/source identities and explicit unproved
+refinement fields; `artifact-hashes.json` binds the retained files. The gate
+rejects a tool/source identity change during its run. It covers the selected
+host compiler/Clang and inputs only; the existing v2 certificate remains a Lean
+model certificate. These differential checks can discover shared serializer or
+lowering mistakes but do not prove AST serialization, all-input native
+preservation, arbitrary programs or cross-target correctness.
