@@ -75,6 +75,39 @@ impl SymbolicValue {
     pub fn is_definitely_false(&self) -> bool {
         matches!(self, SymbolicValue::Literal(0, _))
     }
+
+    /// Try to evaluate this symbolic value to a concrete integer literal.
+    ///
+    /// Returns `Some(i64)` when the value is or simplifies to a concrete integer,
+    /// allowing `rel_verdict` to decide `Binary <op> Literal` comparisons
+    /// structurally without routing to Z3. Handles the common nested case
+    /// `(x+0)+1` directly by binding inner literals and folding immediately.
+    pub fn try_to_literal(&self) -> Option<i64> {
+        match self {
+            SymbolicValue::Literal(n, _) => Some(*n),
+            SymbolicValue::Binary(op, l, r) => {
+                // Fast path: both operands are concrete literals.
+                if let (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) = (&**l, &**r) {
+                    return fold_integer(op, *a, *b);
+                }
+                // Nested path: (x ± c1) ± c2  →  evaluate inner first, then fold outer.
+                // Covers expressions like `(a+0)+1` where the inner result is still a Binary.
+                if let Some(ref a) = l.try_to_literal() {
+                    if let SymbolicValue::Literal(b, _) = &**r {
+                        return fold_integer(op, *a, *b);
+                    }
+                }
+                if let Some(ref b) = r.try_to_literal() {
+                    if let SymbolicValue::Literal(a, _) = &**l {
+                        return fold_integer(op, *a, *b);
+                    }
+                }
+                // Fallback: let simplify_binary handle any other algebraic identity.
+                simplify_binary(op, l, r)?.try_to_literal()
+            }
+            _ => None,
+        }
+    }
 }
 
 /// State during symbolic execution of a path
@@ -85,6 +118,12 @@ pub struct SymbolicState {
 
     /// Constraints (guards) from this path
     pub path_constraints: Vec<Expr>,
+
+    /// Field assignments: (base-identifier, field-name) -> symbolic value.
+    /// Populated when the body assigns to `x.field = expr`.  Allows
+    /// `eval_symbolic(x.field)` to resolve the stored value structurally
+    /// rather than routing to Z3 for field-projection postconditions.
+    field_assignments: HashMap<(String, String), SymbolicValue>,
 }
 
 impl SymbolicState {
@@ -93,6 +132,7 @@ impl SymbolicState {
         SymbolicState {
             assignments: HashMap::new(),
             path_constraints: vec![precondition.clone()],
+            field_assignments: HashMap::new(),
         }
     }
 
@@ -101,6 +141,7 @@ impl SymbolicState {
         SymbolicState {
             assignments: HashMap::new(),
             path_constraints: Vec::new(),
+            field_assignments: HashMap::new(),
         }
     }
 
@@ -128,6 +169,30 @@ impl SymbolicState {
     pub fn get_value(&self, name: &str) -> Option<SymbolicValue> {
         self.assignments.get(name).cloned()
     }
+
+    /// Record an assignment to a struct field (x.field = expr).
+    pub fn assign_field(&mut self, base: &str, field: &str, value_expr: &Expr) {
+        let sym_val = eval_symbolic(value_expr, self);
+        self.field_assignments
+            .insert((base.to_string(), field.to_string()), sym_val);
+    }
+
+    /// Get the symbolic value for a field, or None if not tracked.
+    pub fn get_field(&self, base: &str, field: &str) -> Option<SymbolicValue> {
+        self.field_assignments
+            .get(&(base.to_string(), field.to_string()))
+            .cloned()
+    }
+
+    /// Drop all field entries whose base identifier was reassigned.
+    ///
+    /// Reassigning `x` (e.g. `x = y`) changes which object `x` points to, so any
+    /// earlier `x.f = …` value is no longer valid for the new `x`.  Clearing the
+    /// entries keeps the field map sound: a stale read falls back to `Unknown` and
+    /// escalates to Z3 rather than silently using a wrong value.
+    pub fn invalidate_fields_for(&mut self, base: &str) {
+        self.field_assignments.retain(|(b, _), _| b != base);
+    }
 }
 
 /// Evaluate an expression to a symbolic value
@@ -153,6 +218,19 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
             } else {
                 SymbolicValue::Identifier(name.clone())
             }
+        }
+
+        // Field projections from struct assignments.
+        // state.assignments records x -> Field(x, "n", expr) on x.n = expr.
+        // This reconstructs the field's value by evaluating the stored expr.
+        Expr::Field(base, field) => {
+            let base_val = eval_symbolic(base, state);
+            if let SymbolicValue::Identifier(base_name) = &base_val {
+                if let Some(field_val) = state.get_field(base_name, field) {
+                    return field_val;
+                }
+            }
+            SymbolicValue::Unknown
         }
 
         // Binary operations
@@ -258,7 +336,6 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         // Compound and complex expressions
         Expr::List(_)
         | Expr::Index(_, _)
-        | Expr::Field(_, _)
         | Expr::Tuple(_)
         | Expr::If(_, _, _)
         | Expr::Match(_, _)
@@ -281,7 +358,6 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         // Derivation and metadata
         Expr::DerivationBlock(_)
         | Expr::StructLiteral { .. }
-        | Expr::Field(_, _)
         | Expr::Reflect(_, _, _)
         | Expr::MethodCall(..)
         | Expr::FormattingAnnotation(_) => SymbolicValue::Unknown,
@@ -304,7 +380,11 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
 }
 
 /// Try to simplify a binary operation on symbolic values
-fn simplify_binary(op: &str, left: &SymbolicValue, right: &SymbolicValue) -> Option<SymbolicValue> {
+pub(crate) fn simplify_binary(
+    op: &str,
+    left: &SymbolicValue,
+    right: &SymbolicValue,
+) -> Option<SymbolicValue> {
     if let (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) = (left, right) {
         return fold_integer(op, *a, *b).map(SymbolicValue::int_literal);
     }

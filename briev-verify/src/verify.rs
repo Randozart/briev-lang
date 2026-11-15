@@ -22,7 +22,7 @@
 // boundary).
 
 use crate::ast::{Annotation, BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
-use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic};
+use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic, simplify_binary};
 use std::collections::HashMap;
 
 /// Tri-state outcome of evaluating a postcondition on one symbolic path.
@@ -571,6 +571,13 @@ fn step_assign(lhs: &Expr, expr: &Expr, st: SymbolicState, next: &mut Vec<Symbol
     let mut s = st;
     if let Expr::Identifier(name) = lhs {
         s.assign(name, expr);
+        // Reassigning `x` changes which object it names; clear any field values
+        // recorded under `x` so a later `x.f` read does not use a stale value.
+        s.invalidate_fields_for(name);
+    } else if let Expr::Field(base, field) = lhs {
+        if let Expr::Identifier(base_name) = base.as_ref() {
+            s.assign_field(base_name, field, expr);
+        }
     }
     next.push(s);
 }
@@ -774,6 +781,20 @@ fn rel_verdict(
             _ => ProofVerdict::Undecided,
         };
     }
+    // Concrete arithmetic result: a binary expression that evaluates to a
+    // known integer (e.g. 2+3 → 5) compared against a literal.  Decides
+    // immediately without routing to Z3 — the dominant case for arithmetic
+    // body-postcondition obligations.
+    if let Some(lit) = lv.try_to_literal() {
+        if let SymbolicValue::Literal(r, _) = rv {
+            return order_verdict(op, lit.cmp(r));
+        }
+    }
+    if let Some(lit) = rv.try_to_literal() {
+        if let SymbolicValue::Literal(l, _) = lv {
+            return order_verdict(op, l.cmp(&lit));
+        }
+    }
     // Identifier-vs-literal: decide through the path's interval bounds.
     if let SymbolicValue::Identifier(name) = lv {
         if let SymbolicValue::Literal(v, _) = rv {
@@ -911,16 +932,46 @@ fn order_verdict(op: BinaryOpKind, ord: std::cmp::Ordering) -> ProofVerdict {
     }
 }
 
+/// Reduce a symbolic value through one pass of algebraic simplification.
+///
+/// Applies `simplify_binary` to `Binary` nodes; returns the simplified value.
+/// Handles the common cases that would otherwise route to Z3:
+///   a + 0 → a,  a - 0 → a,  a * 1 → a,  a * 0 → 0
+///   (a+b) − b → a,  2 + 3 → 5
+///
+/// Single pass (no recursion) — keeps O(1) complexity; nested reductions
+/// like (a+0)+1 are handled by `eval_symbolic`'s bottom-up construction.
+fn simplifies_to(sv: &SymbolicValue) -> SymbolicValue {
+    let SymbolicValue::Binary(op, l, r) = sv else {
+        return sv.clone();
+    };
+    let Some(simplified) = simplify_binary(op.as_str(), l, r) else {
+        return sv.clone();
+    };
+    simplified
+}
+
 /// Structural equality of two symbolic values — proves `x + 1 == x + 1`
 /// without a concrete numeric value. Unknown never equals anything (two
-/// unanalysable values are NOT provably identical).
+/// unanalysable values are NOT provably identical).  Both sides are first
+/// reduced through `simplifies_to` so algebraically equal terms match even
+/// when their surface forms differ.
 fn structural_eq(lv: &SymbolicValue, rv: &SymbolicValue) -> bool {
-    match (lv, rv) {
+    // Algebraic simplification: if both sides reduce to the same canonical form
+    // they are equal even when surface syntax differs (e.g. (a+0) vs a).
+    let sl = simplifies_to(lv);
+    let sr = simplifies_to(rv);
+    // Pointer-identity fast path: if lv and rv are the same allocation they
+    // are trivially equal (catches shared subterms).
+    if std::ptr::eq(lv, rv) {
+        return true;
+    }
+    match (sl, sr) {
         (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => a == b,
         (SymbolicValue::Identifier(a), SymbolicValue::Identifier(b)) => a == b,
         (SymbolicValue::Previous(a), SymbolicValue::Previous(b)) => a == b,
         (SymbolicValue::Binary(a, al, ar), SymbolicValue::Binary(b, bl, br)) => {
-            a == b && structural_eq(al, bl) && structural_eq(ar, br)
+            a == b && structural_eq(&*al, &*bl) && structural_eq(&*ar, &*br)
         }
         _ => false,
     }
@@ -1394,12 +1445,27 @@ fn unsupported_reason(stmts: &[Statement], sums: &HashMap<String, Summary>) -> O
     stmts.iter().find_map(|stmt| statement_reason(stmt, sums))
 }
 
+/// Whether an assignment target is in the prover's reach: a plain name
+/// (`x`), or a field of a plain name (`x.n`).  Index bases (`arr[i].n`) and
+/// any deeper projection stay out of reach — the field map keys on the base
+/// identifier and cannot track which element of a collection is written.
+fn plain_assignment_target(lhs: &Expr) -> bool {
+    match lhs {
+        Expr::Identifier(_) => true,
+        Expr::Field(base, _) => matches!(base.as_ref(), Expr::Identifier(_)),
+        _ => false,
+    }
+}
+
 /// The reason one statement is unsupported, if it is.
 fn statement_reason(stmt: &Statement, sums: &HashMap<String, Summary>) -> Option<String> {
     match stmt {
         Statement::Assign(lhs, e) => {
-            if !matches!(lhs, Expr::Identifier(_)) {
-                return Some("an assignment whose target is not a plain name".to_string());
+            if !plain_assignment_target(lhs) {
+                return Some(
+                    "an assignment whose target is not a plain name or a field of a plain name"
+                        .to_string(),
+                );
             }
             expr_reason(e, sums)
         }
@@ -1736,5 +1802,118 @@ mod prover_api_tests {
 
         let report = verify_bodies(&[item]);
         assert_eq!(report.violated.len(), 1, "proven: {:?}", report.proven);
+    }
+}
+
+#[cfg(test)]
+mod structural_derivation_tests {
+    use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+
+    /// A field projection in a postcondition is resolved structurally from the
+    /// body's field assignment, without Z3: `x.n = 5; [x.n > 0]` holds because
+    /// the field map records `("x", "n") -> 5` and `5 > 0` is a concrete order.
+    #[test]
+    fn field_assignment_proves_field_postcondition() {
+        let x_n = || Expr::Field(Box::new(Expr::Identifier("x".into())), "n".into());
+        let body = vec![
+            Statement::Assign(x_n(), Expr::Decimal(5)),
+            Statement::Term(Some(Expr::Decimal(0))),
+        ];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(x_n()),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Identifier("true".into()), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_field", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_field"),
+            "field postcondition should be proved structurally; unproven: {:?}; skipped: {:?}",
+            report.unproven,
+            report.skipped
+        );
+        assert!(report.violated.is_empty());
+    }
+
+    /// Reassigning the base object (`x = y`) invalidates any earlier `x.n = …`
+    /// value.  The stale entry must NOT be used to prove `x.n > 0` after the
+    /// reassignment, so the body must not appear as proven (the postcondition
+    /// is undecidable without a value for the new `x`).
+    #[test]
+    fn field_reassignment_invalidates_stale_value() {
+        let x_n = || Expr::Field(Box::new(Expr::Identifier("x".into())), "n".into());
+        let body = vec![
+            Statement::Assign(x_n(), Expr::Decimal(5)),
+            Statement::Assign(Expr::Identifier("x".into()), Expr::Identifier("y".into())),
+            Statement::Term(Some(Expr::Decimal(0))),
+        ];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(x_n()),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Identifier("true".into()), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_stale", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            !report.proven.iter().any(|n| n == "f_stale"),
+            "stale field value was incorrectly used to prove; proven: {:?}",
+            report.proven
+        );
+    }
+
+    /// Additive identity: `term = a + 0` reduces to `a`, so `term == a` is
+    /// structural equality, provable without Z3.
+    #[test]
+    fn additive_identity_proves_structural_equality() {
+        let a = Expr::Identifier("a".into());
+        let body = vec![Statement::Term(Some(Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(a.clone()),
+            Box::new(Expr::Decimal(0)),
+        )))];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("term".into())),
+            Box::new(a),
+        );
+        let contract = Contract::proven(Expr::Identifier("true".into()), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_id", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_id"),
+            "a + 0 == a should be proved structurally; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Zero absorption: `term = a * 0` reduces to `0`, so `term == 0` holds
+    /// for any `a`, provable without Z3.
+    #[test]
+    fn zero_multiplication_proves_zero_result() {
+        let body = vec![Statement::Term(Some(Expr::BinaryOp(
+            BinaryOpKind::Mul,
+            Box::new(Expr::Identifier("a".into())),
+            Box::new(Expr::Decimal(0)),
+        )))];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("term".into())),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Identifier("true".into()), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_zero", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_zero"),
+            "a * 0 == 0 should be proved structurally; unproven: {:?}",
+            report.unproven
+        );
     }
 }
