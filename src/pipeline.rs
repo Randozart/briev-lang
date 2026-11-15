@@ -334,6 +334,12 @@ pub struct BuildOptions {
     /// JSON to this path (--verify-report). Tooling must not parse the human
     /// diagnostics: their wording is not a contract.
     pub verify_report: Option<String>,
+    /// 2026-11-15 (issue #9): conservative compile profile. `--safe` selects
+    /// `-O0 -march=x86-64` (the generic x86-64 baseline; no LTO, no
+    /// -ffast-math) for the clang link and the frgn object compilation.
+    /// For triaging large-IR instability and reproducing backend bugs
+    /// without optimizer interference.
+    pub safe_mode: bool,
 }
 
 /// 2026-09-25 (interop Wave 1 C3): the de-facto default option set, lifted
@@ -399,6 +405,7 @@ impl Default for BuildOptions {
             web_page_key: None,
             verify_bodies: false,
             verify_report: None,
+            safe_mode: false,
         }
     }
 }

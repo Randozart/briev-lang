@@ -473,6 +473,8 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut no_link = false;
     let mut verify_bodies = false;
     let mut verify_report: Option<String> = None;
+    // 2026-11-15 (issue #9): conservative compile profile (--safe).
+    let mut safe_mode = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -699,6 +701,13 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             // directly (an MBR-style .code16/.org 510 body cannot link).
             no_link = true;
             i += 1;
+        } else if arg == "--safe" {
+            // 2026-11-15 (issue #9): conservative compile profile — -O0,
+            // no -flto, no -ffast-math, -march=generic. For triaging
+            // large-IR instability and reproducing backend bugs without
+            // optimizer interference.
+            safe_mode = true;
+            i += 1;
         } else if arg == "--linker-script" {
             let val = args
                 .get(i + 1)
@@ -821,6 +830,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         web_page_key: None,
         verify_bodies,
         verify_report,
+        safe_mode,
     })
 }
 
@@ -1214,6 +1224,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         web_page_key: None,
         verify_bodies: false,
         verify_report: None,
+        safe_mode: false,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;

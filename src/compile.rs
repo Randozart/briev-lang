@@ -991,7 +991,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // there too (the freestanding path drops it, but don't even compile it).
     let skip_briev_rt = briev_compiler::conformance::is_bare(std::path::Path::new(file_path))
         || has_bootstrap_entry(&items);
-    let mut extra_objects = collect_extra_objects(&items, &resolver, skip_briev_rt)?;
+    let mut extra_objects =
+        collect_extra_objects(&items, &resolver, skip_briev_rt, opts.safe_mode)?;
 
     // ── Frgn dispatch resolution ──────────────────────────────────────
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
@@ -1359,6 +1360,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                         shared: opts.shared,
                         bad_objects: &bad_fn_objects,
                         bootstrap_entry: bootstrap_entry.as_deref(),
+                        safe_mode: opts.safe_mode,
                     },
                 )?;
             }
@@ -3105,6 +3107,7 @@ fn collect_extra_objects(
     items: &[briev_compiler::ast::TopLevel],
     resolver: &briev_compiler::import_resolver::ImportResolver,
     skip_briev_rt: bool,
+    safe_mode: bool,
 ) -> Result<Vec<PathBuf>, String> {
     let cache_dir = get_ffi_cache_dir();
     let mut objects = Vec::new();
@@ -3140,7 +3143,7 @@ fn collect_extra_objects(
         match ext.as_deref() {
             Some("c") | Some("cpp") | Some("cc") | Some("cxx") | Some("m") => {
                 let src = resolved_path();
-                let obj = compile_source_to_object(&src, &cache_dir)?;
+                let obj = compile_source_to_object(&src, &cache_dir, safe_mode)?;
                 objects.push(obj);
             }
             Some("so") | Some("dylib") | Some("a") | Some("o") => {
@@ -3164,14 +3167,24 @@ fn get_ffi_cache_dir() -> PathBuf {
 
 /// 2026-07-16: P4 — Compile a C/C++ source to a .o object file.
 /// Content-hash cached at ~/.cache/briev-compiler/ffi/<hash>.o.
-fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<PathBuf, String> {
+fn compile_source_to_object(
+    source_path: &Path,
+    cache_dir: &Path,
+    safe_mode: bool,
+) -> Result<PathBuf, String> {
     let content = std::fs::read(source_path)
         .map_err(|e| format!("cannot read '{}': {}", source_path.display(), e))?;
     // 2026-07-26: Include compiler flags in the cache key so flag changes
     // (e.g. -flto) produce fresh cache entries instead of reusing stale ones.
+    // 2026-11-15 (issue #9): safe_mode is part of the key too — -O0 objects
+    // must not be cached under the -O3 hash.
     let mut hasher = blake3::Hasher::new();
     hasher.update(&content);
-    hasher.update(b":flto:fPIC");
+    if safe_mode {
+        hasher.update(b":safe:O0");
+    } else {
+        hasher.update(b":flto:fPIC");
+    }
     let hash = hasher.finalize();
     let cache_path = cache_dir.join(format!("{}.o", hash.to_hex()));
     if cache_path.exists() {
@@ -3192,8 +3205,23 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
             ));
         }
     };
-    let status = Command::new("clang")
-        .args([
+    // 2026-11-15 (issue #9): --safe selects conservative flags for the
+    // frgn C compilation — -O0, no -flto, no -ffast-math, -march=x86-64
+    // (the generic x86-64 baseline; 'generic' is not a valid target CPU).
+    let flags: Vec<&str> = if safe_mode {
+        vec![
+            "-O0",
+            "-march=x86-64",
+            "-fPIC",
+            "-x",
+            lang_flag,
+            "-c",
+            source_path.to_str().unwrap(),
+            "-o",
+            cache_path.to_str().unwrap(),
+        ]
+    } else {
+        vec![
             "-O3",
             "-flto",
             "-march=native",
@@ -3205,7 +3233,10 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
             source_path.to_str().unwrap(),
             "-o",
             cache_path.to_str().unwrap(),
-        ])
+        ]
+    };
+    let status = Command::new("clang")
+        .args(&flags)
         .status()
         .map_err(|e| format!("failed to invoke clang (is it installed?): {}", e))?;
     if !status.success() {
@@ -3230,6 +3261,8 @@ struct LinkInputs<'a> {
     shared: bool,
     bad_objects: &'a [PathBuf],
     bootstrap_entry: Option<&'a str>,
+    /// 2026-11-15 (issue #9): conservative compile profile (--safe).
+    safe_mode: bool,
 }
 
 /// 2026-10-27: reject invalid emitted IR before clang/llc. This turns
@@ -3262,6 +3295,7 @@ fn compile_ll_to_binary(
         shared,
         bad_objects,
         bootstrap_entry,
+        safe_mode,
     } = inputs;
     verify_emitted_ir(ll_path)?;
     let ll_text = std::fs::read_to_string(ll_path)
@@ -3288,8 +3322,21 @@ fn compile_ll_to_binary(
     // stdlib (e.g., `frgn __print_int from "lib/runtime/briev_rt.c"`) are compiled
     // by collect_extra_objects and passed via extra_objects. This removes the
     // duplicate symbol error that occurred when briev_rt.c was compiled twice.
+    // 2026-11-15 (issue #9): --safe selects a conservative profile —
+    // -O0, no -flto, no -ffast-math, -march=generic. For triaging
+    // large-IR instability without optimizer interference.
     if shared {
-        cmd.args(["-O3", "-flto", "-shared", "-fPIC", ll_path]);
+        if safe_mode {
+            cmd.args(["-O0", "-shared", "-fPIC", ll_path]);
+        } else {
+            cmd.args(["-O3", "-flto", "-shared", "-fPIC", ll_path]);
+        }
+    } else if safe_mode {
+        // 2026-11-15: -march=x86-64 is the GENERIC x86-64 baseline (no
+        // native CPU features) — the conservative counterpart to
+        // -march=native. 'generic' is not a valid clang target CPU.
+        cmd.arg("-O0");
+        cmd.args(["-march=x86-64", ll_path]);
     } else {
         cmd.arg("-O3");
         // 2026-09-13: skip -march=native for cross-compilation targets
@@ -3343,7 +3390,7 @@ fn compile_ll_to_binary(
             .any(|o| o.to_string_lossy().contains("briev_rt"));
         if needs_runtime && !has_runtime {
             let cache_dir = get_ffi_cache_dir();
-            let obj = compile_source_to_object(&runtime_c, &cache_dir)?;
+            let obj = compile_source_to_object(&runtime_c, &cache_dir, safe_mode)?;
             cmd.arg(obj.as_os_str());
         }
         for obj in extra_objects {
@@ -3900,6 +3947,7 @@ node go [done == false][done == true] {
             web_page_key: None,
             verify_bodies: false,
             verify_report: None,
+            safe_mode: false,
         }
     }
 
@@ -4215,12 +4263,12 @@ node go [done == false][done == true] {
         with_temp_file(content, |path| {
             let cache_dir = get_ffi_cache_dir();
             // First compilation
-            let result1 = compile_source_to_object(path, &cache_dir);
+            let result1 = compile_source_to_object(path, &cache_dir, false);
             assert!(result1.is_ok(), "first compile failed: {:?}", result1);
             let obj1 = result1.unwrap();
             assert!(obj1.exists(), "object file not created");
             // Same source → same hash → returns cached path (identical)
-            let result2 = compile_source_to_object(path, &cache_dir);
+            let result2 = compile_source_to_object(path, &cache_dir, false);
             assert!(result2.is_ok(), "second compile failed: {:?}", result2);
             let obj2 = result2.unwrap();
             assert_eq!(obj1, obj2, "cached path should match");
@@ -4237,7 +4285,7 @@ node go [done == false][done == true] {
     fn test_compile_source_to_object_bad_ext() {
         let path = Path::new("/tmp/test_bad_ext.xyz");
         std::fs::write(path, "hello").ok();
-        let result = compile_source_to_object(path, &get_ffi_cache_dir());
+        let result = compile_source_to_object(path, &get_ffi_cache_dir(), false);
         assert!(
             result.is_err(),
             "expected compile error for unknown extension"
