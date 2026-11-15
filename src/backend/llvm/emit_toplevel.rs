@@ -9196,6 +9196,62 @@ impl LlvmBackend {
         }
     }
 
+    /// LLVM ABI type of a registered defn's first parameter.
+    ///
+    /// Mirrors `emit_definition`'s parameter emission so a call site can spell
+    /// the same type the `define` line declares. Returns `i64` for unregistered
+    /// symbols, matching the legacy frgn convention.
+    pub(super) fn defn_first_param_ll(&self, name: &str) -> String {
+        match self
+            .ctx
+            .defn_params
+            .get(name)
+            .and_then(|params| params.first())
+        {
+            Some(ty) => self.llvm_ret_abi_type(ty),
+            None => "i64".to_string(),
+        }
+    }
+
+    /// Emit the `endprogram` exit call with the callee's registered ABI.
+    ///
+    /// 2026-11-15 (wasm32 cross-backend gate): the call site hardcoded
+    /// `call i64 @exit_prog(... i64 ...)` while `emit_definition` declares
+    /// `define i32 @exit_prog(i32)` on wasm32 (Int = i{int_bits}). On x86-64 the
+    /// two agree by accident, but on wasm a call whose signature disagrees with
+    /// the definition lowers to a funcref-bitcast trap stub — so *every*
+    /// `endprogram` trapped (`..Lexit_prog_bitcast_invalid`) instead of exiting,
+    /// while the native run exited normally. Derive the return and argument
+    /// types from the registered defn and narrow the i64 code with an explicit
+    /// `trunc`, so the emitted IR is well-typed on every target.
+    pub(super) fn emit_exit_prog_call(&mut self, out: &mut String, indent: &str, code: &str) {
+        let state_arg = if self.ctx.defn_takes_state("exit_prog") {
+            "ptr %state, "
+        } else {
+            ""
+        };
+        let ret_ty = self.defn_call_ret_ll("exit_prog");
+        let arg_ty = self.defn_first_param_ll("exit_prog");
+        let code = if arg_ty == "i64" {
+            code.to_string()
+        } else {
+            let narrowed = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = trunc i64 {} to {}",
+                indent, narrowed, code, arg_ty
+            )
+            .ok();
+            narrowed
+        };
+        writeln!(
+            out,
+            "{}call {} @exit_prog({}{} {})",
+            indent, ret_ty, state_arg, arg_ty, code
+        )
+        .ok();
+    }
+
     /// 2026-10-07 (frgn void signature agreement): does `name` declare
     /// `void` in LLVM? Defns: an EMPTY registered return list. Frgns:
     /// `ResultType::is_void` — the same predicate the declare loop uses

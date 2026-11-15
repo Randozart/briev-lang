@@ -450,6 +450,16 @@ defn float_format(f: Float, precision: Int)
         };
         term fresh_string("0");
     };
+// 2026-11-15: the masks above and the two early returns make these facts
+// true — mant is a 23-bit mask so it is < 2^23, exp8 is never 0xFF so it is
+// <= 254, and exp8 == 0 && mant == 0 already returned. The call-site
+// precondition checker cannot derive them through the shifts and mask
+// constants, so the boundary is written as an explicit guard: an impossible
+// input yields "0" rather than demanding a proof the checker cannot supply.
+// 2026-11-15 (reverted): the guard is not enough either — the checker does not
+// decompose a disjunctive guard into per-fact bounds. See the note on
+// mantissa_val below; the boundary stays as it was until the checker can
+// consume mask bounds.
     let m: Int = mantissa_val(exp8, mant);
     let e: Int = exponent_val(exp8);
     let (r, k): (Int, Int) = float_rounded(m, e, precision);
@@ -465,21 +475,21 @@ defn float_format(f: Float, precision: Int)
 
 // mantissa_val - the 24-bit significand (hidden bit for normal values).
 //
-// 2026-11-15: two contract fixes, both behaviour-preserving.
-// (a) `term < 1 << 24` is not a *sortable* word-model postcondition — the
-//     solver encoding has no shift operator (`smt/encoding.rs::signature`),
-//     so the whole obligation was rejected as "ill-sorted" before any
-//     reasoning ran. The literal 16777216 is the same bound.
-// (b) The old precondition (`exp8 <= 255 && mant >= 0`) made the
-//     postcondition unprovable: the `exp8 == 0` path can return mant == 0,
-//     and an unbounded mant allows any magnitude. The real call site
-//     (`float_format`) masks mant with 0x7FFFFF (so mant < 2^23), has
-//     already returned on exp8 == 0xFF, and has already returned on
-//     `exp8 == 0 && mant == 0`. Those facts are now stated directly, so the
-//     body is provable from its OWN precondition rather than from
-//     caller-side facts the body checker never sees.
-defn mantissa_val(exp8: Int, mant: Int)
-    [exp8 >= 0 && exp8 <= 254 && mant >= 0 && mant < 8388608 && (exp8 > 0 || mant >= 1)]
+// 2026-11-15: `term < 1 << 24` was rewritten as the literal 16777216. A shift
+// inside a contract is not *sortable* by the word-model encoder
+// (`smt/encoding.rs::signature` has no shift), so the whole obligation was
+// rejected as "ill-sorted" before any reasoning ran. The literal is the same
+// bound.
+//
+// The precondition is deliberately unchanged. Stating the true call-site facts
+// (exp8 <= 254, mant < 2^23, "exp8 == 0 implies mant != 0") makes the body
+// provable by `--verify-bodies`, but the DECLARED-EDGE checker cannot derive
+// those facts at the call site — it does no mask-bound reasoning and does not
+// decompose a disjunctive guard — so tightening it breaks
+// examples/view-bind-edge.rbv. The actionable fix is to teach the checker
+// mask bounds (the rule briev-verify now has); until then this postcondition
+// stays unproven, and that is reported rather than hidden.
+defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
     [term >= 1 && term < 16777216]
     -> Int {
     when exp8 == 0 {
@@ -496,11 +506,11 @@ defn mantissa_val(exp8: Int, mant: Int)
 // the correct fix is to tighten THIS precondition to `exp8 <= 254`, which is
 // its own pass over the call sites rather than a one-line bound change.
 //
-// 2026-11-15: applied that fix. `float_format` returns on exp8 == 0xFF before
-// reaching this call, so 254 is the true upper bound at every call site; with
-// it, path 2 (`exp8 != 0`) lands in [1-150, 254-150] = [-149, 104] and the
-// postcondition is decided by the existing interval reasoning.
-defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 254][term >= -149 && term <= 104] -> Int {
+// 2026-11-15: attempted and reverted. The body proof does land in [-149, 104],
+// but the declared-edge checker cannot discharge `exp8 <= 254` at the call site
+// (it does not follow the preceding `when exp8 == 0xFF` return), so the
+// tightening breaks examples/view-bind-edge.rbv. Left at 255 deliberately.
+defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 255][term >= -149 && term <= 104] -> Int {
     when exp8 == 0 {
         term 1 - 150;
     };

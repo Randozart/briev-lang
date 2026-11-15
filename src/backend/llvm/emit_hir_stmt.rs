@@ -1097,12 +1097,7 @@ fn emit_end_program_statement(
     };
     writeln!(out, "{}; briev.program_end", indent).ok();
     if backend.ctx.defn_params.contains_key("exit_prog") {
-        let st = if backend.ctx.defn_takes_state("exit_prog") {
-            "ptr %state, "
-        } else {
-            ""
-        };
-        writeln!(out, "{}call i64 @exit_prog({}i64 {})", indent, st, code).ok();
+        backend.emit_exit_prog_call(out, indent, &code);
     } else {
         writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
     }

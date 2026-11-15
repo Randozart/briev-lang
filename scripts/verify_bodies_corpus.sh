@@ -84,23 +84,25 @@ done
 
 [ "$FULL" -eq 1 ] && cat "$raw"
 
-proven=0 unproven=0 no_post=0 skipped=0 violated=0 errors=0
-violated_lines=""
-error_lines=""
+# Tally. Done in awk: one pass, per-file PROVEN (a file with no failure
+# bucket), and NO_POSTCONDITION counted separately so it never inflates the
+# unproven denominator.
+counts=$(awk '
+    /^FILE: / { if (seen && !bad) proven++; seen=1; bad=0; next }
+    /body has no terminating value path/ { no_post++; next }
+    /could not prove:/ { unproven++; bad=1; next }
+    /verify-bodies skipped:/ { skipped++; next }
+    /verify-bodies violation:/ { violated++; bad=1; violations = violations $0 "\n"; next }
+    /error:/ { errors++; bad=1; errlines = errlines $0 "\n"; next }
+    END {
+        if (seen && !bad) proven++
+        printf "%d %d %d %d %d %d", proven, unproven, no_post, skipped, violated, errors
+    }
+' "$raw")
 
-while IFS= read -r line; do
-    case "$line" in
-    *"body has no terminating value path"*) no_post=$((no_post + 1)) ;;
-    *"could not prove:"*) unproven=$((unproven + 1)) ;;
-    *"verify-bodies skipped:"*) skipped=$((skipped + 1)) ;;
-    *"verify-bodies violation:"*) violated=$((violated + 1)); violated_lines+="$line"$'\n' ;;
-    *"error:"*) errors=$((errors + 1)); error_lines+="$line"$'\n' ;;
-    esac
-done <"$raw"
-
-# A file is PROVEN when it produced no failure bucket at all.
-proven=$(grep -c '^FILE: ' "$raw")
-proven=$((proven - $(grep -cE 'could not prove:|verify-bodies violation:|error:' "$raw")))
+read -r proven unproven no_post skipped violated errors <<<"$counts"
+violated_lines=$(awk '/verify-bodies violation:/' "$raw")
+error_lines=$(awk '/error:/' "$raw")
 
 cat <<EOF
 === VERIFY-BODIES CORPUS ===
