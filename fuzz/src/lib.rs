@@ -46,3 +46,10 @@ pub fn welltyped(data: &[u8]) {
 pub fn collections(data: &[u8]) {
     semantic::check_collections(data);
 }
+
+/// 2026-11-15 (P4 growth slice): fuzz enum construction, `match` dispatch and
+/// cross-definition payload transport; assert the interpreter agrees with the
+/// independent fold.
+pub fn enums(data: &[u8]) {
+    semantic::check_enums(data);
+}

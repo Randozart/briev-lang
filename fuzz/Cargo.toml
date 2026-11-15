@@ -55,3 +55,10 @@ path = "fuzz_targets/collections.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "enums"
+path = "fuzz_targets/enums.rs"
+test = false
+doc = false
+bench = false

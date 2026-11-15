@@ -157,6 +157,62 @@ pub fn check_collections(data: &[u8]) {
     );
 }
 
+// ── P4 growth slice: enums (2026-11-15) ───────────────────────────────────
+//
+// Fuzz bytes choose which enum constructors a generated program applies, and
+// the oracle folds the same payloads. Exercises enum declaration, payload
+// construction, `match` dispatch, and a call chain that carries the enum
+// across a definition boundary — a shape the arithmetic/collection slices do
+// not reach.
+
+/// Build a program that applies one `Pick` per fuzz byte and folds the
+/// payloads. Even bytes pick `Some(payload)`, odd bytes pick `Empty(0)`.
+///
+/// The oracle mirrors `apply`: `Some(v) => v`, `Empty(v) => 0`, summed in
+/// order. The nullary arm carries a payload deliberately: the interpreter does
+/// not resolve a bare nullary enum constructor in argument position
+/// (`UndefinedVariable`), so `Empty` is declared `Empty(Int)` and matched
+/// `Empty(v)`. That is the same dispatch shape with a constructor form the
+/// reference can execute.
+pub fn enum_program(data: &[u8]) -> Option<(String, i64)> {
+    if data.is_empty() {
+        return None;
+    }
+    let mut expected: i64 = 0;
+    let mut steps = String::new();
+    for (index, byte) in data.iter().take(8).enumerate() {
+        // Payload is the low seven bits so it stays non-negative, matching the
+        // `Some(Int)` arm's arithmetic without relying on wrapping.
+        let payload = i64::from(byte & 0x7f);
+        if byte % 2 == 0 {
+            expected += payload;
+            steps.push_str(&format!(
+                "    acc = acc + apply(Some({payload})); // step {index}\n"
+            ));
+        } else {
+            steps.push_str(&format!(
+                "    acc = acc + apply(Empty(0)); // step {index}\n"
+            ));
+        }
+    }
+    let full = format!(
+        "enum Pick {{\n  Some(Int),\n  Empty(Int),\n}};\n\ndefn apply(p: Pick) -> Int {{\n  term match p {{\n    Some(v) => v,\n    Empty(v) => 0,\n  }};\n}};\n\ndefn compute() -> Int {{\n  let acc: Int = 0;\n{steps}  term acc;\n}};\nlet result: Int = compute();\n"
+    );
+    Some((full, expected))
+}
+
+pub fn check_enums(data: &[u8]) {
+    let Some((source, expected)) = enum_program(data) else {
+        return;
+    };
+    let actual = interpret_collection(&source, "result");
+    assert_eq!(
+        actual,
+        Ok(expected),
+        "enum semantic disagreement; input={data:?}\n{source}"
+    );
+}
+
 /// A generated valid program must execute and agree with the independent model.
 /// No catch_unwind: libFuzzer must see compiler panics and semantic failures.
 pub fn check(data: &[u8], tuples: bool) {
@@ -230,5 +286,37 @@ mod tests {
     #[test]
     fn collections_slice_incomplete_input_is_not_a_program() {
         assert!(collections_program(&[]).is_none());
+    }
+
+    // P4 enum slice: even byte -> Some(payload), odd -> None.
+    #[test]
+    fn enum_slice_folds_payloads_and_nones() {
+        // 4 (even, +4), 5 (odd, +0), 6 (even, +6) => 10
+        let input = [4u8, 5, 6];
+        let (_, expected) = enum_program(&input).unwrap();
+        assert_eq!(expected, 10);
+        check_enums(&input);
+    }
+
+    #[test]
+    fn enum_slice_all_none_is_zero() {
+        let input = [1u8, 3, 7];
+        let (_, expected) = enum_program(&input).unwrap();
+        assert_eq!(expected, 0);
+        check_enums(&input);
+    }
+
+    #[test]
+    fn enum_slice_payload_is_non_negative() {
+        // 0xFC is even; payload is the low seven bits (124), not -4.
+        let input = [0xFCu8];
+        let (_, expected) = enum_program(&input).unwrap();
+        assert_eq!(expected, 124);
+        check_enums(&input);
+    }
+
+    #[test]
+    fn enum_slice_empty_input_is_not_a_program() {
+        assert!(enum_program(&[]).is_none());
     }
 }
