@@ -80,7 +80,7 @@ defn sscale(acc: Int, e: Int, k: Int)
 // ---- Fraction path (E < 0): value = m / 2^b ----------------------------
 // pow2b - 2^b for b in [0, 60] (fraction comparisons; b > 60 handled by the
 // value < 1 guard BEFORE calling this).
-defn pow2b(b: Int) [b >= 0 && b <= 60][term >= 1 && term <= 1 << 60] -> Int {
+defn pow2b(b: Int) [b >= 0 && b <= 60][term >= 1 && term <= 1152921504606846976] -> Int {
     when b == 0 { term 1; };
     term pow2b(b - 1) * 2;
 };
@@ -197,7 +197,7 @@ defn frac_exp(m: Int, b: Int)
 // float_rounded - the rounded leading `precision` digits of M x 2^E as an
 // integer, plus the leading-digit exponent k.
 defn float_rounded(m: Int, e: Int, precision: Int)
-    [m > 0 && m < 1 << 24 && e >= -149 && e <= 104 && precision >= 1 && precision <= 9]
+    [m > 0 && m < 16777216 && e >= -149 && e <= 104 && precision >= 1 && precision <= 9]
     [term.0 >= 0 && term.0 < 1000000000000000000 && term.1 >= -45 && term.1 <= 40]
     -> (Int, Int)
 {
@@ -464,8 +464,23 @@ defn float_format(f: Float, precision: Int)
 };
 
 // mantissa_val - the 24-bit significand (hidden bit for normal values).
-defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
-    [term >= 1 && term < 1 << 24]
+//
+// 2026-11-15: two contract fixes, both behaviour-preserving.
+// (a) `term < 1 << 24` is not a *sortable* word-model postcondition — the
+//     solver encoding has no shift operator (`smt/encoding.rs::signature`),
+//     so the whole obligation was rejected as "ill-sorted" before any
+//     reasoning ran. The literal 16777216 is the same bound.
+// (b) The old precondition (`exp8 <= 255 && mant >= 0`) made the
+//     postcondition unprovable: the `exp8 == 0` path can return mant == 0,
+//     and an unbounded mant allows any magnitude. The real call site
+//     (`float_format`) masks mant with 0x7FFFFF (so mant < 2^23), has
+//     already returned on exp8 == 0xFF, and has already returned on
+//     `exp8 == 0 && mant == 0`. Those facts are now stated directly, so the
+//     body is provable from its OWN precondition rather than from
+//     caller-side facts the body checker never sees.
+defn mantissa_val(exp8: Int, mant: Int)
+    [exp8 >= 0 && exp8 <= 254 && mant >= 0 && mant < 8388608 && (exp8 > 0 || mant >= 1)]
+    [term >= 1 && term < 16777216]
     -> Int {
     when exp8 == 0 {
         term mant;
@@ -480,7 +495,12 @@ defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
 // [-149, 105] — exp8 == 255 is NaN/Inf and never reaches the formatter — so
 // the correct fix is to tighten THIS precondition to `exp8 <= 254`, which is
 // its own pass over the call sites rather than a one-line bound change.
-defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 255][term >= -149 && term <= 104] -> Int {
+//
+// 2026-11-15: applied that fix. `float_format` returns on exp8 == 0xFF before
+// reaching this call, so 254 is the true upper bound at every call site; with
+// it, path 2 (`exp8 != 0`) lands in [1-150, 254-150] = [-149, 104] and the
+// postcondition is decided by the existing interval reasoning.
+defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 254][term >= -149 && term <= 104] -> Int {
     when exp8 == 0 {
         term 1 - 150;
     };

@@ -341,3 +341,51 @@ spike so no interval machinery is built on speculation. W3-D1 comes after,
 because W3 shrinks the interval class and clarifies what remains.
 
 W4 and W5 are independent and can run in parallel with W2/W3.
+
+---
+
+## 5. Landing log
+
+### W3a — DONE (2026-11-15)
+
+**The plan was wrong about the blocker.** `mantissa_val` was not merely
+"unprovable": its postcondition `term < 1 << 24` was **not sortable** by the
+word-model encoder at all. `smt/encoding.rs::signature` has no shift operator
+(`And/Or`, `Lt/Le/Gt/Ge`, `Add/Sub/Mul/Div/Mod` only), so
+`postcondition_sort` returned `None` and `verify_supported` rejected the whole
+obligation as "unsupported or ill-sorted word-model contract" before any
+reasoning ran. Three contracts in `lib/std/float_fmt.bv` carried `<<`
+(`pow2b`, `float_rounded`, `mantissa_val`); all three now use the equivalent
+literal.
+
+Two further real defects were fixed in the same file:
+
+| Defect | Fix |
+|---|---|
+| `mantissa_val` precondition `mant >= 0` admits `mant == 0` on the `exp8 == 0` path (refuting `term >= 1`) and any magnitude (refuting `term < 2^24`) | precondition now states the true call-site facts: `exp8 <= 254`, `mant < 8388608`, and `(exp8 > 0 \|\| mant >= 1)` |
+| `exponent_val` precondition `exp8 <= 255` yields `term == 105` at `exp8 == 255`, refuting `term <= 104` | precondition tightened to `exp8 <= 254` — exactly what the file's own comment already prescribed |
+
+**W3b was not needed.** The spike showed the split/restate cleared the
+obligations without `Interval::shift`, because `rel_verdict` already reaches a
+decided verdict when the precondition pins the range directly. No verifier
+change was made — the honest outcome is that the 1330 obligations were a
+**stdlib contract defect**, and the "missing interval operation" hypothesis is
+retired until a case actually needs it.
+
+**Measurement** (`scripts/verify_bodies_corpus.sh lib/std`, new reproducible
+runner): `mantissa_val`, `exponent_val` and `pow2b` are absent from the
+unproven tally — `mantissa_val` went from 1330 obligations to 0.
+
+**Behaviour gate:** `bash benchmarks/parity/run.sh float_fmt_cases` → PASS
+(byte-identical to the golden) and `cast_cases` → PASS. The contract edits are
+behaviour-preserving, as required.
+
+**Remaining `lib/std` unproven** (13): `lshr64` ×3 (tautology → W2), `ip_v4` ×3
+(shift/Or bit reasoning), `sha1_padded_len` ×2 (modular), `fold_upper_byte` ×2 +
+`fold_lower_byte` ×2 + `ascii_lower` ×1 (unconstrained input → stdlib item).
+
+**Note on the runner:** it verifies every file with `brievc build`, so library
+fragments that cannot link standalone report `ERR` (e.g. `std/os/temp.bv`'s
+undefined `@to_c_string`, `std/posix/io.bv`'s `@FD_STDOUT`). Those are
+pre-existing standalone-linking artifacts, not proof failures; the runner
+prints them in a separate section for that reason.
