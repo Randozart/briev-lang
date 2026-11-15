@@ -107,19 +107,21 @@ jobs:
       - name: Parity corpora
         run: bash benchmarks/parity/run.sh cast_cases float_cases float_fmt_cases int_cases parse_cases string_cases
 
-      - name: Counsel static verification (src/ — non-blocking)
-        # Clones counsel-crate, builds counsel-check (static half), runs it over
-        # the entire src/ tree. Non-blocking: proven/unproven/skipped are logged;
-        # only a Violated result causes a non-zero exit. counsel-crate:
+      - name: Counsel static verification (per-file over src/ — non-blocking)
+        # Clones counsel-crate, builds counsel-check (static half), runs it
+        # per-file over src/. counsel-check is file-independent: a whole-tree
+        # scan exits 2 on the first unadmittable file (glob imports, unexpanded
+        # attribute macros) and produces no census, so we scan each .rs file
+        # individually. Refused files are counted as skipped, not failures.
+        # Non-blocking: proven/unproven/skipped are logged; only a Violated
+        # result (a false proof) causes a non-zero exit. counsel-crate:
         # https://github.com/Randozart/counsel
         continue-on-error: true
         run: |
           set -e
           git clone --depth 1 https://github.com/Randozart/counsel.git /tmp/counsel-crate
           (cd /tmp/counsel-crate && cargo build --release --features static --bin counsel-check)
-          /tmp/counsel-crate/target/release/counsel-check \
-            --format human \
-            src/ \
+          bash scripts/counsel-check.sh /tmp/counsel-crate/target/release/counsel-check \
             | tee /tmp/counsel-check.log
 
       - name: Counsel verification artifact
