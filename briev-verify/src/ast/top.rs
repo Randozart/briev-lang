@@ -349,10 +349,9 @@ impl Contract {
 impl Definition {
     /// A `defn` with only the fields the prover reads filled in.
     ///
-    /// The prover looks at the name, the contract and the body; the other
-    /// eleven fields exist for the compiler's frontend and backends. This is the
-    /// constructor for a caller that has no frontend — it builds nodes and asks
-    /// for a verdict.
+    /// Creates an untyped mathematical word-model declaration. Source callers
+    /// must retain parameter/result/local types and supply a resolved scalar
+    /// model to `verify_bodies_with_types`; type erasure is not source assurance.
     pub fn prover_defn(name: impl Into<String>, contract: Contract, body: Vec<Statement>) -> Self {
         Definition {
             name: name.into(),

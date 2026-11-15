@@ -16,7 +16,7 @@ selection definition for both adapters:
 | Mode | Required selections |
 |---|---|
 | `quick` | Root library excluding names containing `conformance_sweep`; the 13 integration binaries below; all `verifier` selections |
-| `verifier` | `briev-verify` library, `arithmetic_boundary`, and the three exact `solver_boundary` names below |
+| `verifier` | `briev-verify` library, `arithmetic_boundary`, the three exact `solver_boundary` names, and six exact `typed_boundary` names below |
 
 Quick integration binaries: `diagnostics`, `hir_snapshots`, `hold_law`,
 `publish_reclamation`, `deterministic_transitions`, `unit_test_blocks`,
@@ -29,11 +29,22 @@ Required solver cases:
 - `a_sat_model_named_unsat_cannot_prove_a_false_body_contract`
 - `wrapping_addition_cannot_prove_unbounded_monotonicity`
 
-Only the explicitly named solver cases enable ignored execution. Other
+Required typed-boundary cases (integrated from upstream 2026-11-15):
+
+- `floating_increment_is_not_proven_by_integer_bitvectors` (ignored real-Z3 regression)
+- `a_float_local_cannot_acquire_integer_cancellation_guarantees`
+- `a_floating_helper_cannot_launder_a_word_summary`
+- `exceptional_division_is_not_certified_by_total_smt_arithmetic`
+- `resolved_models_accept_only_the_supported_word_width`
+- `a_global_float_cannot_be_treated_as_a_free_word`
+
+Only these explicitly named solver/typed cases enable ignored execution. Other
 ignored cases are excluded with an explicit reason. The conformance sweep
 still belongs to the separate full root-library run. Discovery must find
 every required binary and named case, with a nonempty selection per binary.
-New ordinary tests within these binaries are discovered automatically.
+New ordinary tests in the library/arithmetic/quick integration selections are
+discovered automatically. The exact solver/typed selections require list
+updates for additional required cases; discovery records all other exclusions.
 
 `--runner auto` prefers installed nextest and otherwise chooses Cargo.
 `--runner nextest` requires nextest; `--runner cargo` forces the fallback.

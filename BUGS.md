@@ -1,3 +1,13 @@
+## 2026-11-15 — required verifier selection missed the new typed boundary
+
+Integrating `0400749f` revealed that the explicit verifier suite list omitted
+the new `typed_boundary` binary. Ordinary workspace runs also skip its ignored
+real-Z3 floating-increment regression. Add all six typed-boundary cases by
+exact name to quick/verifier selections, including that ignored case. Both
+adapters must discover every name and report its execution; missing cases fail
+closed. Controls also keep unrelated ignored cases excluded. See the
+[hosted qualification record](docs/plans/2026-11-15-a0-hosted-qualification.md).
+
 ## 2026-11-15 — formatting parity fixtures still divide by zero after native trap parity
 
 **Symptom.** `benchmarks/parity/run.sh` traps in `float_cases` with SIGILL;
@@ -87,6 +97,41 @@ routing when the pinned nextest reporter produces coherent ignored-suite
 lifecycles and counts with ignored cases enabled and disabled; do not relax
 the evidence contract. Upstream reporter
 repair remains external to this repository.
+
+## 2026-11-15 — a right operand supplied an unsupported Boolean operator
+
+**Reproduced.** `defn f(b: Bool) [true][term == b + 1] -> Bool { term b + 1; };`
+passed source checking and body verification. With the function retained/called,
+LLVM declared `f` returning i8 but emitted an i64 sum at its return. Both clang
+-O0 and -O3 rejected `ret i8 %t0` because `%t0` was i64. This is an invalid-IR
+compiler bug and an assurance coverage gap; no native execution was claimed.
+
+**Cause/fix.** Binary resolution fell through to the right operand's Int
+operator, while arithmetic inference always returned the left receiver's type.
+Remove that unrelated-operand fallback; retain receiver declarations, inherited
+bindings and protocol bindings, including explicit cross-type operators. Tests
+reject Bool and Bool-derived aliases for arithmetic with integer literals and
+preserve a declared cross-type implementation. The word prover also excludes
+declared Boolean storage until its distinct expression semantics are modeled.
+
+## 2026-11-15 — body verification erased arithmetic types
+
+**Reproduced.** The public body prover certified Float `x + 1 != x` using
+64-bit integer SMT and certified `(x + 1) - 1 == x` through a typed Float local.
+The first has an f32 counterexample at 16777216; rounding also refutes the second
+in that arithmetic. Both new regressions failed before the fix. Parameter,
+result and local types had been discarded; helper summaries provided another
+route around declaration semantics.
+
+**Fix.** Admit resolved standard signed 64-bit types before proving
+bodies or summarizing helpers. Preserve the compiler's actual target width;
+reject unsupported types, global state and unresolved/custom arithmetic.
+Standalone source clients now supply their type resolver explicitly. Dynamic
+or exceptional division/remainder is skipped until definedness is modeled,
+rather than relying on total SMT operations. Regressions cover Float parameters,
+locals, helpers, globals, aliases, narrow/unsigned types and 32-bit targets.
+The optional Lean exporter uses the same type boundary and keeps exporter/native
+refinement explicitly unproved.
 
 ## 2026-11-13 — interpreter mis-evaluates every Float relational (and Float equality)
 
@@ -13771,3 +13816,34 @@ The retained C formatter flushes before returning; its %.9g format is unchanged.
 The native regression requires exact `0.5\n` output at O3 and checks Float64
 zero/negative-zero traps under both emission paths. This does not establish a
 full Float64 formatting or precision theorem.
+
+## 2026-11-15 — parity corpora encoded pre-alignment IEEE div-by-zero
+
+**Symptom.** Tip CI (817f1d698) failed the Parity corpora step: `float_cases`
+(and then `float_fmt_cases`) hit `Illegal instruction` (exit 132, `ud2`) at
+runtime.
+
+**Cause.** Both corpora contained explicit division-by-zero probes
+(`1.0 / 0.0`, `-1.0 / 0.0`, `0.0 / 0.0`, `-0.0 / 0.0`) with goldens expecting
+IEEE 754 `inf`/`-inf`/`nan`. These lines predate the Float div-by-zero
+alignment (corpora frozen 2026-09-09, before the guard landed 2026-11-14).
+The interpreter — the semantic authority — raises
+`RuntimeError::DivisionByZero` for `Float / 0.0` (`exec_div`,
+`src/interpreter/intrinsics.rs`), and native codegen now matches via
+`@llvm.trap()` emitted before `fdiv`. The guard is correct; the corpora were
+stale.
+
+**Fix.** Removed the four div-by-zero `println!` lines from
+`benchmarks/parity/corpus/float_cases.bv` and `float_fmt_cases.bv` and
+regenerated the two goldens (39 → 35 lines each; the dropped lines were the
+trailing `inf`/`-inf`/`nan`/`nan`). All six CI parity corpora now pass.
+Division-by-zero behaviour is covered by the native CLI regressions
+(`tests/cli_args_test.rs` float div/zero traps), not by the float-formatting
+parity corpora — those remain the `%.9g` precision gate.
+
+**Integration follow-up.** The correctness branch independently replaced those
+four constructions with overflow literals and `Sqrt#(-1.0)`. On merging
+`8b69cbe2`, retain these supported inputs and restore all 39 original golden
+lines. The trap contract and its CLI regressions remain in force; exceptional
+formatting values are supplied without zero division. See the formatting
+fixture diagnosis above and the hosted qualification record.

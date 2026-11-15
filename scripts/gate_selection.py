@@ -44,6 +44,16 @@ SOLVER_TESTS = (
     "a_sat_model_named_unsat_cannot_prove_a_false_body_contract",
     "wrapping_addition_cannot_prove_unbounded_monotonicity",
 )
+# 2026-11-15: upstream's typed boundary adds an ignored real-Z3 regression.
+# Require all six exact cases; retire this list for a shared per-test gate tag.
+TYPED_BOUNDARY_TESTS = (
+    "floating_increment_is_not_proven_by_integer_bitvectors",
+    "a_float_local_cannot_acquire_integer_cancellation_guarantees",
+    "a_floating_helper_cannot_launder_a_word_summary",
+    "exceptional_division_is_not_certified_by_total_smt_arithmetic",
+    "resolved_models_accept_only_the_supported_word_width",
+    "a_global_float_cannot_be_treated_as_a_free_word",
+)
 
 
 def phases(mode):
@@ -51,6 +61,7 @@ def phases(mode):
         [Suite("briev-verify", "lib", "briev_verify"),
          Suite("briev-verify", "test", "arithmetic_boundary")],
         [Suite("briev-verify", "test", "solver_boundary", only=SOLVER_TESTS)],
+        [Suite("briev-verify", "test", "typed_boundary", only=TYPED_BOUNDARY_TESTS)],
     ]
     if mode == "verifier":
         return verifier

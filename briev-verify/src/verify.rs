@@ -112,6 +112,9 @@ struct Bound {
 /// Verify every txn/defn body (incl. SyncGroup/Export wrappers) against its
 /// own explicit contract.
 ///
+/// Explicit source types require `verify_bodies_with_types`; this standalone
+/// entry point admits only untyped mathematical AST declarations.
+///
 /// Returns the three-way report; the caller decides failure (violated) and
 /// warning (unproven) handling. Bodies whose surface is outside the
 /// pure-integer prover's reach are skipped — never wrongly proven, never
@@ -121,10 +124,21 @@ struct Bound {
 /// Callers enable this only under `BuildOptions.verify_bodies`; with the flag
 /// off (the default) the historical consistency-only behaviour is unchanged.
 pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
+    verify_bodies_with_types(items, &|_| crate::domain::ScalarModel::Unsupported)
+}
+
+/// Verify source declarations with compiler-resolved scalar semantics. The
+/// resolver must account for the selected target and user operator overrides.
+/// Untyped AST variables retain the standalone API's mathematical word model.
+pub fn verify_bodies_with_types(
+    items: &[TopLevel],
+    resolve: &crate::domain::TypeResolver<'_>,
+) -> BodyReport {
     let mut report = BodyReport::default();
+    let globals = crate::domain::global_names(items);
     // C3: value summaries let a body be proved through the helpers it calls.
     // Computed once, up front, so the result never depends on item order.
-    let sums = build_summaries(items);
+    let sums = build_summaries(items, resolve, &globals);
     for item in items {
         let (name, contract, body) = match contract_target(item) {
             Some(t) => t,
@@ -135,6 +149,10 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
         if !contract.explicit || trivially_true(&contract.post_condition) {
             continue;
         }
+        if let Some(reason) = crate::domain::unsupported_declaration(item, resolve, &globals) {
+            report.skipped.push(format!("{name}: {reason}"));
+            continue;
+        }
         // A loop carrying an `invariant` annotation is proved by its three
         // Hoare obligations, not as one straight-line body. Each obligation is
         // loop-free, so the ordinary path walk discharges it.
@@ -143,54 +161,55 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
             .or_else(|| convergent_obligations(item, name, contract, body));
         if let Some(obligations) = obligations {
             for (obligation, pre, post, obligation_body) in obligations {
-                if let Some(reason) = unsupported_reason(&obligation_body, &sums) {
-                    report.skipped.push(format!("{obligation}: {reason}"));
-                    continue;
-                }
-                let Ok(flat) = inline_body(&obligation_body, &sums) else {
-                    report
-                        .skipped
-                        .push(format!("{obligation}: a call could not be inlined"));
-                    continue;
-                };
-                match verify_one(&pre, &post, &flat) {
-                    BodyOutcome::Proven => report.proven.push(obligation),
-                    BodyOutcome::Unproven(why) => {
-                        report.unproven.push(format!("{obligation}: {why}"))
-                    }
-                    BodyOutcome::Violated(why) => {
-                        report.violated.push(format!("{obligation}: {why}"))
-                    }
-                }
+                verify_supported(
+                    &mut report,
+                    &obligation,
+                    (&pre, &post),
+                    &obligation_body,
+                    &sums,
+                );
             }
             continue;
         }
-        // Soundness boundary: only prove bodies whose entire surface is
-        // within the pure-integer prover's reach (calls included, when the
-        // callee has a value summary).
-        if let Some(reason) = unsupported_reason(body, &sums) {
-            report.skipped.push(format!("{name}: {reason}"));
-            continue;
-        }
-        // Substitute each summarised call with the callee's value expression,
-        // so the existing path walk reasons about one flat body.
-        let Ok(flattened) = inline_body(body, &sums) else {
-            report
-                .skipped
-                .push(format!("{name}: a call could not be inlined"));
-            continue;
-        };
-        match verify_one(
-            &contract.pre_condition,
-            &contract.post_condition,
-            &flattened,
-        ) {
-            BodyOutcome::Proven => report.proven.push(name.to_string()),
-            BodyOutcome::Unproven(why) => report.unproven.push(format!("{name}: {why}")),
-            BodyOutcome::Violated(why) => report.violated.push(format!("{name}: {why}")),
-        }
+        verify_supported(
+            &mut report,
+            name,
+            (&contract.pre_condition, &contract.post_condition),
+            body,
+            &sums,
+        );
     }
     report
+}
+
+/// Apply the same admission and inlining boundary to ordinary bodies and
+/// generated loop obligations. Calls must have independently admitted summaries.
+fn verify_supported(
+    report: &mut BodyReport,
+    name: &str,
+    contract: (&Expr, &Expr),
+    body: &[Statement],
+    sums: &HashMap<String, Summary>,
+) {
+    let reason = unsupported_reason(body, sums)
+        .or_else(|| crate::domain::unsupported_expression(contract.0))
+        .or_else(|| crate::domain::unsupported_expression(contract.1));
+    if let Some(reason) = reason {
+        report.skipped.push(format!("{name}: {reason}"));
+        return;
+    }
+    // Substitute only summarized callees so the path walk sees a flat body.
+    let Ok(flattened) = inline_body(body, sums) else {
+        report
+            .skipped
+            .push(format!("{name}: a call could not be inlined"));
+        return;
+    };
+    match verify_one(contract.0, contract.1, &flattened) {
+        BodyOutcome::Proven => report.proven.push(name.to_string()),
+        BodyOutcome::Unproven(why) => report.unproven.push(format!("{name}: {why}")),
+        BodyOutcome::Violated(why) => report.violated.push(format!("{name}: {why}")),
+    }
 }
 
 /// Extract (name, contract, body) from a top-level item, looking one level
@@ -1514,6 +1533,9 @@ fn statement_reason(stmt: &Statement, sums: &HashMap<String, Summary>) -> Option
 /// A call is supported **only** when the callee has a value summary, so the
 /// prover never claims a proof over a value it cannot evaluate.
 fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
+    if let Some(reason) = crate::domain::expression_node_reason(expr) {
+        return Some(reason);
+    }
     match expr {
         Expr::Decimal(_)
         | Expr::Char(_)
@@ -1558,9 +1580,16 @@ struct Summary {
 /// retried next round. Recursion therefore never acquires a summary — the sound
 /// answer, since a self-referential summary would be a guess rather than a
 /// proof.
-fn build_summaries(items: &[TopLevel]) -> HashMap<String, Summary> {
-    let candidates: Vec<(&str, Vec<String>, &[Statement])> =
-        items.iter().filter_map(summary_candidate).collect();
+fn build_summaries(
+    items: &[TopLevel],
+    resolve: &crate::domain::TypeResolver<'_>,
+    globals: &std::collections::HashSet<String>,
+) -> HashMap<String, Summary> {
+    let candidates: Vec<(&str, Vec<String>, &[Statement])> = items
+        .iter()
+        .filter(|item| crate::domain::unsupported_declaration(item, resolve, globals).is_none())
+        .filter_map(summary_candidate)
+        .collect();
     let mut sums: HashMap<String, Summary> = HashMap::new();
     // Each round adds a summary or ends the loop, so this terminates.
     for _ in 0..=candidates.len() {

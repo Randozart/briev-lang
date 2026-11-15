@@ -18,7 +18,8 @@ import gate
 from gate_evidence import Evidence
 from gate_protocol import (GateError, cargo_list, cargo_results, inventory,
                            nextest_list, nextest_results)
-from gate_selection import SOLVER_TESTS, Suite, cargo_command, execution_batches, nextest_command, phases
+from gate_selection import (SOLVER_TESTS, TYPED_BOUNDARY_TESTS, Suite, cargo_command,
+                            execution_batches, nextest_command, phases)
 
 
 def prepared(suite, names=("answer",), ignored=()):
@@ -64,9 +65,24 @@ class SelectionControls(unittest.TestCase):
                 self.assertEqual(nextest[nextest.index("--") + 1:], suite.filters())
                 self.assertEqual(cargo[-len(suite.filters()):] if suite.filters() else [], suite.filters())
                 self.assertIn(suite.package, cargo)
-        solver = groups[-1][0]
+        solver = next(suite for group in groups for suite in group if suite.name == "solver_boundary")
         self.assertEqual(set(solver.only), set(SOLVER_TESTS))
         self.assertEqual(len(prepared(solver, SOLVER_TESTS, SOLVER_TESTS)["selected"]), 3)
+
+    def test_typed_regression_is_required_without_enabling_unrelated_ignored_cases(self):
+        required = "floating_increment_is_not_proven_by_integer_bitvectors"
+        for mode in ("quick", "verifier"):
+            suite = next(s for group in phases(mode) for s in group if s.name == "typed_boundary")
+            names = (*TYPED_BOUNDARY_TESTS, "optional_device_probe")
+            ignored = (required, "optional_device_probe")
+            record = prepared(suite, names, ignored)
+            self.assertIn(required, record["selected"])
+            self.assertEqual(len(record["selected"]), 6)
+            self.assertEqual(record["excluded"], {"optional_device_probe": "not_explicitly_selected"})
+            for runner in ("cargo", "nextest"):
+                self.assertEqual(execution_batches([suite], runner, {suite.identity: record}), [("cargo", [suite])])
+            with self.assertRaises(GateError):
+                inventory(suite, [name for name in names if name != required], ["optional_device_probe"])
 
     def test_discovery_retains_exclusions_and_requires_named_tests(self):
         suite = Suite("p", "lib", "p", skip=("conformance_sweep",))

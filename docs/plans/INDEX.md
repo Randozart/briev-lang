@@ -24,6 +24,16 @@ with its runtime archives, and keeps a fail-closed `Default gates` aggregate.
 Local acceptance: **31 controls**, the same **3,873** quick results, **3,788**
 library tests, **18** binary tests, **42** tier-1 fixtures, census, and restored-
 artifact native/browser checks pass; hosted scheduling remains to be qualified.
+The [hosted qualification increment](2026-11-15-a0-hosted-qualification.md)
+integrates `8b69cbe2`, retains upstream's per-file Counsel census, restores full
+39-line float-formatting coverage, and makes all six typed-boundary cases
+required (including the ignored real-Z3 regression). Refreshed validation and
+publication results are recorded there.
+Integrated local acceptance: **3,892** passing quick tests under both runners
+with identical identities/outcomes, **38** required verifier cases, **3,801**
+library tests, **4,254** full-workspace tests, **32** controls, and all native/
+browser checks pass. The full workspace's four ignored Z3 cases run explicitly
+in each quick invocation.
 The [gate contract](../architecture/compiler-correctness.md) documents runner,
 job, and evidence boundaries. Next: A1 controls and A2 full observations;
 exact-revision hosted qualification and broader per-case manifests remain A0

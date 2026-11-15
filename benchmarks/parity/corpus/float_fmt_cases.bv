@@ -40,7 +40,8 @@ node go [done == false][done == true] {
         println!("{}", float_format(1e-2, 9));
         println!("{}", float_format(-0.0, 9));
         // 2026-11-15: match float_cases' exceptional-value construction without
-        // invoking the division-by-zero trap. Retire for stdlib special constants.
+        // invoking DivisionByZero (interpreter) or its native trap. The old
+        // zero-divisor probes predate alignment. Retire for stdlib special constants.
         println!("{}", float_format(1.5e308, 9));
         println!("{}", float_format(-1.5e308, 9));
         println!("{}", float_format(Sqrt#(-1.0), 9));

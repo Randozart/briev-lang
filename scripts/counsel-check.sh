@@ -1,84 +1,114 @@
 #!/bin/bash
-# Run counsel-check over src/, fail on Violated, print a clean census.
-# Installs counsel-check from crates.io if not found.
-set -euo pipefail
+# Run counsel-check per-file over src/, fail on Violated, print a census.
+#
+# counsel-check is file-independent: it refuses a whole directory that contains
+# even one unadmittable file (glob imports, unexpanded attribute macros, ...),
+# so a whole-tree scan exits 2 and produces no census. Scanning each .rs file
+# individually yields a real proven/unproven/violated/skipped census; refused
+# files are counted as skipped, not as failures.
+#
+# Usage:
+#   scripts/counsel-check.sh [counsel-check-binary]
+#   (binary defaults to: counsel-check on PATH, else the sibling
+#    ../counsel-crate/target/release/counsel-check build)
+#
+# Exit codes: 0 = no violated contracts, 1 = violated contract(s) found,
+#             2 = counsel-check binary unavailable or scan error.
+set -uo pipefail
 
-find_cc() {
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$ROOT/src"
+
+# Resolve the counsel-check binary.
+CC="${1:-}"
+if [ -z "$CC" ]; then
     if command -v counsel-check &>/dev/null; then
-        echo counsel-check
-        return 0
+        CC=counsel-check
+    elif [ -x "$ROOT/../counsel-crate/target/release/counsel-check" ]; then
+        CC="$ROOT/../counsel-crate/target/release/counsel-check"
+    else
+        echo "counsel-check binary not found; pass it as the first argument" >&2
+        exit 2
     fi
-    if command -v cargo &>/dev/null; then
-        # Try to use counsel from this workspace, else fetch from crates.io
-        if cargo metadata --no-deps -q /home/randozart/Desktop/Projects/counsel-crate/Cargo.toml &>/dev/null 2>&1; then
-            echo "cargo run -q --release --manifest-path /home/randozart/Desktop/Projects/counsel-crate/Cargo.toml --features static --bin counsel-check --"
-            return 0
-        fi
-        echo "cargo install counsel --quiet --no-default-features --features static 2>/dev/null && counsel-check"
-        return 1
-    fi
-    return 1
-}
-
-CC_ARGS=()
-# Resolve counsel-check binary
-if ! CC=$(find_cc 2>/dev/null); then
-    echo "Installing counsel-check from crates.io..." >&2
-    cargo install counsel --quiet --no-default-features --features static 2>/dev/null || true
-    CC=counsel-check
 fi
 
-echo "Running counsel-check over src/ ..."
-WORKDIR=$(pwd)
-JSON=$(mktemp)
-trap 'rm -f "$JSON"' EXIT
+echo "Running counsel-check per-file over src/ ..."
+echo "binary: $CC"
 
-$CC --format json src/ > "$JSON" 2>&1 && CC_RV=0 || CC_RV=$?
+TMP="$ROOT/scripts/.counsel-census.tmp"
+: > "$TMP"
+trap 'rm -f "$TMP"' EXIT
 
-if [ $CC_RV -ne 0 ] && [ $CC_RV -ne 2 ]; then
-    # Crash or parse error — surface it
-    echo "counsel-check crashed (exit $CC_RV):" >&2
-    cat "$JSON" >&2
-    exit $CC_RV
-fi
+files_scanned=0
+files_refused=0
 
-# Parse census from JSON
-python3 - "$JSON" << 'EOF'
+# Iterate .rs files under src/ in deterministic (sorted) order.
+# counsel-check exits non-zero (1) for scannable files whose strict gate fails
+# (unannotated functions), and exits 2 (refusal) for files outside the subset.
+# Both produce stdout we must distinguish: a scannable file emits a JSON
+# document; a refused file emits a plain-text refusal note (no JSON).
+# Capture stdout regardless of exit code, then test whether it is JSON.
+while IFS= read -r f; do
+    out=$("$CC" --format json "$f" 2>/dev/null) || true
+    if [ -n "$out" ] && printf '%s' "$out" | head -c 1 | grep -q '^{' ; then
+        files_scanned=$((files_scanned + 1))
+        printf '%s\n' "$out" >> "$TMP"
+    else
+        files_refused=$((files_refused + 1))
+    fi
+done < <(find "$SRC" -name '*.rs' | sort)
+
+# Aggregate the concatenated per-file JSON object streams into a census.
+# Files-scanned/refused counts are passed as argv so the Python stage does not
+# depend on shell state.
+python3 - "$TMP" "$files_scanned" "$files_refused" << 'PYEOF'
 import json, sys
-path = sys.argv[1]
-try:
-    with open(path) as f: data = json.load(f)
-except Exception as e:
-    print("error: failed to parse counsel-check JSON: {}".format(e), file=sys.stderr)
-    sys.exit(2)
 
-proven = unproven = skipped = violated = 0
-for fi in data.get("files", []):
-    for v in fi.get("verdicts", []):
-        o = v.get("outcome", "unknown")
-        if o == "proven":     proven += 1
-        elif o == "unproven": unproven += 1
-        elif o == "violated": violated += 1
-        elif fi.get("skip_reason") or v.get("skip_reason"): skipped += 1
+path, scanned, refused = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+text = open(path).read()
 
-print("counsel-check census:")
-print("  proven   : {}".format(proven))
-print("  unproven : {}".format(unproven))
-print("  skipped  : {}".format(skipped))
-print("  violated : {}".format(violated))
+proven = unproven = violated = skipped = 0
+violated_detail = []
+dec = json.JSONDecoder()
+i, n = 0, len(text)
+while i < n:
+    while i < n and text[i] in ' \t\r\n':
+        i += 1
+    if i >= n:
+        break
+    try:
+        obj, i = dec.raw_decode(text, i)
+    except ValueError:
+        break
+    for fi in obj.get("files", []):
+        for v in fi.get("verdicts", []):
+            o = v.get("outcome", "unknown")
+            if o == "proven":
+                proven += 1
+            elif o == "unproven":
+                unproven += 1
+            elif o == "violated":
+                violated += 1
+                violated_detail.append((v.get("name", "?"), fi.get("path", fi.get("file", "?"))))
+            else:
+                skipped += 1
+        for s in fi.get("skips", []):
+            skipped += 1
+
+print("counsel-check census (per-file over src/):")
+print("  files scanned : {}".format(scanned))
+print("  files refused : {}".format(refused))
+print("  proven        : {}".format(proven))
+print("  unproven      : {}".format(unproven))
+print("  skipped       : {}".format(skipped))
+print("  violated      : {}".format(violated))
 
 if violated > 0:
     print("\nVIOLATED contracts found (false proofs):", file=sys.stderr)
-    for fi in data.get("files", []):
-        for v in fi.get("verdicts", []):
-            if v.get("outcome") == "violated":
-                print("  {} in {}".format(v["name"], fi.get("file","?")), file=sys.stderr)
+    for name, where in violated_detail:
+        print("  {} in {}".format(name, where), file=sys.stderr)
     sys.exit(1)
 
-if proven == 0 and unproven == 0 and skipped == 0:
-    print("\nwarning: no contracts found — is counsel-check scanning the right scope?", file=sys.stderr)
-
 sys.exit(0)
-EOF
-EOF
-chmod +x scripts/counsel-check.sh && echo "script created, size=$(wc -c < scripts/counsel-check.sh) bytes"
+PYEOF
+exit $?

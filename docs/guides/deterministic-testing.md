@@ -9,8 +9,9 @@ bash scripts/gate.sh verifier
 ```
 
 Quick selects this transition suite alongside the focused integration and
-library tests, then requires the extracted verifier and three named Z3
-regressions. Both runner choices discover the same identities. Install
+library tests, then requires the extracted verifier, three named solver
+regressions, and six typed-boundary cases including the ignored real-Z3
+floating-increment regression. Both runner choices discover the same identities. Install
 Python 3, Rust/Cargo, Git, Z3, clang/LLVM (`opt`, `llc`), and GNU `timeout`.
 Nextest is preferred when installed; `--runner nextest` requires it explicitly.
 Binaries with ignored tests execute via Cargo because nextest 0.9.151 has a

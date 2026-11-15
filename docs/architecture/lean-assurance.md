@@ -4,7 +4,7 @@ Owner: the compiler-assurance workstream in
 [the implementation plan](../plans/2026-11-14-201223-compiler-assurance-and-lean-export.md).
 
 The first objective is assurance about the existing Rust compiler and discovery
-of missed bugs. A later optional Briev-to-Lean backend would export program
+of missed bugs. A restricted optional Briev-to-Lean backend now exports selected program
 semantics and proof obligations. No language syntax change is part of this work.
 
 ## First component: solver response classification
@@ -91,3 +91,60 @@ has been implemented. The [production arithmetic contract](verifier-arithmetic.m
 records Kani's separate implementation obligations and the newly discovered
 native no-wrap mismatch. These checks are foundations for export, not evidence
 that arbitrary Briev programs or native outputs are proved.
+
+## Restricted export now available
+
+The optional library API `backend::lean::export_source` uses the real parser and
+typechecker and translates one named definition into a Lean word program and a
+contract obligation. Run its executable example from the repository root:
+
+```bash
+cargo run --example lean_export -- path/to/source.bv function_name /tmp/new-export
+python3 verification/lean/check_export.py /tmp/new-export
+```
+
+The output directory must be new. Generation writes `Program.lean`, the reviewed
+integer model, the pinned toolchain, original and expanded typed source, and
+`manifest.json`. It reports **generated-unchecked**. Only a successful checker
+run writes `checked.json`, naming the theorem, Lean version, axiom dependencies
+and hashes of the inputs, logs and compiled artifacts. A failed recheck removes
+the previous success marker. Modified inputs, missing theorem reports and
+unapproved axioms fail closed. The gate accepts only `propext`, matching the
+existing model gate; it uses simplification and `bv_omega`, not native reduction.
+Lean's [proof-validation reference](https://lean-lang.org/doc/reference/latest/ValidatingProofs/)
+explains why native evaluation adds a trust dependency; this choice was also
+checked against the installed Lean 4.24.0 tactic implementation.
+
+The initial subset is monomorphic, pure signed 64-bit parameters/results,
+straight-line word locals and assignments to those locals, and a final return.
+Parameters are immutable in the export subset; binding shadowing is rejected so
+contract parameter references retain their input meaning. Word expressions
+support literals, variables, negation, add/sub/mul; contracts support equality,
+signed comparisons and propositional connectives. Types resolve through metadata
+and protocol categories, with standard operators required. Calls, loops, effects,
+globals, division, narrower/unsigned/floating arithmetic, generic declarations,
+authority contracts and modifiers are rejected. Only the selected definition is
+covered; this export makes no claim about other functions or whole-program
+termination. Some valid obligations exceed the current proof tactics and fail
+without a certificate.
+
+The emitted `program` uses `BrievIntegerVC.Word` directly; it does not yet derive
+its semantics from the model's assignment VC theorem. **A checked export proves
+the contract of that emitted model.** The Rust exporter, source-to-model mapping
+and native lowering still have unproved refinement obligations, recorded in both
+manifests. Hashes bind the evidence to particular artifacts; they do not prove
+the translation correct. The exporter and type adapter source hashes identify
+the generating implementation. Expanded source records resolved declarations,
+including imports, rather than relying only on the original file's hash.
+
+Run the end-to-end gate after building the example:
+
+```bash
+cargo build --example lean_export
+python3 verification/lean/export_gate.py /path/to/debug/examples/lean_export /tmp/new-export-checks
+```
+
+It checks a parametric cancellation contract, rejects false overflow and identity
+contracts at their Lean obligations, and rejects hash drift, a missing axiom
+report and a theorem depending on a user axiom. Unit tests separately reject
+unsupported source forms. These controls do not prove exporter refinement.
