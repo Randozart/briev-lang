@@ -15,6 +15,10 @@ fn has(cmd: &str) -> bool {
     Command::new(cmd).arg("--version").output().is_ok()
 }
 
+// 2026-11-15: the smoke gate tests HIR-path codegen.  Excluded from the
+// AST opt-out suite (BRIEV_HIR_EMIT=0) via nextest filter — the
+// `#[cfg]` approach is not viable because `hir_emit_enabled()` reads
+// `std::env::var` at runtime, which is not a const expression.
 #[test]
 fn router_smoke_gate() {
     for tool in ["clang", "llc"] {

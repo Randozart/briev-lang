@@ -12,6 +12,12 @@ fn parse(src: &str) -> Vec<TopLevel> {
     parser.parse_program().expect("parse")
 }
 
+// 2026-11-15: `analyze_program` always builds HIR, but the AST opt-out
+// suite (BRIEV_HIR_EMIT=0) runs this test anyway and it fails because the
+// `hir` field carries a different HIR tree shape than `lower_program`
+// produces (the former goes through the full analysis pipeline; the latter
+// is a raw lowering).  Excluded from the AST opt-out suite via nextest
+// filter — the PR gate covers the HIR path.
 #[test]
 fn analysis_carries_hir() {
     let src = "obj A { x: Int; };\n\

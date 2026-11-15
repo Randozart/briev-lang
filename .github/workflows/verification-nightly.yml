@@ -35,10 +35,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The flipped default is HIR; this keeps the one-release opt-out path
       # honest without doubling every PR gate.
+      # 2026-11-15: two tests are HIR-specific and must be excluded:
+      #   - `analysis_carries_hir`: calls `hir::verify()` and `lower_program()`
+      #   - `router_smoke_gate`: tests HIR-path codegen via the `brievc` subprocess
+      # Both fail under BRIEV_HIR_EMIT=0; the PR gate covers them with HIR on.
       - name: Full suite on the AST path
         env:
           BRIEV_HIR_EMIT: "0"
-        run: cargo nextest run --all -j 4
+        run: |
+          cargo nextest run --all -j 4 \
+            -E 'not testname:analysis_carries_hir' \
+            -E 'not testname:router_smoke_gate'
 
   full-opt-matrix:
     name: Full tier1 optimization matrix
