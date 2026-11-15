@@ -1,5 +1,20 @@
 # Verification Next Steps (2026-11-15)
 
+## Dated amendment — 2026-11-15, after `a9917e166`
+
+The [assurance handoff and next-steps plan](2026-11-15-163529-assurance-handoff-and-next-steps.md)
+updates the compiler-assurance ordering and records the merged baseline. The
+original proposals below remain historical/planned; illustrative profiling code
+and feature flags are not implemented commands. Known false-proof boundaries
+should be repaired without waiting for performance profiling.
+
+**Correction to section 4:** positive signed 64-bit operands do not imply a
+positive or nonnegative wrapping product: `9223372036854775807 * 2 == -2`.
+The proposed sign-lattice conclusions below require modular semantics or proved
+no-overflow premises. They must not be implemented as unconditional word rules.
+The linked handoff preserves the independent wasm/fuzz proposals and separates
+model proofs from production and source/native refinement obligations.
+
 ## Status
 
 Structural derivation (Tiers 1 + 2a + 2b) landed in commit `c732c0b02`
