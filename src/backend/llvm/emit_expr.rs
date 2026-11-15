@@ -1079,6 +1079,35 @@ impl LlvmBackend {
                     } else {
                         (l.clone(), r.clone())
                     };
+                // 2026-11-15 (stability): Float div/0 zero-check on the HIR path,
+                // mirrored from the AST arm (emit_expr.rs:2182). The
+                // interpreter raises RuntimeError::DivisionByZero; native
+                // codegen must match via @llvm.trap(). Without this, the HIR
+                // and AST emission paths diverge (A/B byte-identity failure).
+                if matches!(op, crate::ast::BinaryOpKind::Div)
+                    && self.float_category_bits(&conv_r.ty).is_some()
+                {
+                    let ty_str = self.llvm_type(&conv_r.ty);
+                    let cmp = self.fun.next_label("cmp");
+                    let divzero = self.fun.next_label("divzero");
+                    let cont = self.fun.next_label("divcont");
+                    writeln!(
+                        out,
+                        "{}  %{} = fcmp oeq {} {}, 0.0",
+                        indent, cmp, ty_str, conv_r.name
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "{}  br i1 %{}, label %{}, label %{}",
+                        indent, cmp, divzero, cont
+                    )
+                    .ok();
+                    writeln!(out, "{}{}:", indent, divzero).ok();
+                    writeln!(out, "{}  call void @llvm.trap()", indent).ok();
+                    writeln!(out, "{}  br label %{}", indent, cont).ok();
+                    writeln!(out, "{}{}:", indent, cont).ok();
+                }
                 self.emit_normalized_binary_op(out, (&v, indent), op, (&conv_l, &conv_r))
             }
             _ => return None,
@@ -13296,6 +13325,12 @@ pub(super) fn hir_expr_lossless(expr: &crate::hir::expr::HirExpr) -> bool {
                 && else_branch.as_ref().map_or(true, |e| hir_expr_lossless(e))
         }
         K::Lambda { body, .. } => hir_expr_lossless(body),
+        // 2026-11-15 (HIR-fidelity): within / exists / formatting-annotation
+        // are fully representable in HIR and reconstruct by `to_ast`, so they
+        // are lossless (previously `Other` made the whole expression non-lossless).
+        K::Within(l, r) => hir_expr_lossless(l) && hir_expr_lossless(r),
+        K::Exists(_) => true,
+        K::FormattingAnnotation(_) => true,
         K::PluginIntercept { args, receiver, .. } => {
             args.iter().all(hir_expr_lossless)
                 && receiver.as_ref().map_or(true, |e| hir_expr_lossless(e))
@@ -13359,6 +13394,10 @@ fn hir_stmt_lossless(stmt: &crate::hir::stmt::HirStmt) -> bool {
         | K::ReleaseOwned { .. }
         | K::MetadataAssignment(..)
         | K::InlineAsm { .. } => true,
-        K::Other(_) => false,
+        // 2026-11-15: the HIR carries only the inline-defn name, but `to_ast`
+        // cannot reconstruct the full `Definition` (no `PartialEq`), so a body
+        // containing an inline defn is not lossless — the caller falls back
+        // to the AST path, exactly as for `Other`.
+        K::InlineDefn(_) | K::Other(_) => false,
     }
 }

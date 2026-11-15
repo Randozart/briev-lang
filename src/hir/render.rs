@@ -296,6 +296,7 @@ fn stmt_tag(kind: &HirStmtKind) -> &'static str {
         HirStmtKind::TrgBinding { .. } => "trg-binding",
         HirStmtKind::MetadataAssignment(..) => "metadata",
         HirStmtKind::InlineAsm { .. } => "inline-asm",
+        HirStmtKind::InlineDefn(_) => "inline-defn",
         HirStmtKind::Other(tag) => tag,
     }
 }

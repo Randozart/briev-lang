@@ -1134,6 +1134,10 @@ fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
             clobbers: clobbers.clone(),
             span: *span,
         },
+        // 2026-11-15 (HIR-fidelity): inline `$defn` statements now carry the
+        // defn name into HIR (previously `Other("inline-defn")`). The full
+        // `Definition` is not stored (no `PartialEq`); `to_ast` falls back.
+        Statement::InlineDefn(def) => HirStmtKind::InlineDefn(def.name.clone()),
         other => HirStmtKind::Other(stmt_tag(other)),
     };
     HirStmt {
@@ -1377,6 +1381,18 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
         Expr::AddrOf(inner) => (None, HirExprKind::AddrOf(Box::new(lower_expr(inner, ids)))),
         Expr::Consume(inner) => (None, HirExprKind::Consume(Box::new(lower_expr(inner, ids)))),
         Expr::Await(inner) => (None, HirExprKind::Await(Box::new(lower_expr(inner, ids)))),
+        // 2026-11-15 (HIR-fidelity): `within` scope expressions lower losslessly.
+        Expr::Within(lhs, rhs) => (
+            None,
+            HirExprKind::Within(
+                Box::new(lower_expr(lhs, ids)),
+                Box::new(lower_expr(rhs, ids)),
+            ),
+        ),
+        // 2026-11-15 (HIR-fidelity): compile-time existence checks lower losslessly.
+        Expr::Exists(name) => (Some(Type::bool_()), HirExprKind::Exists(name.clone())),
+        // 2026-11-15 (HIR-fidelity): formatting annotations lower losslessly.
+        Expr::FormattingAnnotation(f) => (None, HirExprKind::FormattingAnnotation(f.clone())),
         Expr::UnitLiteral { value, unit } => (
             Some(Type::float()),
             HirExprKind::UnitLiteral {

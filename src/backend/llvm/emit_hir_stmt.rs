@@ -1232,6 +1232,10 @@ pub(crate) fn emit_hir_statement(
             name: backend.fun.gen_reg(),
             ty: crate::ast::Type::void(),
         }),
+        // 2026-11-15: an inline defn in a body is a source-level construct the
+        // HIR body seam cannot reconstruct (to_ast returns None for it); the
+        // caller splices the source statement, so return None like `Other`.
+        HirStmtKind::InlineDefn(_) => None,
         HirStmtKind::Other(_) => None,
     }
 }

@@ -78,3 +78,38 @@ fn destructuring_names_survive() {
         .expect("let");
     assert_eq!(names, vec!["a".to_string(), "kk".to_string()]);
 }
+
+// 2026-11-15 (HIR-fidelity): `fn?` (Exists) and formatting annotations are
+// lossless — they lower into HIR and reconstruct to the identical AST node,
+// so `unsupported_counts` no longer flags them and `to_ast` no longer bails.
+#[test]
+fn exists_check_round_trips_losslessly() {
+    // `g?` is a compile-time function-existence check (Expr::Exists).
+    let src = "defn g() -> Int { term 1; };\n\
+               defn f() -> Int { let present: Bool = g?; when present { term 1; }; term 0; };";
+    let items = parse(src);
+    let program = lower_program(&items);
+    // The lowered program must carry zero unsupported nodes: `Exists` is a
+    // first-class HIR node now, not an `Other("exists")` gap.
+    assert_eq!(
+        briev_compiler::hir::unsupported_counts(&program).total(),
+        0,
+        "fn? (Exists) must lower losslessly into HIR"
+    );
+    // And the body must round-trip to the identical AST statements.
+    let hir_f = program
+        .callables
+        .iter()
+        .find(|c| c.name == "f" && matches!(c.kind, HirCallableKind::Defn))
+        .expect("hir f");
+    let ast_f = items
+        .iter()
+        .find_map(|i| match i {
+            TopLevel::Definition(d) if d.name == "f" => Some(d),
+            _ => None,
+        })
+        .expect("ast f");
+    let round =
+        to_ast::stmt_body(&hir_f.body.statements).expect("f body must be lossless (no Other node)");
+    assert_eq!(round, ast_f.body, "fn? body must round-trip losslessly");
+}

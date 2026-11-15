@@ -184,6 +184,11 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
             },
         },
         HirExprKind::Block(stmts) => Expr::Block(stmt_body(stmts)?),
+        // 2026-11-15 (HIR-fidelity): lossless reconstruction for the three
+        // previously-`Other` expression variants.
+        HirExprKind::Within(l, r) => Expr::Within(Box::new(expr(l)?), Box::new(expr(r)?)),
+        HirExprKind::Exists(name) => Expr::Exists(name.clone()),
+        HirExprKind::FormattingAnnotation(f) => Expr::FormattingAnnotation(f.clone()),
         HirExprKind::Other(_) => return None,
     })
 }
@@ -323,6 +328,11 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
             clobbers: clobbers.clone(),
             span: *span,
         },
+        // 2026-11-15 (HIR-fidelity): HIR carries the inline-defn name for
+        // analysis, but the AST's manual `PartialEq` treats `InlineDefn` as
+        // non-round-trippable, so `to_ast` cannot faithfully reconstruct it.
+        // Return `None` (as for `Other`) so the body seam falls back to AST.
+        HirStmtKind::InlineDefn(_) => return None,
         HirStmtKind::Other(_) => return None,
     })
 }

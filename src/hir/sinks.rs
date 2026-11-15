@@ -153,6 +153,9 @@ fn collect_stmt(facts: &mut HirSinkFacts, callable: &HirCallable, stmt: &HirStmt
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
         | HirStmtKind::InlineAsm { .. }
+        // 2026-11-15: an inline defn's body sinks are collected as its own
+        // callable, not through the enclosing body scan.
+        | HirStmtKind::InlineDefn(_)
         | HirStmtKind::Other(_) => {}
         // Inserted release: nothing to sink. Temp-transfer: the wrapped expr
         // still occupies the return sink it was carved out of.

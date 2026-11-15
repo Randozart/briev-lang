@@ -138,5 +138,15 @@ pub enum HirExprKind {
         arms: Vec<HirMatchArm>,
     },
     Block(Vec<HirStmt>),
+    /// `lhs within rhs` — a scoped expression (2026-11-15 HIR-fidelity: was
+    /// `Other("within")`). Lossless: both operands lower normally.
+    Within(Box<HirExpr>, Box<HirExpr>),
+    /// 2026-07-25: `fn?` — compile-time function-existence check. Evaluates
+    /// to Bool; used to guard `frgn?`/`frgn!` calls. Lossless: the name is
+    /// the whole node.
+    Exists(String),
+    /// A formatting annotation (e.g. a `formatting <~` target tag). Lossless:
+    /// the `Formatting` kind is carried by value.
+    FormattingAnnotation(crate::ast::Formatting),
     Other(&'static str),
 }
