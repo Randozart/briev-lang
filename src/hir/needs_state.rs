@@ -238,7 +238,11 @@ fn stmt_needs_state(stmt: &HirStmt, ctx: &Ctx<'_>) -> bool {
         | HirStmtKind::FreeHint(_)
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(..)
-        | HirStmtKind::InlineAsm { .. } => false,
+        | HirStmtKind::InlineAsm { .. }
+        // 2026-11-15: an inline defn's body is analyzed as its own callable,
+        // not through the enclosing state walk — treat as stateless here
+        // (matches the AST walker, which indexes defs separately).
+        | HirStmtKind::InlineDefn(_) => false,
         // Compiler-inserted storage release: no state. Temp-transfer behaves
         // like the expression it wraps plus its (stateless) release list.
         HirStmtKind::ReleaseOwned { .. } => false,
@@ -309,6 +313,10 @@ fn expr_needs_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
         HirExprKind::Match { scrutinee, arms } => {
             expr_needs_state(scrutinee, ctx) || arms.iter().any(|a| expr_needs_state(&a.body, ctx))
         }
+        // 2026-11-15: `within` recurses into both operands; `exists` and
+        // `formatting-annotation` are compile-time metadata with no state.
+        HirExprKind::Within(l, r) => expr_needs_state(l, ctx) || expr_needs_state(r, ctx),
+        HirExprKind::Exists(_) | HirExprKind::FormattingAnnotation(_) => false,
     }
 }
 

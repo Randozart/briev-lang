@@ -79,10 +79,16 @@ pub fn walk_expr_mut<F: FnMut(&mut HirExpr)>(expr: &mut HirExpr, f: &mut F) {
                 walk_expr_mut(&mut arm.body, f);
             }
         }
+        HirExprKind::Within(l, r) => {
+            walk_expr_mut(l, f);
+            walk_expr_mut(r, f);
+        }
         HirExprKind::Block(body) => walk_body_mut(body, f),
         HirExprKind::Literal(_)
         | HirExprKind::Identifier(_)
         | HirExprKind::UnitLiteral { .. }
+        | HirExprKind::Exists(_)
+        | HirExprKind::FormattingAnnotation(_)
         | HirExprKind::Other(_) => {}
     }
     f(expr);
@@ -146,6 +152,7 @@ pub fn walk_stmt_mut<F: FnMut(&mut HirExpr)>(stmt: &mut HirStmt, f: &mut F) {
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
         | HirStmtKind::InlineAsm { .. }
+        | HirStmtKind::InlineDefn(_)
         | HirStmtKind::Other(_) => {}
     }
 }
@@ -273,10 +280,16 @@ pub fn walk_expr<F: FnMut(&HirExpr)>(expr: &HirExpr, f: &mut F) {
                 walk_expr(&arm.body, f);
             }
         }
+        HirExprKind::Within(l, r) => {
+            walk_expr(l, f);
+            walk_expr(r, f);
+        }
         HirExprKind::Block(body) => walk_body(body, f),
         HirExprKind::Literal(_)
         | HirExprKind::Identifier(_)
         | HirExprKind::UnitLiteral { .. }
+        | HirExprKind::Exists(_)
+        | HirExprKind::FormattingAnnotation(_)
         | HirExprKind::Other(_) => {}
     }
     f(expr);
@@ -338,6 +351,7 @@ pub fn walk_stmt<F: FnMut(&HirExpr)>(stmt: &HirStmt, f: &mut F) {
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
         | HirStmtKind::InlineAsm { .. }
+        | HirStmtKind::InlineDefn(_)
         | HirStmtKind::Other(_) => {}
     }
 }

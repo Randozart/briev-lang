@@ -141,3 +141,43 @@ The harness excludes cleanup of its proof-owned recursive enums; recursive AST
 conversion, arbitrary identifier strings, HashMap state transitions and caller
 soundness remain outside this proof. The five existing production kernels now
 include this narrow obligation; this is not a full symbolic-executor theorem.
+
+
+## Interval boundaries and feasible violations
+
+The production `verify/interval.rs` kernel represents closed signed-i64 ranges;
+`lower > upper` denotes emptiness. Strict restrictions use checked arithmetic:
+`x > MAX` and `x < MIN` are empty. Equality/order restrictions are exact;
+interior disequalities keep their interval hull and therefore overapproximate.
+Literal-left comparisons use `Relation::mirror`, and negated comparisons use
+`Relation::negate`. Both adapters share the production proof obligations.
+
+Known inconsistent range facts make the implication vacuous. A fast negative
+verdict becomes a hard violation only when its path is feasible. The adapter
+first tries a concrete assignment satisfying every supported recorded fact,
+then asks Z3 if needed. Unknown feasibility remains advisory. This prevents an
+unreachable constant-return branch from refuting a valid contract. These facts
+remain snapshots under the assignment discipline above.
+
+Five Kani harnesses check actual production intersection, restriction,
+classification, mirroring and negation for arbitrary i64 endpoints, literals and
+witnesses. They establish membership/verdict properties without proving the
+whole fact extractor, symbolic executor, witness adapter or solver. Together
+with the previous five kernels and the SMT byte codec, the discharged production
+kernel count is eleven. Deliberate wrapping-endpoint and incorrect-mirror copies
+must fail their corresponding obligations. Debug/release API and compiler CLI
+regressions cover the adapters. The constructed-false-contract unit fixture now
+uses `Expr::Bool(true)` rather than a free identifier spelled `true`; its hard
+violation assertion is retained.
+
+
+Directly tracked field postconditions remain available in the standalone word
+AST API. Their sort inference treats a field of a plain variable as a word, but
+does not serialize fields into SMT or widen typed source admission. Field reads
+use the lexical base name; following its saved entry atom would read another
+variable's stale field. Every common assignment invalidates that base's field
+entries after reading its RHS, including declaration callers. The field snapshot
+regressions preserve latest writes and reject rebound stale values. Structural
+equality recursively rejects Unknown, including pointer-identical trees. Field
+maps, object alias semantics and these adapters are not covered by the eleven
+primitive Kani obligations.

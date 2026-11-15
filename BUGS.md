@@ -1,3 +1,59 @@
+## 2026-11-15 — rebound fields read another variable's old value
+
+**Reproduced against incoming main 052cf5e03.** The standalone word AST body
+`y.n = 1; x = y; x.n = 2; term 0` certified the false postcondition `x.n == 1`.
+The field evaluator followed the saved base atom `y` and read its old field map
+entry instead of the directly tracked write to `x.n`. The public assignment API
+also left field entries intact outside the statement walk.
+
+**Repair.** Read tracked fields by their lexical base name. Clear a base's field
+entries inside `SymbolicState::assign`, after evaluating the right-hand side,
+so both assignment and declaration callers share the invalidation rule. Tests
+reject the old-value proof, preserve the latest-value proof, and check common-API
+invalidation and mixed Boolean/word rejection. Structural field postconditions
+retain explicit word-model sort admission without acquiring an SMT encoding;
+typed source admission is unchanged. Incoming test fixtures now use Boolean
+`true` rather than a free identifier with that spelling. Pointer identity also
+cannot establish equality of Unknown values or trees containing them.
+
+These are mathematical-AST regressions; no source/native object-alias refinement
+or whole field-map proof is claimed. The incoming HIR fidelity and division guard
+changes are retained and included in the combined compiler gates.
+
+## 2026-11-15 — reversed bounds, endpoint overflow and unsafe SMT fallbacks
+
+**Reproduced.** `[0 < x][term < 0] { term x; }` was reported proven: the range
+extractor read the literal-left comparison as `x < 0`. A valid guard `x > MAX`
+panicked in debug builds while tightening its lower bound with `MAX + 1`.
+Contradictory facts and unreachable branches could also produce hard violations
+for valid contracts. Baseline package regressions reproduce these failures.
+
+**Repair.** Normalize comparisons through a shared relation mirror/negation;
+represent empty signed-word intervals explicitly. Checked strict endpoints
+produce an empty interval. Conclusive range verdicts apply to every member;
+interior disequalities retain a conservative hull. A hard violation now requires
+a feasible path, established by an evaluated witness or Z3. Infeasible paths are
+vacuous, and unknown feasibility remains advisory. Production Kani harnesses
+check intersection, restriction, classification, mirroring and negation over
+arbitrary i64 inputs; source/CLI tests preserve genuine violations.
+
+**SMT boundary.** The public VC writer encoded unsupported `If` syntax as true,
+allowing a false conditional predicate to become UNSAT. Unsupported unary
+operators could also lose their operator. Supported terms now carry Boolean or
+Word64 sorts; unsupported or ill-sorted queries emit only a diagnostic and yield
+Unknown. Names use hexadecimal UTF-8 in a separate namespace from canonical
+`#Self`/`#self`. The previous `#Foo`/`hash_Foo` and self/ordinary-name collisions
+caused solver errors and proof loss in the reproduced queries; no false proof
+from those collisions was demonstrated. Contract parameters remain a closed set.
+Protocol consumers share the same fallible word encoder and identifier naming.
+
+The byte codec has a production injectivity/alphabet Kani harness, distinct from
+a proof of the whole String encoder. Copied sanitizer examples were retired from
+`kani/prove_smt_cache.rs`; its two cache-cap models remain scalar models. Real-Z3
+controls cover unsupported syntax, sort mismatches, namespace collisions and
+protocol inverse/non-inverse queries. See the
+[interval/SMT plan](docs/plans/2026-11-15-144601-interval-and-smt-boundaries.md).
+
 ## 2026-11-15 — saved symbolic values were rebound by later assignments
 
 **Reproduced.** `defn f(x: Int64) [true][term == 0] -> Int64 { let y: Int64 = x; x = 0; term y; };`

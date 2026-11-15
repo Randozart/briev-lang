@@ -58,3 +58,40 @@ normalization, arbitrary-length parser behavior, query encoding, Z3 correctness,
 or native compiler correctness. The earlier whole-parser harness for arbitrary
 eight-byte ASCII suffixes after a leading SAT line remains present and
 undischarged: its first run timed out. The smaller proof does not replace it.
+
+
+## Query encoding boundary
+
+Production terms carry Boolean or Word64 sorts. Equality requires matching
+operand sorts; connectives require Boolean terms, while arithmetic and signed
+comparisons require Word64 operands. Unsupported expressions/operators and
+ill-sorted formulas have no encoding. Public String query builders emit a
+diagnostic-only script with no `check-sat`; solver consumers consequently return
+Unknown. Bitwise operators remain unsupported. The legacy expression String API
+uses an undeclared error sentinel on failure; internal protocol consumers use
+`try_encode_word_for_proof` and propagate absence explicitly.
+
+`symbols::encode` maps ordinary UTF-8 names to `v_` plus two lowercase hexadecimal
+digits per byte. `#Self` and `#self` intentionally share `b_self`, disjoint from
+ordinary names. Declarations deduplicate canonical aliases. Contract queries
+reject free identifiers outside their declared parameters/self; VC queries
+declare their collected free names. Protocol query templates obtain binder
+names from this same encoder rather than assuming a literal `x` or `y`.
+
+`symbol_byte_codec_is_injective` proves the actual two-digit byte primitive is
+injective and stays within the hexadecimal alphabet for arbitrary u8 inputs.
+It does not prove unbounded String iteration, declaration collection, caller
+binding or AST-to-SMT semantics. Real-Z3 tests in `smt_encoding` and the ignored
+`namespaced_protocol_queries_preserve_real_solver_results` compiler unit test
+must be executed explicitly. The prover command `-- --include-ignored` includes
+the solver-dependent package controls. Copied sanitizer examples formerly in
+`kani/prove_smt_cache.rs` are retired; the remaining two scalar cache-cap models
+do not prove the production cache/mutex. Division is total in SMT and still
+requires the separate typed/domain admission rules for source proofs.
+
+
+The structural body prover separately infers ranks for directly tracked field
+postconditions in its mathematical word API. This does not make fields supported
+SMT terms. Unsupported or ill-sorted contracts remain advisory/unproven; an
+unsupported body or declaration retains its separate skipped outcome. The same
+binary rank table checks structural postconditions and serialized SMT terms.

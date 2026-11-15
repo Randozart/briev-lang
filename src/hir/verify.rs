@@ -132,6 +132,8 @@ fn verify_stmt(stmt: &HirStmt, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
         | HirStmtKind::InlineAsm { .. }
+        // 2026-11-15: the inline-defn name carries no sub-nodes to verify.
+        | HirStmtKind::InlineDefn(_)
         | HirStmtKind::Other(_) => Ok(()),
     }
 }
@@ -225,10 +227,17 @@ fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
             verify_expr(scrutinee, nodes)?;
             verify_expr_arms(arms, nodes)
         }
+        HirExprKind::Within(l, r) => {
+            verify_expr(l, nodes)?;
+            verify_expr(r, nodes)
+        }
         HirExprKind::Block(body) => verify_body(body, nodes),
         HirExprKind::Literal(_)
         | HirExprKind::Identifier(_)
         | HirExprKind::UnitLiteral { .. }
+        // 2026-11-15: exists / formatting-annotation carry no sub-nodes.
+        | HirExprKind::Exists(_)
+        | HirExprKind::FormattingAnnotation(_)
         | HirExprKind::Other(_) => Ok(()),
     }
 }

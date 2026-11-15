@@ -22,8 +22,11 @@
 // boundary).
 
 use crate::ast::{Annotation, BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
-use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic};
+use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic, simplify_binary};
 use std::collections::HashMap;
+
+mod interval;
+use interval::{Interval as Bound, Relation};
 
 /// Tri-state outcome of evaluating a postcondition on one symbolic path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,13 +103,6 @@ pub fn findings_json(entries: &[String]) -> Vec<serde_json::Value> {
             serde_json::json!({ "name": name, "reason": reason })
         })
         .collect()
-}
-
-/// Inclusive numeric bounds of one identifier, derived from path facts.
-#[derive(Debug, Clone, Copy, Default)]
-struct Bound {
-    lower: Option<i64>,
-    upper: Option<i64>,
 }
 
 /// Verify every txn/defn body (incl. SyncGroup/Export wrappers) against its
@@ -198,6 +194,14 @@ fn verify_supported(
         report.skipped.push(format!("{name}: {reason}"));
         return;
     }
+    if !crate::smt::supported_boolean(contract.0)
+        || !crate::smt::supported_word_postcondition(contract.1)
+    {
+        report.unproven.push(format!(
+            "{name}: unsupported or ill-sorted word-model contract"
+        ));
+        return;
+    }
     // Substitute only summarized callees so the path walk sees a flat body.
     let Ok(flattened) = inline_body(body, sums) else {
         report
@@ -274,7 +278,7 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
     let mut undecided = 0usize;
     let mut first_undecided: Option<usize> = None;
     for (index, state) in terminated.iter().enumerate() {
-        match verdict_for_path(post, state) {
+        match reachable_verdict(post, state) {
             ProofVerdict::Holds => {}
             ProofVerdict::Violated => {
                 if violated.is_none() {
@@ -316,6 +320,63 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
         ));
     }
     BodyOutcome::Proven
+}
+
+/// A refutation needs a feasible execution path. Failure to find a witness or
+/// decide feasibility cannot turn an unreachable branch into a hard error.
+fn reachable_verdict(post: &Expr, state: &SymbolicState) -> ProofVerdict {
+    match verdict_for_path(post, state) {
+        ProofVerdict::Violated => match path_feasible(state) {
+            Some(true) => ProofVerdict::Violated,
+            Some(false) => ProofVerdict::Holds,
+            None => ProofVerdict::Undecided,
+        },
+        other => other,
+    }
+}
+
+/// Establish a real path witness before reporting a hard violation. If the
+/// simple deterministic witness fails, ask the solver about the recorded facts.
+/// Unknown feasibility remains advisory, never a spurious hard rejection.
+fn path_feasible(state: &SymbolicState) -> Option<bool> {
+    if state
+        .path_constraints
+        .iter()
+        .any(|fact| !crate::smt::supported_boolean(fact))
+    {
+        return None;
+    }
+    let Some(bounds) = bounds_of(state) else {
+        return Some(false);
+    };
+    let mut witness = SymbolicState::empty();
+    for name in state.path_constraints.iter().flat_map(free_idents) {
+        let interval = bounds.get(&name).copied().unwrap_or(Bound::FULL);
+        let value = if interval.contains(0) {
+            0
+        } else {
+            interval.lower
+        };
+        witness
+            .assignments
+            .insert(name, SymbolicValue::int_literal(value));
+    }
+    if state
+        .path_constraints
+        .iter()
+        .all(|fact| eval_post(fact, &witness, &HashMap::new()) == ProofVerdict::Holds)
+    {
+        return Some(true);
+    }
+    if !crate::smt::is_z3_available() {
+        return None;
+    }
+    let query = crate::smt::build_vc_query(&state.path_constraints, &Expr::Bool(false));
+    match crate::smt::prove_smt_formula(&query, 1000) {
+        crate::smt::SmtResult::Sat(_) => Some(true),
+        crate::smt::SmtResult::Unsat => Some(false),
+        crate::smt::SmtResult::Unknown => None,
+    }
 }
 
 /// Try to decide an Undecided path with the SMT solver (C4).
@@ -571,6 +632,10 @@ fn step_assign(lhs: &Expr, expr: &Expr, st: SymbolicState, next: &mut Vec<Symbol
     let mut s = st;
     if let Expr::Identifier(name) = lhs {
         s.assign(name, expr);
+    } else if let Expr::Field(base, field) = lhs {
+        if let Expr::Identifier(base_name) = base.as_ref() {
+            s.assign_field(base_name, field, expr);
+        }
     }
     next.push(s);
 }
@@ -588,12 +653,17 @@ fn bind_output(st: SymbolicState, expr: &Expr) -> SymbolicState {
 }
 
 /// Drain a path's constraints into per-identifier numeric bounds.
-fn bounds_of(state: &SymbolicState) -> HashMap<String, Bound> {
+fn bounds_of(state: &SymbolicState) -> Option<HashMap<String, Bound>> {
     let mut bounds: HashMap<String, Bound> = HashMap::new();
     for constraint in &state.path_constraints {
-        update_bounds(constraint, &mut bounds);
+        if !update_bounds(constraint, &mut bounds) {
+            return None;
+        }
     }
-    bounds
+    if bounds.values().any(|bound| bound.is_empty()) {
+        return None;
+    }
+    Some(bounds)
 }
 
 /// Merge one comparison fact into the identifier bounds map.
@@ -601,69 +671,62 @@ fn bounds_of(state: &SymbolicState) -> HashMap<String, Bound> {
 /// Recurses through conjunctions (a precondition like
 /// `[a >= 0 && a <= 255]` contributes both facts) and maps negated
 /// comparisons to their flipped forms (`!(a > 5)` bounds `a <= 5`).
-fn update_bounds(constraint: &Expr, bounds: &mut HashMap<String, Bound>) {
+fn update_bounds(constraint: &Expr, bounds: &mut HashMap<String, Bound>) -> bool {
     match constraint {
+        Expr::Bool(value) => *value,
         Expr::BinaryOp(BinaryOpKind::And, l, r) => {
-            update_bounds(l, bounds);
-            update_bounds(r, bounds);
+            update_bounds(l, bounds) && update_bounds(r, bounds)
         }
-        Expr::UnaryOp(UnaryOpKind::Not, inner) => {
-            if let Some(fact) = negated_comparison(inner.as_ref()) {
-                update_bounds(&fact, bounds);
-            }
+        Expr::UnaryOp(UnaryOpKind::Not, inner) => match inner.as_ref() {
+            Expr::Bool(value) => !value,
+            Expr::BinaryOp(op, left, right) => Relation::from_ast(*op)
+                .is_none_or(|op| comparison_bounds(op.negate(), left, right, bounds)),
+            _ => true,
+        },
+        Expr::BinaryOp(op, left, right) => {
+            Relation::from_ast(*op).is_none_or(|op| comparison_bounds(op, left, right, bounds))
         }
-        Expr::BinaryOp(op, l, r) => {
-            let (name, lit) = match (l.as_ref(), r.as_ref()) {
-                (Expr::Identifier(n), Expr::Decimal(v)) => (n, *v),
-                (Expr::Decimal(v), Expr::Identifier(n)) => (n, *v),
-                _ => return,
-            };
-            tighten(&name.clone(), *op, lit, bounds);
-        }
-        _ => {}
+        _ => true,
     }
 }
 
-/// The negation of one comparison as a bound-expressible fact, when one
-/// exists. `!(a < b)` ⟺ `a >= b`; `!(a != b)` ⟺ `a == b` (integer math);
-/// `!(a == b)` is a disjunction (`a < b or a > b`) — NOT expressible as a
-/// single interval fact, so `None`. Skipping it is sound: facts only ever
-/// constrain an identifier; we never assume the world minus a fact.
-fn negated_comparison(expr: &Expr) -> Option<Expr> {
-    let Expr::BinaryOp(op, l, r) = expr else {
-        return None;
-    };
-    let flipped = match op {
-        BinaryOpKind::Lt => BinaryOpKind::Ge,
-        BinaryOpKind::Le => BinaryOpKind::Gt,
-        BinaryOpKind::Gt => BinaryOpKind::Le,
-        BinaryOpKind::Ge => BinaryOpKind::Lt,
-        BinaryOpKind::Neq => BinaryOpKind::Eq,
-        BinaryOpKind::Eq => return None,
-        _ => return None,
-    };
-    Some(Expr::BinaryOp(flipped, l.clone(), r.clone()))
+/// Constant unary negation follows signed-word wrapping semantics.
+fn literal_word(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Decimal(value) => Some(*value),
+        Expr::UnaryOp(UnaryOpKind::Neg, inner) => literal_word(inner).map(i64::wrapping_neg),
+        _ => None,
+    }
 }
 
-/// Tighten one identifier's bounds with `name <op> lit`.
-fn tighten(name: &str, op: BinaryOpKind, lit: i64, bounds: &mut HashMap<String, Bound>) {
-    let b = bounds.entry(name.to_string()).or_default();
-    match op {
-        BinaryOpKind::Ge => b.lower = Some(b.lower.map_or(lit, |l| l.max(lit))),
-        BinaryOpKind::Gt => b.lower = Some(b.lower.map_or(lit + 1, |l| l.max(lit + 1))),
-        BinaryOpKind::Le => b.upper = Some(b.upper.map_or(lit, |u| u.min(lit))),
-        BinaryOpKind::Lt => b.upper = Some(b.upper.map_or(lit - 1, |u| u.min(lit - 1))),
-        BinaryOpKind::Eq => {
-            b.lower = Some(b.lower.map_or(lit, |l| l.max(lit)));
-            b.upper = Some(b.upper.map_or(lit, |u| u.min(lit)));
-        }
-        _ => {}
+/// Normalize literal-left facts through the same production relation mirror
+/// checked by Kani; unknown/nonlinear facts retain their original SMT form.
+fn comparison_bounds(
+    op: Relation,
+    left: &Expr,
+    right: &Expr,
+    bounds: &mut HashMap<String, Bound>,
+) -> bool {
+    if let (Some(a), Some(b)) = (literal_word(left), literal_word(right)) {
+        return op.holds(a, b);
     }
+    let (name, value, op) = match (left, right) {
+        (Expr::Identifier(name), value) => (name, literal_word(value), op),
+        (value, Expr::Identifier(name)) => (name, literal_word(value), op.mirror()),
+        _ => return true,
+    };
+    if let Some(value) = value {
+        let current = bounds.entry(name.clone()).or_insert(Bound::FULL);
+        *current = current.restrict(op, value);
+    }
+    true
 }
 
 /// Tri-state evaluation of the postcondition against one path's state.
 fn verdict_for_path(post: &Expr, state: &SymbolicState) -> ProofVerdict {
-    let bounds = bounds_of(state);
+    let Some(bounds) = bounds_of(state) else {
+        return ProofVerdict::Holds;
+    };
     // 2026-11-12 (point bounds): a precondition that pins an identifier
     // (`[a == 5]`) is a fact about its VALUE, not merely a range. Binding such
     // an identifier to its literal lets arithmetic over it fold — otherwise
@@ -679,12 +742,9 @@ fn verdict_for_path(post: &Expr, state: &SymbolicState) -> ProofVerdict {
 fn with_point_bounds(state: &SymbolicState, bounds: &HashMap<String, Bound>) -> SymbolicState {
     let mut pinned = state.clone();
     for (name, bound) in bounds {
-        let (Some(lower), Some(upper)) = (bound.lower, bound.upper) else {
+        let Some(lower) = bound.point() else {
             continue;
         };
-        if lower != upper {
-            continue;
-        }
         pinned
             .assignments
             .entry(name.clone())
@@ -774,6 +834,20 @@ fn rel_verdict(
             _ => ProofVerdict::Undecided,
         };
     }
+    // Concrete arithmetic result: a binary expression that evaluates to a
+    // known integer (e.g. 2+3 → 5) compared against a literal.  Decides
+    // immediately without routing to Z3 — the dominant case for arithmetic
+    // body-postcondition obligations.
+    if let Some(lit) = lv.try_to_literal() {
+        if let SymbolicValue::Literal(r, _) = rv {
+            return order_verdict(op, lit.cmp(r));
+        }
+    }
+    if let Some(lit) = rv.try_to_literal() {
+        if let SymbolicValue::Literal(l, _) = lv {
+            return order_verdict(op, l.cmp(&lit));
+        }
+    }
     // Identifier-vs-literal: decide through the path's interval bounds.
     if let SymbolicValue::Identifier(name) = lv {
         if let SymbolicValue::Literal(v, _) = rv {
@@ -796,19 +870,18 @@ fn ident_verdict(
     flipped: bool,
     bounds: &HashMap<String, Bound>,
 ) -> ProofVerdict {
-    // `lit <op> x` ⟺ `x flip(op) lit` — normalise so bounds read naturally.
-    let (effective, v) = if flipped { (flip(op), lit) } else { (op, lit) };
-    let Some(b) = bounds.get(name) else {
+    let Some(relation) = Relation::from_ast(op) else {
         return ProofVerdict::Undecided;
     };
-    match effective {
-        BinaryOpKind::Eq => point_verdict(b, v, true),
-        BinaryOpKind::Neq => point_verdict(b, v, false),
-        BinaryOpKind::Lt => strict_upper_verdict(b, v),
-        BinaryOpKind::Le => inclusive_upper_verdict(b, v),
-        BinaryOpKind::Ge => inclusive_lower_verdict(b, v),
-        BinaryOpKind::Gt => strict_lower_verdict(b, v),
-        _ => ProofVerdict::Undecided,
+    let relation = if flipped { relation.mirror() } else { relation };
+    match bounds
+        .get(name)
+        .copied()
+        .unwrap_or(Bound::FULL)
+        .classify(relation, lit)
+    {
+        Some(value) => tri(value),
+        None => ProofVerdict::Undecided,
     }
 }
 
@@ -818,77 +891,6 @@ fn tri(holds: bool) -> ProofVerdict {
         ProofVerdict::Holds
     } else {
         ProofVerdict::Violated
-    }
-}
-
-/// Whether an interval is entirely outside `v` (every value > v or < v).
-fn disjoint_from(b: &Bound, v: i64) -> bool {
-    b.lower.map_or(false, |l| l > v) || b.upper.map_or(false, |h| h < v)
-}
-
-/// Decide `x == v` (want_eq) or `x != v` (!want_eq) against an interval.
-fn point_verdict(b: &Bound, v: i64, want_eq: bool) -> ProofVerdict {
-    if b.lower == Some(v) && b.upper == Some(v) {
-        return tri(want_eq);
-    }
-    if disjoint_from(b, v) {
-        return tri(!want_eq);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x < v` against an interval.
-fn strict_upper_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if b.upper.map_or(false, |h| h < v) {
-        return tri(true);
-    }
-    if b.lower.map_or(false, |l| l >= v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x <= v` against an interval.
-fn inclusive_upper_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if b.upper.map_or(false, |h| h <= v) {
-        return tri(true);
-    }
-    if disjoint_from(b, v) && b.lower.is_some_and(|l| l > v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x >= v` against an interval.
-fn inclusive_lower_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if b.lower.map_or(false, |l| l >= v) {
-        return tri(true);
-    }
-    if b.upper.map_or(false, |h| h < v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x > v` against an interval.
-fn strict_lower_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if disjoint_from(b, v) && b.lower.is_some_and(|l| l > v) {
-        return tri(true);
-    }
-    if b.upper.map_or(false, |h| h <= v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// The mirrored comparison operator (`v <op> x` ⟺ `x flip(<op>) v`).
-fn flip(op: BinaryOpKind) -> BinaryOpKind {
-    match op {
-        BinaryOpKind::Lt => BinaryOpKind::Gt,
-        BinaryOpKind::Le => BinaryOpKind::Ge,
-        BinaryOpKind::Gt => BinaryOpKind::Lt,
-        BinaryOpKind::Ge => BinaryOpKind::Le,
-        other => other,
     }
 }
 
@@ -911,16 +913,41 @@ fn order_verdict(op: BinaryOpKind, ord: std::cmp::Ordering) -> ProofVerdict {
     }
 }
 
+/// Reduce a symbolic value through one pass of algebraic simplification.
+///
+/// Applies `simplify_binary` to `Binary` nodes; returns the simplified value.
+/// Handles the common cases that would otherwise route to Z3:
+///   a + 0 → a,  a - 0 → a,  a * 1 → a,  a * 0 → 0
+///   (a+b) − b → a,  2 + 3 → 5
+///
+/// Single pass (no recursion) — keeps O(1) complexity; nested reductions
+/// like (a+0)+1 are handled by `eval_symbolic`'s bottom-up construction.
+fn simplifies_to(sv: &SymbolicValue) -> SymbolicValue {
+    let SymbolicValue::Binary(op, l, r) = sv else {
+        return sv.clone();
+    };
+    let Some(simplified) = simplify_binary(op.as_str(), l, r) else {
+        return sv.clone();
+    };
+    simplified
+}
+
 /// Structural equality of two symbolic values — proves `x + 1 == x + 1`
 /// without a concrete numeric value. Unknown never equals anything (two
-/// unanalysable values are NOT provably identical).
+/// unanalysable values are NOT provably identical).  Both sides are first
+/// reduced through `simplifies_to` so algebraically equal terms match even
+/// when their surface forms differ.
 fn structural_eq(lv: &SymbolicValue, rv: &SymbolicValue) -> bool {
-    match (lv, rv) {
+    // Algebraic simplification: if both sides reduce to the same canonical form
+    // they are equal even when surface syntax differs (e.g. (a+0) vs a).
+    let sl = simplifies_to(lv);
+    let sr = simplifies_to(rv);
+    match (sl, sr) {
         (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => a == b,
         (SymbolicValue::Identifier(a), SymbolicValue::Identifier(b)) => a == b,
         (SymbolicValue::Previous(a), SymbolicValue::Previous(b)) => a == b,
         (SymbolicValue::Binary(a, al, ar), SymbolicValue::Binary(b, bl, br)) => {
-            a == b && structural_eq(al, bl) && structural_eq(ar, br)
+            a == b && structural_eq(&*al, &*bl) && structural_eq(&*ar, &*br)
         }
         _ => false,
     }
@@ -1394,12 +1421,27 @@ fn unsupported_reason(stmts: &[Statement], sums: &HashMap<String, Summary>) -> O
     stmts.iter().find_map(|stmt| statement_reason(stmt, sums))
 }
 
+/// Whether an assignment target is in the prover's reach: a plain name
+/// (`x`), or a field of a plain name (`x.n`).  Index bases (`arr[i].n`) and
+/// any deeper projection stay out of reach — the field map keys on the base
+/// identifier and cannot track which element of a collection is written.
+fn plain_assignment_target(lhs: &Expr) -> bool {
+    match lhs {
+        Expr::Identifier(_) => true,
+        Expr::Field(base, _) => matches!(base.as_ref(), Expr::Identifier(_)),
+        _ => false,
+    }
+}
+
 /// The reason one statement is unsupported, if it is.
 fn statement_reason(stmt: &Statement, sums: &HashMap<String, Summary>) -> Option<String> {
     match stmt {
         Statement::Assign(lhs, e) => {
-            if !matches!(lhs, Expr::Identifier(_)) {
-                return Some("an assignment whose target is not a plain name".to_string());
+            if !plain_assignment_target(lhs) {
+                return Some(
+                    "an assignment whose target is not a plain name or a field of a plain name"
+                        .to_string(),
+                );
             }
             expr_reason(e, sums)
         }
@@ -1724,7 +1766,7 @@ mod prover_api_tests {
     #[test]
     fn a_constructed_false_contract_is_violated() {
         let contract = Contract::proven(
-            Expr::Identifier("true".into()),
+            Expr::Bool(true),
             Expr::BinaryOp(
                 BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("term".into())),
@@ -1736,5 +1778,134 @@ mod prover_api_tests {
 
         let report = verify_bodies(&[item]);
         assert_eq!(report.violated.len(), 1, "proven: {:?}", report.proven);
+    }
+}
+
+#[cfg(test)]
+mod structural_derivation_tests {
+    use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+
+    /// A field projection in a postcondition is resolved structurally from the
+    /// body's field assignment, without Z3: `x.n = 5; [x.n > 0]` holds because
+    /// the field map records `("x", "n") -> 5` and `5 > 0` is a concrete order.
+    #[test]
+    fn field_assignment_proves_field_postcondition() {
+        let x_n = || Expr::Field(Box::new(Expr::Identifier("x".into())), "n".into());
+        let body = vec![
+            Statement::Assign(x_n(), Expr::Decimal(5)),
+            Statement::Term(Some(Expr::Decimal(0))),
+        ];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(x_n()),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_field", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_field"),
+            "field postcondition should be proved structurally; unproven: {:?}; skipped: {:?}",
+            report.unproven,
+            report.skipped
+        );
+        assert!(report.violated.is_empty());
+    }
+
+    /// Reassigning the base object (`x = y`) invalidates any earlier `x.n = …`
+    /// value.  The stale entry must NOT be used to prove `x.n > 0` after the
+    /// reassignment, so the body must not appear as proven (the postcondition
+    /// is undecidable without a value for the new `x`).
+    #[test]
+    fn field_reassignment_invalidates_stale_value() {
+        let x_n = || Expr::Field(Box::new(Expr::Identifier("x".into())), "n".into());
+        let body = vec![
+            Statement::Assign(x_n(), Expr::Decimal(5)),
+            Statement::Assign(Expr::Identifier("x".into()), Expr::Identifier("y".into())),
+            Statement::Term(Some(Expr::Decimal(0))),
+        ];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(x_n()),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_stale", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            !report.proven.iter().any(|n| n == "f_stale"),
+            "stale field value was incorrectly used to prove; proven: {:?}",
+            report.proven
+        );
+    }
+
+    /// Additive identity: `term = a + 0` reduces to `a`, so `term == a` is
+    /// structural equality, provable without Z3.
+    #[test]
+    fn additive_identity_proves_structural_equality() {
+        let a = Expr::Identifier("a".into());
+        let body = vec![Statement::Term(Some(Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(a.clone()),
+            Box::new(Expr::Decimal(0)),
+        )))];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("term".into())),
+            Box::new(a),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_id", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_id"),
+            "a + 0 == a should be proved structurally; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Zero absorption: `term = a * 0` reduces to `0`, so `term == 0` holds
+    /// for any `a`, provable without Z3.
+    #[test]
+    fn zero_multiplication_proves_zero_result() {
+        let body = vec![Statement::Term(Some(Expr::BinaryOp(
+            BinaryOpKind::Mul,
+            Box::new(Expr::Identifier("a".into())),
+            Box::new(Expr::Decimal(0)),
+        )))];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("term".into())),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_zero", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_zero"),
+            "a * 0 == 0 should be proved structurally; unproven: {:?}",
+            report.unproven
+        );
+    }
+}
+
+#[cfg(test)]
+mod unknown_identity_tests {
+    use super::*;
+    #[test]
+    fn pointer_identity_does_not_prove_unknown_trees_equal() {
+        let unknown = SymbolicValue::Unknown;
+        assert!(!structural_eq(&unknown, &unknown));
+        let tree = SymbolicValue::Binary(
+            "+".into(),
+            Box::new(unknown),
+            Box::new(SymbolicValue::int_literal(1)),
+        );
+        assert!(!structural_eq(&tree, &tree));
     }
 }

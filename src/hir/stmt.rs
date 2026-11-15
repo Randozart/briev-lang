@@ -99,6 +99,12 @@ pub enum HirStmtKind {
         clobbers: Vec<String>,
         span: Option<crate::errors::Span>,
     },
+    /// An inline `$defn` in a body (2026-11-15 HIR-fidelity: was
+    /// `Other("inline-defn")`). Carries the defn name; the full `Definition`
+    /// is NOT stored (it lacks `PartialEq`, and the AST's manual `PartialEq`
+    /// treats `InlineDefn` as non-round-trippable) — `to_ast` returns `None`
+    /// for it, same as `Other`, so the body seam falls back to AST.
+    InlineDefn(String),
     Other(&'static str),
 }
 

@@ -81,3 +81,31 @@ fn saved_values_and_current_guard_facts_cannot_authorize_false_proofs() {
         );
     }
 }
+
+#[test]
+fn endpoint_guards_are_safe_and_reversed_false_contracts_are_rejected() {
+    let (code, report) = run(
+        "defn f(x: Int) [true][term == 0] -> Int { when x > 9223372036854775807 { term 5; }; term 0; };",
+    );
+    let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(code, 0, "{report}");
+    assert!(
+        value["proven"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "f"),
+        "{report}"
+    );
+    let (code, report) = run("defn f(x: Int) [0 < x][term < 0] -> Int { term x; };");
+    let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(code, 1, "{report}");
+    assert!(
+        value["violated"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "f"),
+        "{report}"
+    );
+}

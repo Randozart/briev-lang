@@ -90,7 +90,10 @@ fn count_stmt(stmt: &HirStmt, counts: &mut UnsupportedCounts) {
         | HirStmtKind::FreeHint(_)
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
-        | HirStmtKind::InlineAsm { .. } => {}
+        | HirStmtKind::InlineAsm { .. }
+        // 2026-11-15: inline-defn is a fully-represented HIR node (carries
+        // the defn name); not an unsupported gap, so it is not counted.
+        | HirStmtKind::InlineDefn(_) => {}
         HirStmtKind::ReleaseOwned { .. } => {}
         HirStmtKind::TempTransfer { expr, .. } => count_expr(expr, counts),
         HirStmtKind::Other(tag) => {
@@ -185,6 +188,7 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
                 count_expr(r, counts);
             }
         }
+        HirExprKind::Within(l, r) => count_exprs([l.as_ref(), r.as_ref()], counts),
         HirExprKind::Block(body) => count_body(body, counts),
         HirExprKind::Other(tag) => {
             counts.expressions += 1;
@@ -195,7 +199,10 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
         // 2026-11-12 (electronics full-surface port): a lowered selector,
         // never unsupported syntax.
         | HirExprKind::Wildcard
-        | HirExprKind::UnitLiteral { .. } => {}
+        | HirExprKind::UnitLiteral { .. }
+        // 2026-11-15: fully-represented HIR nodes, not unsupported gaps.
+        | HirExprKind::Exists(_)
+        | HirExprKind::FormattingAnnotation(_) => {}
     }
 }
 

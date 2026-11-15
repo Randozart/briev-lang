@@ -8,6 +8,9 @@
 // (no cross-compilation persistence) and is invalidated when the Z3 binary
 // changes. See docs/plans/2026-11-14-proof-result-caching.md.
 
+mod encoding;
+mod symbols;
+
 use crate::ast::{Expr, Type};
 use crate::solver_response::parse_solver_output;
 use std::collections::HashMap;
@@ -265,58 +268,36 @@ pub fn prove_smt_formula(formula: &str, _timeout_ms: u64) -> SmtResult {
 /// Build an SMT-LIB query from a Briev expression.
 /// All values are encoded as (_ BitVec 64) — the only primitive.
 fn build_smt_query(expr: &Expr) -> String {
-    let mut q = String::new();
-    q.push_str("(set-option :produce-models true)\n");
-    q.push_str("(set-logic QF_BV)\n");
-    q.push_str("(declare-const x (_ BitVec 64))\n");
-    q.push_str("(assert ");
-    q.push_str(&encode_expr_smt(expr));
-    q.push_str(")\n");
-    q.push_str("(check-sat)\n");
-    q
+    let Some(term) = encoding::expect(expr, encoding::Sort::Boolean) else {
+        return encoding_diagnostic();
+    };
+    let mut names = std::collections::BTreeSet::new();
+    collect_free_idents(expr, &mut names);
+    let mut query = query_header(&names);
+    query.push_str(&format!("(assert {term})\n(check-sat)\n"));
+    query
 }
 
-/// Encode a Briev expression as an SMT-LIB term.
-/// Only supports a subset of Expr — the Boolean constraint subset.
-/// Sanitizes #Self → self_var for SMT-LIB compatibility.
-fn encode_expr_smt(expr: &Expr) -> String {
-    match expr {
-        Expr::Bool(true) => "(= #b1 #b1)".into(),
-        Expr::Bool(false) => "(= #b0 #b1)".into(),
-        Expr::Decimal(n) => {
-            format!("#x{:016x}", *n as u64)
-        }
-        Expr::Identifier(name) => sanitize_name(name),
-        Expr::BinaryOp(kind, lhs, rhs) => {
-            let l = encode_expr_smt(lhs);
-            let r = encode_expr_smt(rhs);
-            match kind {
-                crate::ast::BinaryOpKind::Eq => format!("(= {} {})", l, r),
-                crate::ast::BinaryOpKind::Neq => format!("(not (= {} {}))", l, r),
-                crate::ast::BinaryOpKind::Lt => format!("(bvslt {} {})", l, r),
-                crate::ast::BinaryOpKind::Gt => format!("(bvsgt {} {})", l, r),
-                crate::ast::BinaryOpKind::Le => format!("(bvsle {} {})", l, r),
-                crate::ast::BinaryOpKind::Ge => format!("(bvsge {} {})", l, r),
-                crate::ast::BinaryOpKind::And => format!("(and {} {})", l, r),
-                crate::ast::BinaryOpKind::Or => format!("(or {} {})", l, r),
-                crate::ast::BinaryOpKind::Add => format!("(bvadd {} {})", l, r),
-                crate::ast::BinaryOpKind::Sub => format!("(bvsub {} {})", l, r),
-                crate::ast::BinaryOpKind::Mul => format!("(bvmul {} {})", l, r),
-                crate::ast::BinaryOpKind::Div => format!("(bvsdiv {} {})", l, r),
-                crate::ast::BinaryOpKind::Mod => format!("(bvsrem {} {})", l, r),
-                _ => format!("(= {} {})", l, r),
-            }
-        }
-        Expr::UnaryOp(kind, e) => {
-            let inner = encode_expr_smt(e);
-            match kind {
-                crate::ast::UnaryOpKind::Not => format!("(not {})", inner),
-                crate::ast::UnaryOpKind::Neg => format!("(bvneg {})", inner),
-                _ => inner,
-            }
-        }
-        _ => "(= #b0 #b0)".into(),
+/// A diagnostic script emits no satisfiability verdict. The response parser
+/// returns Unknown; unsupported syntax cannot be cached as a proof.
+fn encoding_diagnostic() -> String {
+    "(echo \"briev: unsupported or ill-sorted expression\")\n".into()
+}
+
+fn query_header(names: &std::collections::BTreeSet<String>) -> String {
+    let mut query = "(set-option :produce-models true)\n(set-logic QF_BV)\n".to_string();
+    let symbols: std::collections::BTreeSet<_> =
+        names.iter().map(|name| sanitize_name(name)).collect();
+    for symbol in symbols {
+        query.push_str(&format!("(declare-const {symbol} (_ BitVec 64))\n"));
     }
+    query
+}
+
+/// Legacy term API: an unbound sentinel fails closed in existing raw-query
+/// consumers. New proof consumers should use the fallible, sorted API instead.
+fn encode_expr_smt(expr: &Expr) -> String {
+    encoding::encode(expr).map_or_else(|| "briev_encoding_error".into(), |term| term.text)
 }
 
 /// 2026-07-23: Build an SMT-LIB query to prove a contract condition.
@@ -324,22 +305,26 @@ fn encode_expr_smt(expr: &Expr) -> String {
 /// then asserts `(not condition)` — proving UNSAT means the
 /// condition always holds.
 pub fn build_contract_query(expr: &Expr, params: &[(String, Type)]) -> String {
-    let mut q = String::new();
-    q.push_str("(set-option :produce-models true)\n");
-    q.push_str("(set-logic QF_BV)\n");
-
-    // Declare #Self as a free variable (for protocol contracts)
-    q.push_str("(declare-const self_var (_ BitVec 64))\n");
-
-    // Declare named parameters as free variables
-    for (name, _ty) in params {
-        let var = sanitize_name(name);
-        q.push_str(&format!("(declare-const {} (_ BitVec 64))\n", var));
+    let Some(condition) = encoding::expect(expr, encoding::Sort::Boolean) else {
+        return encoding_diagnostic();
+    };
+    let mut names = std::collections::BTreeSet::from(["#Self".to_owned()]);
+    names.extend(params.iter().map(|(name, _)| name.clone()));
+    let mut free = std::collections::BTreeSet::new();
+    collect_free_idents(expr, &mut free);
+    let declared: std::collections::BTreeSet<_> =
+        names.iter().map(|name| sanitize_name(name)).collect();
+    if free
+        .iter()
+        .any(|name| !declared.contains(&sanitize_name(name)))
+    {
+        return encoding_diagnostic();
     }
+    let mut q = query_header(&names);
 
     // Assert the negation: if UNSAT, the condition always holds
     q.push_str("(assert (not ");
-    q.push_str(&encode_expr_smt(expr));
+    q.push_str(&condition);
     q.push_str("))\n");
 
     q.push_str("(check-sat)\n");
@@ -362,23 +347,26 @@ pub fn build_vc_query(facts: &[Expr], post: &Expr) -> String {
     }
     collect_free_idents(post, &mut free);
 
-    let mut q = String::new();
-    q.push_str("(set-option :produce-models true)\n");
-    q.push_str("(set-logic QF_BV)\n");
-    for name in &free {
-        q.push_str(&format!(
-            "(declare-const {} (_ BitVec 64))\n",
-            sanitize_name(name)
-        ));
-    }
+    let Some(goal) = encoding::expect(post, encoding::Sort::Boolean) else {
+        return encoding_diagnostic();
+    };
+    let Some(encoded_facts): Option<Vec<String>> = facts
+        .iter()
+        .map(|fact| encoding::expect(fact, encoding::Sort::Boolean))
+        .collect()
+    else {
+        return encoding_diagnostic();
+    };
+    let mut q = query_header(&free);
+
     // Assumptions first, then the negated goal.
-    for fact in facts {
+    for fact in encoded_facts {
         q.push_str("(assert ");
-        q.push_str(&encode_expr_smt(fact));
+        q.push_str(&fact);
         q.push_str(")\n");
     }
     q.push_str("(assert (not ");
-    q.push_str(&encode_expr_smt(post));
+    q.push_str(&goal);
     q.push_str("))\n");
     q.push_str("(check-sat)\n");
     q.push_str("(get-model)\n");
@@ -401,15 +389,29 @@ fn collect_free_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>
 }
 
 /// Sanitize a Briev identifier for SMT-LIB.
-/// #Self → self_var (SMT-LIB doesn't allow # in simple symbols).
+/// Preserve the intentional self aliases; encode all other UTF-8 names in a disjoint namespace.
 fn sanitize_name(name: &str) -> String {
-    if name == "#Self" || name == "#self" {
-        "self_var".to_string()
-    } else if name.starts_with('#') {
-        format!("hash_{}", &name[1..])
-    } else {
-        name.to_string()
-    }
+    symbols::encode(name)
+}
+
+/// Generated identifier shared by external SMT proof binders and term encoding.
+pub fn encode_identifier_for_proof(name: &str) -> String {
+    symbols::encode(name)
+}
+
+/// Encode only supported word-valued expressions for protocol proof bodies.
+pub fn try_encode_word_for_proof(expr: &Expr) -> Option<String> {
+    encoding::expect(expr, encoding::Sort::Word)
+}
+
+pub(crate) fn supported_boolean(expr: &Expr) -> bool {
+    encoding::expect(expr, encoding::Sort::Boolean).is_some()
+}
+
+/// Fast word-model postconditions may contain directly tracked fields; this
+/// preserves their structural proofs without pretending to encode them in SMT.
+pub(crate) fn supported_word_postcondition(expr: &Expr) -> bool {
+    encoding::postcondition_sort(expr) == Some(encoding::Sort::Boolean)
 }
 
 /// 2026-07-23: Quick check if z3 is on PATH by spawning with --version.
