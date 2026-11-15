@@ -389,3 +389,98 @@ fragments that cannot link standalone report `ERR` (e.g. `std/os/temp.bv`'s
 undefined `@to_c_string`, `std/posix/io.bv`'s `@FD_STDOUT`). Those are
 pre-existing standalone-linking artifacts, not proof failures; the runner
 prints them in a separate section for that reason.
+
+---
+
+## 6. Final landing log (2026-11-15)
+
+Outcomes, including where this plan was wrong. Nothing here is aspirational.
+
+### W1 — DONE
+Four corrections applied to `2026-11-15-verification-next-steps.md` (fuzz path,
+`CharCount#` size, P3 scope) plus a new section recording that "body has no
+terminating value path" is expected behaviour and must not count as unproven.
+
+### W3a — partial, and the plan's diagnosis was wrong twice
+The obligations were not merely "unprovable": three contracts in
+`lib/std/float_fmt.bv` contained shift expressions (`1 << 24`, `1 << 60`) and
+the word-model encoder has **no shift operator**, so those whole obligations
+were rejected as "unsupported or ill-sorted" before any reasoning ran. Replaced
+with the equivalent literals — kept, verified by both float parity goldens.
+
+The precondition tightenings for `mantissa_val` and `exponent_val` **were
+attempted and reverted**. They make `--verify-bodies` prove both bodies
+(measured: 84 of 100 lib files clean, 5 obligations left), but they break the
+**declared-edge checker**: that pass verifies preconditions at call sites and
+cannot derive `mant <= 0x7FFFFF`-style facts — it does no mask-bound reasoning
+and does not decompose a disjunctive guard (`when a || b || c`). Confirmed by
+`import_resolver::tests::test_rbv_edge_declared_surface` failing on
+`examples/view-bind-edge.rbv`.
+
+**So `mantissa_val`/`exponent_val` remain unproven, with the root cause now
+precisely identified**: two different passes need bounds, and only one has
+them. The actionable follow-on is to teach the declared-edge checker the same
+mask-bound rule W3-D1 added to `briev-verify`; until then the contracts stay
+truthful rather than convenient.
+
+### W2 — DONE
+`tautology_verdict` decides complementary comparisons and Bool-domain
+exhaustion in `eval_post`. Cleared `lshr64` (`term == 0 || term != 0`) in
+`lib/std`; no other class moved. Six tests, two of them over-discharge guards.
+
+### W3-D1 — DONE, but with zero measured corpus payoff (reported honestly)
+`mask_bound` + `add_mask_bounds` + `interval_verdict`, Kani 3/3, four tests.
+It does **not** move the corpus: `sha1_f` and `rotl32` are *skipped* (their
+bodies call `Store#`/helpers with no value summary), never unproven, so there
+was nothing to clear; `ip_v4` uses shifts and `|`, not `&`. The rule is sound
+and general (it will pay off the moment a masked body reaches the prover), but
+claiming a payoff here would be false.
+
+### stdlib — DONE
+`fold_lower_byte`, `fold_upper_byte`, `ascii_lower` preconditions now state the
+byte domain (`b >= 0`); 5 obligations cleared. `ml_arena_off_bytes` is left
+alone and documented: its body reads a module global, so the prover reports it
+as *skipped*, not unproven, and putting a global in a contract changed the
+global's lowering for no benefit (tried, reverted).
+
+### W4 — DONE, and it found a real compiler bug
+`tests/wasm32_parity.rs` + `tests/fixtures/wasm_parity/basic_exit.bv`.
+
+The gate immediately exposed a defect no native test could see: `endprogram X`
+emitted `call i64 @exit_prog(... i64 ...)` while the definition is
+`define i32 @exit_prog(i32)` on wasm32. On x86-64 the spellings agree by
+accident; on wasm a mismatched call lowers to a funcref-bitcast trap stub, so
+**every terminating program trapped** instead of exiting. Fixed in
+`emit_exit_prog_call` (both AST and HIR paths); the gate now passes.
+
+Both earlier diagnoses are recorded in the test header: neither "needs the DOM
+shim" nor "the tick guard fails" — the traps were `print_str`'s bitcast check
+(a printing fixture) and then the `exit_prog` stub.
+
+### W5a / W5b — DONE
+Enum slice (construction, `match` dispatch, payload transport across a call)
+and string slice (concatenation + `CharCount#`, with a two-byte UTF-8 tail so
+byte-counting implementations disagree). Fuzz crate 14/14.
+
+Enum detail worth keeping: the interpreter does not resolve a bare nullary
+constructor in argument position (`UndefinedVariable { name: "None" }`), so the
+slice uses `Empty(Int)`/`Empty(v)` — the same dispatch shape in a constructor
+form the reference can execute.
+
+### Measurement infrastructure — DONE
+`scripts/verify_bodies_corpus.sh`: one reproducible runner (parallel, sorted,
+single pass), per-file PROVEN, and a separate **NO_POSTCONDITION** bucket. The
+ad-hoc loop it replaces triple-counted every goal, which is where §1's original
+numbers went wrong.
+
+### What is left, in order
+1. **Teach the declared-edge checker mask bounds** — unblocks
+   `mantissa_val`/`exponent_val` (the largest class) and any future masked
+   precondition. This is now the single highest-value item.
+2. **Shift / bitwise-Or interval reasoning** — `ip_v4` (33) and
+   `sha1_padded_len`'s modular shape (9).
+3. **Value summaries for `Store#`/`Load#` helpers** — would move `sha1_f`,
+   `rotl32` and the whole skipped class into the prover's reach; currently
+   ~16 000 bodies are skipped, which dwarfs what is unproven.
+4. **CharCount# axioms** (~363) — the lemma-registry workstream.
+5. **wasm stdout parity** — needs the DOM host path.
