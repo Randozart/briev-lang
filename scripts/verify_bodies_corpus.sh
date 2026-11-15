@@ -15,6 +15,11 @@
 #   bash scripts/verify_bodies_corpus.sh --full          # also print every warning
 #   BRIEVC=./target/release/brievc bash scripts/verify_bodies_corpus.sh
 #
+# 2026-11-15: builds are redirected with --out into the scratch directory. Without
+# it the runner dropped an ELF executable next to every lib/std source file (85
+# untracked artifacts in one run) — a measurement tool must not write into the
+# tree it is measuring.
+#
 # Z3 escalation makes the whole corpus a ~20 min job, so targeted runs are the
 # normal case while iterating on a single class. Files are verified in parallel
 # (one process per file, output reassembled in sorted order).
@@ -73,10 +78,10 @@ printf '%s\0' "${FILES[@]}" \
         f="$1"
         out="$2/$(printf "%s" "$f" | tr "/" "_")"
         { printf "FILE: %s\n" "$f"
-          "$0" build "$f" --verify-bodies 2>&1 \
+          "$0" build "$f" --verify-bodies --out "$3/out" 2>&1 \
               | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|error:"
         } > "$out" 2>&1
-    ' "$BRIEVC" {} "$workdir"
+    ' "$BRIEVC" {} "$workdir" "$workdir"
 
 for file in "${FILES[@]}"; do
     cat "$workdir/$(printf '%s' "$file" | tr '/' '_')" 2>/dev/null >>"$raw"
