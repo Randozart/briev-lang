@@ -42,11 +42,11 @@ node go [done == false][done == true] {
         println!("{}", 1e-2);
         // Sign of zero
         println!("{}", -0.0);
-        // Division edge cases
-        println!("{}", 1.0 / 0.0);
-        println!("{}", -1.0 / 0.0);
-        println!("{}", 0.0 / 0.0);
-        println!("{}", -0.0 / 0.0);
+        // 2026-11-15: division-by-zero edge cases REMOVED. The interpreter (the
+        // semantic authority) raises RuntimeError::DivisionByZero for
+        // `Float / 0.0`; native codegen matches via `@llvm.trap()`. The old
+        // IEEE inf/-inf/nan golden predates the div-zero alignment (added
+        // 2026-09-09) and is no longer the contract.
         done = true;
     };
     term;

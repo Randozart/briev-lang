@@ -13716,3 +13716,27 @@ The retained C formatter flushes before returning; its %.9g format is unchanged.
 The native regression requires exact `0.5\n` output at O3 and checks Float64
 zero/negative-zero traps under both emission paths. This does not establish a
 full Float64 formatting or precision theorem.
+
+## 2026-11-15 — parity corpora encoded pre-alignment IEEE div-by-zero
+
+**Symptom.** Tip CI (817f1d698) failed the Parity corpora step: `float_cases`
+(and then `float_fmt_cases`) hit `Illegal instruction` (exit 132, `ud2`) at
+runtime.
+
+**Cause.** Both corpora contained explicit division-by-zero probes
+(`1.0 / 0.0`, `-1.0 / 0.0`, `0.0 / 0.0`, `-0.0 / 0.0`) with goldens expecting
+IEEE 754 `inf`/`-inf`/`nan`. These lines predate the Float div-by-zero
+alignment (corpora frozen 2026-09-09, before the guard landed 2026-11-14).
+The interpreter — the semantic authority — raises
+`RuntimeError::DivisionByZero` for `Float / 0.0` (`exec_div`,
+`src/interpreter/intrinsics.rs`), and native codegen now matches via
+`@llvm.trap()` emitted before `fdiv`. The guard is correct; the corpora were
+stale.
+
+**Fix.** Removed the four div-by-zero `println!` lines from
+`benchmarks/parity/corpus/float_cases.bv` and `float_fmt_cases.bv` and
+regenerated the two goldens (39 → 35 lines each; the dropped lines were the
+trailing `inf`/`-inf`/`nan`/`nan`). All six CI parity corpora now pass.
+Division-by-zero behaviour is covered by the native CLI regressions
+(`tests/cli_args_test.rs` float div/zero traps), not by the float-formatting
+parity corpora — those remain the `%.9g` precision gate.
