@@ -4,6 +4,18 @@
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
 **Suite state:** `cargo test --lib` 3732 green (2026-11-12, incl. 7 owned-storage tests); daily corpus 41 green; quick gate 36 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
+
+**Production correctness strategy (adopted 2026-11-15):**
+[Production compiler correctness: evidence, oracles, and an execution plan](2026-11-14-production-correctness-strategy.md)
+preserves the audit of upstream `e9169750`. The
+[current-main reassessment](2026-11-15-production-correctness-reassessment.md)
+checks `817f1d69`: CI solver setup, exact solver-status recognition and native
+wrapping repairs landed; gate coverage/accounting, strong HIR/native oracles,
+and the complete ownership/proof campaigns remain. Start with A0 quick-gate
+selection parity and explicit verifier/Z3 execution, then A1 controls and A2
+full observations. Suite counts above and prior CI/proof results are dated;
+the reassessment records its own execution evidence.
+
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
