@@ -213,6 +213,59 @@ pub fn check_enums(data: &[u8]) {
     );
 }
 
+// ── P4 growth slice: strings (2026-11-15) ────────────────────────────────
+//
+// Fuzz bytes choose the length of each concatenated ASCII fragment, plus a
+// fixed two-byte UTF-8 tail. The program concatenates the fragments and
+// reduces them to an Int with `CharCount#`, so the existing `as_i64` result
+// path is enough — no new interpreter accessor is needed, and the reduction is
+// a genuine string operation rather than a length computed in the oracle.
+//
+// The UTF-8 tail is the interesting part: it has char count 1 and byte count 2,
+// so an implementation that counts bytes instead of characters disagrees.
+
+/// Build a program concatenating one ASCII fragment per fuzz byte plus "é".
+///
+/// Each byte picks a fragment length in `1..=4`; the oracle sums the fragment
+/// lengths (1 per character) and adds 1 for the multi-byte tail.
+pub fn string_program(data: &[u8]) -> Option<(String, i64)> {
+    if data.is_empty() {
+        return None;
+    }
+    let mut expected: i64 = 0;
+    let mut parts: Vec<String> = Vec::new();
+    for (index, byte) in data.iter().take(4).enumerate() {
+        let length = i64::from(byte % 4) + 1;
+        expected += length;
+        // Distinct letters keep the fragments easy to read in a failure report.
+        let letter = char::from(b'a' + (index as u8 % 26));
+        parts.push(format!(
+            "\"{}\"",
+            letter.to_string().repeat(length as usize)
+        ));
+    }
+    // Two-byte UTF-8 character: one Char, two Bytes.
+    parts.push("\"é\"".to_string());
+    expected += 1;
+    let full = format!(
+        "defn compute() -> Int {{\n  let s: String = {joined};\n  term CharCount#(s);\n}};\nlet result: Int = compute();\n",
+        joined = parts.join(" + ")
+    );
+    Some((full, expected))
+}
+
+pub fn check_strings(data: &[u8]) {
+    let Some((source, expected)) = string_program(data) else {
+        return;
+    };
+    let actual = interpret_collection(&source, "result");
+    assert_eq!(
+        actual,
+        Ok(expected),
+        "string semantic disagreement; input={data:?}\n{source}"
+    );
+}
+
 /// A generated valid program must execute and agree with the independent model.
 /// No catch_unwind: libFuzzer must see compiler panics and semantic failures.
 pub fn check(data: &[u8], tuples: bool) {
@@ -318,5 +371,30 @@ mod tests {
     #[test]
     fn enum_slice_empty_input_is_not_a_program() {
         assert!(enum_program(&[]).is_none());
+    }
+
+    // P4 string slice: fragment lengths are (byte % 4) + 1, plus one
+    // multi-byte tail character.
+    #[test]
+    fn string_slice_counts_characters_not_bytes() {
+        // bytes 0,1,2 => lengths 1,2,3 => 6 ASCII chars, plus "é" => 7.
+        let input = [0u8, 1, 2];
+        let (_, expected) = string_program(&input).unwrap();
+        assert_eq!(expected, 7);
+        check_strings(&input);
+    }
+
+    #[test]
+    fn string_slice_single_byte_input() {
+        // byte 3 => length 4, plus "é" => 5.
+        let input = [3u8];
+        let (_, expected) = string_program(&input).unwrap();
+        assert_eq!(expected, 5);
+        check_strings(&input);
+    }
+
+    #[test]
+    fn string_slice_empty_input_is_not_a_program() {
+        assert!(string_program(&[]).is_none());
     }
 }

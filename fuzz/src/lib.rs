@@ -53,3 +53,10 @@ pub fn collections(data: &[u8]) {
 pub fn enums(data: &[u8]) {
     semantic::check_enums(data);
 }
+
+/// 2026-11-15 (P4 growth slice): fuzz string concatenation and `CharCount#`
+/// reduction, including a two-byte UTF-8 character so byte-counting
+/// implementations disagree.
+pub fn strings(data: &[u8]) {
+    semantic::check_strings(data);
+}
