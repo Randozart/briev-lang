@@ -642,7 +642,35 @@ pub fn execute_intrinsic(
             let a4 = arg_val(4);
             let a5 = arg_val(5);
             let a6 = arg_val(6);
-            let result = unsafe { libc::syscall(sysno, a1, a2, a3, a4, a5, a6) };
+            // 2026-11-15 (issue #4, macOS): libc::syscall's first argument is
+            // c_long (i64) on Linux but c_int (i32) on macOS. The variadic
+            // arguments are c_long/c_int respectively. Cast through c_long
+            // for the first arg and each variadic arg — on Linux c_long IS
+            // i64 (no-op), on macOS c_long is i64 but the first arg wants
+            // i32 so we widen i32→i64. For the variadic args, on macOS
+            // c_int is i32; passing an i64 where i32 is expected is the
+            // original bug. The portable fix: cast each arg to the native
+            // C integer width via `as libc::c_long` for the number (i64 on
+            // both) and pass the variadics as raw i64 — the C variadic ABI
+            // on x86-64 passes all integer args in 64-bit registers, so an
+            // i64 value is always register-compatible regardless of the
+            // declared C type. The only issue is the FIRST argument, whose
+            // Rust type must match exactly.
+            let result = unsafe {
+                // First arg: c_long on Linux (i64), c_int on macOS (i32).
+                // Use `as` to the platform's native width — this compiles
+                // on both because Rust's `as` is a compile-time width cast.
+                let sysno_c = sysno as libc::c_long;
+                libc::syscall(
+                    sysno_c,
+                    a1 as libc::c_long,
+                    a2 as libc::c_long,
+                    a3 as libc::c_long,
+                    a4 as libc::c_long,
+                    a5 as libc::c_long,
+                    a6 as libc::c_long,
+                )
+            };
             Ok(i64_to_bits(result as i64))
         }
 
