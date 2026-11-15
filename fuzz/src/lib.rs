@@ -39,3 +39,10 @@ pub fn typecheck(data: &[u8]) {
 pub fn welltyped(data: &[u8]) {
     briev_compiler::typed_program::check(data);
 }
+
+/// 2026-11-15 (P4 growth slice): fuzz literal `List<Int>` programs and assert
+/// the interpreter's sum+length reduction agrees with the independent oracle.
+/// Exercises list construction, `foreach` reduction, and `Count#`.
+pub fn collections(data: &[u8]) {
+    semantic::check_collections(data);
+}

@@ -48,3 +48,10 @@ path = "fuzz_targets/welltyped.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "collections"
+path = "fuzz_targets/collections.rs"
+test = false
+doc = false
+bench = false
