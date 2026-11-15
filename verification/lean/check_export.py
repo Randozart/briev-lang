@@ -11,6 +11,8 @@ import re
 import shutil
 import subprocess
 
+THEOREMS = ("vc_checked", "translation_checked", "contract_checked")
+
 INPUT_NAMES = [
     "manifest.json",
     "Program.lean",
@@ -29,13 +31,22 @@ def input_hashes(directory):
     return {name: digest(directory / name) for name in INPUT_NAMES}
 
 
-def validate_inputs(directory):
+def read_manifest(directory):
     manifest = json.loads((directory / "manifest.json").read_text())
     if (
-        manifest.get("schema") != "briev-lean-export/v1"
+        manifest.get("schema") != "briev-lean-export/v2"
         or manifest.get("status") != "generated-unchecked"
     ):
-        raise ValueError("unsupported export manifest")
+        raise ValueError(
+            "unsupported export manifest; regenerate with the current exporter (schema v2)"
+        )
+    if manifest.get("theorems") != [f"BrievExport.{name}" for name in THEOREMS]:
+        raise ValueError("export must name all required proof obligations")
+    return manifest
+
+
+def validate_inputs(directory):
+    manifest = read_manifest(directory)
     keys = {
         "Program.lean": "program_sha256",
         "source.bv": "source_sha256",
@@ -105,16 +116,30 @@ def run_lean(directory, executable, environment):
     return logs
 
 
-def contract_axioms(logs):
-    pattern = r"'BrievExport\.contract_checked' (?:depends on axioms: \[([^]]*)\]|does not depend on any axioms)"
-    reports = re.findall(pattern, logs[1])
-    if len(reports) != 1:
-        raise ValueError("missing or duplicate contract axiom report")
-    axioms = set(reports[0].split(", ")) if reports[0] else set()
-    forbidden = ["sorryAx", "Lean.ofReduceBool", "declaration uses 'sorry'"]
-    if axioms - {"propext"} or any(token in "\n".join(logs) for token in forbidden):
+def approved_dependencies(dependencies):
+    axioms = set(dependencies.split(", ")) if dependencies else set()
+    if axioms - {"propext"}:
         raise ValueError(f"unapproved proof dependency: {sorted(axioms)}")
     return sorted(axioms)
+
+
+def contract_axioms(logs):
+    pattern = r"'BrievExport\.(\w+)' (?:depends on axioms: \[([^]]*)\]|does not depend on any axioms)"
+    reports = {}
+    for line in logs[1].splitlines():
+        match = re.fullmatch(pattern, line)
+        if match is None:
+            continue
+        name, dependencies = match.groups()
+        if name in reports:
+            raise ValueError("missing or duplicate proof axiom report")
+        reports[name] = approved_dependencies(dependencies)
+    if set(reports) != set(THEOREMS):
+        raise ValueError("missing or duplicate proof axiom report")
+    forbidden = ["sorryAx", "Lean.ofReduceBool", "declaration uses 'sorry'"]
+    if any(token in "\n".join(logs) for token in forbidden):
+        raise ValueError("unapproved proof dependency in Lean output")
+    return reports
 
 
 def check(directory, lean):
@@ -137,9 +162,13 @@ def check(directory, lean):
     checked.write_text(
         json.dumps(
             {
+                "schema": "briev-lean-check/v2",
                 "status": "checked-exported-model",
+                "checked_correspondence": "program and pre/postconditions agree with assignment semantics for all results",
                 "lean": version,
                 "theorem": "BrievExport.contract_checked",
+                "theorems": [f"BrievExport.{name}" for name in THEOREMS],
+                "ast_serialization_refinement": "unproved",
                 "axioms": axioms,
                 "lean_binary_sha256": tool_hash,
                 "files": {name: digest(directory / name) for name in files},
@@ -152,7 +181,7 @@ def check(directory, lean):
         + "\n"
     )
     print(
-        "Checked exported-model contract; source/native and exporter refinement remain unproved."
+        "Checked model VC, program/specification correspondence and derived contract; AST serialization and source/native refinement remain unproved."
     )
 
 

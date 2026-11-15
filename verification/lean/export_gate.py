@@ -12,13 +12,27 @@ import sys
 
 CASES = {
     "cancel": "defn f(x: Int64) [true][term == x] -> Int64 { let y: Int64 = x + 1; y = y - 1; term y; };",
+    "signed": "defn f(x: Int64, y: Int64) [x <= y][term <= y] -> Int64 { term x; };",
+    "greater": "defn f(x: Int64, y: Int64) [x > y][term > y] -> Int64 { term x; };",
+    "copy": "defn f(x: Int64, y: Int64) [true][term == x] -> Int64 { let a: Int64 = x; let b: Int64 = a; a = y; term b; };",
+    "negate": "defn f(x: Int64) [true][term == -x] -> Int64 { term -x; };",
+    "constant": "defn f() [true][term == 1] -> Int { term 1; };",
+    "logic": "defn f(x: Int64) [x != 0][((!(term != x) && term >= x) || term < x) && ((term == x) || false)] -> Int64 { term x; };",
+    "multiply": "defn f(x: Int64, y: Int64) [true][term == x * y + y] -> Int64 { let a: Int64 = x * y; a = a + y; term a; };",
     "overflow": "defn f(x: Int64) [true][term > x] -> Int64 { term x + 1; };",
     "false": "defn f(x: Int64) [true][term == 0] -> Int64 { term x; };",
 }
 CONTROLS = {
     "hash-drift": "hash mismatch",
+    "legacy-schema": "unsupported export manifest",
+    "missing-vc": "missing or duplicate",
+    "missing-translation": "missing or duplicate",
     "missing-report": "missing or duplicate",
     "forbidden-axiom": "unapproved proof dependency",
+    "program-drift": "Lean rejected Program.lean",
+    "slot-drift": "Lean rejected Program.lean",
+    "postcondition-drift": "Lean rejected Program.lean",
+    "precondition-drift": "Lean rejected Program.lean",
 }
 
 
@@ -48,7 +62,7 @@ def contract_case(exporter, artifacts, checker, name, source):
 def assert_contract_result(name, directory, result):
     checked = (directory / "checked.json").exists()
     certified = result.returncode == 0 and checked
-    if name == "cancel":
+    if name not in {"overflow", "false"}:
         if not certified:
             raise RuntimeError("positive exported contract was not checked")
         return "checked-exported-model"
@@ -65,10 +79,33 @@ def assert_contract_result(name, directory, result):
 
 
 def control_program(control, text):
-    if control == "missing-report":
-        return text.replace("#print axioms contract_checked", "")
+    missing = {
+        "missing-report": "contract_checked",
+        "missing-vc": "vc_checked",
+        "missing-translation": "translation_checked",
+    }
+    if control in missing:
+        return text.replace(f"#print axioms {missing[control]}", "")
+    if control == "legacy-schema":
+        return text
     if control == "forbidden-axiom":
-        return "import IntegerVC\nnamespace BrievExport\naxiom untrusted : False\ntheorem contract_checked : False := untrusted\n#print axioms contract_checked\nend BrievExport\n"
+        return "import IntegerVC\nnamespace BrievExport\naxiom untrusted : False\ntheorem vc_checked : False := untrusted\ntheorem translation_checked : False := untrusted\ntheorem contract_checked : False := untrusted\n#print axioms vc_checked\n#print axioms translation_checked\n#print axioms contract_checked\nend BrievExport\n"
+    mutations = {
+        "program-drift": ("(arg_0 + (1 : Word))", "(arg_0 + (2 : Word))"),
+        "slot-drift": ("(2, (.sub", "(3, (.sub"),
+        "postcondition-drift": ("(result = arg_0)", "True"),
+        "precondition-drift": (
+            "def pre (arg_0 : Word) : Prop := True",
+            "def pre (arg_0 : Word) : Prop := False",
+        ),
+    }
+    if control in mutations:
+        original, changed = mutations[control]
+        if text.count(original) != 1:
+            raise RuntimeError(
+                f"control no longer targets exactly one construct: {control}"
+            )
+        return text.replace(original, changed)
     return text + "\n-- modified after export\n"
 
 
@@ -81,6 +118,9 @@ def checker_control(artifacts, checker, control):
         manifest_path = directory / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["program_sha256"] = hashlib.sha256(program.read_bytes()).hexdigest()
+        manifest["schema"] = (
+            "briev-lean-export/v1" if control == "legacy-schema" else manifest["schema"]
+        )
         manifest_path.write_text(json.dumps(manifest))
     result = run(
         [sys.executable, str(checker), str(directory)], artifacts / (control + ".log")
@@ -112,7 +152,7 @@ def main():
     )
     (artifacts / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(
-        "Export checks: 1 contract checked, 2 false contracts and 3 invalid-evidence controls rejected."
+        f"Export checks: {len(CASES) - 2} contracts checked; 2 false contracts and {len(CONTROLS)} invalid-evidence/correspondence controls rejected."
     )
 
 

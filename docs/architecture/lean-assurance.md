@@ -41,7 +41,7 @@ The gate uses Lean on PATH or the standard user Elan installation; `LEAN_BIN`
 can name an explicit executable. It checks version 4.24.0, compiles the model
 into the external directory and requires `negative/FalseSat.lean` to exit 1
 because `decide` refutes its false SAT-to-UNSAT theorem. A missing import, tool
-error or accepted false theorem cannot satisfy that control. All nine named
+error or accepted false theorem cannot satisfy that control. All eleven named
 theorems across both models must report their axiom dependencies; the gate accepts no
 reported dependencies beyond Lean's foundational `propext`, and writes
 `axioms.json` alongside the full log. Missing or duplicate reports fail closed.
@@ -60,7 +60,7 @@ actual production function; it does not close that refinement gap.
 
 ## Export acceptance boundary
 
-A future export must name the supported typed-HIR subset, machine arithmetic,
+An export must name its supported source subset, machine arithmetic,
 errors, effects and termination assumptions. Unsupported constructs must produce
 coverage diagnostics. Contracts must become obligations, not assumed facts.
 Emitting Lean that typechecks is not equivalent to proving a source contract.
@@ -77,16 +77,22 @@ separate these obligations rather than promising arbitrary-program proofs.
 
 `verification/lean/IntegerVC.lean` defines a restricted expression AST with
 64-bit words, variables, literals and wrapping add/sub/mul. Assertions support
-equality, signed less-than, conjunction and implication. The three named
-theorems establish expression substitution, assertion substitution and soundness
-of an assignment VC for arbitrary states and expressions in this model.
-A VC is a universally quantified precondition implying the substituted
-postcondition; the checked theorem transfers that obligation to the updated state.
+Boolean literals, equality, signed less-than, negation, conjunction, disjunction
+and implication. The original three integer theorems establish expression
+substitution, assertion substitution and single-assignment VC soundness.
 
-The gate now checks nine named theorems across both models and rejects two
+Finite assignment lists now have explicit `execute` semantics and a backward
+`wp` transformation. `sequence_wp_correct` proves that a weakest precondition
+holds exactly when the postcondition holds after execution, for arbitrary
+states, code lists and assertions. `sequence_vc_sound` transfers a checked VC
+to the final state. These are proofs about the actual Lean definitions, with
+no fixed bound on program length.
+
+The gate checks eleven named theorems across both models and rejects three
 false-theorem controls. `negative/UnboundedAddition.lean` specifically rejects
-positive monotonicity at signed MAX. No division, calls, memory, loops, effects
-or termination claim is included. No exporter or Rust-to-Lean refinement theorem
+positive monotonicity at signed MAX; `negative/StaleAssignment.lean` rejects
+retaining an earlier value after a later assignment. No division, calls, memory, loops, effects
+or source/native whole-program termination claim is included. No exporter or Rust-to-Lean refinement theorem
 has been implemented. The [production arithmetic contract](verifier-arithmetic.md)
 records Kani's separate implementation obligations and the newly discovered
 native no-wrap mismatch. These checks are foundations for export, not evidence
@@ -106,7 +112,7 @@ python3 verification/lean/check_export.py /tmp/new-export
 The output directory must be new. Generation writes `Program.lean`, the reviewed
 integer model, the pinned toolchain, original and expanded typed source, and
 `manifest.json`. It reports **generated-unchecked**. Only a successful checker
-run writes `checked.json`, naming the theorem, Lean version, axiom dependencies
+run writes `checked.json`, naming all three obligations, Lean version, axiom dependencies
 and hashes of the inputs, logs and compiled artifacts. A failed recheck removes
 the previous success marker. Modified inputs, missing theorem reports and
 unapproved axioms fail closed. The gate accepts only `propext`, matching the
@@ -128,14 +134,38 @@ covered; this export makes no claim about other functions or whole-program
 termination. Some valid obligations exceed the current proof tactics and fail
 without a certificate.
 
-The emitted `program` uses `BrievIntegerVC.Word` directly; it does not yet derive
-its semantics from the model's assignment VC theorem. **A checked export proves
-the contract of that emitted model.** The Rust exporter, source-to-model mapping
-and native lowering still have unproved refinement obligations, recorded in both
-manifests. Hashes bind the evidence to particular artifacts; they do not prove
-the translation correct. The exporter and type adapter source hashes identify
-the generating implementation. Expanded source records resolved declarations,
-including imports, rather than relying only on the original file's hash.
+Version 2 exports retain the direct `program`, `pre` and `post` definitions and
+independently serialize expressions and mutable locals into `code`, `model_pre`
+and `model_post`. Direct emission gives each assignment a fresh Lean name;
+model serialization reuses local slots and executes the assignment list. The
+checker requires exactly these three named proof reports:
+
+- `vc_checked`: for every model state, the precondition implies `wp code model_post`.
+- `translation_checked`: the direct function equals model execution, its
+  precondition agrees with the model, and its postcondition agrees for **every
+  possible result**, rather than only the result this program happens to return.
+- `contract_checked`: the requested contract follows from `sequence_vc_sound`
+  and those checked correspondences. It transports the modeled final state back
+  to the immutable input parameters and returned word.
+
+Both the export and check records use schema `v2`; regenerate old `v1` bundles.
+The axiom record now maps each proof name to its dependencies. Every proof must
+use only the approved `propext` axiom (or no axioms). Program correspondence uses
+definitional equality; contract normalization is restricted to named logical,
+order and slot-index rules, avoiding a broader simplifier trust dependency.
+
+**This checks correspondence between two emitted Lean views.** The Briev parser,
+typechecker and AST-to-model serialization remain trusted implementation steps;
+two emitters can share the same systematic mapping mistake. Source/native and
+whole-exporter refinement remain unproved and are recorded in the manifests.
+The backend currently consumes a typechecked AST; a typed-HIR/native bridge is
+still a separate obligation. There is no runtime optimization consumer for these
+certificates yet; their consumers are the Lean correspondence and contract gates.
+
+Hashes bind inputs, proof logs, models, checker and compiled artifacts. Source
+hashes identify the direct emitter, independent model serializer and type adapter;
+expanded source records resolved declarations, including imports. Hashes identify
+particular inputs and implementations, rather than proving translation correctness.
 
 Run the end-to-end gate after building the example:
 
@@ -144,7 +174,13 @@ cargo build --example lean_export
 python3 verification/lean/export_gate.py /path/to/debug/examples/lean_export /tmp/new-export-checks
 ```
 
-It checks a parametric cancellation contract, rejects false overflow and identity
-contracts at their Lean obligations, and rejects hash drift, a missing axiom
-report and a theorem depending on a user axiom. Unit tests separately reject
-unsupported source forms. These controls do not prove exporter refinement.
+It checks cancellation, signed relations, copied/reassigned locals, negation,
+constants, logical contracts and multiplication. It rejects false overflow and
+identity contracts, hash drift, each missing proof report, legacy-schema bundles
+and user-axiom dependencies.
+Further controls independently corrupt the direct program, a model assignment
+slot, the direct postcondition and the precondition. The postcondition control
+would evade a correspondence check limited to the program's actual result; the
+precondition control catches a vacuous contract introduced by the emitter.
+Unsupported source forms remain covered by unit tests. These controls strengthen
+per-artifact evidence while leaving the AST-serialization refinement gap explicit.

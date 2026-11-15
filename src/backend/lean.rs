@@ -2,6 +2,8 @@
 //! Restricted, optional contract export. A checked theorem describes the
 //! emitted word program; source/native refinement remains a separate obligation.
 
+mod model;
+
 use crate::analysis::verify_bodies::BodyTypeModel;
 use crate::ast::{
     BinaryOpKind as Op, Definition, Expr, OutputType, Statement, TopLevel, UnaryOpKind,
@@ -32,13 +34,17 @@ pub fn export_source(source_path: &str, source: &str, name: &str) -> Result<Lean
     let program = translate(definition, &model)?;
     let typed_source = crate::ast::format_program(&items);
     let manifest = serde_json::json!({
-        "schema": "briev-lean-export/v1", "function": name,
+        "schema": "briev-lean-export/v2", "function": name,
         "status": "generated-unchecked", "theorem": "BrievExport.contract_checked",
+        "theorems": ["BrievExport.vc_checked", "BrievExport.translation_checked", "BrievExport.contract_checked"],
+        "checked_correspondence": "direct program and pre/postconditions agree with serialized assignment semantics for all results",
+        "ast_serialization_refinement": "unproved",
         "semantics": "pure signed wrapping 64-bit words",
         "coverage": "selected definition only; straight-line locals, assignments, return, scalar contracts",
         "source_sha256": hash(source), "typed_source_sha256": hash(&typed_source),
         "program_sha256": hash(&program), "model_sha256": hash(MODEL),
         "exporter_source_sha256": hash(include_str!("lean.rs")),
+        "model_serializer_sha256": hash(include_str!("lean/model.rs")),
         "type_adapter_source_sha256": hash(include_str!("../analysis/verify_bodies.rs")),
         "compiler_version": env!("CARGO_PKG_VERSION"),
         "assumptions": ["the stated precondition holds", "the emitted word-model semantics"],
@@ -94,17 +100,43 @@ fn translate(d: &Definition, model: &BodyTypeModel<'_>) -> Result<String, String
     }
     let post = proposition(&d.contract.post_condition, &post_env)?;
     let body = translate_body(&d.body, env, model)?;
+    let semantics = model::declarations(d, &binders, &args)?;
     Ok(format!(
-        "-- Generated restricted model; consult manifest.json for coverage and proof status.\n\
-        import IntegerVC\nimport Std.Tactic\n\nnamespace BrievExport\n\
-        abbrev Word := BrievIntegerVC.Word\n\
-        def program{binders} : Word :=\n{body}\n\
-        def pre{binders} : Prop := {pre}\n\
-        def post{binders} (result : Word) : Prop := {post}\n\
-        theorem contract_checked{binders} : pre{args} → post{args} (program{args}) := by\n\
-          simp_all [pre, post, program, BitVec.add_sub_cancel, BitVec.sub_add_cancel]\n\
-          <;> bv_omega\n\
-        #print axioms contract_checked\nend BrievExport\n"
+        r#"-- Generated restricted model; consult manifest.json for coverage and proof status.
+import IntegerVC
+import Std.Tactic
+
+namespace BrievExport
+abbrev Word := BrievIntegerVC.Word
+def program{binders} : Word :=
+{body}
+def pre{binders} : Prop := {pre}
+def post{binders} (result : Word) : Prop := {post}
+{semantics}
+theorem translation_checked{binders} :
+    (program{args} = reference_program{args}) ∧
+    (pre{args} ↔ BrievIntegerVC.holds (initial{args}) model_pre) ∧
+    (∀ result : Word, post{args} result ↔
+      BrievIntegerVC.holds (BrievIntegerVC.update (initial{args}) 0 result) model_post) := by
+  refine ⟨rfl, ?_, fun result => ?_⟩
+  all_goals first | rfl | simp only [pre, post, model_pre, model_post, initial,
+    BrievIntegerVC.holds, BrievIntegerVC.eval, BrievIntegerVC.update,
+    Int.not_lt, if_true, if_false, Nat.reduceEqDiff]
+theorem contract_checked{binders} : pre{args} → post{args} (program{args}) := by
+  rw [(translation_checked{args}).1]
+  intro precondition
+  have model_precondition := (translation_checked{args}).2.1.mp precondition
+  have model_result := BrievIntegerVC.sequence_vc_sound model_pre model_post code vc_checked
+    (initial{args}) model_precondition
+  apply ((translation_checked{args}).2.2 (reference_program{args})).mpr
+  simpa only [model_post, reference_program, initial, code, BrievIntegerVC.execute,
+    BrievIntegerVC.update, BrievIntegerVC.holds, BrievIntegerVC.eval,
+    if_true, if_false, Nat.reduceEqDiff] using model_result
+#print axioms vc_checked
+#print axioms translation_checked
+#print axioms contract_checked
+end BrievExport
+"#
     ))
 }
 
@@ -261,19 +293,29 @@ mod tests {
     fn exports_typechecked_words_and_binds_all_inputs() {
         let source = "defn cancel(x: Int64) [true][term == x] -> Int64 { let y: Int64 = x + 1; y = y - 1; term y; };";
         let export = export_source("<export>", source, "cancel").unwrap();
-        assert!(
-            export
-                .program
-                .contains("theorem contract_checked (arg_0 : Word)")
-        );
-        assert!(
-            export
-                .program
-                .contains("let local_1 : Word := (local_0 - (1 : Word))")
+        assert_eq!(export.manifest["schema"], "briev-lean-export/v2");
+        assert_eq!(
+            export.manifest["theorems"],
+            serde_json::json!([
+                "BrievExport.vc_checked",
+                "BrievExport.translation_checked",
+                "BrievExport.contract_checked"
+            ])
         );
         assert_eq!(export.manifest["source_sha256"], hash(source));
         assert_eq!(export.manifest["status"], "generated-unchecked");
         assert!(!export.program.contains("sorry"));
+    }
+
+    #[test]
+    fn serialization_preserves_parameter_order_deterministically() {
+        let source = "defn f(z: Int64, a: Int64, m: Int64) [true][term == z * a + m] -> Int64 { term z * a + m; };";
+        let first = export_source("<ordered-export>", source, "f").unwrap();
+        for _ in 0..8 {
+            let next = export_source("<ordered-export>", source, "f").unwrap();
+            assert_eq!(first.program, next.program);
+            assert_eq!(first.manifest, next.manifest);
+        }
     }
 
     #[test]
