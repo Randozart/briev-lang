@@ -1,6 +1,9 @@
 use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, UnaryOpKind};
 use std::collections::{HashMap, HashSet};
 
+// The counsel contract layer: inert identity attributes, checked by counsel-check.
+use counsel::post;
+
 /// Call graph for transaction-to-transaction calls.
 ///
 /// Maps each transaction name to the set of transaction names it calls.
@@ -134,7 +137,9 @@ impl CallGraph {
         self.defn_names.contains(name)
     }
 
-    /// Total number of transactions in the graph
+    /// Total number of transactions in the graph.
+    /// counsel proves the postcondition: Vec::len is always non-negative.
+    #[post(term >= 0)]
     pub fn node_count(&self) -> usize {
         self.txn_names.len()
     }
