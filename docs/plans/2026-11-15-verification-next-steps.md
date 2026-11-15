@@ -272,3 +272,115 @@ Once the planning phase clears this document:
 | `tests/opt_level_parity.rs` | wasm32 variant in the harness |
 | `tests/fuzz_program_differential.rs` | collection/enum/string proptest strategies |
 | `docs/plans/2026-11-09-compiler-verification-program.md` | update P3/P4 phase statuses |
+
+---
+
+## Session results (2026-11-15, end of session)
+
+### Completed
+- **Profiling instrumentation** (Sections 1a+1b): `Z3EscalationProfile` + `categorize_post` + `record_smt_result` in `briev-verify/src/verify.rs`, gated behind `z3-profile` feature. Committed as `0b07cbed1`, merged to `main` as `63959d0a8`.
+- **P4 collections fuzz slice**: `collections_program` + `check_collections` in `fuzz/src/semantic.rs`, `collections.rs` fuzz target. 3 unit tests, all passing. Same commit.
+- **Baseline profiling run**: 650 total, 183 PROVEN, 467 UNPROVEN, 0 VIOLATED (report: `/tmp/verify-bodies-baseline.txt`).
+
+### Tier 3 decision: NOT justified
+The escalation histogram (from the baseline run) shows:
+
+| Goal shape | Count | Category | Structural? |
+|---|---|---|---|
+| `(term >= 1) && (term < (1 << 24))` mantissa_val | 1330 | interval/bound | **No** — stdlib precond too weak (see below) |
+| `(term == true) \|\| (term == false)` tautology | 87 | logic tautology | **Yes** — trivial `x ∨ ¬x` |
+| `(term >= 0) && (term <= 4294967295/MASK32)` uint range | 60 | interval | Yes, but small |
+| `CharCount#` string goals | ~30 | intrinsic | No (SMT only) |
+| `(i == count)` loop invariant | 9 | induction | No (SMT only) |
+| timestamp `x * 86400/3600/60` | ~15 | nonlinear mul | No (SMT only) |
+
+**The dominant class (1330×, ~85% of UNPROVEN) is NOT a missing derivation rule.** `mantissa_val` in `lib/std/float_fmt.bv` has postcondition `term >= 1 && term < 1 << 24` with precondition `exp8 >= 0 && exp8 <= 255 && mant >= 0`. On the `exp8 == 0` path, `term = mant`, so `term >= 1` requires `mant >= 1` (false for `mant = 0`) and `term < 1 << 24` requires `mant < 1 << 24` (unestablished). The contract is **genuinely unsatisfiable** under the current precondition. The verifier correctly returns `Undecided` (tri-state working as designed). The fix is to **tighten the stdlib precondition** (e.g. `exp8 == 0 && mant >= 1 && mant < 1 << 24` for the `exp8 == 0` branch, or a combined `mant > 0 || exp8 > 0` style), not to add a new derivation rule.
+
+**The tautology class (87×) IS structural** — `x ∨ ¬x` forms dischargeable by a simplifier extension without SMT. This is a smaller, simpler win than Tier 3 sign-lattice work.
+
+**Decision**: Tier 3 sign-lattice is **deferred**. The profiling data does not justify it: the dominant escalation is a stdlib contract defect, the only true interval shape (uint-range, 60×) is small, and the tautology class is a different, simpler problem. If Tier 3 is revisited, the correct target is the 60× uint-range class, not the 1330× mantissa_val class.
+
+### P3 wasm32 parity gate: BLOCKED
+The webstack `.wasm` exports `txn_run(state_ptr)` but requires the full DOM host shim (`render_frame`, flush-binding table, `__web_boot` state initialization) to reach `endprogram`. A minimal Node harness cannot honestly drive the wasm to completion — `txn_run` hits the guard-fail `unreachable` path on the first call. The broken test was removed; the blocker is documented. A Node-based DOM shim implementation is required before this gate can function.
+
+### Next steps (updated)
+1. **Tighten `mantissa_val` precondition** in `lib/std/float_fmt.bv` — would clear the 1330× dominant escalation class. This is a stdlib change, separate from the verifier.
+2. **Add tautology discharge** (`x ∨ ¬x → true`) to the structural simplifier in `briev-verify` — would clear 87× escalations with zero SMT. Small, contained change.
+3. **Tier 3 sign-lattice**: deferred. Revisit only if the uint-range class (60×) becomes the dominant escalation after steps 1 and 2.
+4. **P3 wasm32**: implement a Node-based DOM host shim, then re-attempt the cross-backend parity gate.
+5. **P4 enums/strings fuzz slices**: extend the collections slice pattern to enum and string differential oracles.
+
+### Correction: P3 blocker was over-claimed (2026-11-15, post-session)
+
+**Lesson / oversight record.** In the original session I documented the P3 wasm32
+parity gate as "BLOCKED: webstack `.wasm` needs the full DOM host shim to reach
+`endprogram`." That was an **over-claim** and I record it as such:
+
+1. **`endprogram` is not a requirement for a Briev program to complete.**
+   Per `docs/architecture/briev-execution-model.md`, a reactive program has no
+   `main()`; the reactor IS the pseudo-loop. A program "finishes" by reaching
+   **equilibrium** (no node precondition can fire → idle). `endprogram` is an
+   *optional lifecycle law* (`hold G { endprogram; }`) that makes the reactor
+   terminate the process when `G` holds. I conflated "the fixture must call
+   `endprogram`" with "the program must terminate," and then conflated
+   "I need an observable outcome" with "the observable must be an exit code."
+
+2. **The parity gate does NOT need the DOM host shim.** The observable for a
+   parity check is the **final state** (after the reactor reaches equilibrium)
+   or the exit code for terminating fixtures. Both are reachable from the
+   existing `txn_run(state_ptr)` loop in a minimal Node harness: drive
+   `txn_run` until it stops firing (equilibrium), then read the exported
+   `%State` slots from linear memory and compare against the native run. The
+   DOM shim (`render_frame`, `stdout_buf`, flush-binding) is only required for
+   the **stdout / browser-observability** path — not for state or exit-code
+   parity.
+
+3. **The actual remaining gap is a harness-contract detail**, not a missing
+   runtime: the minimal Node harness's `txn_run` loop was hitting the
+   guard-fail `unreachable` branch on iteration 0. The guard (`tick < 1`)
+   is satisfiable at `tick = 0` (set by `init_state` via `__web_boot`), so the
+   failure is in the harness's state/memory plumbing (stale `DataView` of the
+   wasm `memory`, or passing the state pointer in the wrong form), not in the
+   wasm or the compiler. This needs a focused harness fix, not a DOM shim.
+
+**Corrected P3 scope.** Re-scope the wasm32 parity gate to **equilibrium-state
+comparison**: drive `txn_run` to equilibrium in Node, read the final `%State`
+from linear memory, and compare against the native execution's final state.
+For fixtures with `endprogram`, the exit code is a cheap additional observable.
+The gate should classify fixtures by shape (terminating vs equilibrium) and
+compare the appropriate observable per shape. The DOM shim is out of scope for
+state/exit-code parity and remains a separate, larger effort for stdout parity.
+
+**Process note.** The over-claim happened because I stopped investigating at the
+first plausible-sounding blocker ("needs the DOM shim") without verifying the
+execution-model semantics first. The correct move was to read
+`briev-execution-model.md` (equilibrium vs `endprogram`) *before* scoping the
+gate's observable. Future gate work should ground the observable choice in the
+execution model, not in the convenience of the existing harness.
+
+### P3 harness root cause (verified in `.ll`, 2026-11-15)
+
+Further investigation of the `txn_run` guard-fail (on the terminating fixture
+`enum_local_return`, which native-runs to `endprogram` → exit 0):
+
+- `txn_run(state)`'s first guard is `slot0 < 1` (the node's `tick < 1`).
+- `init_state` (called by `__web_boot`) sets `slot0 = 0`, so the guard is
+  **satisfiable** — the reactor *should* fire the node on the first call.
+- The minimal Node harness hits the `unreachable` guard-fail branch on
+  iteration 0. This is a **harness state-pointer/plumbing mismatch**: the
+  `txn_run(sp)` call is not reaching the same state the DOM driver does
+  (the DOM driver reads `_statePtr` from `__briev_state_ptr()` and calls
+  `txn_run` through the `WasmDomRuntime` with the full `state_layout`/
+  `bindingTable` contract; a bare harness that re-instantiates or passes the
+  pointer in a different form does not).
+- `render_frame` is a **no-op stub** (`ret void`) in the webstack emission —
+  the actual tick driver in the DOM path is the host calling `txn_run` in a
+  loop (the `requestAnimationFrame` loop wraps `render_frame`, but the
+  real per-frame work is `txn_run`).
+
+**Conclusion:** the P3 gate's remaining work is a **focused harness fix** —
+replicate the DOM driver's `txn_run`-in-a-loop + `state_layout`/`bindingTable`
+contract in the Node test — then drive to equilibrium and diff the final
+`%State` (or compare `endprogram` exit code for terminating fixtures). No DOM
+shim, no compiler change. This is a small, contained test-infrastructure fix,
+not the "large separate effort" originally documented.
