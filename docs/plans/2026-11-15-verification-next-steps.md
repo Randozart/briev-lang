@@ -176,8 +176,10 @@ Per the verification program:
 
 > Growth slices: collections → enums/tuples → strings.
 
-The fuzz program differential (`tests/fuzz_program_differential.rs`) generates
-typed deterministic programs. The current slice exercises: Int/Bool lets,
+The fuzz program differential (`fuzz/src/semantic.rs` + `fuzz/fuzz_targets/*.rs`,
+the libFuzzer surface; `tests/fuzz_frontend.rs` / `tests/fuzz_backend.rs` are
+the proptest surfaces) generates typed deterministic programs. The current
+slice exercises: Int/Bool lets,
 `when`, bounded `foreach`, arithmetic, print. Growth slices add:
 
 **Slice 1 — collections**: `List<T>`, `Vector<N>`, `Map<K,V>` in fuzzed programs.
@@ -270,7 +272,7 @@ Once the planning phase clears this document:
 |------|--------|
 | `briev-verify/src/verify.rs` | `z3_profile` module + `categorize_post` + gated counters in `verify_one` |
 | `tests/opt_level_parity.rs` | wasm32 variant in the harness |
-| `tests/fuzz_program_differential.rs` | collection/enum/string proptest strategies |
+| `fuzz/src/semantic.rs` + `fuzz/fuzz_targets/` | collection/enum/string differential slices (libFuzzer); proptest counterparts in `tests/fuzz_frontend.rs` / `tests/fuzz_backend.rs` |
 | `docs/plans/2026-11-09-compiler-verification-program.md` | update P3/P4 phase statuses |
 
 ---
@@ -290,7 +292,7 @@ The escalation histogram (from the baseline run) shows:
 | `(term >= 1) && (term < (1 << 24))` mantissa_val | 1330 | interval/bound | **No** — stdlib precond too weak (see below) |
 | `(term == true) \|\| (term == false)` tautology | 87 | logic tautology | **Yes** — trivial `x ∨ ¬x` |
 | `(term >= 0) && (term <= 4294967295/MASK32)` uint range | 60 | interval | Yes, but small |
-| `CharCount#` string goals | ~30 | intrinsic | No (SMT only) |
+| `CharCount#` string goals | ~363 | uninterpreted-fn axioms | No (lemma registry) |
 | `(i == count)` loop invariant | 9 | induction | No (SMT only) |
 | timestamp `x * 86400/3600/60` | ~15 | nonlinear mul | No (SMT only) |
 
@@ -307,7 +309,10 @@ The webstack `.wasm` exports `txn_run(state_ptr)` but requires the full DOM host
 1. **Tighten `mantissa_val` precondition** in `lib/std/float_fmt.bv` — would clear the 1330× dominant escalation class. This is a stdlib change, separate from the verifier.
 2. **Add tautology discharge** (`x ∨ ¬x → true`) to the structural simplifier in `briev-verify` — would clear 87× escalations with zero SMT. Small, contained change.
 3. **Tier 3 sign-lattice**: deferred. Revisit only if the uint-range class (60×) becomes the dominant escalation after steps 1 and 2.
-4. **P3 wasm32**: implement a Node-based DOM host shim, then re-attempt the cross-backend parity gate.
+4. **P3 wasm32**: anchor the gate on a **native sink** (state-slot value decoded
+   via `state_layout`, or the `briev_syscall(231)` exit code for terminating
+   fixtures). No DOM shim is required — see the correction section below, which
+   also records two wrong diagnoses made while scoping this gate.
 5. **P4 enums/strings fuzz slices**: extend the collections slice pattern to enum and string differential oracles.
 
 ### Correction: P3 blocker was over-claimed (2026-11-15, post-session)
@@ -413,3 +418,21 @@ contract in a Node test.
 This corrects the earlier over-claim that the gate "needs the DOM host shim."
 The shim was only needed for stdout. The parity observable is a native sink —
 exactly the class the amended doctrine now names.
+
+### Correction: "body has no terminating value path" is expected, not unproven
+
+Roughly 90 baseline warnings read:
+
+```
+could not prove: <name>: body has no terminating value path — nothing to verify
+```
+
+(`init_exit`, `script_main`, `tick`, `increment`, `withdraw`, `vol_user`, …).
+These are reactive `node`/`txn` bodies with no `term`/`endprogram`: there is no
+postcondition to discharge, and the message says so. They are **correct
+behaviour**, not proof gaps.
+
+Consequence for measurement: future profiling runs must exclude them from the
+UNPROVEN denominator (a separate `NO_POSTCONDITION` bucket), otherwise the
+"467 UNPROVEN" figure understates the pass rate and dilutes the histogram. The
+follow-on plan (`2026-11-15-remaining-verification-work.md` §1.4) carries this.

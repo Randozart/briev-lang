@@ -124,14 +124,16 @@ that matters).
 (is_ws_byte 75 + lshr64 9) and **zero** change elsewhere. Any other delta is a
 bug, not a bonus.
 
-### W3 — `mantissa_val`: 1330 obligations, and the fix is stdlib, not verifier
+### W3 — `mantissa_val`: 1330 obligations (stdlib restructure first, one small interval operation if needed)
 
 **Key architectural finding:** `--verify-bodies` checks a body's postcondition
 **at the definition site against the declared precondition**. There is **no
 call-site precondition obligation** in this pass (the only diagnostics are
 postcondition failures, guard/invariant obligations, and "no terminating value
-path"). Therefore no amount of caller-side derivation reaches `mantissa_val`:
-path 1 of 3 is checked against `[exp8 >= 0 && exp8 <= 255 && mant >= 0]` alone.
+path" — verified by reading `verify_one`/`eval_post`/`loop_obligations` and the
+absence of any call-site check). Therefore no amount of caller-side derivation
+reaches `mantissa_val`: path 1 of 3 is checked against
+`[exp8 >= 0 && exp8 <= 255 && mant >= 0]` alone.
 
 **Why the current contract cannot be proven.** With only `mant >= 0`:
 - `exp8 == 0` path: `term = mant`, and `mant = 0` refutes `term >= 1`.
@@ -143,10 +145,8 @@ The contract is *satisfiable in practice* (the caller masks `mant` with
 `exp8 == 0 && mant == 0` cases) — but that is a **caller-side** fact the
 verifier never sees.
 
-**Fix — restructure, do not weaken and do not rely on caller facts.** Split the
-two physically different cases into two definitions, each locally provable with
-the existing identifier-vs-literal interval reasoning and **no new verifier
-feature**:
+**Fix, part A — restructure, never weaken and never rely on caller facts.**
+Split the two physically different cases into two definitions:
 
 ```
 // normal: hidden bit set
@@ -166,21 +166,48 @@ defn mantissa_subnormal(mant: Int)
 };
 ```
 
-Proofs: normal — `mant + 8388608 >= 1` ✓ and `mant + 8388608 < 16777216` from
-`mant < 8388608` ✓. Subnormal — `mant >= 1` ✓ and `mant < 8388608 < 2^24` ✓.
-Both are pure interval reasoning over a bounded identifier against literals,
-which `ident_verdict` already does.
-
 Caller change in `float_format` (`lib/std/float_fmt.bv:452-453`): branch on
 `exp8 == 0` and call the matching defn. This also makes the precondition
 obligation *visible in the source* rather than implied by masks two lines
 earlier — the honest form.
 
+**Fix, part B — one small missing interval operation.** The subnormal body
+(`term mant`, an identifier) is decided by the existing
+`ident_verdict`/`Interval::classify` path. The normal body is **not**: its term
+is `mant + 0x800000`, i.e. `SymbolicValue::Binary("+", …)`, and
+`rel_verdict` only consults bounds when one side is a bare `Identifier`. The
+interval domain (`briev-verify/src/verify/interval.rs`, `Interval { lower,
+upper }` with `restrict`/`intersect`/`classify`) therefore also needs:
+
+- `Interval::shift(delta: i64) -> Interval` — `x ∈ [a,b] ⇒ x ± c ∈ [a±c, b±c]`,
+  saturating (`checked_add`/`checked_sub`, falling back to `FULL` on overflow,
+  never to a wrong bound). ~10 lines, next to `restrict`/`classify`.
+- `fn interval_of(sv: &SymbolicValue, bounds: &HashMap<String, Bound>) ->
+  Option<Bound>` in `verify.rs` — returns a bound for a bare `Identifier` and
+  for `Binary("+"/"-", <bounded>, <literal>)`. Called from `rel_verdict` when
+  neither side is a literal. ~30 lines, early-return shaped.
+
+This is deliberately the *smallest* interval extension that closes the case:
+affine offset only (`x + c`, `x - c`). No multiplication, no sign lattice, no
+bit reasoning. It also serves `ascii_lower`, `bump`, `ml_arena_off_bytes` and
+any `x ± const` postcondition.
+
+**Kani.** `interval.rs` already carries a `#[cfg(kani)] mod proofs`; add
+`shift` soundness to it (`∀ x ∈ [a,b]`, `∀ c`: `x + c ∈ shift(a,b,c)`) so the
+new operation is proved, not assumed. Kani harnesses live in the standalone
+`kani/` crate (`cd kani && kani …`), not the workspace.
+
 **Verification:** `brievc build lib/std/float_fmt.bv --verify-bodies` (or the
 corpus run) must go from 1330 UNPROVEN to 0 for these two defns, and the
 caller's own postcondition `[term .^Length >= 1]` must stay PROVEN. Plus a
-regression fixture with a known float formatting case (compare against C
-`printf("%g")` output) to prove behaviour did not change.
+regression fixture with a known float formatting case compared against the C
+`printf("%g")` reference, to prove behaviour did not change.
+
+**Spike before committing to part B.** Write the two split defns first and run
+`--verify-bodies`. If the normal case is already decided (possible if some
+other path I have not traced supplies the interval), skip part B entirely.
+Only build `Interval::shift` + `interval_of` if the spike proves it is the
+missing piece — this keeps the verifier change evidence-driven.
 
 **Guard:** if either split defn still fails to prove, stop and report — do not
 relax the postcondition. The postcondition is the specification.
@@ -298,18 +325,19 @@ No class regression lands without an A/B explanation.
 | # | Item | Effort | Obligations cleared | Risk |
 |---|---|---|---|---|
 | W1 | doc accuracy | 30 min | — | none |
-| W3 | `mantissa_val` restructure | ~2 h | **1330** | low (stdlib + fixture) |
+| W3a | `mantissa_val` split (stdlib) + spike | ~2 h | up to 1330 | low |
 | W2 | tautology / contradiction | ~2 h | 84 | low |
+| W3b | `Interval::shift` + `interval_of` (**only if the spike needs it**) | ~3 h | finishes W3's 1330 | medium (Kani proof) |
+| stdlib | delete/strengthen `fold_*`, `ml_arena_off_bytes`, `ascii_lower`, `bump` | ~1 h | 129 | low |
 | W5a | enum differential | ~half day | new coverage | none |
 | W3-D1 | mask bounds | ~1 day | 24 + generality | medium |
 | W4 | wasm32 gate | ~1 day | new cross-backend coverage | medium |
-| stdlib | delete/strengthen `fold_*`, `ml_arena_off_bytes`, `ascii_lower`, `bump` | ~1 h | 129 | low |
 | W5b | string differential | ~1 day | new coverage | low |
 
-Rationale for the order: **W3 first** — it is the single largest class (1330,
-~70% of all obligations) and the fix is a stdlib restructure that needs no new
-verifier machinery, which makes it the best value in the whole list. W2 is the
-cheapest verifier change with a precisely measurable delta. W3-D1 comes after
-W3 because W3 shrinks the interval class and clarifies what remains.
+Rationale for the order: **W3a first** — it is the single largest class (1330,
+~70% of all obligations), and the restructure alone may clear it. W2 is the
+cheapest verifier change with a precisely measurable delta. W3b is gated on the
+spike so no interval machinery is built on speculation. W3-D1 comes after,
+because W3 shrinks the interval class and clarifies what remains.
 
 W4 and W5 are independent and can run in parallel with W2/W3.
