@@ -40,6 +40,15 @@ defn ml_arena_reset() -> Void {
     term;
 };
 
+// 2026-11-15: the getter's `[term >= 0]` is unprovable and stays so — the body
+// reads a module global, and globals are outside the state-free analysis model
+// (the prover reports this body as *skipped*, not unproven). Stating
+// `[ml_arena_off >= 0]` as a precondition was tried and reverted: it puts a
+// global into a contract, which changes how the global is lowered, for a fact
+// the prover cannot consume anyway. The invariant is instead documented here —
+// every writer keeps it (install/reset store 0; tensor_alloc adds a
+// non-negative `need`) — and the postcondition is left intact rather than
+// weakened to make a skipped body look clean.
 defn ml_arena_off_bytes() [true][term >= 0] -> Int {
     term ml_arena_off;
 };

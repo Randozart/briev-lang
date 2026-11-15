@@ -13816,3 +13816,25 @@ trailing `inf`/`-inf`/`nan`/`nan`). All six CI parity corpora now pass.
 Division-by-zero behaviour is covered by the native CLI regressions
 (`tests/cli_args_test.rs` float div/zero traps), not by the float-formatting
 parity corpora — those remain the `%.9g` precision gate.
+
+## sweep_mid / sweep_sparse parity goldens are stale — PRE-EXISTING, OBSERVED 2026-11-15
+
+**Symptom:** `bash benchmarks/parity/run.sh` reports 12 passed, 2 failed:
+`sweep_mid` and `sweep_sparse` differ from their goldens in the 5th significant
+digit (`1.99243784` vs `1.99238849`; `1.87476909` vs `1.87476027`).
+
+**Controlled A/B (done before logging, per the no-blame-without-A/B rule):**
+restored `lib/std/float_fmt.bv` to its pre-2026-11-15 content (`git show
+HEAD~1:lib/std/float_fmt.bv`), rebuilt both benchmarks, re-ran parity — **both
+still fail**. The failure is therefore not caused by the float-contract work in
+`4a24b3a21`. The goldens were frozen once (`5324b6765 parity: P0 golden freeze`)
+and the presenting code has changed since.
+
+**State:** unresolved. The values differ in the computed float, not the
+formatting (the `float_fmt_cases` and `cast_cases` `%.9g` corpora both pass,
+which is the formatting gate). Whether the presenter drifted or the goldens were
+recorded on a different target is not yet established.
+
+**Next step:** determine which side is correct — run the corresponding C
+reference for the same shapes and compare, then either fix the presenter or
+regenerate the two goldens with a note in the results file.

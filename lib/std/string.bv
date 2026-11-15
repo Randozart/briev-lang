@@ -376,12 +376,17 @@ defn is_numeric_str(s: String) [true][term == true || term == false] -> Bool {
 // `s[i] as Char` re-encodes UTF-8 continuation bytes (an em dash became
 // mojibake and changed length). Strings are byte buffers: copy bytes, fold
 // only A-Z, leave every other byte (including multi-byte UTF-8) untouched.
-defn fold_lower_byte(b: Int) [true][term >= 0] -> Int {
+//
+// 2026-11-15: both preconditions were `[true]`, which made `[term >= 0]`
+// unprovable — a negative byte is refuted by the passthrough branch. The only
+// call sites pass `Load#(src + j, 1)`, a byte, so `[b >= 0]` states the real
+// domain instead of leaving the verifier to guess.
+defn fold_lower_byte(b: Int) [b >= 0][term >= 0] -> Int {
     when b >= 65 && b <= 90 { term b + 32; };
     term b;
 };
 
-defn fold_upper_byte(b: Int) [true][term >= 0] -> Int {
+defn fold_upper_byte(b: Int) [b >= 0][term >= 0] -> Int {
     when b >= 97 && b <= 122 { term b - 32; };
     term b;
 };
