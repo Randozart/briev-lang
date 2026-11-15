@@ -103,3 +103,41 @@ inherited or protocol operator. Explicit cross-type declarations remain valid.
 Declared Boolean parameters, locals and results are conservatively skipped by
 the word prover until a separate expression/storage model exists. Boolean
 literals, comparisons and connectives in contracts remain available.
+
+## Symbolic value and path-fact snapshots
+
+`SymbolicValue::Identifier` denotes an immutable entry atom inside an evaluated
+value. `eval_symbolic` already eagerly copies the current symbolic value on
+assignment. The production converter in `briev-verify/src/symbolic/snapshot.rs`
+therefore consults current bindings only for leaves in the AST expression being
+evaluated. Converting a saved symbolic value never follows that mutable map.
+The same conversion serves SMT goals, helper summaries and guard/check facts.
+Facts are frozen when encountered; an unknown value supplies no fact. Omitting
+such a constraint weakens the VC conservatively. Known guards keep only their
+feasible branch. The saved-tree depth cap remains eight and rejects oversized
+values rather than guessing a free identifier.
+
+The previous transitive substitution certified a copied input as zero after its
+source parameter was overwritten. It also corrupted helper summaries. Raw guard
+facts could contradict the entry precondition after a write and make an arbitrary
+postcondition vacuously SMT-valid. Package and compiler CLI regressions cover these
+false proofs, valid copies and known-state branches. A maintained external native
+witness returns 7 at input 7 on AST/HIR at O0/O3 while the baseline reports the
+false `term == 0` contract proven. Native generation is unchanged by this repair.
+Input-dependent SAT counterexamples remain advisory, as in the existing API.
+
+This repair establishes a concrete snapshot discipline, not a universal proof of
+the full symbolic executor, recursive AST conversion, bound inference or solver
+encoding. The Lean assignment model separately proves that a copied slot survives
+an overwrite of its distinct source. Implementation proof attempts and their
+bounds/unavailable outcomes are recorded in the dated
+[state-snapshot plan](../plans/2026-11-15-132215-symbolic-value-snapshots.md).
+
+The bounded Kani obligation `snapshot_leaf_conversion_is_exact` checks the actual
+production leaf converter for arbitrary 64-bit literals, a fixed saved input
+atom and Unknown. It reports zero failed checks with all four cover properties
+satisfied. A private zero-for-identifier mutant fails the intended assertion.
+The harness excludes cleanup of its proof-owned recursive enums; recursive AST
+conversion, arbitrary identifier strings, HashMap state transitions and caller
+soundness remain outside this proof. The five existing production kernels now
+include this narrow obligation; this is not a full symbolic-executor theorem.

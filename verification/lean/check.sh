@@ -56,7 +56,7 @@ expected = {
     "leading_sat_dominates", "leading_unsat_dominates",
     "malformed_head_cannot_prove", "substitution_preserves_evaluation",
     "assertion_substitution", "assignment_vc_sound", "sequence_wp_correct",
-    "sequence_vc_sound",
+    "sequence_vc_sound", "copy_survives_source_overwrite",
 }
 pattern = r"'(?:BrievAssurance|BrievIntegerVC)\.(\w+)' (?:depends on axioms: \[([^]]*)\]|does not depend on any axioms)"
 reports = {}
@@ -74,7 +74,7 @@ if set(reports) != expected:
 Path(sys.argv[2]).write_text(json.dumps(reports, indent=2) + "\n")
 PY
 
-for control in FalseSat UnboundedAddition StaleAssignment; do
+for control in FalseSat UnboundedAddition StaleAssignment SavedAlias; do
     if LEAN_PATH="$artifact_dir${LEAN_PATH:+:$LEAN_PATH}" \
         "$lean_bin" "negative/$control.lean" > "$artifact_dir/$control.log" 2>&1; then
         echo "The intentionally false theorem $control was accepted." >&2
@@ -89,4 +89,4 @@ for control in FalseSat UnboundedAddition StaleAssignment; do
         exit 1
     fi
 done
-echo "Lean models checked (11 named theorems); axioms approved; 3 false theorems rejected."
+echo "Lean models checked (12 named theorems); axioms approved; 4 false theorems rejected."

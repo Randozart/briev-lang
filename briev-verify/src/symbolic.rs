@@ -32,6 +32,8 @@
 use crate::ast::{BinaryOpKind, Expr, Statement, UnaryOpKind};
 use std::collections::HashMap;
 
+pub(crate) mod snapshot;
+
 /// Symbolic representation of a value
 /// Represents what a variable could be given current state
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +41,8 @@ pub enum SymbolicValue {
     /// Literal constant (5, true, "hello", etc.)
     Literal(i64, String), // (value, type_hint: "int", "bool", "float", etc.)
 
-    /// Reference to another variable
+    /// Immutable entry atom captured when this value was evaluated. Never
+    /// resolve it again through the mutable assignment map.
     Identifier(String),
 
     /// Prior state value (before execution)
@@ -109,12 +112,16 @@ impl SymbolicState {
 
     /// Add a guard constraint (from [condition] guard block)
     pub fn add_constraint(&mut self, condition: &Expr, taken: bool) {
-        if taken {
-            self.path_constraints.push(condition.clone());
+        let Some(fact) = snapshot::expression(condition, &self.assignments) else {
+            // Unknown values cannot supply facts; omitting one only weakens a VC.
+            return;
+        };
+        let fact = if taken {
+            fact
         } else {
-            self.path_constraints
-                .push(Expr::UnaryOp(UnaryOpKind::Not, Box::new(condition.clone())));
-        }
+            Expr::UnaryOp(UnaryOpKind::Not, Box::new(fact))
+        };
+        self.path_constraints.push(fact);
     }
 
     /// Get the symbolic value for a variable, or None if unknown

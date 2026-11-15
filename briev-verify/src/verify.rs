@@ -408,105 +408,10 @@ fn collect_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
 /// Maximum transitive substitution depth before the discharge gives up.
 const SUBST_DEPTH_CAP: usize = 8;
 
-/// Rewrite every identifier the path bound to a symbolic value.
-///
-/// Substitution is transitive (a local may be defined in terms of another) with
-/// a depth cap; it bails out (`None`) rather than guessing.
+/// Evaluate current expression leaves once; saved symbolic values already refer
+/// to immutable entry atoms and must never be followed through later bindings.
 fn substitute_all(expr: &Expr, assignments: &HashMap<String, SymbolicValue>) -> Option<Expr> {
-    // A body assignment is self-referential: `acc = acc + 1` binds
-    // `acc -> acc + 1`. Following that chain reaches the depth cap and returns
-    // None, which silently meant NO verification condition was ever built — so
-    // no accumulating body could ever reach the solver. The `seen` guard stops
-    // at the cycle and leaves the name free, which is what a VC needs.
-    let mut seen = Vec::new();
-    subst_expr(expr, assignments, 0, &mut seen)
-}
-
-/// One substitution step; `depth` caps transitive chains.
-fn subst_expr(
-    expr: &Expr,
-    assignments: &HashMap<String, SymbolicValue>,
-    depth: usize,
-    seen: &mut Vec<String>,
-) -> Option<Expr> {
-    if depth > SUBST_DEPTH_CAP {
-        return None;
-    }
-    match expr {
-        Expr::Identifier(name) => match assignments.get(name) {
-            Some(value) => {
-                // Guard the name BEFORE descending. `acc -> acc + 1` is
-                // self-referential, so without this the inner `acc` expands
-                // again and one `acc = acc + 1` becomes acc+2 in the goal.
-                if seen.iter().any(|seen_name| seen_name == name) {
-                    return Some(Expr::Identifier(name.clone()));
-                }
-                seen.push(name.clone());
-                let expanded = symbolic_to_expr(value, assignments, depth + 1, seen);
-                seen.pop();
-                expanded
-            }
-            None => Some(expr.clone()),
-        },
-        Expr::BinaryOp(kind, l, r) => Some(Expr::BinaryOp(
-            *kind,
-            Box::new(subst_expr(l, assignments, depth, seen)?),
-            Box::new(subst_expr(r, assignments, depth, seen)?),
-        )),
-        Expr::UnaryOp(kind, inner) => Some(Expr::UnaryOp(
-            *kind,
-            Box::new(subst_expr(inner, assignments, depth, seen)?),
-        )),
-        other => Some(other.clone()),
-    }
-}
-
-/// Convert a tracked symbolic value back into an expression for the solver.
-fn symbolic_to_expr(
-    value: &SymbolicValue,
-    assignments: &HashMap<String, SymbolicValue>,
-    depth: usize,
-    seen: &mut Vec<String>,
-) -> Option<Expr> {
-    match value {
-        SymbolicValue::Literal(n, _) => Some(Expr::Decimal(*n)),
-        SymbolicValue::Identifier(name) => {
-            // A cycle means "this name refers to itself": keep it free rather
-            // than expanding until the depth cap and giving up.
-            if seen.iter().any(|seen_name| seen_name == name) {
-                return Some(Expr::Identifier(name.clone()));
-            }
-            match assignments.get(name) {
-                Some(_) if depth > SUBST_DEPTH_CAP => Some(Expr::Identifier(name.clone())),
-                Some(inner) => {
-                    seen.push(name.clone());
-                    let expanded = symbolic_to_expr(inner, assignments, depth + 1, seen);
-                    seen.pop();
-                    expanded
-                }
-                None => Some(Expr::Identifier(name.clone())),
-            }
-        }
-        SymbolicValue::Binary(op, l, r) => Some(Expr::BinaryOp(
-            op_kind(op)?,
-            Box::new(symbolic_to_expr(l, assignments, depth + 1, seen)?),
-            Box::new(symbolic_to_expr(r, assignments, depth + 1, seen)?),
-        )),
-        // Prior-state (`@x`) and unknown values have no solver encoding here.
-        SymbolicValue::Previous(_) | SymbolicValue::Unknown => None,
-    }
-}
-
-/// Map a symbolic operator symbol to its AST kind.
-fn op_kind(symbol: &str) -> Option<BinaryOpKind> {
-    match symbol {
-        "+" => Some(BinaryOpKind::Add),
-        "-" => Some(BinaryOpKind::Sub),
-        "*" => Some(BinaryOpKind::Mul),
-        "/" => Some(BinaryOpKind::Div),
-        "%" => Some(BinaryOpKind::Mod),
-        _ => None,
-    }
+    crate::symbolic::snapshot::expression(expr, assignments)
 }
 
 /// Whether the SMT encoder models this expression exactly.
@@ -644,16 +549,21 @@ fn step_guard(
     next: &mut Vec<SymbolicState>,
     terminated: &mut Vec<SymbolicState>,
 ) {
+    let decision = verdict_for_path(cond, &st);
     // Guard TAKEN: descend with the guard as a fact; whatever reaches the
     // inner block's end falls through with the guard still true.
-    let mut taken = st.clone();
-    taken.add_constraint(cond, true);
-    pin_points(&mut taken, cond);
-    next.extend(walk_block(inner, taken, terminated));
+    if decision != ProofVerdict::Violated {
+        let mut taken = st.clone();
+        taken.add_constraint(cond, true);
+        pin_points(&mut taken, cond);
+        next.extend(walk_block(inner, taken, terminated));
+    }
     // Guard NOT taken: continue in the enclosing block with the negated fact.
-    let mut skipped = st;
-    skipped.add_constraint(cond, false);
-    next.push(skipped);
+    if decision != ProofVerdict::Holds {
+        let mut skipped = st;
+        skipped.add_constraint(cond, false);
+        next.push(skipped);
+    }
 }
 
 /// Track a pure-integer assignment symbolically.
@@ -1642,10 +1552,9 @@ fn summary_candidate(item: &TopLevel) -> Option<(&str, Vec<String>, &[Statement]
 
 /// Evaluate a call-free, guard-free body to the expression it returns.
 ///
-/// Parameters are deliberately left UNBOUND: `eval_symbolic` already yields
-/// `Identifier(name)` for an unknown name, whereas binding `a -> Identifier(a)`
-/// is self-referential — `symbolic_to_expr` would follow it until the depth cap
-/// and give up, and no summary would ever be produced.
+/// Parameters stay unbound so `eval_symbolic` captures their immutable entry
+/// atoms. Returning a saved value must not resolve those atoms through the
+/// callee's final assignments (which may have overwritten its parameters).
 fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
     let mut state = SymbolicState::empty();
     for stmt in body {
@@ -1675,14 +1584,7 @@ fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
                 }
             }
             Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-                let mut seen = Vec::new();
-                return symbolic_to_expr(
-                    &eval_symbolic(e, &state),
-                    &state.assignments,
-                    0,
-                    &mut seen,
-                )
-                .ok_or(());
+                return crate::symbolic::snapshot::value_expr(&eval_symbolic(e, &state)).ok_or(());
             }
             Statement::Gate(_) | Statement::Check(_) | Statement::Expression(_) => {}
             // Guards pick between values; a non-value exit has no result.

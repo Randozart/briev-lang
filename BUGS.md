@@ -1,3 +1,23 @@
+## 2026-11-15 — saved symbolic values were rebound by later assignments
+
+**Reproduced.** `defn f(x: Int64) [true][term == 0] -> Int64 { let y: Int64 = x; x = 0; term y; };`
+was reported proven. At input 7, the reference interpreter and native AST/HIR
+programs at clang O0/O3 all return 7. The helper-summary path also certified the
+wrong constant return. A second false proof used `[x == 1]`, then `x = 2`, then
+`when x == 2`: recording the guard as the entry-name fact `x == 2` made the SMT
+facts contradictory and licensed an arbitrary postcondition `term == y`.
+
+**Cause/fix.** Assignment evaluation already copies symbolic values eagerly,
+but solver conversion and helper summaries followed identifiers inside those
+copies through the final assignment map. Saved identifiers now remain immutable
+entry atoms. Current-expression leaves alone consult the map. Guard/check facts
+are converted at recording time; unrepresentable facts are omitted conservatively.
+Guards already decided by the current state retain only their feasible branch.
+Excessive saved-expression depth fails closed rather than becoming a free name.
+Public-API and source/CLI regressions reject all three false-proof routes and
+preserve valid saved-value and known-guard proofs. Input-dependent counterexamples
+retain the existing advisory policy; the fix removes their erroneous proven status.
+
 ## 2026-11-15 — a right operand supplied an unsupported Boolean operator
 
 **Reproduced.** `defn f(b: Bool) [true][term == b + 1] -> Bool { term b + 1; };`

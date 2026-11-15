@@ -49,3 +49,35 @@ fn report_is_written_for_a_violation_and_a_pass() {
     );
     assert_eq!(value["violated"].as_array().map(Vec::len), Some(0));
 }
+
+#[test]
+fn saved_values_and_current_guard_facts_cannot_authorize_false_proofs() {
+    for source in [
+        "defn f(x: Int64) [true][term == 0] -> Int64 { let y: Int64 = x; x = 0; term y; };",
+        "defn f(x: Int64, y: Int64) [x == 1][term == y] -> Int64 { x = 2; when x == 2 { term x; }; term y; };",
+        "defn helper(x: Int64) -> Int64 { let y: Int64 = x; x = 0; term y; }; defn f(x: Int64) [true][term == 0] -> Int64 { term helper(x); };",
+    ] {
+        let (code, report) = run(source);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(
+            code, 0,
+            "input-dependent counterexamples remain advisory: {report}"
+        );
+        assert!(
+            value["proven"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["name"] != "f"),
+            "{report}"
+        );
+        assert!(
+            value["unproven"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["name"] == "f"),
+            "{report}"
+        );
+    }
+}

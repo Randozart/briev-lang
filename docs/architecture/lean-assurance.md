@@ -41,7 +41,7 @@ The gate uses Lean on PATH or the standard user Elan installation; `LEAN_BIN`
 can name an explicit executable. It checks version 4.24.0, compiles the model
 into the external directory and requires `negative/FalseSat.lean` to exit 1
 because `decide` refutes its false SAT-to-UNSAT theorem. A missing import, tool
-error or accepted false theorem cannot satisfy that control. All eleven named
+error or accepted false theorem cannot satisfy that control. All twelve named
 theorems across both models must report their axiom dependencies; the gate accepts no
 reported dependencies beyond Lean's foundational `propext`, and writes
 `axioms.json` alongside the full log. Missing or duplicate reports fail closed.
@@ -88,10 +88,14 @@ states, code lists and assertions. `sequence_vc_sound` transfers a checked VC
 to the final state. These are proofs about the actual Lean definitions, with
 no fixed bound on program length.
 
-The gate checks eleven named theorems across both models and rejects three
+The gate checks twelve named theorems across both models and rejects four
 false-theorem controls. `negative/UnboundedAddition.lean` specifically rejects
 positive monotonicity at signed MAX; `negative/StaleAssignment.lean` rejects
-retaining an earlier value after a later assignment. No division, calls, memory, loops, effects
+retaining an earlier value after a later assignment. `copy_survives_source_overwrite` proves, for arbitrary states, words and distinct
+slots, that saving a source value survives a subsequent source overwrite. The
+`negative/SavedAlias.lean` control rejects treating that copy as an alias. This is
+a model theorem, separate from the Rust snapshot repair and its implementation
+obligations. No division, calls, memory, loops, effects
 or source/native whole-program termination claim is included. No exporter or Rust-to-Lean refinement theorem
 has been implemented. The [production arithmetic contract](verifier-arithmetic.md)
 records Kani's separate implementation obligations and the newly discovered

@@ -114,6 +114,12 @@ theorem sequence_vc_sound (pre post : Assertion) (code : Program)
   intro s hp
   exact (sequence_wp_correct s code post).mp (checked s hp)
 
+-- Saving a word copies its value; later writes to its source cannot rebind it.
+theorem copy_survives_source_overwrite (s : State) (source saved : Nat)
+    (value : Word) (different : saved ≠ source) :
+    execute s [(saved, .variable source), (source, .literal value)] saved = s source := by
+  simp [execute, eval, update, different]
+
 -- Kernel-reduced examples pin signed overflow rather than mathematical Int.
 example : (eval (fun _ => 0) (.add (.literal 9223372036854775807) (.literal 1))).toInt
     = -9223372036854775808 := by decide
@@ -125,5 +131,6 @@ example : eval (fun _ => 0) (.mul (.literal 9223372036854775807) (.literal 2))
 #print axioms assignment_vc_sound
 #print axioms sequence_wp_correct
 #print axioms sequence_vc_sound
+#print axioms copy_survives_source_overwrite
 
 end BrievIntegerVC
