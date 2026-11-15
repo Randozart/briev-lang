@@ -1801,12 +1801,7 @@ fn emit_copy(
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dptr, ity, d_op).ok();
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, sptr, ity, s_op).ok();
     let len64 = widen_to_i64(backend, out, &len, indent);
-    writeln!(
-        out,
-        "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
-        indent, dptr, sptr, len64
-    )
-    .ok();
+    backend.emit_memcpy(out, indent, &dptr, &sptr, &len64);
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister {
         name: v.to_string(),

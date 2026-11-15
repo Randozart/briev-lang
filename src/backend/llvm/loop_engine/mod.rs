@@ -273,13 +273,8 @@ impl LlvmBackend {
         writeln!(out, "  %state_save = alloca %State, align 8").ok();
         writeln!(out, "  br label %.loop").ok();
         writeln!(out, ".loop:").ok();
-        let state_bytes = self.compute_state_size_bytes() as i64;
-        writeln!(
-            out,
-            "  call void @llvm.memcpy.p0.p0.i64(ptr %state_save, ptr %state, i64 {}, i1 false)",
-            state_bytes
-        )
-        .ok();
+        let state_bytes = self.compute_state_size_bytes();
+        self.emit_memcpy(out, "  ", "%state_save", "%state", &state_bytes.to_string());
         // 2026-07-14: Use async phase for async programs
         if self.has_async_txns && !self.is_lightweight_async {
             self.emit_async_phase(out, "%state");

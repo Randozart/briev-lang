@@ -1139,12 +1139,7 @@ impl LlvmBackend {
         // Destination is the provided dest_ptr (caller computes the offset)
         let dest = self.fun.next_reg_with_prefix(dest_prefix);
         writeln!(out, "{}{} = bitcast ptr {} to ptr", indent, dest, dest_ptr).ok();
-        writeln!(
-            out,
-            "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
-            indent, dest, src, length
-        )
-        .ok();
+        self.emit_memcpy(out, indent, &dest, &src, length);
     }
 
     /// Write a null terminator at the end of the string data.
@@ -2907,19 +2902,44 @@ impl LlvmBackend {
             return reg.clone();
         };
         let bytes = layout.image_words * 8;
+        let bytes_str = bytes.to_string();
         let handle = self.adapt_to_i64(out, indent, reg);
         let source = self.fun.gen_reg();
         let destination = self.fun.gen_reg();
         let result = self.fun.gen_reg();
         writeln!(out, "{indent}{source} = inttoptr i64 {handle} to ptr").ok();
         writeln!(out, "{indent}{destination} = call ptr @malloc(i64 {bytes})").ok();
-        writeln!(out, "{indent}call void @llvm.memcpy.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)").ok();
+        self.emit_memcpy(out, indent, &destination, &source, &bytes_str);
         let hw = format!("i{}", self.ctx.int_bits);
         writeln!(out, "{indent}{result} = ptrtoint ptr {destination} to {hw}").ok();
         TypedRegister {
             name: result,
             ty: reg.ty.clone(),
         }
+    }
+
+    /// Centralised `llvm.memcpy` emission (Rule 17, issue #14).
+    /// 2026-11-15: the three `llvm.memcpy.p0.p0.i64` call sites were
+    /// independent `writeln!` copies; this method is the single point of
+    /// emission. Aligned copies use `value_lowering::emit_copy_to_destination`.
+    ///
+    /// # Parameters
+    /// - `destination` / `source`: LLVM pointer values (e.g. `"%dst"`).
+    /// - `bytes`: byte count (already formatted as an integer literal).
+    pub(crate) fn emit_memcpy(
+        &self,
+        out: &mut String,
+        indent: &str,
+        destination: &str,
+        source: &str,
+        bytes: &str,
+    ) {
+        writeln!(
+            out,
+            "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
+            indent, destination, source, bytes
+        )
+        .ok();
     }
 
     /// 2026-10-25: returning a local enum must transfer its image to the

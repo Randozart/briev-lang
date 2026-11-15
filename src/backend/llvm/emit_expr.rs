@@ -8620,7 +8620,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "{indent}{owned} = call ptr @malloc(i64 {bytes})").ok();
-        writeln!(out, "{indent}call void @llvm.memcpy.p0.p0.i64(ptr {owned}, ptr {source}, i64 {bytes}, i1 false)").ok();
+        self.emit_memcpy(out, indent, &owned, &source, &bytes.to_string());
         writeln!(out, "{indent}{handle} = ptrtoint ptr {owned} to {width}").ok();
         TypedRegister {
             name: handle,
@@ -8675,11 +8675,7 @@ impl LlvmBackend {
             "inline object payload {object_name} is {bytes} bytes, image allows {}",
             object.payload_words * 8
         );
-        writeln!(
-            out,
-            "{indent}call void @llvm.memcpy.p0.p0.i64(ptr {payload}, ptr {source}, i64 {bytes}, i1 false)"
-        )
-        .ok();
+        self.emit_memcpy(out, indent, &payload, &source, &bytes.to_string());
     }
 
     fn emit_enum_payload(
