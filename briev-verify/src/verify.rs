@@ -24,6 +24,250 @@
 use crate::ast::{Annotation, BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
 use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic, simplify_binary};
 use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// Z3 escalation profiler — active only with `--features z3-profile`.
+///
+/// Instruments `verify_one` to record WHY each path escalated to `smt_discharge`.
+/// Output via `z3_profile_report()`.  Run the corpus through `verify_bodies` with
+/// the feature enabled, then grep the output for "Z3 profile".
+///
+/// The histogram tells us where structural derivation stops and Z3 begins:
+/// - `binary_vs_nonliteral` = Tier 1a gap (a+b compared, neither operand is a bound literal)
+/// - `field_projection`      = Tier 2a gap (x.n in postcondition, may still need Z3 if field not in map)
+/// - `mul_sign`             = sign-lattice candidate (a * b > 0)
+/// - `uninterpreted_fn`    = needs lemma or Z3 (f(x) in postcondition)
+/// - `pure_nonlinear`       = Z3 only (sqrt, pow, division)
+/// - `other`                = needs per-case diagnosis
+#[cfg(feature = "z3-profile")]
+mod z3_profile {
+    use crate::ast::{BinaryOpKind, Expr, UnaryOpKind};
+    use crate::symbolic::SymbolicState;
+    use crate::verify::ProofVerdict;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    /// Records Z3 escalation patterns for corpus analysis.
+    #[derive(Default)]
+    pub struct Z3EscalationProfile {
+        /// Total paths that escalated to smt_discharge.
+        pub escalated: usize,
+        /// Z3 found a concrete violation.
+        pub smt_violated: usize,
+        /// Z3 proved the postcondition holds.
+        pub smt_holds: usize,
+        /// Z3 unavailable / model-dependent / bound / not encodable.
+        pub smt_none: usize,
+        /// Postcondition structural category.
+        post_category: HashMap<&'static str, usize>,
+    }
+
+    // RwLock + interior mutability: `force()` gives `&Z3EscalationProfile`; lock()
+    // for write access to `record`.  Initialised once on first use, safe because
+    // Rust closures in statics are implicitly Send + Sync and this is only called
+    // from single-threaded test / verify_bodies_with_types contexts.
+    fn make_profile() -> RwLock<Z3EscalationProfile> {
+        RwLock::new(Z3EscalationProfile::default())
+    }
+    static PROFILE: std::sync::LazyLock<RwLock<Z3EscalationProfile>> =
+        std::sync::LazyLock::new(make_profile);
+
+    /// Classify the structural shape of a postcondition expression.
+    ///
+    /// Returns one of:
+    /// - `"binary_vs_literal"`       — comparison of a binary expression against a literal
+    /// - `"binary_vs_nonliteral"`     — comparison of a binary expression against a non-literal
+    /// - `"field_projection"`         — post contains `x.n` (a struct field read)
+    /// - `"mul_sign"`                 — post has a multiplication/subdivision on both sides
+    /// - `"uninterpreted_fn"`         — post contains a function call
+    /// - `"pure_nonlinear"`           — sqrt, pow, division in post (requires reals)
+    /// - `"identifier_vs_literal"`    — plain identifier vs literal (already handled by bounds)
+    /// - `"structural_eq"`            — equality comparison of compound terms
+    /// - `"other"`                   — anything not in the above categories
+    fn either<L, R>(l: L, r: R, pred: impl Fn(&Expr) -> bool) -> bool {
+        pred(l) || pred(r)
+    }
+
+    fn both_sides(l: &Expr, r: &Expr, pred: impl Fn(&Expr) -> bool) -> bool {
+        pred(l) && pred(r)
+    }
+
+    /// True if either operand is a Mul or Div binary op (sign-lattice candidate).
+    fn has_mul_or_div(l: &Expr, r: &Expr) -> bool {
+        either(l, r, |e| {
+            matches!(
+                e,
+                Expr::BinaryOp(BinaryOpKind::Mul | BinaryOpKind::Div, _, _)
+            )
+        })
+    }
+
+    /// True if either operand is a Div or Mod binary op (real arithmetic needed).
+    fn has_div_or_mod(l: &Expr, r: &Expr) -> bool {
+        either(l, r, |e| {
+            matches!(
+                e,
+                Expr::BinaryOp(BinaryOpKind::Div | BinaryOpKind::Mod, _, _)
+            )
+        })
+    }
+
+    /// True if either operand is a Call or BitNot (nonlinear / uninterpreted).
+    fn has_nonlinear(l: &Expr, r: &Expr) -> bool {
+        either(l, r, |e| {
+            matches!(e, Expr::Call(..) | Expr::UnaryOp(UnaryOpKind::BitNot, _))
+        })
+    }
+
+    /// True if one operand is a BinaryOp/Field and the other is a Decimal literal.
+    fn binary_vs_literal(l: &Expr, r: &Expr) -> bool {
+        both_sides(l, r, |_| false)
+            || (is_binary_or_field(l) && is_decimal(r))
+            || (is_binary_or_field(r) && is_decimal(l))
+    }
+
+    /// True if one operand is a BinaryOp/Field and the other is an Identifier.
+    fn binary_vs_nonliteral(l: &Expr, r: &Expr) -> bool {
+        (is_binary_or_field(l) && is_identifier(r)) || (is_binary_or_field(r) && is_identifier(l))
+    }
+
+    /// True if the op is Eq/Neq and at least one side is a BinaryOp or Field.
+    fn is_structural_eq(op: &BinaryOpKind, l: &Expr, r: &Expr) -> bool {
+        (op.is_eq() || op.is_neq()) && (is_binary_or_field(l) || is_binary_or_field(r))
+    }
+
+    fn is_decimal(e: &Expr) -> bool {
+        matches!(e, Expr::Decimal(_))
+    }
+
+    fn is_identifier(e: &Expr) -> bool {
+        matches!(e, Expr::Identifier(_))
+    }
+
+    fn is_binary_or_field(e: &Expr) -> bool {
+        matches!(e, Expr::BinaryOp(..) | Expr::Field(..))
+    }
+
+    fn categorize_non_comparison(post: &Expr) -> &'static str {
+        match post {
+            Expr::Field(..) => "field_projection",
+            Expr::Call(..) => "uninterpreted_fn",
+            Expr::Identifier(_) => "identifier_vs_literal",
+            _ => "other",
+        }
+    }
+
+    /// Classify a postcondition into a structural category for profiling.
+    /// Early-return per category; all two-operand checks are in named helpers.
+    pub fn categorize_post(post: &Expr) -> &'static str {
+        let Expr::BinaryOp(op, lhs, rhs) = post else {
+            return categorize_non_comparison(post);
+        };
+        if !op.is_comparison() {
+            return "other";
+        }
+        let (l, r) = (&**lhs, &**rhs);
+        if has_mul_or_div(l, r) {
+            return "mul_sign";
+        }
+        if has_div_or_mod(l, r) {
+            return "pure_nonlinear";
+        }
+        if has_nonlinear(l, r) {
+            return "pure_nonlinear";
+        }
+        if binary_vs_literal(l, r) {
+            return "binary_vs_literal";
+        }
+        if binary_vs_nonliteral(l, r) {
+            return "binary_vs_nonliteral";
+        }
+        if is_structural_eq(op, l, r) {
+            return "structural_eq";
+        }
+        "other"
+    }
+
+    impl Z3EscalationProfile {
+        fn record(&mut self, post: &Expr, result: Option<ProofVerdict>) {
+            self.escalated += 1;
+            match result {
+                Some(ProofVerdict::Violated) => self.smt_violated += 1,
+                Some(ProofVerdict::Holds) => self.smt_holds += 1,
+                None => self.smt_none += 1,
+                _ => {}
+            }
+            let cat = categorize_post(post);
+            *self.post_category.entry(cat).or_insert(0) += 1;
+        }
+    }
+
+    /// Called from `verify_one` each time `smt_discharge` is invoked.
+    pub fn record_smt_result(post: &Expr, result: Option<ProofVerdict>) {
+        if let Ok(mut p) = std::sync::LazyLock::force(&PROFILE).write() {
+            p.record(post, result);
+        }
+    }
+
+    /// Print the profile histogram to stdout.
+    ///
+    /// Output is stable key-value format — parseable by scripts:
+    /// ```
+    /// Z3 profile:
+    ///   escalated:       203
+    ///   smt_violated:     12
+    ///   smt_holds:        89
+    ///   smt_none:        102  (solver unavailable / model-dependent / not encodable)
+    ///   binary_vs_literal:    45
+    ///   binary_vs_nonliteral: 12
+    ///   field_projection:      31
+    ///   mul_sign:              8
+    ///   uninterpreted_fn:     14
+    ///   pure_nonlinear:         7
+    ///   structural_eq:         5
+    ///   identifier_vs_literal: 31
+    ///   other:                 50
+    /// ```
+    pub fn report() {
+        let p = std::sync::LazyLock::force(&PROFILE).read().unwrap();
+        println!("Z3 profile:");
+        println!("  escalated:       {}", p.escalated);
+        println!("  smt_violated:    {}", p.smt_violated);
+        println!("  smt_holds:       {}", p.smt_holds);
+        println!(
+            "  smt_none:        {}  (solver unavailable / model-dependent / not encodable)",
+            p.smt_none
+        );
+        let mut cats: Vec<_> = p.post_category.iter().collect();
+        cats.sort_by_key(|(k, _)| *k);
+        for (cat, count) in cats.iter() {
+            println!("  {cat:30}  {count}");
+        }
+        let smt_total = p.smt_violated + p.smt_holds;
+        if smt_total > 0 {
+            println!("  --- SMT resolution ---");
+            println!(
+                "  smt_violated/smt_total: {}/{} ({:.0}%)",
+                p.smt_violated,
+                smt_total,
+                100.0 * p.smt_violated as f64 / smt_total as f64
+            );
+        }
+    }
+}
+
+/// Wire Z3 profiling into `smt_discharge`.  When the feature is off this is a
+/// no-op (LLVM dead-code elimination removes the call).
+#[cfg(feature = "z3-profile")]
+macro_rules! z3_profile_record {
+    ($post:expr, $result:expr) => {
+        z3_profile::record_smt_result($post, $result);
+    };
+}
+#[cfg(not(feature = "z3-profile"))]
+macro_rules! z3_profile_record {
+    ($post:expr, $result:expr) => {};
+}
 
 mod interval;
 use interval::{Interval as Bound, Relation};
@@ -175,6 +419,11 @@ pub fn verify_bodies_with_types(
             &sums,
         );
     }
+    // Emit Z3 escalation histogram when profiling is active.
+    // This fires once per top-level verify_bodies_with_types call — callers can
+    // grep for "Z3 profile" to collect data without the feature enabled.
+    #[cfg(feature = "z3-profile")]
+    z3_profile::report();
     report
 }
 
@@ -289,7 +538,9 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
                 // C4: escalate an inconclusive symbolic verdict to the solver
                 // before reporting "could not prove". Only a real `Sat` becomes
                 // a violation; every other answer stays honest and undecided.
-                match smt_discharge(post, state) {
+                let smt_result = smt_discharge(post, state);
+                z3_profile_record!(post, smt_result);
+                match smt_result {
                     Some(ProofVerdict::Violated) => {
                         if violated.is_none() {
                             violated = Some(render_counterexample(state));

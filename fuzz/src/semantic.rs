@@ -93,6 +93,70 @@ fn interpret(source: &str, result: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("missing integer result {result}"))
 }
 
+// ── P4 growth slice: collections (2026-11-15) ──────────────────────────────
+//
+// Fuzz bytes select a sequence of List<Int> operations; the oracle tracks
+// the list in memory and compares the final sum + length against the
+// interpreter's result. Exercises: list construction, push (Append#),
+// length (Abs#), and foreach-sum reduction.
+
+/// Decode up to nine element bytes into a literal `List<Int>`. The oracle
+/// tracks the elements; the generated program builds the same literal list
+/// and reduces it (sum + len*1000) inside a `defn`, which the reference
+/// interpreter executes. Fuzz bytes select the data, not the answer.
+pub fn collections_program(data: &[u8]) -> Option<(String, i64, i64, String)> {
+    if data.is_empty() {
+        return None;
+    }
+    let elements: Vec<i64> = data.iter().take(9).map(|b| i64::from(*b as i8)).collect();
+    let expected_sum: i64 = elements.iter().sum();
+    let expected_len = elements.len() as i64;
+    let init: Vec<String> = elements.iter().map(|v| v.to_string()).collect();
+    let full = format!(
+        "defn compute() -> Int {{\n  let lst: List<Int> = [{init}];\n  let total: Int = 0;\n  foreach v in lst {{ total = total + v; }};\n  let len: Int = Count#(lst);\n  term total + len * 1000;\n}};\nlet result: Int = compute();\n",
+        init = init.join(", ")
+    );
+    Some((
+        full,
+        expected_sum + expected_len * 1000,
+        expected_len,
+        "result".to_string(),
+    ))
+}
+
+fn interpret_collection(source: &str, result: &str) -> Result<i64, String> {
+    let tokens = tokenize(source).map_err(|e| format!("lex: {e}"))?;
+    let items = Parser::new(tokens, source)
+        .parse_program()
+        .map_err(|e| format!("parse: {e}"))?;
+    let mut interpreter = Interpreter::new();
+    interpreter.load_program(&items);
+    for item in &items {
+        if let TopLevel::Statement(stmt) = item {
+            interpreter
+                .exec_stmt(stmt)
+                .map_err(|e| format!("runtime: {e:?}"))?;
+        }
+    }
+    interpreter
+        .state
+        .get(result)
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| format!("missing result {result}"))
+}
+
+pub fn check_collections(data: &[u8]) {
+    let Some((source, expected, _, result)) = collections_program(data) else {
+        return;
+    };
+    let actual = interpret_collection(&source, &result);
+    assert_eq!(
+        actual,
+        Ok(expected),
+        "collections semantic disagreement; input={data:?}\n{source}"
+    );
+}
+
 /// A generated valid program must execute and agree with the independent model.
 /// No catch_unwind: libFuzzer must see compiler panics and semantic failures.
 pub fn check(data: &[u8], tuples: bool) {
@@ -141,5 +205,30 @@ mod tests {
         assert_eq!(program(&[7, 6, 2, 0], true).unwrap().1, 9);
         assert_eq!(program(&[7, 6, 2, 1], true).unwrap().1, 5);
         assert_eq!(program(&[7, 7, 2, 0], true).unwrap().1, 4);
+    }
+
+    // P4 collections slice: bytes 5,3,7 → literal list [5,3,7]; sum=15, len=3;
+    // result = 15 + 3*1000 = 3015.
+    #[test]
+    fn collections_slice_literal_sum_length_agrees() {
+        let input = [5u8, 3, 7];
+        let (_, expected, len, _) = collections_program(&input).unwrap();
+        assert_eq!(len, 3);
+        assert_eq!(expected, 15 + 3 * 1000);
+        check_collections(&input);
+    }
+
+    #[test]
+    fn collections_slice_single_element() {
+        let input = [42u8];
+        let (_, expected, len, _) = collections_program(&input).unwrap();
+        assert_eq!(len, 1);
+        assert_eq!(expected, 42 + 1 * 1000);
+        check_collections(&input);
+    }
+
+    #[test]
+    fn collections_slice_incomplete_input_is_not_a_program() {
+        assert!(collections_program(&[]).is_none());
     }
 }
