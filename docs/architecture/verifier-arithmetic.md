@@ -71,7 +71,7 @@ integer division remain separate obligations.
 Body proofs now retain declaration types before helper summarization and loop
 obligation extraction. The compiler supplies its resolved type universe and
 actual LLVM target width, including profile/triple/layout overrides. Admission
-requires standard signed 64-bit scalar semantics or Boolean semantics; floating,
+requires standard signed 64-bit scalar semantics; declared Boolean storage, floating,
 unsigned, narrower, structured, unresolved and operator-overridden types are
 explicitly skipped. Fixed-width storage metadata must agree with the model even
 when the casting graph would fall back to a target-wide integer. Other backends
@@ -94,3 +94,12 @@ The regressions reproduce two previously accepted Float proofs (a nonzero
 increment and cancellation through a Float local). Their f32 rounding
 counterexamples demonstrate the missing type boundary; they do not establish
 that every optimized native floating path has identical rounding behavior.
+
+A subsequent native probe exposed `Bool + 1`: the typechecker borrowed the
+right-hand integer's operator while retaining a Boolean result, and LLVM
+returned an i64 sum as i8. Clang rejected that IR even though body verification
+reported an identity proof. Resolution now requires the receiver's own declared,
+inherited or protocol operator. Explicit cross-type declarations remain valid.
+Declared Boolean parameters, locals and results are conservatively skipped by
+the word prover until a separate expression/storage model exists. Boolean
+literals, comparisons and connectives in contracts remain available.

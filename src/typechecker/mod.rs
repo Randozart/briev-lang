@@ -531,6 +531,12 @@ impl<'a> TypecheckContext<'a> {
         if let Some(binding) = Self::list_concat_binding(kind, lhs, rhs) {
             return Some(binding);
         }
+        // A width constraint inherits the receiver's base operators. This is
+        // independent of the other operand: Int<8> + 1 remains valid, while
+        // Bool<1> cannot acquire Int.Add from the literal.
+        if let Type::Constrained(base, _) = lhs {
+            return self.resolve_binary_op_binding(kind, base, rhs);
+        }
         let rune = format!("{}", kind);
         let op_name = crate::type_universe::operators::rune_to_op_name(&rune)?;
         if let Some(fn_name) = self.type_declares_op_binding(lhs, &op_name, rhs) {
@@ -544,10 +550,11 @@ impl<'a> TypecheckContext<'a> {
         {
             return Some(binding);
         }
-        if let Some(binding) = self.protocol_binding_for(&rune, rhs) {
-            return Some(binding);
-        }
-        crate::type_universe::operators::get_operator_intrinsic(self.universe, &rune, rhs)
+        // The result type belongs to the left receiver. A right-hand literal
+        // can fit that domain, but cannot supply an operator the receiver lacks
+        // (Bool + 1 previously borrowed Int.Add and emitted an i64 as i8).
+        // Declared cross-type functions above remain the authorization path.
+        None
     }
 
     /// 2026-08-03 (P1.4): the variant of a declared protocol string —
@@ -13114,5 +13121,47 @@ node entry [beginprogram][true] {
             msg.contains("Counter") && msg.contains("Widget") && msg.contains("bump"),
             "the diagnostic must name the trait, the type, and the missing op, got: {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod operator_receiver_tests {
+    #[test]
+    fn a_right_integer_cannot_supply_a_boolean_arithmetic_operator() {
+        for (ty, operator) in [
+            ("Bool", "+"),
+            ("Bool", "-"),
+            ("Bool", "*"),
+            ("Bool", "/"),
+            ("Bool", "%"),
+            ("Flag", "+"),
+            ("Flag", "-"),
+            ("Flag", "*"),
+            ("Flag", "/"),
+            ("Flag", "%"),
+        ] {
+            let source =
+                format!("type Flag: Bool; defn f(b: {ty}) -> {ty} {{ term b {operator} 1; }};");
+            assert!(
+                crate::library::parse_and_check("<operator-receiver>", &source).is_err(),
+                "accepted {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsigned_receivers_own_their_modular_operators() {
+        for operator in ["+", "-", "*"] {
+            let source = format!("defn f(x: UInt<8>) -> UInt<8> {{ term x {operator} 1; }};");
+            let result = crate::library::parse_and_check("<unsigned-receiver>", &source);
+            assert!(result.is_ok(), "{source}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_declared_cross_type_operator_still_authorizes_the_operation() {
+        let source = "type Flag: Bool { op Add(Int): add_flag(#Lh, #Rh); }; defn add_flag(b: Flag, delta: Int) -> Flag { term b; }; defn f(b: Flag) -> Flag { term b + 1; };";
+        let result = crate::library::parse_and_check("<declared-operator>", source);
+        assert!(result.is_ok(), "{result:?}");
     }
 }

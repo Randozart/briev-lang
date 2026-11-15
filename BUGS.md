@@ -1,3 +1,19 @@
+## 2026-11-15 — a right operand supplied an unsupported Boolean operator
+
+**Reproduced.** `defn f(b: Bool) [true][term == b + 1] -> Bool { term b + 1; };`
+passed source checking and body verification. With the function retained/called,
+LLVM declared `f` returning i8 but emitted an i64 sum at its return. Both clang
+-O0 and -O3 rejected `ret i8 %t0` because `%t0` was i64. This is an invalid-IR
+compiler bug and an assurance coverage gap; no native execution was claimed.
+
+**Cause/fix.** Binary resolution fell through to the right operand's Int
+operator, while arithmetic inference always returned the left receiver's type.
+Remove that unrelated-operand fallback; retain receiver declarations, inherited
+bindings and protocol bindings, including explicit cross-type operators. Tests
+reject Bool and Bool-derived aliases for arithmetic with integer literals and
+preserve a declared cross-type implementation. The word prover also excludes
+declared Boolean storage until its distinct expression semantics are modeled.
+
 ## 2026-11-15 — body verification erased arithmetic types
 
 **Reproduced.** The public body prover certified Float `x + 1 != x` using
@@ -7,7 +23,7 @@ in that arithmetic. Both new regressions failed before the fix. Parameter,
 result and local types had been discarded; helper summaries provided another
 route around declaration semantics.
 
-**Fix.** Admit resolved standard signed 64-bit/Boolean types before proving
+**Fix.** Admit resolved standard signed 64-bit types before proving
 bodies or summarizing helpers. Preserve the compiler's actual target width;
 reject unsupported types, global state and unresolved/custom arithmetic.
 Standalone source clients now supply their type resolver explicitly. Dynamic

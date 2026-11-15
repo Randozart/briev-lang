@@ -9,14 +9,13 @@ use std::collections::HashSet;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarModel {
     SignedWord { bits: u64 },
-    Boolean,
     Unsupported,
 }
 
 impl ScalarModel {
     /// The current arithmetic engine models exactly signed wrapping 64-bit words.
     pub fn admitted(self) -> bool {
-        matches!(self, Self::SignedWord { bits: 64 } | Self::Boolean)
+        matches!(self, Self::SignedWord { bits: 64 })
     }
 }
 
@@ -170,7 +169,7 @@ fn check_type(ty: &Type, resolve: &TypeResolver<'_>) -> Option<String> {
         return None;
     }
     Some(format!(
-        "type {ty:?} is outside the signed 64-bit/Boolean model"
+        "type {ty:?} is outside the signed 64-bit word model"
     ))
 }
 
@@ -202,7 +201,6 @@ mod proofs {
         let bits: u64 = kani::any();
         assert_eq!(ScalarModel::SignedWord { bits }.admitted(), bits == 64);
         assert!(!ScalarModel::Unsupported.admitted());
-        assert!(ScalarModel::Boolean.admitted());
         kani::cover!(bits == 64);
         kani::cover!(bits != 64);
     }

@@ -51,7 +51,6 @@ impl<'a> BodyTypeModel<'a> {
             .resolve_llvm_type(self.universe, ty, self.int_bits);
         match (category.as_deref(), storage.as_str()) {
             (Some("Int"), "i64") => ScalarModel::SignedWord { bits: 64 },
-            (Some("Bool"), "i1" | "i8") => ScalarModel::Boolean,
             _ => ScalarModel::Unsupported,
         }
     }
@@ -779,5 +778,17 @@ mod typed_model_tests {
             model.resolve(&Type::Custom("CustomArithmetic".into())),
             ScalarModel::Unsupported
         );
+    }
+}
+
+#[cfg(test)]
+mod boolean_model_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn boolean_storage_requires_a_separate_expression_model() {
+        let universe = TypeUniverse::new();
+        let model = BodyTypeModel::new(&[], &universe, 64);
+        assert_eq!(model.resolve(&Type::bool_()), ScalarModel::Unsupported);
     }
 }
