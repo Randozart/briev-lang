@@ -1018,11 +1018,17 @@ fn eval_post(post: &Expr, state: &SymbolicState, bounds: &HashMap<String, Bound>
             // Conjunction / disjunction decompose so each conjunct is proven
             // independently (e.g. `[term >= -149 && term <= 104]`).
             BinaryOpKind::And => {
+                if let Some(verdict) = tautology_verdict(BinaryOpKind::And, l, r) {
+                    return verdict;
+                }
                 let lv = eval_post(l, state, bounds);
                 let rv = eval_post(r, state, bounds);
                 combine_and(lv, rv)
             }
             BinaryOpKind::Or => {
+                if let Some(verdict) = tautology_verdict(BinaryOpKind::Or, l, r) {
+                    return verdict;
+                }
                 let lv = eval_post(l, state, bounds);
                 let rv = eval_post(r, state, bounds);
                 combine_or(lv, rv)
@@ -1036,6 +1042,55 @@ fn eval_post(post: &Expr, state: &SymbolicState, bounds: &HashMap<String, Bound>
         Expr::UnaryOp(UnaryOpKind::Not, inner) => not_verdict(eval_post(inner, state, bounds)),
         _ => ProofVerdict::Undecided,
     }
+}
+
+/// Decide a disjunction/conjunction whose operands are logically exhaustive.
+///
+/// Two shapes are exhaustive by construction, and deciding them syntactically
+/// avoids routing them to the solver (84 baseline escalations came from exactly
+/// these two):
+///
+/// * `p || !p` — a comparison paired with its flipped complement.
+/// * `a == true || a == false` — the whole Bool domain for one operand.
+///
+/// For `||` an exhaustive pair makes the postcondition TRUE; for `&&` the
+/// conjunction is unsatisfiable, which refutes the path.
+fn tautology_verdict(op: BinaryOpKind, l: &Expr, r: &Expr) -> Option<ProofVerdict> {
+    if !is_complement(l, r) && !is_bool_exhaustive(l, r) {
+        return None;
+    }
+    match op {
+        BinaryOpKind::Or => Some(ProofVerdict::Holds),
+        BinaryOpKind::And => Some(ProofVerdict::Violated),
+        _ => None,
+    }
+}
+
+/// True when one operand is the comparison complement of the other.
+///
+/// `negate` flips `<`/`>=`, `<=`/`>`, `==`/`!=` exactly over the integers, so
+/// the two comparisons together cover every value of the left operand.
+fn is_complement(l: &Expr, r: &Expr) -> bool {
+    negate(l) == *r || negate(r) == *l
+}
+
+/// True for `a == true` paired with `a == false` on the same operand.
+///
+/// Sound without type information: in a well-typed program only a Bool compares
+/// equal to a Bool literal, and Bool has exactly these two values. Deliberately
+/// narrow — `a == 0 || a == 1` is NOT exhaustive for an Int and must stay
+/// undecided.
+fn is_bool_exhaustive(l: &Expr, r: &Expr) -> bool {
+    let (Expr::BinaryOp(lop, ll, lr), Expr::BinaryOp(rop, rl, rr)) = (l, r) else {
+        return false;
+    };
+    if *lop != BinaryOpKind::Eq || *rop != BinaryOpKind::Eq || ll != rl {
+        return false;
+    }
+    matches!(
+        (&**lr, &**rr),
+        (Expr::Bool(true), Expr::Bool(false)) | (Expr::Bool(false), Expr::Bool(true))
+    )
 }
 
 /// Kleene negation.
@@ -2142,6 +2197,132 @@ mod structural_derivation_tests {
             "a * 0 == 0 should be proved structurally; unproven: {:?}",
             report.unproven
         );
+    }
+}
+
+#[cfg(test)]
+mod tautology_discharge_tests {
+    use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+
+    /// Build `defn name() [true][post] { term <body_expr>; }` and return the report.
+    ///
+    /// The cache guard is held because a postcondition outside the structural
+    /// rules escalates to the solver, whose cache and statistics are
+    /// process-global and shared with `smt::tests`.
+    fn report_for(name: &str, post: Expr, body_expr: Expr) -> crate::verify::BodyReport {
+        let _guard = crate::smt::cache_test_guard();
+        let body = vec![Statement::Term(Some(body_expr))];
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn(name, contract, body));
+        verify_bodies(&[item])
+    }
+
+    fn ident(name: &str) -> Expr {
+        Expr::Identifier(name.into())
+    }
+
+    fn binop(op: BinaryOpKind, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(op, Box::new(l), Box::new(r))
+    }
+
+    /// `x == 0 || x != 0` is a complementary pair: every integer satisfies it,
+    /// so the postcondition holds without consulting the solver.
+    #[test]
+    fn complementary_comparisons_are_a_tautology() {
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0)),
+            binop(BinaryOpKind::Neq, ident("x"), Expr::Decimal(0)),
+        );
+        let report = report_for("f_complement", post, ident("x"));
+        assert!(
+            report.proven.iter().any(|n| n == "f_complement"),
+            "x == 0 || x != 0 must be a tautology; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Order pairs are complementary too: `x < k || x >= k`.
+    #[test]
+    fn complementary_order_pair_is_a_tautology() {
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Lt, ident("x"), Expr::Decimal(5)),
+            binop(BinaryOpKind::Ge, ident("x"), Expr::Decimal(5)),
+        );
+        let report = report_for("f_order", post, ident("x"));
+        assert!(report.proven.iter().any(|n| n == "f_order"));
+    }
+
+    /// The same pair under `&&` can never hold, so the path is refuted —
+    /// a violation, not an undecided obligation.
+    #[test]
+    fn complementary_conjunction_is_refuted() {
+        let post = binop(
+            BinaryOpKind::And,
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0)),
+            binop(BinaryOpKind::Neq, ident("x"), Expr::Decimal(0)),
+        );
+        let report = report_for("f_contra", post, ident("x"));
+        assert!(
+            report.violated.iter().any(|n| n.contains("f_contra")),
+            "x == 0 && x != 0 must be refuted; violated: {:?}; unproven: {:?}",
+            report.violated,
+            report.unproven
+        );
+    }
+
+    /// `b_term == true || b_term == false` covers the whole Bool domain.
+    /// Mirrors `is_ws_byte`, whose term is a disjunction of comparisons.
+    #[test]
+    fn bool_domain_exhaustion_is_a_tautology() {
+        let term_expr = || binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0));
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(true)),
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(false)),
+        );
+        let report = report_for("f_bool", post, term_expr());
+        assert!(
+            report.proven.iter().any(|n| n == "f_bool"),
+            "(x == 0) == true || (x == 0) == false must be a tautology; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Over-discharge guard: a repeated comparison is NOT exhaustive, so it
+    /// must stay undecided rather than being reported as proved.
+    #[test]
+    fn repeated_comparison_is_not_a_tautology() {
+        let term_expr = || binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0));
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(true)),
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(true)),
+        );
+        let report = report_for("f_repeat", post, term_expr());
+        assert!(
+            !report.proven.iter().any(|n| n == "f_repeat"),
+            "a repeated comparison is not exhaustive and must not be proved"
+        );
+    }
+
+    /// Over-discharge guard: two distinct integer constants do NOT exhaust the
+    /// Int domain, so `x == 0 || x == 1` must stay undecided.
+    #[test]
+    fn integer_domain_is_not_exhausted_by_two_constants() {
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0)),
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(1)),
+        );
+        let report = report_for("f_int", post, ident("x"));
+        assert!(
+            !report.proven.iter().any(|n| n == "f_int"),
+            "x == 0 || x == 1 must not be treated as exhaustive"
+        );
+        assert!(!report.violated.iter().any(|n| n.contains("f_int")));
     }
 }
 

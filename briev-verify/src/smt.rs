@@ -39,8 +39,13 @@ static STATS: std::sync::Mutex<(usize, usize)> = std::sync::Mutex::new((0, 0));
 static CACHE_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 /// Acquire the shared cache-test serialization guard (test builds only).
+///
+/// 2026-11-15: `pub(crate)` so verification tests that can escalate to the
+/// solver (`verify_bodies` on an obligation the structural rules do not decide)
+/// serialize against the cache tests too. The cache and its statistics are
+/// process-global, so any test that can reach them must hold this guard.
 #[cfg(test)]
-fn cache_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn cache_test_guard() -> std::sync::MutexGuard<'static, ()> {
     CACHE_TEST_LOCK
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
