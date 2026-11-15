@@ -155,3 +155,14 @@ boundary solely to flush the existing Float64 printf before returning; retain
 %.9g and make no new precision/round-trip guarantee. The regression must assert
 exact `0.5\n` order before endprogram, not merely trimmed output. Read runtime
 instructions before touching lib/runtime/briev_rt.c; no nested AGENTS.md exists.
+
+### 2026-11-15T00:58:57+01:00 — Refresh the main integration tip
+
+Committed the checked Float/Float64 integration as 8278566cb (native fix remains
+74311bce0). A subsequent main fast-forward attempt stopped before mutation:
+main already contained 8f9ebf394, a layout/ordering-helper contract refactor.
+The tip should have been refreshed before the previous freeze. Preserve that
+work in a prepared merge and repeat required checks on the combined revision.
+Its inert/skipped counsel attributes are not counted as Lean/Kani proofs here.
+The existing body of source-linked native, Lean and Kani evidence remains
+historical; new evidence is stored separately for this refreshed integration.
