@@ -975,9 +975,12 @@ fn comparison_bounds(
 
 /// Tri-state evaluation of the postcondition against one path's state.
 fn verdict_for_path(post: &Expr, state: &SymbolicState) -> ProofVerdict {
-    let Some(bounds) = bounds_of(state) else {
+    let Some(mut bounds) = bounds_of(state) else {
         return ProofVerdict::Holds;
     };
+    // Mask expressions contribute intervals: `x & MASK32` is in [0, MASK32].
+    // Without this the uint-range postconditions never have a bound to consult.
+    add_mask_bounds(state, &mut bounds);
     // 2026-11-12 (point bounds): a precondition that pins an identifier
     // (`[a == 5]`) is a fact about its VALUE, not merely a range. Binding such
     // an identifier to its literal lets arithmetic over it fold — otherwise
@@ -1165,7 +1168,63 @@ fn rel_verdict(
             return ident_verdict(op, name, *v, true, bounds);
         }
     }
+    // Masked value vs literal: `x & M` with `M >= 0` lies in `[0, M]`, which
+    // decides the uint-range postconditions (`term <= MASK32`) without a solver.
+    if let (Some(bound), SymbolicValue::Literal(v, _)) = (mask_bound(lv), rv) {
+        return interval_verdict(op, bound, *v, false);
+    }
+    if let (Some(bound), SymbolicValue::Literal(v, _)) = (mask_bound(rv), lv) {
+        return interval_verdict(op, bound, *v, true);
+    }
     ProofVerdict::Undecided
+}
+
+/// The interval of a value masked by a non-negative constant.
+///
+/// `x & M` with `M >= 0` lies in `[0, M]`: the AND can never set a bit above
+/// the mask's highest set bit, and a non-negative mask keeps the sign bit clear.
+/// This is the general rule behind every `term <= MASK32` obligation rather than
+/// a rule for one function.
+///
+/// Deliberately narrow: a negative mask is not a range (`x & -1 == x`), so it
+/// contributes nothing instead of a bound that could be wrong.
+fn mask_bound(value: &SymbolicValue) -> Option<Bound> {
+    let SymbolicValue::Binary(op, left, right) = value else {
+        return None;
+    };
+    if op != "&" {
+        return None;
+    }
+    let mask = literal_value(left).or_else(|| literal_value(right))?;
+    if mask < 0 {
+        return None;
+    }
+    Some(Bound {
+        lower: 0,
+        upper: mask,
+    })
+}
+
+/// The integer behind a literal symbolic value.
+fn literal_value(value: &SymbolicValue) -> Option<i64> {
+    match value {
+        SymbolicValue::Literal(inner, _) => Some(*inner),
+        _ => None,
+    }
+}
+
+/// Fold mask-derived intervals for assigned locals into the path's bounds.
+///
+/// `let lo: Int = x & MASK32` binds `lo` to a mask expression; recording its
+/// interval lets a later `lo <= MASK32` resolve through `ident_verdict`.
+fn add_mask_bounds(state: &SymbolicState, bounds: &mut HashMap<String, Bound>) {
+    for (name, value) in &state.assignments {
+        let Some(masked) = mask_bound(value) else {
+            continue;
+        };
+        let entry = bounds.entry(name.clone()).or_insert(Bound::FULL);
+        *entry = entry.intersect(masked);
+    }
 }
 
 /// Decide `lit <op> x` (flipped) or `x <op> lit` for a bounded identifier.
@@ -1176,16 +1235,20 @@ fn ident_verdict(
     flipped: bool,
     bounds: &HashMap<String, Bound>,
 ) -> ProofVerdict {
+    let bound = bounds.get(name).copied().unwrap_or(Bound::FULL);
+    interval_verdict(op, bound, lit, flipped)
+}
+
+/// Decide a comparison against a literal from a known interval.
+///
+/// `None` from `classify` means the interval straddles the literal, which is a
+/// genuine undecided — never reported as holding.
+fn interval_verdict(op: BinaryOpKind, bound: Bound, lit: i64, flipped: bool) -> ProofVerdict {
     let Some(relation) = Relation::from_ast(op) else {
         return ProofVerdict::Undecided;
     };
     let relation = if flipped { relation.mirror() } else { relation };
-    match bounds
-        .get(name)
-        .copied()
-        .unwrap_or(Bound::FULL)
-        .classify(relation, lit)
-    {
+    match bound.classify(relation, lit) {
         Some(value) => tri(value),
         None => ProofVerdict::Undecided,
     }
@@ -2323,6 +2386,107 @@ mod tautology_discharge_tests {
             "x == 0 || x == 1 must not be treated as exhaustive"
         );
         assert!(!report.violated.iter().any(|n| n.contains("f_int")));
+    }
+}
+
+#[cfg(test)]
+mod mask_bound_tests {
+    use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+
+    fn report_for(name: &str, post: Expr, body: Vec<Statement>) -> crate::verify::BodyReport {
+        let _guard = crate::smt::cache_test_guard();
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn(name, contract, body));
+        verify_bodies(&[item])
+    }
+
+    fn ident(name: &str) -> Expr {
+        Expr::Identifier(name.into())
+    }
+
+    fn masked(mask: i64) -> Expr {
+        Expr::BinaryOp(
+            BinaryOpKind::BitAnd,
+            Box::new(ident("x")),
+            Box::new(Expr::Decimal(mask)),
+        )
+    }
+
+    fn cmp(op: BinaryOpKind, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(op, Box::new(l), Box::new(r))
+    }
+
+    /// `x & 0xFF` is in [0, 255], so the upper bound is decided.
+    ///
+    /// The postcondition names `term` rather than the mask expression: a
+    /// contract that itself contains `&` is rejected as ill-sorted by the word
+    /// model (the same admission gate that rejected shift expressions), so
+    /// writing it inline would test the gate, not the inference.
+    #[test]
+    fn byte_mask_is_non_negative_and_bounded() {
+        let post = cmp(BinaryOpKind::Le, ident("term"), Expr::Decimal(255));
+        let report = report_for(
+            "f_byte_mask",
+            post,
+            vec![Statement::Term(Some(masked(0xFF)))],
+        );
+        assert!(
+            report.proven.iter().any(|n| n == "f_byte_mask"),
+            "x & 0xFF <= 255 must be proved; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// The 32-bit mask case (`sha1_f`, `rotl32`).
+    #[test]
+    fn word_mask_is_bounded_by_the_mask() {
+        let post = cmp(BinaryOpKind::Le, ident("term"), Expr::Decimal(4294967295));
+        let report = report_for(
+            "f_word_mask",
+            post,
+            vec![Statement::Term(Some(masked(4294967295)))],
+        );
+        assert!(
+            report.proven.iter().any(|n| n == "f_word_mask"),
+            "x & MASK32 <= MASK32 must be proved; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Soundness guard: a negative mask is the identity, not a range, so a
+    /// small upper bound must NOT be inferred.
+    #[test]
+    fn negative_mask_yields_no_bound() {
+        let post = cmp(BinaryOpKind::Le, ident("term"), Expr::Decimal(5));
+        let report = report_for("f_neg_mask", post, vec![Statement::Term(Some(masked(-1)))]);
+        assert!(
+            !report.proven.iter().any(|n| n == "f_neg_mask"),
+            "x & -1 must not be bounded by 5"
+        );
+        assert!(!report.violated.iter().any(|n| n.contains("f_neg_mask")));
+    }
+
+    /// A masked value assigned to a local carries its interval to that local.
+    #[test]
+    fn assigned_mask_interval_reaches_the_local() {
+        let body = vec![
+            Statement::Let {
+                name: "lo".into(),
+                names: Vec::new(),
+                ty: None,
+                expr: Some(masked(4294967295)),
+                modifiers: Vec::new(),
+            },
+            Statement::Term(Some(ident("lo"))),
+        ];
+        let post = cmp(BinaryOpKind::Le, ident("lo"), Expr::Decimal(4294967295));
+        let report = report_for("f_mask_let", post, body);
+        assert!(
+            report.proven.iter().any(|n| n == "f_mask_let"),
+            "a masked local must carry its interval; unproven: {:?}",
+            report.unproven
+        );
     }
 }
 
