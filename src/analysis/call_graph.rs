@@ -144,7 +144,9 @@ impl CallGraph {
         self.txn_names.len()
     }
 
-    /// Total number of edges (calls between transactions)
+    /// Total number of edges (calls between transactions).
+    /// counsel: the sum of non-negative `Vec::len` counts is non-negative.
+    #[post(term >= 0)]
     pub fn edge_count(&self) -> usize {
         self.graph.values().map(|v| v.len()).sum()
     }
