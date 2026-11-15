@@ -9,6 +9,7 @@ pub mod circt;
 pub mod electronics;
 pub mod gpu_lowering;
 pub mod llvm;
+pub mod lean;
 pub mod metadata;
 pub mod normalizer;
 pub mod ptx;

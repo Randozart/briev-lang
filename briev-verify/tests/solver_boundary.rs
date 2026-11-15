@@ -2,7 +2,18 @@
 
 use briev_verify::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel, Type};
 use briev_verify::smt::{SmtResult, is_z3_available, prove_smt, prove_smt_formula};
-use briev_verify::verify::verify_bodies;
+use briev_verify::verify::verify_bodies_with_types;
+
+// These fixtures explicitly declare their abstract signed word semantics.
+fn verify_bodies(items: &[TopLevel]) -> briev_verify::verify::BodyReport {
+    verify_bodies_with_types(items, &|ty| {
+        if *ty == Type::int() {
+            briev_verify::domain::ScalarModel::SignedWord { bits: 64 }
+        } else {
+            briev_verify::domain::ScalarModel::Unsupported
+        }
+    })
+}
 
 #[test]
 #[ignore = "requires a working Z3 executable; run explicitly for the solver-boundary gate"]

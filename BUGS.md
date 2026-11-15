@@ -1,3 +1,22 @@
+## 2026-11-15 — body verification erased arithmetic types
+
+**Reproduced.** The public body prover certified Float `x + 1 != x` using
+64-bit integer SMT and certified `(x + 1) - 1 == x` through a typed Float local.
+The first has an f32 counterexample at 16777216; rounding also refutes the second
+in that arithmetic. Both new regressions failed before the fix. Parameter,
+result and local types had been discarded; helper summaries provided another
+route around declaration semantics.
+
+**Fix.** Admit resolved standard signed 64-bit/Boolean types before proving
+bodies or summarizing helpers. Preserve the compiler's actual target width;
+reject unsupported types, global state and unresolved/custom arithmetic.
+Standalone source clients now supply their type resolver explicitly. Dynamic
+or exceptional division/remainder is skipped until definedness is modeled,
+rather than relying on total SMT operations. Regressions cover Float parameters,
+locals, helpers, globals, aliases, narrow/unsigned types and 32-bit targets.
+The optional Lean exporter uses the same type boundary and keeps exporter/native
+refinement explicitly unproved.
+
 ## 2026-11-13 — interpreter mis-evaluates every Float relational (and Float equality)
 
 **Symptom.** In the reference interpreter (`brievc test --tests-only`), float

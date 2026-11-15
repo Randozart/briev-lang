@@ -846,7 +846,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             ),
             Err(stale) => eprintln!("warning: --verify-bodies: {stale}"),
         }
-        let report = briev_compiler::analysis::verify_bodies::verify_bodies(&items);
+        let proof_bits = match opts.backend {
+            BackendKind::Llvm => {
+                configure_llvm_target(opts, LlvmBackend::new().with_int_bits(opts.int_bits))
+                    .ctx
+                    .int_bits
+            }
+            // Other backends do not yet have a refinement to this word model.
+            _ => 0,
+        };
+        let report = briev_compiler::analysis::verify_bodies::verify_bodies_in_universe(
+            &items, &universe, proof_bits,
+        );
         // Advisory: supported bodies the prover could not decide. Never a
         // failure — only concrete counterexamples fail the build.
         for line in &report.unproven {
@@ -1913,6 +1924,34 @@ fn append_ptx_companions(
     }
 }
 
+/// Apply the target configuration once for code generation and proof-domain
+/// selection, so a triple/layout override cannot retain a 64-bit proof model.
+fn configure_llvm_target(opts: &BuildOptions, mut b: LlvmBackend) -> LlvmBackend {
+    let ext = get_extension(&opts.file_path);
+    let target_config = load_target_config(opts);
+    if let Some(entry) = target_config.lookup(&ext) {
+        if let Some(ref triple) = entry.target_triple {
+            b = b.with_target_triple(triple);
+        }
+        if let Some(ref dl) = entry.data_layout {
+            b = b.with_data_layout(dl);
+        }
+        // 2026-09-13 (rv64 capability kernel): linker script from target profile.
+        if entry.linker_script.is_some() {
+            b = b.with_linker_script(entry.linker_script.clone());
+        }
+    }
+    // 2026-09-13 (rv64 capability kernel): CLI overrides for triple
+    // and linker script take precedence over dbvl settings.
+    if let Some(ref triple) = opts.triple_override {
+        b = b.with_target_triple(triple);
+    }
+    if opts.linker_script_override.is_some() {
+        b = b.with_linker_script(opts.linker_script_override.clone());
+    }
+    b
+}
+
 fn codegen(
     items: &[briev_compiler::ast::TopLevel],
     universe: &mut TypeUniverse,
@@ -2180,7 +2219,6 @@ fn codegen(
                 // across backends — see the block above the dispatch.
                 .with_analysis(analysis);
             // Apply target config if available
-            let ext = get_extension(&opts.file_path);
             // 2026-08-04 (Phase 4): a bare target (.b.bv) activates the
             // restricted embedded mode (check_embedded_restrictions, term! ->
             // wfi) — the freestanding bare-metal path.
@@ -2192,27 +2230,7 @@ fn codegen(
             if let Some(ref mech) = effective_isr_mechanism {
                 b = b.with_isr_mechanism(Some(mech.clone()));
             }
-            let target_config = load_target_config(opts);
-            if let Some(entry) = target_config.lookup(&ext) {
-                if let Some(ref triple) = entry.target_triple {
-                    b = b.with_target_triple(triple);
-                }
-                if let Some(ref dl) = entry.data_layout {
-                    b = b.with_data_layout(dl);
-                }
-                // 2026-09-13 (rv64 capability kernel): linker script from target profile.
-                if entry.linker_script.is_some() {
-                    b = b.with_linker_script(entry.linker_script.clone());
-                }
-            }
-            // 2026-09-13 (rv64 capability kernel): CLI overrides for triple
-            // and linker script take precedence over dbvl settings.
-            if let Some(ref triple) = opts.triple_override {
-                b = b.with_target_triple(triple);
-            }
-            if opts.linker_script_override.is_some() {
-                b = b.with_linker_script(opts.linker_script_override.clone());
-            }
+            b = configure_llvm_target(opts, b);
             // Register proto declarations on the casting graph
             if let Some(ref mut graph) = b.ctx.casting_graph {
                 for item in items.iter() {

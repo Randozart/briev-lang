@@ -65,3 +65,32 @@ flush ordering with raw exit. The CLI integration binary runs in the quick gate.
 These are native regressions; the Lean integer VC model contains no floating
 semantics or precision guarantee. Direct intrinsic division and exceptional
 integer division remain separate obligations.
+
+## Typed admission and exceptional domains
+
+Body proofs now retain declaration types before helper summarization and loop
+obligation extraction. The compiler supplies its resolved type universe and
+actual LLVM target width, including profile/triple/layout overrides. Admission
+requires standard signed 64-bit scalar semantics or Boolean semantics; floating,
+unsigned, narrower, structured, unresolved and operator-overridden types are
+explicitly skipped. Fixed-width storage metadata must agree with the model even
+when the casting graph would fall back to a target-wide integer. Other backends
+currently receive no arithmetic model. Globals remain outside the state-free
+model; a reference is skipped conservatively even when a local shadows its name.
+
+The standalone `briev_verify::verify::verify_bodies` API admits untyped
+mathematical word ASTs. Source consumers must preserve their types and use
+`verify_bodies_with_types`, whose resolver declares the actual scalar semantics.
+The compiler wrapper resolves metadata instead of matching user type names.
+Unrecognized declarations cannot acquire a word proof through a helper summary.
+
+Integer division/remainder are admitted only with a literal divisor other than
+zero or minus one. The restriction is conservative: dynamic safe divisions and
+some valid minus-one operations are skipped until definedness obligations exist.
+SMT bitvector division is total, which cannot by itself establish source/native
+exceptional behavior. Generated loop contracts are rechecked at this boundary.
+
+The regressions reproduce two previously accepted Float proofs (a nonzero
+increment and cancellation through a Float local). Their f32 rounding
+counterexamples demonstrate the missing type boundary; they do not establish
+that every optimized native floating path has identical rounding behavior.
