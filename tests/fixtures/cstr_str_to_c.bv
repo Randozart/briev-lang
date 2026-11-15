@@ -1,0 +1,21 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-15 (FFI zero-copy audit): regression fixture for the str_to_c
+// pointer-arithmetic emission. A frgn C-string boundary marshals a Briev
+// String through the casting graph's str_to_c delta. The c_strlen call
+// consumes the pointer (observable FFI sink), keeping str_to_c live in the
+// emitted .ll. The test asserts the body is `handle + 8` (zero-copy) and
+// carries no memcpy.
+type CStr: String<C_String> { };
+
+frgn c_strlen(s: CStr) -> Int from #Link<libc>;
+
+let done: Bool = false;
+node main [!done][done] {
+    let s: String = "briev";
+    let n: Int = c_strlen(s as CStr);
+    Print#(n);
+    done = true;
+    endprogram;
+};

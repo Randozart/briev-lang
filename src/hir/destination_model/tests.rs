@@ -667,6 +667,34 @@ fn foreign_binding_creates_import_boundary_values() {
     );
 }
 
+/// 2026-11-15 (FFI zero-copy audit): AST/HIR parity for the C-string boundary
+/// classification — `CStr` result = `ZeroCopyWithLifetimeProof` (`str_to_c`
+/// pointer offset), `CStr` param = `CopyAtBoundary` (`cstr_to_briev`).
+#[test]
+fn cstr_boundary_classifies_zero_copy_and_copy() {
+    let plan = assert_parity(
+        r#"type CStr: String<C_String> { };
+frgn to_c(s: CStr) -> CStr from "libc";"#,
+    );
+    let boundary = plan
+        .boundaries
+        .values()
+        .find(|b| b.kind == BoundaryKind::ForeignCall)
+        .expect("foreign boundary");
+    let param = &boundary.values[0];
+    let result = &boundary.values[1];
+    assert_eq!(
+        param.conversion,
+        crate::analysis::destination_model::BoundaryConversion::CopyAtBoundary,
+        "CStr param must classify CopyAtBoundary"
+    );
+    assert_eq!(
+        result.conversion,
+        crate::analysis::destination_model::BoundaryConversion::ZeroCopyWithLifetimeProof,
+        "CStr result must classify ZeroCopyWithLifetimeProof"
+    );
+}
+
 /// The boundary owner is the LINK SYMBOL, not the Briev call name — a
 /// renamed foreign (`frgn local : symbol from "c"`) keys on `symbol`.
 #[test]

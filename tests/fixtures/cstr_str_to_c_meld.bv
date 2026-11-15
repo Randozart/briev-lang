@@ -1,0 +1,21 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-15 (FFI zero-copy audit): implicit-meld regression fixture.
+// Imports the C glue module so the C_String protocol is registered in the
+// casting graph. A String arg passed to a CStr param WITHOUT an explicit
+// `as CStr` cast — the shape that fires emit_frgn_variant_cast (the casting
+// graph's str_to_c delta). The test asserts the emitted IR contains the
+// str_to_c call (pointer offset, zero-copy) and no memcpy in str_to_c's body.
+import "glue/c.bv";
+
+frgn c_strlen(s: CStr) -> Int from #Link<libc>;
+
+let done: Bool = false;
+node main [!done][done] {
+    let s: String = "briev";
+    let n: Int = c_strlen(s);
+    Print#(n);
+    done = true;
+    endprogram;
+};

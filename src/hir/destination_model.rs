@@ -65,7 +65,9 @@ use crate::analysis::destination_ownership::{
 };
 use crate::analysis::enum_repr::EnumRepresentation;
 use crate::ast::Type;
-use std::collections::{BTreeMap, BTreeSet};
+use crate::casting::graph::CastingGraph;
+use crate::type_universe::FUNDAMENTAL_TYPES;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[cfg(test)]
 mod tests;
@@ -889,14 +891,110 @@ fn build_boundaries(
     legacy: &HirDestinationOwnershipPlan,
     shapes: &BTreeMap<CallableId, CallableTypeShapes>,
 ) -> BTreeMap<DestinationId, BoundaryPlan> {
-    let exports = export_boundaries(legacy, shapes);
-    let imports = foreign_boundaries(program);
+    // 2026-11-15 (FFI zero-copy audit): HIR mirror of the AST pass — build the
+    // type → protocol map from `HirProgram.type_defs` so the String-category
+    // C-string delta can be classified identically to the AST path.
+    let type_protocols = hir_type_protocols(program);
+    let exports = export_boundaries(legacy, shapes, &type_protocols);
+    let imports = foreign_boundaries(program, &type_protocols);
     exports.into_iter().chain(imports).collect()
+}
+
+/// Build the type → protocol map from HIR type definitions (HIR mirror of
+/// `crate::casting::graph::derive_type_protocols`). For each type def without
+/// an explicit protocol, walks the parent chain: a bare parent that is a
+/// fundamental type becomes the category; an explicit protocol at any hop
+/// wins; a cycle or missing link stops the walk.
+fn hir_type_protocols(program: &HirProgram) -> HashMap<String, String> {
+    let decls: HashMap<&str, (Option<&str>, Option<&str>)> = program
+        .type_defs
+        .iter()
+        .map(|td| {
+            (
+                td.name.as_str(),
+                (td.protocol.as_deref(), td.parent.as_deref()),
+            )
+        })
+        .collect();
+    decls
+        .iter()
+        .filter_map(|(name, (proto, _))| {
+            resolve_protocol(name, *proto, &decls).map(|resolved| (name.to_string(), resolved))
+        })
+        .collect()
+}
+
+/// Resolve one type's protocol by walking its parent chain. Returns the
+/// protocol string (e.g. `"String<C_String>"`) or the fundamental parent
+/// name (e.g. `"Int"`), or `None` if the chain is broken/cyclic.
+fn resolve_protocol<'a>(
+    name: &'a str,
+    explicit: Option<&'a str>,
+    decls: &'a HashMap<&'a str, (Option<&'a str>, Option<&'a str>)>,
+) -> Option<String> {
+    if let Some(p) = explicit {
+        return Some(p.to_string());
+    }
+    let mut current = name;
+    let mut visited: HashSet<&'a str> = HashSet::new();
+    while let Some((proto, parent)) = decls.get(current).copied() {
+        if let Some(p) = proto {
+            return Some(p.to_string());
+        }
+        let Some(parent) = parent else { return None };
+        if FUNDAMENTAL_TYPES.contains(&parent) {
+            return Some(parent.to_string());
+        }
+        if !visited.insert(parent) {
+            return None;
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Classify the representation conversion at an FFI boundary for one typed
+/// value (HIR mirror of the AST `boundary_conversion`, 2026-11-15).
+/// Returns `Some(conversion)` only for the String category with a declared
+/// C-string variant; `None` means "no type-specific delta — keep the
+/// caller's existing classification."
+fn boundary_conversion(
+    ty: &Option<Type>,
+    role: BoundaryRole,
+    type_protocols: &HashMap<String, String>,
+) -> Option<BoundaryConversion> {
+    let Some(ty) = ty else { return None };
+    let Some(name) = ty.universe_key() else {
+        return None;
+    };
+    let Some((category, variant)) = type_protocols
+        .get(name)
+        .and_then(|p| CastingGraph::parse_protocol_base(p))
+    else {
+        return None;
+    };
+    if category != "String" {
+        return None;
+    }
+    Some(classify_string_variant(&variant, role))
+}
+
+/// Classify a String-category boundary value by its variant + role (HIR
+/// mirror of the AST helper).
+fn classify_string_variant(variant: &str, role: BoundaryRole) -> BoundaryConversion {
+    if variant != "C_String" {
+        return BoundaryConversion::None;
+    }
+    match role {
+        BoundaryRole::Result => BoundaryConversion::ZeroCopyWithLifetimeProof,
+        BoundaryRole::Parameter => BoundaryConversion::CopyAtBoundary,
+    }
 }
 
 fn export_boundaries(
     legacy: &HirDestinationOwnershipPlan,
     shapes: &BTreeMap<CallableId, CallableTypeShapes>,
+    type_protocols: &HashMap<String, String>,
 ) -> BTreeMap<DestinationId, BoundaryPlan> {
     legacy
         .callables
@@ -925,6 +1023,9 @@ fn export_boundaries(
             for value in &mut values {
                 value.external_class = GeneralDestinationClass::ScalarValue;
                 value.conversion = BoundaryConversion::None;
+                if let Some(conv) = boundary_conversion(&value.ty, value.role, type_protocols) {
+                    value.conversion = conv;
+                }
             }
             let boundary = DestinationId {
                 owner: summary.name.clone(),
@@ -953,7 +1054,10 @@ fn export_boundaries(
 /// AST `foreign_boundaries` mirror over `HirForeign`. The boundary owner is
 /// the LINK SYMBOL (`HirForeign.link_symbol`), and the success-output value
 /// name is the parser's empty string — both exactly like the AST walk.
-fn foreign_boundaries(program: &HirProgram) -> BTreeMap<DestinationId, BoundaryPlan> {
+fn foreign_boundaries(
+    program: &HirProgram,
+    type_protocols: &HashMap<String, String>,
+) -> BTreeMap<DestinationId, BoundaryPlan> {
     program
         .foreign
         .iter()
@@ -963,13 +1067,24 @@ fn foreign_boundaries(program: &HirProgram) -> BTreeMap<DestinationId, BoundaryP
                 .iter()
                 .enumerate()
                 .map(|(index, (_, ty))| {
-                    boundary_value(
+                    let mut value = boundary_value(
                         BoundaryRole::Parameter,
                         format!("p{index}"),
                         Some(ty.clone()),
                         OwnershipClass::Unknown,
                         GeneralDestinationClass::ScalarValue,
-                    )
+                    );
+                    // 2026-11-15 (FFI zero-copy audit): the C-string param
+                    // delta is `cstr_to_briev` (mandatory copy); other types
+                    // keep the blanket `WidthConvert` from `boundary_value`.
+                    if let Some(conv) = boundary_conversion(
+                        &Some(ty.clone()),
+                        BoundaryRole::Parameter,
+                        type_protocols,
+                    ) {
+                        value.conversion = conv;
+                    }
+                    value
                 })
                 .collect();
             if let Some(ty) = &binding.ret {
@@ -983,6 +1098,13 @@ fn foreign_boundaries(program: &HirProgram) -> BTreeMap<DestinationId, BoundaryP
                 // The declared FFI result type IS the ABI contract; no
                 // implicit representation change happens at this boundary.
                 value.conversion = BoundaryConversion::None;
+                // 2026-11-15 (FFI zero-copy audit): the C-string result delta
+                // is `str_to_c` (zero-copy); other result types keep `None`.
+                if let Some(conv) =
+                    boundary_conversion(&Some(ty.clone()), BoundaryRole::Result, type_protocols)
+                {
+                    value.conversion = conv;
+                }
                 values.push(value);
             }
             let internal_class = values
