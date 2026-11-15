@@ -25,6 +25,14 @@ exclusions, reported outcomes, tool versions, revision, and dirty-file status.
 CI requires `verifier` and uploads its evidence even on failure. See the
 [gate contract](../architecture/compiler-correctness.md) for schema and scope.
 
+CI runs library, verifier, workspace, native, browser, and census checks in
+independent jobs. `Default gates` fails when any required job fails or is
+skipped; the native matrix continues its other cases after one fails. Check
+`ci-required-jobs-<attempt>` for the aggregate verdict, then the named job's
+logs. Verifier evidence is `verifier-gate-evidence-<attempt>`; transition
+counterexamples remain in `deterministic-transition-failure-<attempt>`.
+Attempt-specific artifacts preserve earlier failures across reruns.
+
 ## Standalone transition campaign
 
 Run on x86_64 Linux with Rust, clang, and GNU `timeout` available:

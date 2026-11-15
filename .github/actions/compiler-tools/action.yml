@@ -1,0 +1,55 @@
+# ===----------------------------------------------------------------------=== #
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+# ===----------------------------------------------------------------------=== #
+name: Compiler CI tools
+description: Prepare the shared Rust, solver, native tools, and evidence directory
+inputs:
+  native:
+    description: Install LLVM and native build tools in addition to Z3
+    default: "true"
+  nextest:
+    description: Install the pinned nextest runner
+    default: "false"
+  cache-key:
+    description: Cargo cache group for jobs with the same build profile
+    default: tests
+runs:
+  using: composite
+  steps:
+    - name: Prepare evidence directories
+      shell: bash
+      run: |
+        mkdir -p /tmp/opencode target/ci-evidence
+        git rev-parse HEAD > target/ci-evidence/revision.txt
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Install solver and native tools
+      shell: bash
+      env:
+        NATIVE: ${{ inputs.native }}
+      run: |
+        packages=(z3)
+        if [[ "$NATIVE" == true ]]; then
+          packages+=(clang lld llvm build-essential spirv-tools)
+        fi
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+        z3 --version | tee target/ci-evidence/z3-version.txt
+        rustc -vV > target/ci-evidence/rustc-version.txt
+        cargo --version > target/ci-evidence/cargo-version.txt
+        if [[ "$NATIVE" == true ]]; then
+          clang --version > target/ci-evidence/clang-version.txt
+          opt --version > target/ci-evidence/opt-version.txt
+          llc --version > target/ci-evidence/llc-version.txt
+          spirv-val --version > target/ci-evidence/spirv-version.txt
+        fi
+    - uses: taiki-e/install-action@v2
+      if: inputs.nextest == 'true'
+      with:
+        tool: cargo-nextest@0.9.151
+    - name: Record nextest version
+      if: inputs.nextest == 'true'
+      shell: bash
+      run: cargo nextest --version > target/ci-evidence/nextest-version.txt
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}

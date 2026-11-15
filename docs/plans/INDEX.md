@@ -18,9 +18,16 @@ retained manifests; its execution record contains the current gate results.
 Acceptance: both quick runners **3,873 passed / 17 suites**, exact identity and
 outcome parity; full root library **3,788 passed**; **22** infrastructure
 controls; all **32** verifier cases including the three named Z3 regressions.
-The [gate contract](../architecture/compiler-correctness.md) documents runner
-and evidence boundaries. Next: independent CI jobs for A0, then A1 controls
-and A2 full observations. Suite counts above and prior CI/proof results are
+The [independent CI jobs increment](2026-11-15-a0-independent-ci-jobs.md) splits
+required checks behind their actual build dependencies, transfers the compiler
+with its runtime archives, and keeps a fail-closed `Default gates` aggregate.
+Local acceptance: **31 controls**, the same **3,873** quick results, **3,788**
+library tests, **18** binary tests, **42** tier-1 fixtures, census, and restored-
+artifact native/browser checks pass; hosted scheduling remains to be qualified.
+The [gate contract](../architecture/compiler-correctness.md) documents runner,
+job, and evidence boundaries. Next: A1 controls and A2 full observations;
+exact-revision hosted qualification and broader per-case manifests remain A0
+acceptance work. Suite counts above and prior CI/proof results are
 dated; each execution record states its own evidence.
 
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152

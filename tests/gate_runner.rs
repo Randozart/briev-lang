@@ -6,7 +6,17 @@
 #[test]
 fn gate_controls_reject_false_success() {
     let output = std::process::Command::new("python3")
-        .args(["-B", "scripts/tests/test_gate.py"])
+        .args([
+            "-B",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "scripts/tests",
+            "-p",
+            "test_*.py",
+            "-v",
+        ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("gate controls require Python 3; install python3 and rerun the gate");

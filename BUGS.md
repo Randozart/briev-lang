@@ -1,3 +1,51 @@
+## 2026-11-15 — formatting parity fixtures still divide by zero after native trap parity
+
+**Symptom.** `benchmarks/parity/run.sh` traps in `float_cases` with SIGILL;
+`float_fmt_cases` contains the same stale constructions. Both the original
+release build and its transferred CI artifact reproduce the failure.
+
+**Cause.** These formatting fixtures construct infinity/NaN using `/ 0.0`.
+Native Float division now intentionally traps on zero, matching the reference
+interpreter and the regression contract in `tests/cli_args_test.rs`. The format
+goldens remain valid; their input construction no longer reaches formatting.
+
+**Fix.** Supply infinity through the existing float32 overflow literal and NaN
+through the existing `Sqrt#` intrinsic, preserving both signs and all existing
+golden output lines. Keep division-trap regressions as the division oracle.
+Validation is recorded in the [CI split plan](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
+
+## 2026-11-15 — Data-to-Float width mismatch emits an invalid bitcast (OPEN)
+
+An alternative exceptional-value probe, `(0x7F800000 as Data) as Float`, emits
+`bitcast i64 ... to float`, rejected by LLVM verification. Narrowing the input
+through `Int32` before `Data` still produces i64. An unequal-width bitcast must
+be diagnosed or explicitly resized according to the declared cast contract;
+it cannot emit invalid IR. Reproduced with the release compiler at `2b64e8c8`;
+diagnostics are in `/tmp/opencode/briev-ci-split-validation/float-special-values-build.log`
+and `float-special-values-build-int32.log`. The formatting corpus uses the
+existing intrinsic/literal construction instead of this cast route.
+
+## 2026-11-15 — a library failure suppresses unrelated required CI evidence
+
+**Cause.** The single `Default gates` job ran verifier, library, native,
+workspace, browser and census commands serially. A failing early step skipped
+all later checks, obscuring independent failures. Its “Contract census (deny)”
+label also overstated the existing script, which explicitly uses a warn-policy
+overlay for diagnostic counting.
+
+**Fix.** Independent required jobs share only the release-build prerequisite
+where needed. The native matrix disables fail-fast. An `always()` aggregate
+retains the `Default gates` name and requires every required job to succeed;
+skipped/cancelled/missing results cannot turn green. Quarantine/Counsel remain
+explicitly non-blocking. Each job retains attempt-specific logs/artifacts.
+The census label now states its actual warn-policy diagnostic scope.
+
+The shared build includes both runtime archives consumed by `src/compile.rs`,
+not just `brievc`; revision/hash/mode checks protect the job boundary. Controls
+exercise failed/skipped aggregate results, malformed evidence, missing build
+inputs, lost executable mode, wrong revisions, and corrupted transfers. See
+[CI split execution](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
+
 ## 2026-11-15 — quick fallback loses suites and omits required verifier execution
 
 **Symptom.** The nextest quick path selected 12 integration binaries; the Cargo

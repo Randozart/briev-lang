@@ -141,7 +141,80 @@ invalid/truncated/duplicate reports, selection parity, and retained artifacts.
 ordinary integration suite. Run them directly with
 `python3 -B scripts/tests/test_gate.py`.
 
-CI runs these controls and `scripts/gate.sh verifier --runner nextest` as
-required steps, then always uploads `target/gate-results/` as
-`verifier-gate-evidence`. Existing full-suite CI commands remain separate.
-Independent CI jobs and broader evidence adoption are subsequent A0 work.
+`scripts/tests/test_ci.py` adds aggregate-status and compiler-transfer controls.
+The Rust wrapper and CI discover both Python control modules:
+
+```bash
+python3 -B -m unittest discover -s scripts/tests -p 'test_*.py' -v
+```
+
+### Independent CI jobs (2026-11-15)
+
+`.github/workflows/ci.yml` keeps the existing `Default gates` check as a
+required-result aggregate. Only actual release consumers depend on the
+compiler producer; library/verifier failures cannot suppress sibling checks.
+
+| Required job | Prerequisite | Contents |
+|---|---|---|
+| `gate-controls` | None | Runner and CI behavioral controls |
+| `verifier` | None | Recorded `verifier --runner nextest`, including all named Z3 cases |
+| `library` | None | Existing root library nextest command |
+| `compiler` | None | Release compiler build and same-run artifact |
+| `workspace` | `compiler` | Existing workspace nextest, binary, and tier-1 fixture commands |
+| `native` | `compiler` | Five independent matrix jobs: effect shape, target surface, accel non-hang, determinism, parity |
+| `browser` | `compiler` | Host transport, heap, compiled collection snapshot |
+| `contracts` | None | Existing conformance census with its warn-policy overlay |
+
+The native matrix uses `fail-fast: false`. `quarantine` (requires `compiler`)
+and `counsel` are explicitly non-blocking independent jobs and are excluded
+from the required aggregate. The census is a required **diagnostic execution**;
+its warn overlay does not establish a deny-policy proof guarantee. Workspace
+tests continue using Cargo's debug compiler where they select
+`CARGO_BIN_EXE_brievc`; the release artifact serves shell consumers and the
+existing explicit release-path integration regression.
+
+`gates` has `if: always()` and directly needs every required job ID above.
+`scripts/ci_summary.py` accepts only a nonempty result map whose entries are
+all `success`. Failure, cancellation, skipping, empty/malformed evidence, and
+duplicate JSON fields fail the aggregate. GitHub supplies the native matrix's
+combined result. An upstream compiler failure leaves its consumers visibly
+skipped and still fails `Default gates`.
+
+The `briev-ci/v1` aggregate (`required-jobs.json`, also in the job summary)
+records `revision`, `run_id`, `run_attempt`, `finished_at`, required `jobs`
+and their GitHub results, `outcome` (`pass`/`fail`), and `error` when applicable.
+These are job verdicts, not executed-test/proof totals. Verifier still carries
+the detailed `briev-gate/v1` manifest; the other existing suites retain logs.
+Broader per-case accounting remains a separate A0 task.
+
+### Compiler transfer and retained artifacts
+
+Local composite actions centralize tool preparation and restoration. The
+compiler artifact is a tarball containing:
+
+- `target/release/brievc` (executable mode preserved)
+- `target/compiler-in-briv/libbriev_accel_rt.a`
+- `target/compiler-in-briv/libbriev_gpu_rt.a`
+- producing revision and SHA-256 checksums
+
+The two archives are runtime link inputs read by `src/compile.rs`; the
+executable alone is insufficient. `scripts/ci_compiler_artifact.sh` rejects
+missing inputs, a nonexecutable compiler, a different checkout revision, or
+checksum disagreement. Consumers restore **after** cache setup, replacing
+cached copies with the checked same-run build. This artifact assumes the
+matching source checkout and Ubuntu toolchain; it is not release-package
+qualification.
+
+The producer returns its exact artifact name through a job output. Names
+include the run attempt, preserving prior failure evidence and allowing a
+downstream-only rerun to reuse the successful producer's artifact. All log,
+counterexample and aggregate uploads use `always()` and attempt-specific
+names. Native uploads also include the matrix case to avoid collisions.
+Explicit Bash shells preserve failure through `tee` pipelines.
+
+Key artifact prefixes: `verifier-gate-evidence-`, `ci-library-`,
+`ci-workspace-`, `ci-native-<case>-`, `ci-browser-`, `ci-contracts-`, and
+`ci-required-jobs-`. The existing simulation counterexample uses
+`deterministic-transition-failure-<attempt>`. See the
+[CI split execution record](../plans/2026-11-15-a0-independent-ci-jobs.md)
+for local checks versus GitHub-hosted qualification.

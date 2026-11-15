@@ -1,0 +1,19 @@
+# ===----------------------------------------------------------------------=== #
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+# ===----------------------------------------------------------------------=== #
+name: Restore this run's compiler
+description: Restore and verify the release compiler and its runtime archives after cache setup
+inputs:
+  artifact:
+    description: Artifact name returned by the successful compiler job
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: target
+    - name: Verify and restore compiler artifact
+      shell: bash
+      run: bash scripts/ci_compiler_artifact.sh unpack
