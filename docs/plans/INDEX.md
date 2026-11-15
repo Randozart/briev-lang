@@ -11,10 +11,17 @@ preserves the audit of upstream `e9169750`. The
 [current-main reassessment](2026-11-15-production-correctness-reassessment.md)
 checks `817f1d69`: CI solver setup, exact solver-status recognition and native
 wrapping repairs landed; gate coverage/accounting, strong HIR/native oracles,
-and the complete ownership/proof campaigns remain. Start with A0 quick-gate
-selection parity and explicit verifier/Z3 execution, then A1 controls and A2
-full observations. Suite counts above and prior CI/proof results are dated;
-the reassessment records its own execution evidence.
+and the complete ownership/proof campaigns remain.
+[A0 gate integrity](2026-11-15-a0-gate-integrity.md) implements shared quick
+selection, explicit verifier/Z3 execution, fail-closed runner controls, and
+retained manifests; its execution record contains the current gate results.
+Acceptance: both quick runners **3,873 passed / 17 suites**, exact identity and
+outcome parity; full root library **3,788 passed**; **22** infrastructure
+controls; all **32** verifier cases including the three named Z3 regressions.
+The [gate contract](../architecture/compiler-correctness.md) documents runner
+and evidence boundaries. Next: independent CI jobs for A0, then A1 controls
+and A2 full observations. Suite counts above and prior CI/proof results are
+dated; each execution record states its own evidence.
 
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the

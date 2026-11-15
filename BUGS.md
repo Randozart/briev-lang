@@ -1,3 +1,45 @@
+## 2026-11-15 — quick fallback loses suites and omits required verifier execution
+
+**Symptom.** The nextest quick path selected 12 integration binaries; the Cargo
+fallback selected seven. Neither path included `briev-verify`'s 27 unit tests,
+two arithmetic tests, or three ignored solver-boundary regressions. CI's
+non-blocking ignored-test command did not establish required solver coverage.
+The conflict scan also accepted Git errors as no conflicts and shared a
+temporary output filename between invocations.
+
+**Cause.** Independent shell selection lists drifted. A zero process exit was
+the only runner-level evidence, with no shared discovered-test inventory or
+terminal-result accounting.
+
+**Fix.** `scripts/gate_selection.py` defines both adapters' selection, including
+the original 12 integrations plus `gate_runner`, verifier tests, and the three
+exact solver names. Quick/verifier preflight required tools, cross-check
+discovery/results/totals, retain `briev-gate/v1` manifests and raw logs, and
+reject missing/empty/invalid evidence. Git exit 1 alone establishes no conflict
+matches. CI requires the verifier gate and preserves its evidence. Behavioral
+controls: `scripts/tests/test_gate.py`, also run through `tests/gate_runner.rs`.
+Execution results: [A0 record](docs/plans/2026-11-15-a0-gate-integrity.md).
+
+## 2026-11-15 — nextest JSON reporter double-counts explicitly enabled ignored tests
+
+**Symptom.** nextest 0.9.151 executes all three solver-boundary cases successfully
+but emits repeated suite starts, empty successful finishes with `ignored: 3`,
+and a final `filtered_out: 18446744073709551613`. Both `--include-ignored` and
+`--run-ignored only` reproduce this in `libtest-json-plus` 0.1 output. The new
+strict gate correctly rejects the stream despite the successful process exit.
+
+An independent mixed ordinary/ignored suite also emits premature finishes and
+repeated starts when its ignored case stays disabled.
+
+**Containment.** Keep nextest discovery, execute binaries containing ignored
+tests and explicitly named selections through Cargo, and record the real
+execution runner per suite. Unaffected binaries remain batched in nextest. The malformed
+JSON control continues to reject the observed reporter behavior. Retire this
+routing when the pinned nextest reporter produces coherent ignored-suite
+lifecycles and counts with ignored cases enabled and disabled; do not relax
+the evidence contract. Upstream reporter
+repair remains external to this repository.
+
 ## 2026-11-13 — interpreter mis-evaluates every Float relational (and Float equality)
 
 **Symptom.** In the reference interpreter (`brievc test --tests-only`), float

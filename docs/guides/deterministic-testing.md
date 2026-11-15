@@ -1,5 +1,32 @@
 # Deterministic transition testing
 
+## Required quick gate and retained evidence
+
+```bash
+bash scripts/gate.sh quick
+bash scripts/gate.sh quick --runner cargo
+bash scripts/gate.sh verifier
+```
+
+Quick selects this transition suite alongside the focused integration and
+library tests, then requires the extracted verifier and three named Z3
+regressions. Both runner choices discover the same identities. Install
+Python 3, Rust/Cargo, Git, Z3, clang/LLVM (`opt`, `llc`), and GNU `timeout`.
+Nextest is preferred when installed; `--runner nextest` requires it explicitly.
+Binaries with ignored tests execute via Cargo because nextest 0.9.151 has a
+JSON reporting defect for those suites; the manifest records the actual runner.
+
+Every quick/verifier run retains a unique `target/gate-results/<run>/` with
+`manifest.json` and command stdout/stderr logs. Use `--artifacts DIR` to
+change the parent directory and `--timeout-seconds N` for the per-command
+limit. Missing tools, empty selection, invalid results, and timeout all fail
+the gate and retain available evidence. The manifest lists selections,
+exclusions, reported outcomes, tool versions, revision, and dirty-file status.
+CI requires `verifier` and uploads its evidence even on failure. See the
+[gate contract](../architecture/compiler-correctness.md) for schema and scope.
+
+## Standalone transition campaign
+
 Run on x86_64 Linux with Rust, clang, and GNU `timeout` available:
 
 ```bash
@@ -62,6 +89,8 @@ directory; use a distinct directory for each concurrent campaign.
 | 10 | List returned from a helper function |
 | 11 | Tuple destructuring |
 | 12 | Match-arm guarded return and fallthrough |
+| 13 | Composed integer operation sequences |
+| 14 | Enum construction and matching |
 
 ```bash
 BRIEV_SIM_FAMILY=2 BRIEV_SIM_CASES=16 BRIEV_SIM_SEED=42 cargo test --test deterministic_transitions -- --nocapture
@@ -75,10 +104,11 @@ generator validity before classifying it as a compiler bug.
 `BRIEV_SIM_TYPED_REFERENCE=1` runs the reference through the full typed frontend
 before interpretation. Use this to exclude missing desugaring/type normalization
 in the direct-parser adapter as the cause of a suspected interpreter defect.
-Known failing replay cases from the real campaign live in
-`tests/fixtures/simulation/`; families 5, 7, 9, and 11 currently reproduce
-defects. The default smoke campaign remains family 0. Explicit ignored
-interpreter reproducers are expected to fail until their underlying bugs are fixed.
+Historical replay cases from the real campaign live in
+`tests/fixtures/simulation/`. The earlier family 5, 7, 9, and 11 interpreter
+defects now have ordinary, non-ignored regression checks in this suite;
+their historical failure labels are not current failure expectations. The
+default generated smoke campaign remains family 0.
 
 ## Scope and scaling boundary
 
@@ -86,7 +116,10 @@ This is an executable transition-model test, not yet a reactive-scheduler,
 virtual-clock, arbitrary-FFI, or GPU simulation. The generated function uses a
 guard, addition, subtraction, signed values, and state carried between events.
 Bounds exclude overflow. The interpreter uses its direct parser/statement path;
-native execution uses the real build pipeline. The small common language subset
+native execution uses the real build pipeline with `BRIEV_HIR_EMIT=0`
+explicitly set by this harness. Default-HIR transition parity is still A2 work
+in the [correctness strategy](../plans/2026-11-14-production-correctness-strategy.md).
+The small common language subset
 does not need imported types or normalization on the reference side.
 
 Process timeouts contain native/compiler hangs; they are infrastructure failures,
@@ -94,7 +127,7 @@ not proof of semantic nontermination. Shrinking is bounded and does not guarante
 a globally minimal case or preserve failure class for unrelated infrastructure
 errors. A failing replay is never silently skipped when clang is missing.
 
-The existing GitHub `cargo test --all` gate includes this test; CI uploads its
+The GitHub all-target test gate includes this test; CI uploads its
 failure bundle even when the test fails. The synthetic-fault mode is opt-in and
 must not be enabled for normal CI. Historical artifacts are not cleared by a
 passing local run. Pin toolchains before relying on cross-machine replay.
@@ -108,7 +141,7 @@ This is the slow, high-fidelity half of the defect-discovery stack. For the
 fast, branch-coverage-driven half — in-process `cargo-fuzz` targets that
 rediscover the same defects from raw bytes — see
 `docs/guides/coverage-guided-fuzzing.md`.
-# Composed integer discovery (2026-11-10)
+## Composed integer discovery (2026-11-10)
 
 Family 13 generates sequences of 1–8 additions, bias subtractions,
 state-dependent guarded subtractions, and signed remainders. It compares the
