@@ -101,7 +101,7 @@ struct EscapeBody {
     body: Vec<Statement>,
 }
 
-fn is_borrowed_intrinsic(name: &str) -> bool {
+pub(crate) fn is_borrowed_intrinsic(name: &str) -> bool {
     matches!(
         name,
         "Load#"
