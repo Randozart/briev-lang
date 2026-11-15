@@ -384,3 +384,32 @@ contract in the Node test — then drive to equilibrium and diff the final
 `%State` (or compare `endprogram` exit code for terminating fixtures). No DOM
 shim, no compiler change. This is a small, contained test-infrastructure fix,
 not the "large separate effort" originally documented.
+
+### P3 observable anchored on the amended Observability-as-Liveness doctrine (2026-11-15)
+
+The P3 gate's observable is now anchored on the **amended Observability-as-Liveness
+doctrine** (see `AGENTS.md` §"Observability as Liveness" and
+`docs/architecture/defn-liveness.md` §"Native observability roots"). The doctrine
+recognizes two classes of observable sink:
+
+- **FFI sinks** — `endprogram code` (syscall 231), `__print_int` / `Print#`
+  (stdout), `GetEnvInt#` (runtime-determined bound).
+- **Native sinks** — `vol` stores (volatile memory the optimizer can't
+  eliminate), webstack state-slot writes (flush records read via the binding
+  table), reactor node-firing (the reactor IS the observable scheduler), and
+  the `reside` lifecycle law (absence of termination is the observable).
+
+**The P3 parity gate anchors on a native sink, not on FFI.** For a wasm32
+parity check, the observable is a **state-slot value** read from the wasm's
+linear memory via the `state_layout`/`bindingTable` contract (a native
+sink), or a `vol`-anchored value. `endprogram`'s exit code is an FFI sink and
+is a cheap *additional* observable for terminating fixtures, but it is not the
+required anchor. The gate does **not** need the DOM shim: the DOM shim
+(`render_frame`, `stdout_buf`, flush-binding for browser rendering) is only
+required for the stdout/browser-observability path. State-slot parity is
+reachable by replicating the DOM driver's `txn_run`-in-a-loop + `state_layout`
+contract in a Node test.
+
+This corrects the earlier over-claim that the gate "needs the DOM host shim."
+The shim was only needed for stdout. The parity observable is a native sink —
+exactly the class the amended doctrine now names.

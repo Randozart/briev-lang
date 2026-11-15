@@ -257,10 +257,33 @@ clang -O3 -flto -march=native -ffast-math -fdata-sections -ffunction-sections \
 ## Observability as Liveness
 
 A program with no observable effect IS dead code — the compiler is right to
-eliminate it. **A value is live if an FFI call consumes it.** The fix for a
-folded loop is NOT liveness hacks (`x == x`, synthetic exit fields) — it's
-`endprogram __print_int(result)` (structurally live swan song) or a
-runtime-determined bound (`GetEnvInt#("BOUND")`, never `const N`).
+eliminate it. **A value is live if it is consumed by an observable sink.**
+Observable sinks come in two classes:
+
+- **FFI sinks** — a function call the host can observe:
+  `endprogram code` (syscall 231), `__print_int` / `Print#` (stdout),
+  `GetEnvInt#` (runtime-determined bound). These are the classic liveness
+  roots.
+- **Native sinks** — a compiler-emitted artifact the host reads directly,
+  without a per-observation function call:
+  - **`vol` stores** — `store volatile` / `load volatile` on state fields and
+    Ptr targets (MMIO semantics). The volatile memory location IS the
+    observable anchor; the optimizer cannot eliminate it. This is the
+    canonical native observable for hardware registers and host-readable
+    state.
+  - **State-slot writes** (webstack) — every state-field write emits a flush
+    record; the host's binding table maps handles to state offsets and reads
+    the slots directly from linear memory. No FFI call per observation.
+  - **Reactor node-firing** — the reactor IS the observable scheduler; each
+    fired node is an observable event. A program's liveness is the reactor's
+    ability to keep firing nodes.
+  - **`reside` lifecycle law** — `hold G { reside; }` declares open-ended
+    residency; the *absence of termination* is the observable.
+
+The fix for a folded loop is NOT liveness hacks (`x == x`, synthetic exit
+fields) — it's an observable sink: an FFI call (`endprogram __print_int(result)`)
+or a native anchor (`vol let x = result` into a host-readable state slot, or a
+runtime-determined bound via `GetEnvInt#("BOUND")`, never `const N`).
 Precomputation is correct, not a bug. `--optimize-budget` (default 256)
 controls simulation depth; increase it or use runtime bounds — never weaken
 contracts.
