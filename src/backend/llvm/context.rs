@@ -635,11 +635,18 @@ impl CompilerContext {
 
     /// Get the pointer width in bytes for the current target.
     /// Derived from int_bits (set by data layout or CLI override).
-    /// Pointer width in bytes = int_bits / 8.  The postcondition (term >= 0) is
-    /// provable because u64 division never produces a negative value.
-    #[post(term >= 0)]
+    /// Pointer width in bytes = int_bits / 8.
     pub fn pointer_bytes(&self) -> u64 {
-        self.int_bits / 8
+        Self::pointer_bytes_from_bits(self.int_bits as i64) as u64
+    }
+
+    /// Pure helper: pointer width in bytes = bit width / 8.
+    /// counsel proves: with 8 ≤ int_bits ≤ 128 (valid LLVM pointer widths),
+    /// the quotient is always in [1, 16].
+    #[pre(int_bits >= 8 && int_bits <= 128)]
+    #[post(term >= 1 && term <= 16)]
+    fn pointer_bytes_from_bits(int_bits: i64) -> i64 {
+        int_bits / 8
     }
 
     pub fn new() -> Self {

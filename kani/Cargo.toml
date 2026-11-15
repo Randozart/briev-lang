@@ -1,0 +1,18 @@
+[package]
+name = "kani-harnesses"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone Kani verification harnesses. NOT a member of the parent workspace
+# (so `cargo build` / `cargo test` at the repo root never compiles these).
+# Run with: kani kani/prove_smt_cache.rs   (from the repo root)
+#          or: cd kani && kani prove_smt_cache.rs
+
+[dependencies]
+kani = "*"
+libc = "*"
+
+[workspace]
+# Empty workspace table so this crate is self-contained and does not inherit
+# the parent briev-lang workspace.
