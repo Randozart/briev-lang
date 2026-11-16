@@ -219,3 +219,25 @@ precise source-order evaluation; `approx` = rounding may differ; `seq` = the
 effect/iteration order is observable (which also pins float accumulation
 order, so a `seq` float fold is not reassociated). `seq` + `approx` can
 coexist: order pinned across iterations, per-op contraction still permitted.
+
+## Affinity ambiguity: `on thread <N>` (2026-11-15, Stage 1 landed)
+
+- **Category:** ambiguity keyword, declared at the site of confusion (on the
+  node/txn), never a speed keyword.
+- **Problem:** the compiler cannot rank cores. Cache locality, NUMA distance
+  and real-time isolation are properties of the *deployment*, not the program,
+  so beyond "let the reactor decide" there is no defensible default to leak.
+- **Surface:** `on thread <N>` pins the node to reactor worker `N`;
+  `on thread any` states the default explicitly. Absent = the default, and the
+  default stays one efficient worker. `on`/`thread` are contextual identifiers,
+  never reserved words. The pin is orthogonal to `async`/`sync<group>`:
+  affinity answers WHERE a node fires, concurrency classification answers
+  WHETHER two nodes may fire together (Rule 22 keeps that authority).
+- **What the compiler owes:** the workers run truly concurrently, so a pinned
+  program must prove cross-worker independence — jointly satisfiable guards and
+  no write/write or write/read overlap between different workers — and each
+  such pair must be `async` on both. Anything less is a data race, and a race
+  is refused, not tolerated. Plan: `docs/plans/2026-11-15-thread-assignment.md`.
+- **Not:** a speed keyword (a keyword-beaten default is still a failing
+  default), a queue mechanism (`queue` stays a stdlib ring + `sync<group>`),
+  or a licence to skip `async`.

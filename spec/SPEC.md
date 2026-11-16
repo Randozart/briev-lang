@@ -2899,6 +2899,42 @@ If two reactive nodes may fire simultaneously and have no XOR read/write depende
 
 An unclassified eligible pair is a compile-time error.
 
+### 12.1a Worker affinity — `on thread <N>` (2026-11-15)
+
+A reactive node or txn may declare which reactor worker fires it:
+
+```briev
+async on thread 0 node worker_a [a < 3][a == 3] { a = a + 1; term; };
+async on thread 1 node worker_b [b < 3][b == 3] { b = b + 1; term; };
+
+on thread any node reporter [done][!done] { report(); term; };
+```
+
+- `on thread <N>` pins the declaration to worker `N`; `on thread any` states the
+  default (the reactor's own choice) explicitly. No declaration is the default,
+  and the default is a single efficient worker.
+- The pin is an **ambiguity keyword**: affinity answers *where* a node fires,
+  never *whether* two nodes may fire together — §12.1 keeps that authority, so a
+  jointly satisfiable cross-worker pair still needs `async` or `sync<group>` on
+  both.
+- Because different workers run concurrently, the compiler refuses a pinned
+  program whose cross-worker pairs are not provably independent: jointly
+  satisfiable guards plus a shared write, or a write read by the other worker, is
+  a race and a hard error. The diagnostic names the shared state and the fix.
+- Workers are numbered from 0; the maximum is 63. `on`/`thread`/`any` are
+  contextual identifiers, and the prefix form composes with the other modifiers
+  (`async on thread 1 node`, `sync<g> on thread 2 node`). A pin on a `defn`/`let`
+  is rejected — those have no firing site.
+- Affinity is never a speed keyword: a pin that only wins because the default
+  was deficient is a failing default, not a feature.
+
+> **2026-11-15 (emission hold).** Parsing, validation and the cross-worker
+> independence proof are implemented; the threaded dispatch lane that gives each
+> worker an OS thread is not. Until it lands a pinned program is refused with a
+> diagnostic naming the proved plan, because serving the partition sequentially
+> would reorder node firing and firing order is observable. Full scope and the
+> in-tree findings: `docs/plans/2026-11-15-thread-assignment.md`.
+
 ### 12.2 `spawn` and `await`
 
 ```briev

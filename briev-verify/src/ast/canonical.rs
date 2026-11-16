@@ -119,7 +119,7 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             format_callable(
                 out,
                 level,
-                &format!("{}{}", async_prefix, prefix),
+                &format!("{}{}{}", thread_pin_prefix(txn), async_prefix, prefix),
                 &Callable {
                     name: &txn.name,
                     parameters: &txn.parameters,
@@ -547,6 +547,22 @@ struct Callable<'a> {
 }
 
 /// 2026-08-05: format a callable declaration (`defn`, `txn`, `node`, `$defn`).
+/// 2026-11-15 (thread-assignment plan): the canonical `on thread` prefix for a
+/// node/txn. A `thread` annotation with no value is `on thread any` (the
+/// compiler's own choice, written explicitly); an integer value is a pin
+/// (`on thread 3`). Absent annotation → empty string (the default, unwritten
+/// form). Any other payload shape is not produced by the parser and is
+/// rendered as the explicit-any form rather than silently dropped.
+fn thread_pin_prefix(txn: &Transaction) -> String {
+    let Some(annotation) = txn.modifiers.iter().find(|m| m.name == "thread") else {
+        return String::new();
+    };
+    match &annotation.value {
+        Some(Expr::Decimal(n)) => format!("on thread {n} "),
+        _ => "on thread any ".to_string(),
+    }
+}
+
 fn format_callable(out: &mut String, level: usize, keyword: &str, c: &Callable) {
     indent(out, level);
     let _ = write!(out, "{} {}", keyword, c.name);

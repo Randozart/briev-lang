@@ -635,6 +635,32 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         return Err(format!("concurrency gate:\n  {}", gate_errors.join("\n  ")));
     }
 
+    // ── Thread gate (2026-11-15, thread-assignment plan) ──────────────────
+    // `on thread <N>` binds a node to a reactor worker. Two pinned nodes on
+    // different workers really do run concurrently, so their state must be
+    // provably disjoint and the pair `async`-classified. The plan itself rides
+    // in the analysis results for the backend's per-worker dispatch.
+    let thread_gate = briev_compiler::analysis::thread_plan::run_thread_gate(&items);
+    if !thread_gate.errors.is_empty() {
+        return Err(format!(
+            "thread gate:\n  {}",
+            thread_gate.errors.join("\n  ")
+        ));
+    }
+    for warning in &thread_gate.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let thread_plan = thread_gate.plan;
+    // 2026-11-15 (thread-assignment plan, Stage 2 hold): the plan is proved and
+    // carried, but the threaded dispatch lane is not emitted yet. A pin changes
+    // dispatch order if it is served sequentially, and dispatch order is
+    // observable — so the only two honest outcomes are real workers or a
+    // refusal. Refusing (with the missing piece named) beats silently reordering
+    // or silently ignoring a declared pin.
+    if thread_plan.is_pinned() {
+        return Err(briev_compiler::analysis::thread_plan::unemitted_pin_message(&thread_plan));
+    }
+
     // ── Static hold-law gate (2026-09-22, Slice C2) ──────────────────────
     // Software `hold G { F }` at top level / in obj / in type bodies is a
     // forced fact the compiler must make hold everywhere. A member fact that

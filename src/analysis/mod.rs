@@ -73,6 +73,9 @@ pub mod swan_song;
 pub mod task_linear;
 pub mod task_segments;
 pub mod termination;
+// 2026-11-15 (thread-assignment plan): `on thread <N>` validation + per-worker
+// assignment plan. Soundness half of the CPU-affinity ambiguity keyword.
+pub mod thread_plan;
 pub mod transition_graph;
 pub mod variadic_specialize;
 pub mod watchdog;

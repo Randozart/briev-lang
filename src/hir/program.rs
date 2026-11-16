@@ -27,6 +27,15 @@ pub struct HirParam {
     pub name: String,
     pub ty: Type,
 }
+/// 2026-11-15 (thread-assignment plan): the `on thread` CPU-affinity pin.
+/// `Index(n)` binds the node to reactor worker `n`; `Any` is the explicit
+/// spelling of the compiler's own scheduling choice. Absent declaration is
+/// `HirCallable::thread_pin == None` — not the same as `Any`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadPin {
+    Index(u32),
+    Any,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirBody {
@@ -122,6 +131,12 @@ pub struct HirCallable {
     /// modifiers the AST `Transaction`/`Definition` carries; names only
     /// because every policy keyword here is value-less.
     pub modifiers: Vec<String>,
+    /// 2026-11-15 (thread-assignment plan): the `on thread` CPU-affinity pin,
+    /// when the author declared one. Value-carrying, so it cannot ride the
+    /// name-only `modifiers` list. `None` = no declaration (the reactor's
+    /// own scheduling). Distinct from `Some(ThreadPin::Any)`, which is the
+    /// explicit spelling of that same default.
+    pub thread_pin: Option<ThreadPin>,
     pub result: Option<Type>,
     /// Explicit multi-output list (`defn f() -> A, B`), if any.
     pub output_list: Vec<Type>,

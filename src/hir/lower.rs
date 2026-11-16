@@ -8,12 +8,12 @@ use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
     HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField, HirForeign,
     HirGlobal, HirInit, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
-    HirWatchdogOnFire,
+    HirWatchdogOnFire, ThreadPin,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use crate::ast::{
-    Contract, Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm, TopLevel,
-    Transaction, Type,
+    Annotation, Contract, Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm,
+    TopLevel, Transaction, Type,
 };
 
 pub fn lower_program(items: &[TopLevel]) -> HirProgram {
@@ -194,6 +194,7 @@ fn lower_isr_handler(h: &crate::ast::top::IsrHandler, ids: &mut IdSupply) -> Hir
             exported: false,
             export_symbol: None,
             modifiers: Vec::new(),
+            thread_pin: None,
         },
     );
     c.is_isr = true;
@@ -902,6 +903,7 @@ fn lower_definition(
             exported,
             export_symbol,
             modifiers: d.modifiers.iter().map(|m| m.name.clone()).collect(),
+            thread_pin: lower_thread_pin(&d.modifiers),
         },
     )
 }
@@ -933,8 +935,25 @@ fn lower_transaction(
             exported,
             export_symbol,
             modifiers: t.modifiers.iter().map(|m| m.name.clone()).collect(),
+            thread_pin: lower_thread_pin(&t.modifiers),
         },
     )
+}
+
+/// 2026-11-15 (thread-assignment plan): read the `on thread <N>` pin out of a
+/// callable's annotation list. A `thread` annotation with no value is the
+/// explicit-`any` form; an integer value is a pin. A negative index or a
+/// non-integer payload cannot be produced by the parser, so it degrades to
+/// `None` (no pin) rather than inventing one.
+fn lower_thread_pin(modifiers: &[Annotation]) -> Option<ThreadPin> {
+    let annotation = modifiers.iter().find(|m| m.name == "thread")?;
+    match &annotation.value {
+        None => Some(ThreadPin::Any),
+        Some(Expr::Decimal(n)) if *n >= 0 && *n <= u32::MAX as i64 => {
+            Some(ThreadPin::Index(*n as u32))
+        }
+        Some(_) => None,
+    }
 }
 
 struct CallableLowerSpec<'a> {
@@ -954,6 +973,7 @@ struct CallableLowerSpec<'a> {
     exported: bool,
     export_symbol: Option<String>,
     modifiers: Vec<String>,
+    thread_pin: Option<ThreadPin>,
 }
 
 fn lower_output(o: &OutputType) -> HirOutput {
@@ -1017,6 +1037,7 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
         is_isr: false,
         sync_domains: Vec::new(),
         modifiers: spec.modifiers,
+        thread_pin: spec.thread_pin,
         result: spec.result,
         output_list: spec.output_list,
         outputs: spec.outputs,

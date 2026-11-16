@@ -95,6 +95,11 @@ pub struct AnalysisResults {
     // strips the per-push grow guard (dead once cap == peak). Per coll NAME
     // (not base): two local `Q`s in one txn must not share a strip.
     pub coll_pregrow: std::collections::HashMap<(String, String), i64>,
+    // 2026-11-15 (thread-assignment plan): the `on thread <N>` plan — worker
+    // count plus per-worker node lists. Empty (worker_count == 0) means no
+    // pins were declared and the backend emits the ordinary single-worker
+    // reactor. Computed once in the frontend, consumed by the LLVM dispatch.
+    pub thread_plan: crate::analysis::thread_plan::ThreadPlan,
     // 2026-08-06 (accel plan): module-level `attr` metadata (SPEC §8.9) merged
     // from TopLevel::ModuleMetadata nodes, last binding wins per key. Any
     // backend or plugin may consume it; the `accel` key gates the GPU
@@ -691,6 +696,10 @@ pub fn analyze_program(
         dataflow_errors: Vec::new(),
         optimize_mode: optimize,
         transition_graph,
+        // 2026-11-15 (thread-assignment plan): the `on thread <N>` plan. The
+        // gate's errors are raised by the caller (compile.rs) before emission;
+        // here only the plan itself is needed.
+        thread_plan: crate::analysis::thread_plan::run_thread_gate(items).plan,
         // 2026-11-05 (H5 inventory port 1): web commit writes from typed
         // HIR under the flag; debug builds assert exact AST equality.
         web_commit_writes: if hir_emit_enabled() {
