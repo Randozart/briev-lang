@@ -1,3 +1,59 @@
+## 2026-11-16 — HIR drops the FFI boundary surface, and the audit does not notice
+
+**Reproduced.** A program with a generated boundary protocol, a `frgn` carrying
+`from #Link<libc>`, and a boundary cast:
+
+```briev
+$(Resolved) { Insert$(All$().Last$().After$(), Quote$("type CStrG: String<C_String> { };"));
+};
+import "glue/c.bv";
+frgn c_strlen(p: Int) -> Int from #Link<libc>;
+let done: Bool = false;
+node main [!done][done] {
+    let s: CStrG = "hi" as CStrG;
+    Print#(c_strlen(s as Int));
+    done = true; endprogram;
+};
+```
+
+`BRIEV_HIR_AUDIT=1 brievc build … --llvm` reports:
+
+```
+HIR_AUDIT ok callables=210 types=27 values=731 sinks=2218 unsupported=0
+```
+
+**`unsupported=0`.** The audit certifies the program as fully representable while
+the entire boundary contract is absent from HIR:
+
+- `HirTypeDefKind` has `Enum | Object | Struct` — there is **no protocol
+  variant**, so a `proto` with its `axiom CastTo`/`CastFrom` bindings reduces to
+  `HirProgram::protocol_binding_fns: Vec<String>` (`src/hir/program.rs:367`,
+  collected by `lower_protocol_bindings`, `src/hir/lower.rs:131`): the protocol
+  name, variant, direction and op contract are gone.
+- `HirForeign { name, link_symbol, params, ret }` (`src/hir/program.rs:229`,
+  lowered at `src/hir/lower.rs:445`) drops `ForeignBinding.from` (literal / registry
+  / protocol / `#Link`), `buffer_mode`, `precondition`, `postcondition`,
+  `default_watchdog`, `error_type`/`error_fields`, `is_optional`,
+  `is_fire_forget`, `is_delivery`, and the variadic marker.
+
+**Why it matters.** HIR emission is the default path
+(`hir_emit_enabled`, `src/backend/mod.rs:181`). It is correct today only because
+of AST-derived side channels (`resolved_frgns`, `compile.rs:1026`, and the
+universe `Cast.*` properties). Consequence: the reactor cannot ask whether a
+foreign call blocks, the thread gate cannot see a retained handle, and the
+destination model classifies boundaries from the *type declaration's* protocol
+string rather than from the call's actual contract.
+
+**Not a miscompile today** — the side channels carry codegen. It is a fidelity
+gap that blocks the FFI contract work
+(`docs/plans/2026-11-16-ffi-contract-and-metaprogramming.md` §3 G3, §8a), and a
+landmine: the audit's "ok" actively certifies the loss.
+
+**Fix direction (S4 of that plan).** `HirProtocol` + `HirBoundary` nodes, and
+`lower_program_checked` must report boundary facts it cannot represent instead of
+returning `unsupported=0`. The fixture above is the acceptance test: it must stop
+being "ok" while the contract is unrepresented.
+
 ## 2026-11-16 — emitted IR is not reproducible: state-field index and interned-string order vary per process
 
 **Symptom.** Two builds of the same source in two processes produce different
