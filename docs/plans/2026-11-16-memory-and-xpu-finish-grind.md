@@ -1,9 +1,26 @@
 # The finishing grind: memory ownership to zero + XPU lane ceilings (2026-11-16)
 
-**Status:** PLANNED. Two tracks, one critical path, one measurement
-discipline. Supersedes nothing; it *executes* the remaining work of
-`2026-11-14-post-reland-hygiene-soak-tailloop.md` (§B) and
+**Status:** ACTIVE. Waves 0–2 landed 2026-11-16 (see §2.0). Two tracks, one
+critical path, one measurement discipline. Supersedes nothing; it *executes*
+the remaining work of `2026-11-14-post-reland-hygiene-soak-tailloop.md` (§B) and
 `2026-11-09-intel-lane-ceilings-and-probe-cost.md` (§W2c/W3/W4).
+
+## 2.0 Wave 0–2 outcome (2026-11-16)
+
+| item | state | evidence |
+|---|---|---|
+| M1 soak truth | **done** | `benchmarks/results/2026-11-16-kiosk-soak-truth.md` — and it CORRECTED an earlier false result: the "flat 1.9 MB" curves were sampling a dead pid (`sample_vmrss_mb` returned 0.0 and the loop accepted it). Harness now asserts pid liveness + `comm` + aborts on vanish. |
+| K1 pin bump | **done** | pin `4aed72809` → native/ML/VAD RPC/VAD sessions/dashboard 624 calls/ratchet all green; 500-call soak flat |
+| M3 census 12 → 0 | **done** | `2026-11-16-owners-census-zero.md`; releases 65 → 73, drops 2200 → 2196 |
+| M4 deny-at-zero | **done** | `brievc memcheck --deny-memory-ambiguity` exits 0; wired into kiosk CI before the ratchet |
+| M5 drops ratchet | **done** | three counters/three directions; both new failure modes probe-tested |
+| M2 tail-loop | **measured + exposed, fix specified** | 1000→12.6 MB, 100k→4775.9 MB, 400k→23675.5 MB (quadratic). `memcheck` now reports the shape as undecided so it blocks deny-at-zero. Fix algorithm in BUGS.md 2026-11-16 (iteration-flag free before the backedge). |
+
+**What M2 taught (record it so nobody "simplifies" it back):** freeing the
+slot value at the backedge also frees the CALLER's argument on iteration 1 —
+the slot is initialised from the caller's handle. The loop needs an `owned`
+flag: false at entry, true after the first backedge store; free the slot value
+only when it is true, and release the final value on the base path.
 
 **Mandatory first reads:** `AGENTS.md` (Rules 12/12b/20/25),
 `docs/plans/INDEX.md`, `docs/plans/2026-11-10-unified-program-capability-and-ceilings.md`
