@@ -85,12 +85,6 @@ impl ResourceEffects {
         self.observable && other.observable
     }
 
-    /// Do **both** sides need the arena? While the arena cursor is one shared
-    /// `%State` slot, two allocating workers bump the same pointer. One side
-    /// allocating is safe: only that worker touches the cursor.
-    pub fn both_allocate(&self, other: &ResourceEffects) -> bool {
-        self.allocates && other.allocates
-    }
 }
 
 /// How two summaries collide on one global.

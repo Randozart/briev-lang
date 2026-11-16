@@ -324,6 +324,18 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
             SymbolicValue::Binary("++".to_string(), Box::new(left_sym), Box::new(right_sym))
         }
 
+        // A whole-word load of `w` bytes is `zext i{8w}` at the backend (see
+        // emit_load), so its value lies in `[0, 2^(8w) - 1]`. Modelling that
+        // interval is what lets the stdlib's own byte contracts prove:
+        // `byte_at` declares `[term >= 0 && term <= 255]` over `Load#(..., 1)`.
+        //
+        // The mask restriction is deliberate. `8w < 32` holds on every target
+        // this compiler emits (wasm32 included); a 4-byte load is exactly the
+        // word width there, so zero-extension is the identity and the value can
+        // read as negative — claiming `[0, 2^32-1]` for it would be a false
+        // proof. Wider or non-literal widths stay Unknown.
+        Expr::Call(name, args, _) if name == "Load#" => load_range_value(expr, args),
+
         // Function calls - can't track
         Expr::Call(_, _, _) => SymbolicValue::Unknown,
 
@@ -423,6 +435,40 @@ pub(crate) fn simplify_binary(
 
 /// Match interpreter/SMT wrapping arithmetic without host-profile overflow panics.
 /// Exceptional division stays symbolic: native division is not a total operation.
+/// The byte width a `Load#` call loads, when it is a literal in the modellable
+/// range.
+///
+/// Returns `None` for a missing width (the backend then loads a full word), for
+/// a non-literal width, and for widths whose bits reach 32 — see the call site in
+/// `eval_symbolic` for why that boundary is the sound one.
+pub(crate) fn load_width(args: &[Expr]) -> Option<i64> {
+    let width = match args.get(1)? {
+        Expr::Decimal(value) => *value,
+        _ => return None,
+    };
+    (1..=3).contains(&width).then_some(width)
+}
+
+/// The symbolic value of a `Load#(addr, w)` call: an opaque atom masked to the
+/// loaded width.
+///
+/// The atom is keyed by the node's identity rather than by its text so that two
+/// textually identical loads stay distinct. Collapsing them would let `a - b`
+/// over two separate loads fold to zero — a false proof, since a store between
+/// them can change the value.
+fn load_range_value(node: &Expr, args: &[Expr]) -> SymbolicValue {
+    let Some(width) = load_width(args) else {
+        return SymbolicValue::Unknown;
+    };
+    let mask = (1_i64 << (8 * width)) - 1;
+    let atom = SymbolicValue::Identifier(format!("load#{:p}", node));
+    SymbolicValue::Binary(
+        "&".to_string(),
+        Box::new(atom),
+        Box::new(SymbolicValue::Literal(mask, "int".to_string())),
+    )
+}
+
 fn fold_integer(op: &str, a: i64, b: i64) -> Option<i64> {
     match op {
         "+" => Some(a.wrapping_add(b)),

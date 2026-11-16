@@ -891,3 +891,112 @@ mod boolean_model_boundary_tests {
         assert!(model.resolve(&Type::bool_()).admitted());
     }
 }
+
+#[cfg(test)]
+mod load_width_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A one-byte load is zero-extended, so the stdlib's own byte contract holds.
+    ///
+    /// `byte_at` declares `[term >= 0 && term <= 255]` over `Load#(addr, 1)`;
+    /// before the width-aware load model this body was skipped as "a call to
+    /// `Load#`, which has no value summary".
+    #[test]
+    fn byte_load_proves_the_byte_range() {
+        let defn = parse_one(
+            "defn f(p: Int) [p >= 0][term >= 0 && term <= 255] -> Int {\n\
+                 term Load#(p, 1);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a 1-byte load must prove [0,255]: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// The bound scales with the loaded width.
+    #[test]
+    fn two_byte_load_proves_the_wider_range() {
+        let defn = parse_one(
+            "defn f(p: Int) [p >= 0][term >= 0 && term <= 65535] -> Int {\n\
+                 term Load#(p, 2);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert_eq!(report.proven.len(), 1, "unproven={:?}", report.unproven);
+    }
+
+    /// A goal the interval does not decide must stay undecided — never proven.
+    #[test]
+    fn wider_load_does_not_prove_a_narrower_bound() {
+        let defn = parse_one(
+            "defn f(p: Int) [p >= 0][term <= 255] -> Int {\n\
+                 term Load#(p, 2);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert!(
+            report.violated.is_empty(),
+            "straddling must not refute: {:?}",
+            report.violated
+        );
+        assert_eq!(report.unproven.len(), 1, "unproven: {:?}", report.unproven);
+    }
+
+    /// Two separate loads must not collapse into one atom.
+    ///
+    /// If they shared an identity, `a - b` would fold to 0 and a postcondition of
+    /// `term == 0` would be "proved" for a body that reads memory twice around a
+    /// possible store. The contract must stay unproven instead.
+    #[test]
+    fn distinct_loads_do_not_collapse() {
+        let defn = parse_one(
+            "defn f(p: Int) [p >= 0][term == 0] -> Int {\n\
+                 let a: Int = Load#(p, 1);\n\
+                 let b: Int = Load#(p, 1);\n\
+                 term a - b;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            !report.proven.iter().any(|name| name == "f"),
+            "two loads must not be treated as one value: {:?}",
+            report.proven
+        );
+    }
+
+    /// A four-byte load is exactly the word width on wasm32, so zero-extension is
+    /// the identity and the value may read negative. Modelling it as
+    /// `[0, 2^32-1]` would be a false proof, so the body must stay out of reach.
+    #[test]
+    fn word_width_load_stays_unmodelled() {
+        let defn = parse_one(
+            "defn f(p: Int) [p >= 0][term >= 0] -> Int {\n\
+                 term Load#(p, 4);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|line| line.contains("no value summary")),
+            "a 4-byte load must stay skipped: {:?}",
+            report.skipped
+        );
+    }
+}

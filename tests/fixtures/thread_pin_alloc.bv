@@ -1,0 +1,60 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-16 (thread-lane E3): two nodes pinned to different workers that BOTH
+// allocate.
+//
+// This pair used to be refused, back when the arena cursor was a single shared
+// `%State` slot. The refusal is retired: each worker owns its own arena triple,
+// so an allocating pair is sound.
+//
+// Honest scope: this fixture reaches the **heap** path, not the bump arena.
+// Every attempt to make it reach the arena failed — a runtime-sized `Alloc#`
+// with a `Store#`/`Load#` pair is constant-folded, a pointer escaping into state
+// is heap-allocated, and a literal size is stack-inlined — so `needs_arena`
+// stays empty here. That is not a property of the program space: it means the
+// bump arena appears to be **unreachable for any program this compiler accepts**,
+// which is filed as a defect (BUGS.md, "bump arena unreachable") because the
+// partition must hold for whatever reaches it in future.
+//
+// Until that is diagnosed, the per-worker partition is covered structurally by
+// `backend::llvm::tests::pinned_arena_injects_one_slot_triple_per_worker` (it
+// drives the injection path directly), and the totality guard in
+// `emit_threaded_dispatch` fails any future program that needs the arena
+// without a triple per worker. This fixture covers the retired refusal end to
+// end.
+
+import "std/io.bv";
+
+let tally_a: Int = 0;
+let tally_b: Int = 0;
+let armed_a: Bool = false;
+// Escaping pointers: the allocations must survive to codegen.
+let hold_a: Int = 0;
+let armed_b: Bool = false;
+
+// The allocation escapes into a state field: an escaping pointer cannot be
+// constant-folded away (a folded `Store#`/`Load#` pair would leave no
+// allocation at all, which is why earlier drafts of this fixture silently
+// exercised nothing), and a runtime-sized `Alloc#` in a reactively-dispatched
+// body is what selects the bump-arena strategy.
+async on thread 0 node work_a [!armed_a][armed_a] {
+    let n: Int = tally_a + 64;
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 7, 8);
+    hold_a = p;
+    armed_a = true;
+    term;
+};
+
+async on thread 1 node work_b [!armed_b][armed_b] {
+    let n: Int = tally_b + 96;
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 9, 8);
+    // Only this worker's own state is observed: reading worker 0's `tally_a`
+    // here would be a cross-worker read of a concurrently written field, which
+    // the thread gate refuses (rightly — the read would race with work_a's
+    // store in the same tick).
+    Print#(Load#(p, 8));
+    endprogram;
+};

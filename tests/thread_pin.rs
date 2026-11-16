@@ -237,3 +237,60 @@ fn pinned_non_lightweight_async_uses_the_threaded_arm() {
         "worker 1's node must actually fire (a parked worker would print nothing)"
     );
 }
+
+// ── 2026-11-16 (thread-lane E3): the both-allocate refusal is retired ────────
+
+/// Two pinned workers that both allocate. This pair was refused while the arena
+/// cursor was a single shared slot; with one triple per worker it is accepted.
+///
+/// Note what the fixture actually reaches: the heap path. No program in this
+/// tree naturally reaches the bump arena — a runtime-sized `Alloc#` is folded or
+/// heap-allocated before codegen, and `needs_arena` stays empty — so the
+/// per-worker partition is covered structurally by
+/// `backend::llvm::tests::pinned_arena_injects_one_slot_triple_per_worker`. This
+/// test covers the retired refusal end to end.
+#[test]
+fn two_pinned_workers_may_both_allocate() {
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("thread_pin_alloc");
+    let ll = emit_ir("thread_pin_alloc.bv", &out);
+
+    // Accepted: two workers, one tick each.
+    assert!(
+        ll.contains("define void @reactor_tick(ptr noalias nocapture %state)"),
+        "worker 0's tick must exist"
+    );
+    assert!(
+        ll.contains("define void @reactor_tick_w1(ptr noalias nocapture %state)"),
+        "worker 1's tick must exist"
+    );
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let binary = out.join("thread_pin_alloc");
+    let link = Command::new("clang")
+        .args([
+            "-O2",
+            "-march=native",
+            &out.join("thread_pin_alloc.ll").to_string_lossy(),
+            &root.join("lib/runtime/briev_rt.c").to_string_lossy(),
+            "-o",
+            &binary.to_string_lossy(),
+        ])
+        .output()
+        .expect("spawn clang");
+    assert!(
+        link.status.success(),
+        "link failed:\n{}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&binary).output().expect("run allocating binary");
+    assert!(
+        run.status.success(),
+        "allocating pinned program failed: stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "9",
+        "worker 1's own allocation round-trips (Store# 9 → Load# 9)"
+    );
+}
