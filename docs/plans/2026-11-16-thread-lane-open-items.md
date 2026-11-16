@@ -203,6 +203,17 @@ still exits 0 with a valid JSON report.
 
 Reversible: set `VERIFY_BODIES_TIMEOUT: "0"` to disable the bound.
 
+### B5-result. Counsel job was red without verifying anything (2026-11-16)
+
+`scripts/counsel-check.sh` documented "per-file over src/" — and so did the CI
+step — but ran `counsel-check --format json src/`, a whole-tree scan. That scan
+stops at the first unadmittable file and emits nothing, so the job has been
+failing on `src/backend/llvm/emit_expr.rs` (counsel cannot parse its
+`#[post(...)]` attribute) while producing **no census at all**. The script now
+walks `find src -name '*.rs'`, runs counsel per file, and merges the per-file
+`files` arrays: 432 files with a census entry, `violated: 0`, exit 0 locally.
+The stray duplicated `EOF` tail it had been executing as a command is gone too.
+
 ### B4 (historical). `Verify Bodies Census` workflow fails on infrastructure
 
 Last run: *"the hosted runner lost communication with the server"* after 55
