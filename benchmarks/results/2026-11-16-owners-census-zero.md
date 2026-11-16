@@ -159,3 +159,48 @@ reported "releases decreased", lowering the drops baseline reported
 smoke (MATCH 7 steps, face rpc raw=0/jpeg=2), ML smoke, VAD RPC 187 chunks, VAD
 sessions 187 chunks over two feeds, dashboard IR verify 624 calls, census
 ratchet ok.
+
+## 7. Merge with main (0b58ff45f) — verification, and an RSS finding
+
+`origin/main` (96 commits: verifier/SMT, resource-effects narrowing of
+"observable", thread lanes, correctness gates, PR #101) merged in. Two
+conflicts, both mechanical: `BUGS.md` (both sides prepended; kept both) and
+`src/hir/owned_storage.rs` (16 hunks — main's only change to that file is
+`0712ce724 chore(fmt): format 435 files`, verified by comparing with whitespace
+stripped, where the two differ only by trailing commas; took this branch's side
+then re-ran rustfmt).
+
+**Merged tree:** `cargo build --release` clean; `cargo test --lib` **3849
+passed, 0 failed** (main added 61 tests). Kiosk gates on the merged compiler:
+native smoke MATCH ×3 with `face rpc: raw=0, jpeg=2`, ML smoke, VAD RPC, VAD
+sessions, dashboard IR verify (625 calls). **Census unchanged: 73 releases,
+0 undecided, 2196 drops** — `--deny-memory-ambiguity` exits 0 and the ratchet is
+green. So main's narrowing of "observable" did not move any daemon family.
+
+### 7.1 RSS step-growth is pre-existing (NOT a merge regression)
+
+A 400-call soak on the merged daemon showed the RSS climbing 169.1 → 197.4 MB
+(~94 KB/call over the later stretch). Because the merged IR differs from the
+pre-merge IR (main's codegen: `add nsw`, new `__print_float64` declare), the
+earlier 900-call evidence could not be assumed to carry over, so the same
+cadence was run on two more builds:
+
+| build | commit | 400-call shape |
+|---|---|---|
+| oldest | `4aed72809` (before the daemon census edits) | 183.0 flat to 250, then +20.8 MB by 350, flat |
+| pre-merge | `751c66932` | 164.4 flat to 150, then +25 MB by 400 |
+| merged | `0b58ff45f` | 153.9 → +33 MB by 400 |
+
+All three start near 150 MB and finish 190–204 MB, in **steps with flat
+stretches** rather than a straight line, and the step positions differ per
+build. Since the oldest build (which predates every change in this campaign)
+shows the same class of movement, the growth is **not** attributable to the
+merge or to the census work. It matches what the campaign already recorded on
+2026-11-11: "residual growth is small per-request heap objects … a full plateau
+is still open".
+
+**Open item (not a merge blocker):** decide whether this is glibc arena
+retention or a true per-request leak, by (a) sampling after `malloc_trim`, or
+(b) counting malloc/free in `coll_arena.c` and diffing per call. Until then, do
+not read a plateau claim from a 400-call window — the steps are larger than the
+average slope.
