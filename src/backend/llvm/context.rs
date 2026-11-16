@@ -458,6 +458,11 @@ pub struct CompilerContext {
     /// (induction variable, bound, direction) and increments per transaction name.
     /// Used by emit_toplevel.rs for precise !prof branch weights on guard conditions.
     pub transition_graph: Option<crate::analysis::transition_graph::ReactorTransitionGraph>,
+    /// 2026-11-16 (per-worker arena plan, Stage 2a): the gate-validated
+    /// `on thread <N>` plan. Pinned programs emit one tick per worker;
+    /// unpinned programs (`worker_count == 0`) keep the ordinary single-worker
+    /// dispatch, byte-identical to before this field existed.
+    pub thread_plan: crate::analysis::thread_plan::ThreadPlan,
     /// Possible state writes at browser commit boundaries, including helper
     /// calls. Frontend-computed; the web flush batch consumes it.
     pub web_commit_writes: std::collections::HashMap<String, std::collections::HashSet<String>>,
@@ -761,6 +766,7 @@ impl CompilerContext {
             has_cycles: false,
             state_size_bytes: 0,
             transition_graph: None,
+            thread_plan: crate::analysis::thread_plan::ThreadPlan::default(),
             web_commit_writes: std::collections::HashMap::new(),
             spawn_pools: std::collections::HashMap::new(),
             dependent_pools: std::collections::HashMap::new(),

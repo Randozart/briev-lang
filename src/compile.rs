@@ -948,15 +948,6 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         eprintln!("warning: {warning}");
     }
     let thread_plan = thread_gate.plan;
-    // 2026-11-15 (thread-assignment plan, Stage 2 hold): the plan is proved and
-    // carried, but the threaded dispatch lane is not emitted yet. A pin changes
-    // dispatch order if it is served sequentially, and dispatch order is
-    // observable — so the only two honest outcomes are real workers or a
-    // refusal. Refusing (with the missing piece named) beats silently reordering
-    // or silently ignoring a declared pin.
-    if thread_plan.is_pinned() {
-        return Err(briev_compiler::analysis::thread_plan::unemitted_pin_message(&thread_plan));
-    }
 
     emit_beast_snapshot(
         file_path,

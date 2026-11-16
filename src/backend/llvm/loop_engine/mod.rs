@@ -261,6 +261,17 @@ impl LlvmBackend {
         // result to state — citing the stale block would make the header
         // phis name a block that is not their predecessor.
         self.fun.cur_block = None;
+        // 2026-11-16 (per-worker arena plan, Stage 2a): start the worker pool
+        // ONCE, before the loop. Starting it per tick would re-create the
+        // threads and re-initialise the barriers on every iteration.
+        if self.ctx.thread_plan.is_pinned() {
+            writeln!(
+                out,
+                "  call i64 @briev_workers_start(i64 {}, ptr @__briev_worker_fns, ptr %state)",
+                self.ctx.thread_plan.worker_count.max(1)
+            )
+            .ok();
+        }
         // 2026-09-10 (async convergence fix): the exit check is the LOOP
         // HEADER. The old shape ran the check ONCE at entry, then .loop's
         // latch branched back to .loop — the convergence predicate was never
@@ -275,15 +286,27 @@ impl LlvmBackend {
         writeln!(out, ".loop:").ok();
         let state_bytes = self.compute_state_size_bytes();
         self.emit_memcpy(out, "  ", "%state_save", "%state", &state_bytes.to_string());
+        // 2026-11-16 (per-worker arena plan, Stage 2a): a pinned program starts
+        // its pool before the loop and runs one barrier-balanced tick per
+        // iteration — main releases the workers, runs worker 0's tick itself,
+        // then waits for the others. The barriers provide every ordering the
+        // tick needs, so no fences are emitted.
+        let threaded = self.ctx.thread_plan.is_pinned();
         // 2026-07-14: Use async phase for async programs
         if self.has_async_txns && !self.is_lightweight_async {
             self.emit_async_phase(out, "%state");
         } else {
+            if threaded {
+                writeln!(out, "  call void @briev_workers_release()").ok();
+            }
             writeln!(
                 out,
                 "  call void @reactor_tick(ptr noalias nocapture %state)"
             )
             .ok();
+            if threaded {
+                writeln!(out, "  call void @briev_workers_wait()").ok();
+            }
         }
         // 2026-07-18: Convergence exit logic.
         // - Wake triggers: check @llvm.wake.any(); exit if none pending.
@@ -310,6 +333,9 @@ impl LlvmBackend {
             writeln!(out, "  br label %.exit_check").ok();
         }
         writeln!(out, ".end:").ok();
+        if self.ctx.thread_plan.is_pinned() {
+            writeln!(out, "  call void @briev_workers_stop()").ok();
+        }
         // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
         // (sub-CAP output was lost at ret; same tail the counter engines emit,
         // has_stdout_flush gates presence + liveness).

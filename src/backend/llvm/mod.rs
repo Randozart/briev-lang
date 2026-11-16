@@ -3715,6 +3715,9 @@ impl LlvmBackend {
         // 2026-07-28: Persist transition graph for !prof computation in emit_toplevel.
         // iter_bounds populated later (at txn processing loop) — txns not in scope yet.
         self.ctx.transition_graph = Some(analysis.transition_graph.clone());
+        // 2026-11-16 (per-worker arena plan, Stage 2a): the gate-validated pin
+        // plan decides whether the reactor emits one tick per worker.
+        self.ctx.thread_plan = analysis.thread_plan.clone();
         self.ctx.web_commit_writes = analysis.web_commit_writes.clone();
         // 2026-08-10: webstack flush buffer sized to the largest write_set —
         // frontend analysis, computed once so the term-site batch emitters and
@@ -6203,8 +6206,13 @@ impl LlvmBackend {
                 // drives each counter independently.
                 let mut shared_counter: Option<String> = None;
                 let mut shared_bound: Option<String> = None;
-                let mut multi_foldable =
-                    enumerable.is_none() && !has_wake_triggers && !self.async_txn_names.is_empty();
+                // 2026-11-16 (per-worker arena plan, Stage 2a): a pinned program
+                // must run one tick per worker, which the single folded loop
+                // cannot express — fall through to the threaded reactor.
+                let mut multi_foldable = enumerable.is_none()
+                    && !has_wake_triggers
+                    && !self.async_txn_names.is_empty()
+                    && !self.ctx.thread_plan.is_pinned();
                 if multi_foldable {
                     for name in &self.async_txn_names {
                         let node = graph.nodes.iter().find(|n| n.name == *name);
@@ -6337,6 +6345,7 @@ impl LlvmBackend {
                     && !txns.is_empty()
                     && enumerable.is_none()
                     && !has_wake_triggers
+                    && !self.ctx.thread_plan.is_pinned()
                 {
                     // EmitAdaptive: SSA register pipeline (or modulo-switch dispatch)
                     // 2026-07-09: Removed bounded_pre + increments requirement —
@@ -6526,6 +6535,19 @@ impl LlvmBackend {
                     // 2026-07-19: Shared library mode — emit export wrappers and
                     // reactive entry points. No main loop, no reactor tick.
                     self.emit_shared_lib_exports(&mut out, items);
+                } else if !txns.is_empty() && self.ctx.thread_plan.is_pinned() {
+                    // 2026-11-16 (per-worker arena plan, Stage 2a): explicit
+                    // workers. A pinned program cannot use the direct SSA loop
+                    // (it inlines every node into @main, which has no worker
+                    // identity), so it takes the reactor path with one tick per
+                    // worker and the runtime's thread pool.
+                    self.reject_bootstrap_off_ssa("threaded reactor loop");
+                    self.emit_threaded_dispatch(
+                        &mut out,
+                        &txns,
+                        &fusable,
+                        has_wake_triggers,
+                    );
                 } else if !txns.is_empty()
                     && self.async_txn_names.is_empty()
                     && self.ctx.mmio_fields.is_empty()

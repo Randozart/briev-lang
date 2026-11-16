@@ -31,31 +31,6 @@ use std::collections::BTreeMap;
 /// any real deployment's core count.
 pub const MAX_THREADS: u32 = 63;
 
-/// 2026-11-15 (Stage 2 hold): the plan is proved and carried, but the threaded
-/// dispatch lane does not emit workers yet. `on thread <N>` cannot be served
-/// sequentially either — dispatch order is observable, so running worker N's
-/// slice inline would change program behaviour. The honest answer is a refusal
-/// that names the missing piece, its fix, and the current workaround.
-pub fn unemitted_pin_message(plan: &ThreadPlan) -> String {
-    let mut workers: Vec<String> = plan
-        .workers
-        .iter()
-        .map(|(index, names)| format!("worker {index}: {}", names.join(", ")))
-        .collect();
-    workers.sort();
-    format!(
-        "`on thread <N>` is validated but cannot be emitted yet — this build \
-         has no threaded dispatch lane, and running the workers sequentially \
-         would reorder node firing (order is observable).\n  \
-         The declared plan is sound: {}.\n  \
-         Fix: drop the pins to keep the reactor's own scheduling (the default \
-         is already one efficient worker). Explicit worker threads land with \
-         the threaded dispatch lane, which additionally needs per-worker \
-         arenas — the runtime arena currently has a single shared cursor.",
-        workers.join("; ")
-    )
-}
-
 /// One callable's declared pin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadPin {

@@ -298,13 +298,33 @@ the existing modifier plumbing, so no `Transaction` struct churn):
 - Tests: 10 unit tests in the module + 2 `tests/compile_fail` fixtures
   (`thread_pin_race.bv`, `thread_pin_unemitted.bv`).
 
-### Stage 1b — the emission hold (2026-11-15)
+### Stage 1b — the emission hold (2026-11-15; RETIRED 2026-11-16)
 
-Pins are **refused at emission** with a diagnostic that names the proved plan
-and the missing lane (`unemitted_pin_message`). Rationale: a pin says WHERE a
-node fires; serving it sequentially would reorder firing, and firing order is
-observable. The only honest outcomes are real workers or a refusal — silently
-reordering and silently ignoring are both forbidden.
+Pins were refused at emission in the first landing (`unemitted_pin_message`),
+because a pin says WHERE a node fires and serving it sequentially would reorder
+firing — and firing order is observable. The hold is now retired: the threaded
+dispatch lane landed (Stage 2a below) and pinned programs emit real workers.
+
+### Stage 2a — DONE (2026-11-16): threaded dispatch lane
+
+- `lib/runtime/briev_rt.c`: `briev_workers_start/release/wait/stop` — a
+  `pthread_barrier_t` pair per tick, main participating as worker 0.
+- `emit_threaded_dispatch` (dispatch.rs): one tick per worker
+  (`@reactor_tick`, `@reactor_tick_w<N>`), the `@__briev_worker_fns` table, and
+  the threaded main loop (pool started once before the loop; each tick is
+  release → own tick → wait; `briev_workers_stop` at `.end`).
+- `emit_reactor` gained `emit_reactor_named(.., fn_name)`; `emit_main` learnt
+  the threaded shape.
+- The four earlier dispatch branches (multi-txn fold, enum trigger, direct SSA
+  register pipeline) are skipped when a program is pinned — none of them can
+  express per-worker ticks.
+- Fixed en route: `@cell_persistent_ticks` is called by every reactor tick but
+  only *defined* when persistent cells exist; the threaded lane emits the empty
+  tick when there is nothing to tick (the direct-SSA path never called it, so
+  the gap was invisible).
+- Verified: `tests/thread_pin.rs` — IR shape (both ticks, the table, the
+  barrier order) plus a linked run producing `6`, identical to an unpinned
+  build.
 
 ### Stage 2 — TODO: threaded dispatch lane
 
@@ -324,11 +344,17 @@ What the investigation established (all verified in-tree):
 3. **`emit_reactor` is nearly parameterizable**: exactly one hardcoded
    `define void @reactor_tick(...)` site, so a `fn_name` parameter plus a
    filtered txn slice yields `@reactor_tick_w<N>` cheaply.
-4. **The arena is the real blocker.** `emit_arena_init` reads/writes arena
-   cursor fields **in `%State`** (`arena_ptr_idx`/`arena_end_idx`/`arena_base_idx`)
-   — one shared cursor per program. Two workers that allocate would corrupt each
-   other. The threaded lane needs per-worker arena triples (state field
-   injection × N) or a proof that pinned nodes never allocate.
+4. **The arena is *not* a user-state blocker — it is undeclared emitter state.**
+   `emit_arena_init`/`emit_arena_alloc` read and write three injected `%State`
+   slots (`__arena_ptr`, `__arena_end`, `__arena_base`, injected in
+   `src/backend/llvm/mod.rs` at codegen time when `needs_arena` is non-empty).
+   The access model (`collect_assigned_identifiers` /
+   `collect_read_identifiers` over the AST body) never names them: an
+   `Alloc#(n)` call does not mention `__arena_ptr`, so every existing
+   conflict analysis — `xor_overlap`, `fusable_pairs`, the concurrency gate,
+   the thread gate, and `build_write_masks` — treats two allocating nodes as
+   independent. Section 7.1 explains why this is a doctrine gap rather than a
+   user-facing hazard, and the derivation that closes it.
 5. **Tick protocol** (mirrors the removed pool and the C reference benchmark):
    two `pthread_barrier_t`s — main releases (`b_start`), every worker runs its
    tick, all meet at `b_done`; main participates as worker 0. Barriers give the
@@ -340,11 +366,123 @@ What the investigation established (all verified in-tree):
    modern Linux), but the harness link line must be checked on the oldest
    supported target before this ships.
 
-Order of work: (a) per-worker arena triples, (b) `emit_reactor` `fn_name`
-parameter + per-worker txn slices, (c) funnel pinned programs into the reactor
-path, (d) `briev_workers_start/stop` in the runtime + threaded `emit_main`
-variant, (e) remove the emission hold, (f) determinism gate + IR A/B on an
-unpinned corpus to prove the default path is untouched.
+Order of work: (a) derive the per-worker arena partition (§7.1), (b) put
+injected emitter state into the access model so *any* future concurrency surface
+inherits the guard, (c) `emit_reactor` `fn_name` parameter + per-worker txn
+slices, (d) funnel pinned programs into the reactor path, (e)
+`briev_workers_start/stop` in the runtime + threaded `emit_main` variant, (f)
+remove the emission hold, (g) determinism gate + IR A/B on an unpinned corpus to
+prove the default path is untouched.
+
+### 7.1 Why the arena is corruptible — and why that is a compiler bug, not an
+### author error
+
+Briev **does** refuse cross-corruption: the concurrency gate (Rule 22) refuses
+unclassified simultaneously-fireable pairs, and the thread gate refuses
+cross-worker write overlap and write/read overlap with a diagnostic naming the
+field. Declared state is guarded.
+
+The arena is *not declared state*. It is three `%State` slots the emitter injects
+at codegen time, and the frontend's read/write sets are computed from the AST
+body — which cannot mention a field the author never wrote. So the refusal
+machinery is blind to it by construction. That is precisely the pattern Golden
+Rule 3 forbids: **undeclared special treatment**. The hidden cursor is one
+allocator shared by every node, so "two allocating nodes are independent" is a
+false claim the compiler currently makes silently.
+
+Why it is invisible today: nothing emitted runs two nodes at once. There is no
+`pthread_create` anywhere in `src/backend`; the pthread pool was removed
+(2026-09-10, "Family H") and `emit_async_phase` emits async bodies as
+sequential direct calls; `emit_parallel_reactor` is a *masked sequential*
+dispatch — its `%fired_mask` orders writes, it does not spawn threads. So the
+model is unsound but not yet exercised. The moment Stage 2 adds real workers it
+becomes a live data race that the compiler would not refuse — which is exactly
+the failure mode this language exists to make impossible.
+
+**The fix is derivation, not a keyword** (Rule 2). The compiler already knows
+which worker runs each node, because Stage 1 computes the plan. The arena
+partition therefore follows: give each worker its own triple
+(`__arena_ptr_w0..wN`), selected at emission time by the worker whose tick
+function is being generated (`arena_idx_for(worker)` replacing the single
+`arena_ptr_idx`). Each worker's tick initialises and bumps only its own
+triple, so there is no shared slot left to race on — sound by construction, no
+proof obligation, and no author burden.
+
+Two independent changes, both wanted:
+
+1. **Derive the partition** (removes the shared slot). Mechanical: the three
+   indices become a function of the worker index; `emit_arena_init`,
+   `emit_arena_alloc`, and `emit_arena_fini` each take the worker they are
+   emitting for. The single-worker case (no pins) keeps exactly one triple, so
+   the default program's `%State` and IR are unchanged.
+2. **Declare the injection into the access model** (closes the general gap).
+   Emitter-injected slots should appear as synthetic accesses on the functions
+   that touch them, so the same conflict analyses that guard user state also
+   guard compiler state. This is worth doing regardless of threads: the GPU
+   runner, the async phase, and any future parallel dispatch inherit the guard
+   for free, and the next injected field cannot repeat the omission.
+
+The concrete design for both — including why the hosted arena cannot simply
+clone its three slots (the process `brk`/`realloc` backing store is global, and
+`emit_arena_fini` on one worker would shrink memory another worker lives in) — is
+`docs/plans/2026-11-16-per-worker-arena-and-resource-effects.md`. That plan is
+the prerequisite for this one's Stage 2.
+
+A narrower alternative — refuse pins when a pinned node allocates — was
+considered and rejected: it makes the author pay for a compiler-internal
+ownership question, and it would need a *new* refusal for every future injected
+field.
+
+### 7.2 The same blind spot in a second place: shared sinks reached through
+### callees
+
+The arena is not the only shared resource the pairwise gate cannot see, and the
+reason is the same: `collect_assigned_identifiers` /
+`collect_read_identifiers` are **intraprocedural**. They walk the node body's own
+assignments, nested blocks, `when` bodies, match arms, and index/field stores —
+but a `Expr::Call` is not expanded into its callee's effects.
+
+That matters for a resource that genuinely is declared state:
+`lib/std/cast_lanes.bv` declares `let stdout_buf: Int = 0; let stdout_fill: Int = 0;`
+and the print lane mutates both (`Store#(stdout_buf + stdout_fill, b, 1)`,
+`stdout_fill = 0` after a `SysCall#` flush). A node whose body calls the print
+path therefore writes `stdout_fill` — but the node's own AST never mentions it,
+so the gate sees two printing nodes as independent.
+
+Today that is again invisible (single-threaded dispatch, so prints are ordered).
+With workers it becomes two failures at once:
+
+- a **data race** on the buffer cursor (interleaved bytes, lost flush), and
+- an **observable reorder** of program output — the one thing the observability
+  razor says a keyword may never silently change.
+
+The infrastructure to catch it already exists and should be consumed rather than
+reinvented (the frontend-driven-dispatch pillar):
+
+- `AnalysisResults::has_unguarded_ffi` — reactive nodes with top-level FFI calls.
+- `AnalysisResults::observable_names` — `out`-marked calls and `out`/`vol` reads
+  and writes are liveness roots; a call to one is an observable sink.
+- `lib/glue`/`lib/std` already mark the print lane's surface `out`, which is why
+  it survives DCE at all.
+
+So the thread gate's rule becomes: a cross-worker, jointly-satisfiable pair is
+refused when either side performs an observable sink or transitively writes a
+shared global — both are "unserialised shared resources", and the diagnostic
+should say which (`Print#` / `stdout_fill`), not just "Conflict".
+
+Implementation note: the gate currently runs in `compile.rs` *before*
+`analyze_program`, so it cannot read those fields yet. Two clean options — run
+the gate after analysis (it is a refusal, so ordering is free), or extract the
+sink/observable detection into a shared helper both call sites use. The second
+is preferable: one definition of "observable sink" instead of two that can
+drift.
+
+A pinned program that prints from two workers is therefore **refused** until
+either the sink is serialised (`sync<group>` on the pair — the barrier makes the
+interleaving explicit and ordered) or the author moves both nodes to one worker.
+That is the same shape as the existing "no implicit concurrency" refusal, and it
+is the behaviour the user's question assumes Briev already has — the work is
+making the assumption true for callee-reached and emitter-injected state.
 
 ### Stage 3 — TODO: tests for the threaded lane
 

@@ -2928,12 +2928,15 @@ on thread any node reporter [done][!done] { report(); term; };
 - Affinity is never a speed keyword: a pin that only wins because the default
   was deficient is a failing default, not a feature.
 
-> **2026-11-15 (emission hold).** Parsing, validation and the cross-worker
-> independence proof are implemented; the threaded dispatch lane that gives each
-> worker an OS thread is not. Until it lands a pinned program is refused with a
-> diagnostic naming the proved plan, because serving the partition sequentially
-> would reorder node firing and firing order is observable. Full scope and the
-> in-tree findings: `docs/plans/2026-11-15-thread-assignment.md`.
+> **2026-11-16 (threaded lane landed).** Each declared worker runs on its own
+> OS thread: the compiler emits one reactor tick per worker and the runtime
+> starts a pool of them, balancing a release/done barrier pair per tick so a
+> tick is ordered as a whole without per-tick fences. Mutually exclusive guards,
+> distinct state and at most one observable sink keep the result deterministic.
+> Two workers that both allocate remain refused while the arena cursor is a
+> single shared slot; per-worker arenas lift that restriction
+> (`docs/plans/2026-11-16-per-worker-arena-and-resource-effects.md`). Full
+> record: `docs/plans/2026-11-15-thread-assignment.md`.
 
 ### 12.2 `spawn` and `await`
 
