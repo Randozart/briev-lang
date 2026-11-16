@@ -27,6 +27,12 @@ use std::path::{Path, PathBuf};
 /// not about Briev-internal type names.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GlueTarget {
+    /// 2026-11-16 (S3/G1): boundary value classes — how a Briev type maps onto a
+    /// representation crossing this boundary. Keyed by the Briev protocol name
+    /// (`String`). Only classes with a non-`scalar` class and a `to_op`/`from_op`
+    /// pair render a boundary type + protocol; scalars are the base types and
+    /// need no generated declaration.
+    pub values: HashMap<String, ValueClass>,
     /// 2026-11-16 (FFI contract plan S2): the ABI core this adapter targets
     /// (`config/abi/<name>.dbvl`). Optional: an adapter whose boundary is not a
     /// machine ABI (e.g. a JS host module) omits it. When present it must name a
@@ -489,6 +495,12 @@ fn validate_named_entries(
             "retain_op",
             "release_op",
             "kind",
+            // 2026-11-16 (S3/G1): the names the generator emits. They are
+            // language facts (what this boundary is called here), so they belong
+            // in data rather than in a naming convention inside the compiler.
+            "boundary",
+            "protocol",
+            "base",
         ]
     };
     for (name, body) in entries {
@@ -526,6 +538,13 @@ fn glue_target_from_entry(
                 .collect(),
             _ => HashMap::new(),
         }
+    };
+    let values = match entry.get("values") {
+        Some(DataValue::Map(map)) => map
+            .iter()
+            .map(|(name, v)| (name.clone(), ValueClass::from_entry(v)))
+            .collect(),
+        _ => HashMap::new(),
     };
     let abi = match entry.get("abi") {
         Some(DataValue::String(name)) => Some(name.clone()),
@@ -579,6 +598,7 @@ fn glue_target_from_entry(
     let param_decl = str_field("param_decl").unwrap_or_else(|| "{name}: {type}".to_string());
     let fn_param_decl = str_field("fn_param_decl").unwrap_or_else(|| "{name}: {type}".to_string());
     Some(GlueTarget {
+        values,
         abi,
         version,
         language: key.to_string(),
@@ -654,6 +674,81 @@ pub fn extension_to_language<'a>(
     targets: &'a HashMap<String, GlueTarget>,
 ) -> Option<&'a str> {
     find_language_by_extension(targets, ext).map(|t| t.language.as_str())
+}
+
+/// One boundary value class of a language adapter.
+///
+/// 2026-11-16 (S3/G1): the *representation* half of the contract. Ownership of a
+/// specific call is declared per function (D1), so nothing here states who frees
+/// what — only how a class is represented and which operations realise the lane.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValueClass {
+    /// `scalar`, `borrowed_bytes`, `owned_buffer`, `opaque_handle`, `aggregate`,
+    /// `callback`, `error_channel`.
+    pub class: String,
+    /// Outbound lane is a representation view, not a copy.
+    pub zero_copy: bool,
+    /// Layout hint for a scalar class (a C type name such as `i8`).
+    pub layout: Option<String>,
+    /// Length accessor operation, for `borrowed_bytes` with a split (ptr, len).
+    pub len_op: Option<String>,
+    /// Outbound conversion operation (Briev → boundary).
+    pub to_op: Option<String>,
+    /// Inbound conversion operation (boundary → Briev).
+    pub from_op: Option<String>,
+    /// The inbound lane must copy (mandatory for representations that differ).
+    pub from_copy: bool,
+    pub retain_op: Option<String>,
+    pub release_op: Option<String>,
+    /// Language-native kind marker for `opaque_handle` (`pyobj`, `jni_ref`, …).
+    pub kind: Option<String>,
+    /// The boundary type name this class declares (`CStr`).
+    pub boundary: Option<String>,
+    /// The protocol name it belongs to (`C_String`).
+    pub protocol: Option<String>,
+    /// The base protocol it specialises (`String`).
+    pub base: Option<String>,
+}
+
+impl ValueClass {
+    /// Read one `values.<Name>: { … }` entry.
+    fn from_entry(value: &DataValue) -> Self {
+        let DataValue::Map(fields) = value else {
+            return Self::default();
+        };
+        let text = |k: &str| match fields.get(k) {
+            Some(DataValue::String(s)) => Some(s.clone()),
+            _ => None,
+        };
+        Self {
+            class: text("class").unwrap_or_else(|| "scalar".to_string()),
+            zero_copy: matches!(fields.get("zero_copy"), Some(DataValue::Bool(true))),
+            layout: text("layout"),
+            len_op: text("len_op"),
+            to_op: text("to_op"),
+            from_op: text("from_op"),
+            from_copy: matches!(fields.get("from_copy"), Some(DataValue::Bool(true))),
+            retain_op: text("retain_op"),
+            release_op: text("release_op"),
+            kind: text("kind"),
+            boundary: text("boundary"),
+            protocol: text("protocol"),
+            base: text("base"),
+        }
+    }
+
+    /// Does this class produce a generated boundary type + protocol?
+    ///
+    /// Only a non-`scalar` class that names a boundary type, a protocol and both
+    /// conversion operations can: the scalars are the base types themselves, and
+    /// a class without ops has no lane to generate.
+    pub fn renders(&self) -> bool {
+        self.class != "scalar"
+            && self.boundary.is_some()
+            && self.protocol.is_some()
+            && self.to_op.is_some()
+            && self.from_op.is_some()
+    }
 }
 
 #[cfg(test)]
