@@ -39,11 +39,18 @@ defn arg_ptr(i: Int, argv: Int) [true][term >= 0] -> Int {
 };
 
 // arg — argv[i] as a Briev String (empty when out of range).
+//
+// 2026-11-16 (owners census): the empty case goes through `fresh_string` so
+// the OWNERSHIP CONTRACT is uniform — `arg` always returns an owned String
+// the caller may free. A bare `""` is static storage: freeing it is invalid,
+// so the mixed static/owned result had to stay unowned and every caller leaked
+// one String per argv read. The cost is one small allocation on a cold path
+// (argv parsing happens once per process).
 defn arg(i: Int)  -> String {
     let argv: Int = Args#();
     let p: Int = arg_ptr(i, argv);
     when p == 0 {
-        term "";
+        term fresh_string("");
     };
     let n: Int = cstr_len(p);
     let buf: Int = Alloc#(8 + n + 1) as Int;
