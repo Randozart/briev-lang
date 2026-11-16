@@ -1224,10 +1224,18 @@ impl Parser {
                 break;
             }
             if !fields.is_empty() {
+                // 2026-11-16 (P0): the separator is not consistently ours to
+                // consume — a nested `{ … }` value already eats the `;` that
+                // follows it, so requiring one here broke the very common
+                // `a: { v: 1; b: { … } }` shape, while a trailing `;` before the
+                // closing brace broke `a: { b: { … }; }`. Consume a separator if
+                // present, then decide on `}` alone: end the map there, else
+                // parse the next field.
                 if self.peek_char() == Some(';') {
                     self.advance();
                     self.skip_ws_and_comments();
-                } else {
+                }
+                if self.peek_char() == Some('}') || self.is_eof() {
                     break;
                 }
             }
@@ -1454,6 +1462,44 @@ mod tests {
     /// field" while a single-entry one parsed. This pins the exact rule instead
     /// of guessing: each case asserts whether it parses, and the failure message
     /// carries the parser's own error.
+    /// 2026-11-16 (P0 bisection, round 2): the six-class `values` block parses on
+    /// its own, so the shipped-adapter failure is an interaction with a sibling
+    /// section. Rebuild the real entry here and drop one sibling at a time; the
+    /// variant that parses names the interacting pair.
+    #[test]
+    fn characterise_entry_level_interaction() {
+        const VALUES: &str = r#"values: { "String": { class: "b"; zero_copy: true; to_op: "t"; from_op: "f"; from_copy: true }; "Int": { class: "s"; layout: "i" }; "Float": { class: "s"; layout: "f" }; "Bool": { class: "s"; layout: "i8" }; "Data": { class: "b"; zero_copy: true }; "Char": { class: "s"; layout: "i32" } }; "#;
+        const PROTOCOLS: &str = r#"protocols: { "String": { native: "int64_t"; c_abi: "int64_t" }; "Int": { native: "int64_t"; c_abi: "int64_t" } }; "#;
+        const CONVERSIONS: &str = r#"conversions: { to_abi: { "Int": "{name}" }; from_abi: { "Int": "result_abi" } }; "#;
+        const STATE: &str = r#"state: { decl: "BrievState* state"; arg: "state"; ffi_type: "" }; "#;
+        let base = r#"types_module: "t.bv"; extension: "h"; bridge_kind: "k"; calling_convention: "c_abi"; "#;
+        let cases: Vec<(&str, String)> = vec![
+            ("min: nested map, no trailing semicolon", r#"a: { b: { x: "1" } };"#.to_string()),
+            ("min: nested map + trailing semicolon", r#"a: { b: { x: "1" }; };"#.to_string()),
+            ("min: flat then nested", r#"a: { v: 1; b: { x: "1" } };"#.to_string()),
+            ("min: flat then nested + semi", r#"a: { v: 1; b: { x: "1" }; };"#.to_string()),
+            ("values alone", format!("c: {{ version: 1; {base}{VALUES}}};")),
+            ("values + protocols", format!("c: {{ version: 1; {base}{VALUES}{PROTOCOLS}}};")),
+            ("values + conversions", format!("c: {{ version: 1; {base}{VALUES}{CONVERSIONS}}};")),
+            ("values + state", format!("c: {{ version: 1; {base}{VALUES}{STATE}}};")),
+            (
+                "values + protocols + conversions + state (the real shape)",
+                format!("c: {{ version: 1; {base}{VALUES}{PROTOCOLS}{CONVERSIONS}{STATE}}};"),
+            ),
+        ];
+        let mut report: Vec<String> = Vec::new();
+        for (name, src) in cases {
+            match parse_document_quoted(&src) {
+                Ok(_) => report.push(format!("{name}: OK")),
+                Err(e) => report.push(format!("{name}: ERR {e}")),
+            }
+        }
+        // Every variant must parse; print the table on failure so the interacting
+        // pair is visible rather than guessed.
+        let failing: Vec<&String> = report.iter().filter(|l| l.contains(": ERR")).collect();
+        assert!(failing.is_empty(), "entry-level shapes:\n{}", report.join("\n"));
+    }
+
     #[test]
     fn characterise_named_map_shapes() {
         let cases: &[(&str, &str, bool)] = &[
