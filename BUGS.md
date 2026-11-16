@@ -53,6 +53,61 @@ landmine: the audit's "ok" actively certifies the loss.
 `lower_program_checked` must report boundary facts it cannot represent instead of
 returning `unsupported=0`. The fixture above is the acceptance test: it must stop
 being "ok" while the contract is unrepresented.
+## 2026-11-16 — HIR/AST defn-liveness drift on lib/std/os/dir.bv (debug-only assert; release ships the smaller set)
+
+**Symptom.** A debug build of `lib/std/os/dir.bv` panics:
+
+```
+thread 'main' panicked at src/backend/mod.rs:633:
+assertion `left == right` failed: HIR/AST defn-liveness drift
+```
+
+The assertion is `debug_assert_eq!`, so release compiles it out — and
+`hir_emit_enabled()` defaults **on** (2026-11-09 H5 flip), so release *uses* the
+HIR set. The check that would catch a bad HIR set is the one that is absent from
+the build that ships it.
+
+**Measured.** Captured the two sets from the panic and diffed them:
+
+```
+AST-only: 56 names   HIR-only: 0 names
+```
+
+HIR is a strict subset of AST. The missing names are ordinary helpers —
+`dir_open`, `dir_close`, `dir_loop`, `dirent_cstr_string`, `count_lead`,
+`digit_char`, `clamp_hi`, `coll_hi_fix`, `cstr_len`, `bool_to_str`, … — not
+contract-only references and not intrinsics.
+
+**Localized.** `entries` (in `lib/std/os/dir.bv`) *is* HIR-live, but its calls to
+`dir_open` / `dir_close` / `dir_loop` never reach the HIR live set, so the whole
+subtree below them is lost. Its shape: an `export defn` returning
+`Result<List<String>, Int>`, with calls in a `let`, in a `when` body
+(`dir_close(fd);` as an expression statement), and in the final
+`term dir_loop(...)`, plus `Free#`/`Alloc#` casts and a `names <- …` push.
+
+**Not the cause** (each ruled out by a unit test in
+`src/backend/mod.rs::liveness_oracle_tests`): plain calls in `let`/`when`/`term`,
+a self-recursive `txn`, and `export defn` — those all agree.
+
+**Impact.** Emission is unaffected — the 56 are still emitted and still called in
+the release `.ll` (checked on `os/dir`). The drift therefore lands on
+*classification*: boundary ownership and the reclamation hints read
+`DefnLiveness`, so those defns get the non-live treatment while being live.
+
+**Reproduce.**
+
+```bash
+cargo build --bin brievc            # debug: asserts are live
+./target/debug/brievc build lib/std/os/dir.bv --no-link --out /tmp/x
+```
+
+**Next step.** Bisect the shape by trimming `entries` in place (a valid
+`Result`-returning fixture needs the real `std/result.bv` imports, which is why
+ad-hoc fixtures kept failing at the type gate rather than reproducing).
+Candidates, in order: the `names <- …` transfer statement; `Free#(x as Ptr<...>)`;
+the `Result<List<String>, Int>` output type itself.
+
+---
 
 ## 2026-11-16 — emitted IR is not reproducible: state-field index and interned-string order vary per process
 

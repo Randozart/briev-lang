@@ -1083,3 +1083,68 @@ mod handle_model_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod length_fact_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A handle's stored length is a non-negative integer, so the byte accessor's
+    /// guard no longer mentions reflection and its contract proves.
+    #[test]
+    fn length_guard_lets_the_byte_accessor_prove() {
+        let defn = parse_one(
+            "defn at(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {\n\
+                 let addr: Int = (s as Data) as Int;\n\
+                 when i < 0 || i >= s.^Length { term 0; };\n\
+                 term Load#(addr + 8 + i, 1);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "the length guard must let this prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// Two different handles have independent lengths: a claim that one equals
+    /// the other must stay undecided, never be assumed.
+    #[test]
+    fn distinct_handles_have_distinct_lengths() {
+        let defn = parse_one(
+            "defn same(a: String, b: String) [true][term >= 0] -> Int {\n\
+                 when a.^Length == b.^Length { term 0; };\n\
+                 term 1;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+    }
+
+    /// Length reflection on a non-handle never reaches the prover: the frontend
+    /// refuses it, which is why the prover's own base-type guard is defensive
+    /// rather than reachable from valid source.
+    #[test]
+    fn length_on_a_non_handle_is_a_frontend_error() {
+        let err = crate::library::parse_and_check(
+            "<test>",
+            "defn f(n: Int) [n >= 0][term >= 0] -> Int { term n.^Length; };",
+        )
+        .expect_err("`.^Length` on an Int must be rejected by the type checker");
+        let text = format!("{err}");
+        assert!(
+            text.contains("no intrinsic (stored) length"),
+            "unexpected diagnostic: {text}"
+        );
+    }
+}

@@ -401,6 +401,10 @@ pub fn verify_bodies_with_types(
             report.skipped.push(format!("{name}: {reason}"));
             continue;
         }
+        if let Some(reason) = unsupported_length_reflection(body, &value_types) {
+            report.skipped.push(format!("{name}: {reason}"));
+            continue;
+        }
         // A handle-returning contract is a claim about text or length, not about
         // a word. Say so as a skip: the model examined nothing to refute.
         // No `mentions_ident` test: a handle postcondition reaches `term` through
@@ -584,6 +588,74 @@ fn protocol_name(ty: &Type) -> Option<&str> {
         Type::Custom(n) => Some(n.as_str()),
         _ => None,
     }
+}
+
+/// Reject length reflection whose base is not a handle.
+///
+/// `.^Length` is modelled only for `String`/`Data` (phase 2b): on those it is the
+/// stored byte count. On anything else the expression stays out of the model, so
+/// the body is skipped with a reason instead of gaining a length fact it has no
+/// right to.
+fn unsupported_length_reflection(
+    body: &[Statement],
+    types: &HashMap<String, Type>,
+) -> Option<String> {
+    fn base_reason(base: &Expr, types: &HashMap<String, Type>) -> Option<String> {
+        let handle = match base {
+            Expr::Identifier(name) => types
+                .get(name)
+                .is_some_and(|ty| matches!(protocol_name(ty), Some("String") | Some("Data"))),
+            // A cast has already been resolved to its target type by now.
+            Expr::Cast(_, target) => {
+                matches!(protocol_name(target), Some("String") | Some("Data"))
+            }
+            _ => false,
+        };
+        (!handle).then(|| "length reflection on a non-handle value".to_string())
+    }
+
+    fn expr_reason(expr: &Expr, types: &HashMap<String, Type>) -> Option<String> {
+        match expr {
+            Expr::Reflect(base, target, _) if target == "Length" => base_reason(base, types),
+            Expr::Call(name, args, _) if name == "CharCount#" && args.len() == 1 => {
+                base_reason(&args[0], types)
+            }
+            Expr::BinaryOp(_, l, r) => {
+                expr_reason(l, types).or_else(|| expr_reason(r, types))
+            }
+            Expr::UnaryOp(_, inner)
+            | Expr::Cast(inner, _)
+            | Expr::Consume(inner)
+            | Expr::Reflect(inner, _, _) => expr_reason(inner, types),
+            Expr::Call(_, args, _) => args.iter().find_map(|a| expr_reason(a, types)),
+            Expr::MethodCall(recv, _, args, _) => expr_reason(recv, types)
+                .or_else(|| args.iter().find_map(|a| expr_reason(a, types))),
+            Expr::Field(base, _) => expr_reason(base, types),
+            Expr::Index(base, idx) => {
+                expr_reason(base, types).or_else(|| expr_reason(idx, types))
+            }
+            _ => None,
+        }
+    }
+
+    fn stmt_reason(stmt: &Statement, types: &HashMap<String, Type>) -> Option<String> {
+        match stmt {
+            Statement::Assign(_, e)
+            | Statement::Term(Some(e))
+            | Statement::EndProgram(Some(e))
+            | Statement::Tail(e)
+            | Statement::Gate(e)
+            | Statement::Check(e)
+            | Statement::Expression(e) => expr_reason(e, types),
+            Statement::Let { expr, .. } => expr.as_ref().and_then(|e| expr_reason(e, types)),
+            Statement::Guarded(c, inner) => {
+                expr_reason(c, types).or_else(|| unsupported_length_reflection(inner, types))
+            }
+            _ => None,
+        }
+    }
+
+    body.iter().find_map(|stmt| stmt_reason(stmt, types))
 }
 
 /// Whether the declaration returns a `String`/`Data` handle.
@@ -2270,7 +2342,8 @@ fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
             // is a zero-extended word, so the prover can bound it. Everything
             // else still needs a summary (or stays out of reach).
             let modelled_load = name == "Load#" && crate::symbolic::load_width(args).is_some();
-            if !modelled_load && !sums.contains_key(name) {
+            let modelled_length = name == "CharCount#" && args.len() == 1;
+            if !modelled_load && !modelled_length && !sums.contains_key(name) {
                 return Some(format!("a call to `{name}`, which has no value summary"));
             }
             args.iter().find_map(|a| expr_reason(a, sums))
@@ -2279,6 +2352,12 @@ fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
         Expr::Index(..) => Some("indexing".to_string()),
         Expr::MethodCall(..) => Some("a method call".to_string()),
         Expr::List(_) | Expr::Tuple(_) => Some("a list or tuple literal".to_string()),
+        // Length reflection on a handle is modelled (phase 2b); the *base* type
+        // is checked by `unsupported_length_reflection`, which can see the
+        // declared types this expression-level gate cannot.
+        Expr::Reflect(_, target, _) if target == "Length" => {
+            None
+        }
         Expr::Reflect(..) => Some("reflection".to_string()),
         _ => Some("an unsupported expression".to_string()),
     }
