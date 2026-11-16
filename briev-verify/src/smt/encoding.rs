@@ -2,8 +2,8 @@
 //! Supported terms carry an explicit sort; unsupported syntax has no encoding.
 use crate::ast::{BinaryOpKind as Op, Expr, UnaryOpKind};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Sort {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sort {
     Boolean,
     Word,
 }
@@ -14,6 +14,15 @@ pub(super) struct Term {
 }
 
 pub(super) fn encode(expr: &Expr) -> Option<Term> {
+    encode_with_term_sort(expr, None)
+}
+
+/// Encode with an explicit sort for `term` (2026-11-15 phase 1b).
+///
+/// `term_sort` is `Some(Sort::Boolean)` for Bool-typed defns so that
+/// `Expr::Identifier("term")` encodes as `Sort::Boolean` and the SMT query
+/// declares it as `Bool`. `None` keeps the word model (BitVec 64).
+pub(super) fn encode_with_term_sort(expr: &Expr, term_sort: Option<Sort>) -> Option<Term> {
     match expr {
         Expr::Bool(value) => Some(Term {
             text: if *value { "(= #b1 #b1)" } else { "(= #b0 #b1)" }.into(),
@@ -23,20 +32,31 @@ pub(super) fn encode(expr: &Expr) -> Option<Term> {
             text: format!("#x{:016x}", *value as u64),
             sort: Sort::Word,
         }),
-        Expr::Identifier(name) => Some(Term {
-            text: super::symbols::encode(name),
-            sort: Sort::Word,
-        }),
-        Expr::BinaryOp(op, left, right) => binary(*op, encode(left)?, encode(right)?),
+        Expr::Identifier(name) => {
+            let sort = if name == "term" && term_sort == Some(Sort::Boolean) {
+                Sort::Boolean
+            } else {
+                Sort::Word
+            };
+            Some(Term {
+                text: super::symbols::encode(name),
+                sort,
+            })
+        }
+        Expr::BinaryOp(op, left, right) => binary(
+            *op,
+            encode_with_term_sort(left, term_sort)?,
+            encode_with_term_sort(right, term_sort)?,
+        ),
         Expr::UnaryOp(UnaryOpKind::Not, inner) => {
-            let inner = expect(inner, Sort::Boolean)?;
+            let inner = expect_with_term_sort(inner, Sort::Boolean, term_sort)?;
             Some(Term {
                 text: format!("(not {inner})"),
                 sort: Sort::Boolean,
             })
         }
         Expr::UnaryOp(UnaryOpKind::Neg, inner) => {
-            let inner = expect(inner, Sort::Word)?;
+            let inner = expect_with_term_sort(inner, Sort::Word, term_sort)?;
             Some(Term {
                 text: format!("(bvneg {inner})"),
                 sort: Sort::Word,
@@ -47,7 +67,16 @@ pub(super) fn encode(expr: &Expr) -> Option<Term> {
 }
 
 pub(super) fn expect(expr: &Expr, sort: Sort) -> Option<String> {
-    let term = encode(expr)?;
+    expect_with_term_sort(expr, sort, None)
+}
+
+/// Expect a term of the given sort, with an explicit sort for `term`.
+pub(super) fn expect_with_term_sort(
+    expr: &Expr,
+    sort: Sort,
+    term_sort: Option<Sort>,
+) -> Option<String> {
+    let term = encode_with_term_sort(expr, term_sort)?;
     (term.sort == sort).then_some(term.text)
 }
 
