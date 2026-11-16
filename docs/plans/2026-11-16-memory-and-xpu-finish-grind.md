@@ -250,6 +250,23 @@ starts before M3 lands, except X5 (a cheap record pulled into wave 0).
 
 ### X1. f16 coopmat tier: fix or gate it (highest measured leverage)
 
+**A/B recipe (needs only the device, no code change).** The tier is already
+policy-gated by a config fact consumed at BOTH decision points
+(`src/backend/spirv/kernel.rs:309` pair-view fields and `:450` tensor kernel):
+
+```toml
+# config/ir-lowering.dbvl
+spirv_coopmat: 1;   # coopmat/tensor tier    ← current
+spirv_coopmat: 0;   # exact tiled kernel      ← the other arm
+```
+
+So the measurement is: build both arms, run the same `ceil_gemm_*_f16.abv` at
+512³ and 4096³, and confirm the **work count** of each dispatch matches before
+comparing times. (An earlier note in this session claimed that knob was parsed
+but never consumed; that was a grep error — `grep "spirv_coopmat\b"` in basic
+grep searches for a BACKSPACE, not a word boundary, so it appeared unused. Both
+consumers are real.)
+
 Recorded device A/B (Vulkan, `2026-11-09-intel-lane-ceilings`) — f16 GEMM
 takes the coopmat tier since the declared-kind + cast-tolerant detection
 landed:
@@ -491,6 +508,23 @@ blocker.
 6. **Stop condition:** if M2's carrier route exceeds a day, take the
    documented fallback (§M2) and keep the fact as recorded debt rather than
    leaving the exclusion undocumented.
+7. **IR reproducibility is not yet achieved (found 2026-11-16).** Two builds of
+   the kiosk daemon still differ in `%State` field indices (8 vs 9) and in
+   interned-string assignment (`%ip_8` vs `%ip_9`). The release-order half is
+   fixed (sorted), the other two are recorded in `BUGS.md` 2026-11-16. Until
+   they are fixed, any IR-level A/B must diff the same *process output*, not two
+   builds, and the determinism gate's corpus needs a state-heavy fixture with
+   many interned strings.
+
+## 7.1 Blocked on the PTL node (needs credentials, not decisions)
+
+X2 (NEO residency), X3 (GLSL/XMX ceiling), X4 (`clFinish`), X5 (Stage F
+promotion), X6 (dispatch waves), X7 (OpenVINO gate) all need the Intel device.
+The node answers on `100.92.76.67` but only with interactive password auth —
+no key, so a session cannot drive it unattended. Every one of those items has
+its recipe written down here and in the harvest doc, so they are mechanical
+once access exists. Local box is NVIDIA-only (2× RTX 3060), so no Intel
+substitute is available.
 
 ---
 
