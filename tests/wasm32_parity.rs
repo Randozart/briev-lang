@@ -93,22 +93,64 @@ if (typeof exports.__briev_state_ptr !== 'function') {
 }
 const state = toNum(exports.__briev_state_ptr());
 
+// 2026-11-16 (native-sink parity leg): the tick loop tracks the last
+// successful-tick state. Two terminal shapes:
+//   * Terminating: a briev_syscall(231, code) records the exit; the
+//     subsequent noreturn `unreachable` is expected (the emitter marks
+//     exit_prog noreturn). Report the recorded code.
+//   * Equilibrium: no endprogram. Once the guard is permanently false the
+//     reactor traps on the next tick. That post-settle trap is the
+//     equilibrium signal — report the last successful-tick state (the fixed
+//     point) with exit = -1. A trap on the FIRST tick (no state ever settled)
+//     is a real failure (120).
+let settled = false;
+let sawTrap = false;
 for (let turn = 0; turn < 200000 && !observed.exited; turn += 1) {
   try {
     exports[txn](state);
+    settled = true;
   } catch (error) {
     if (/unreachable/.test(String(error.message))) {
-      // The noreturn marker after exit_prog traps too; only a trap with no
-      // recorded exit is a failure.
-      if (!observed.exited) {
-        console.error('trap before endprogram:', String(error.stack).split('\n')[1] || '');
-        process.exit(120);
-      }
-      break;
+      sawTrap = true;
+      if (observed.exited) { break; }          // noreturn after exit_prog
+      if (settled) { break; }                  // equilibrium: settled, then trap
+      // No successful tick before the trap — a genuine guard-fail.
+      console.error('trap before any settle:', String(error.stack).split('\n')[1] || '');
+      process.exit(120);
     }
     throw error;
   }
 }
+if (!observed.exited && !settled && !sawTrap) {
+  // Ran the full tick cap without settling or trapping: the reactor never
+  // reached a terminal state. That is not a clean equilibrium — report it.
+  console.error('no settle and no trap within the tick cap');
+  process.exit(126);
+}
+// 2026-11-16 (native-sink parity leg): dump the final state slots so the
+// gate can compare the host-readable %State against the fixture's
+// documented fixed point. state_layout() returns a pointer to:
+//   +0: field_count u32, +4: generation_off, +8: flush_off,
+//   +12: max_entries, then field_count rows of {handle, off, size, tag}
+// (all u32, little-endian). A slot's value lives at
+// `__briev_state_ptr() + off`. Terminating fixtures read state at exit;
+// equilibrium fixtures read it after the tick cap (the reactor has
+// settled, so cap == equilibrium for a finite state space).
+const report = { exit: observed.exited ? observed.code : -1, state: [] };
+if (typeof exports.state_layout === 'function') {
+  const dv = new DataView(memory.buffer);
+  const layout = toNum(exports.state_layout());
+  const count = dv.getUint32(layout, true);
+  for (let i = 0; i < count; i += 1) {
+    const row = layout + 16 + i * 16;
+    const off = dv.getUint32(row + 4, true);
+    const size = dv.getUint32(row + 8, true);
+    report.state.push(
+      size === 4 ? dv.getInt32(state + off, true) : Number(dv.getBigInt64(state + off, true))
+    );
+  }
+}
+console.log(JSON.stringify(report));
 process.exit(observed.exited ? observed.code : 127);
 "#;
 
@@ -169,13 +211,68 @@ fn run_native(binary: &Path) -> i32 {
     status.code().unwrap_or(-1)
 }
 
-/// Run a wasm module through the Node harness and return its exit code.
+/// Per-fixture metadata, optional. A `<stem>.json` beside the `.bv`
+/// classifies the fixture's shape and states the expected final state slots.
+///
+/// * `equilibrium: true` — the program settles instead of ending (no
+///   `endprogram` reachable). The native side is documented-skipped: a native
+///   process with no terminating path idles and its final state is not
+///   host-readable, so only the wasm-side native sink (host-read %State)
+///   is checked.
+/// * `state` — expected final slot values in `state_layout` table order.
+///   Checked against the wasm run's dump. For terminating fixtures the exit
+///   code already cross-anchors state (it is derived from it), so this adds
+///   the host-read observable on top; for equilibrium fixtures it is the
+///   only observable.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct FixtureMeta {
+    #[serde(default)]
+    equilibrium: bool,
+    #[serde(default)]
+    state: Option<Vec<i64>>,
+}
+
+/// Load the optional `<stem>.json` metadata for a fixture (None means
+/// exit-code comparison only — the historical gate behaviour).
+fn load_meta(fixtures_dir: &Path, stem: &str) -> Option<FixtureMeta> {
+    let path = fixtures_dir.join(format!("{}.json", stem));
+    if !path.is_file() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(&path).expect("read fixture metadata");
+    let parsed: FixtureMeta = serde_json::from_str(&raw).unwrap_or_else(|error| {
+        panic!(
+            "bad metadata in {} (expected {{\"equilibrium\": bool, \"state\":[i64]}}): {error}",
+            path.display()
+        )
+    });
+    Some(parsed)
+}
+
+/// The harness's end-of-run report: the recorded `endprogram` exit code (-1
+/// when none fired) and the final state slots in `state_layout` order.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WasmReport {
+    exit: i32,
+    state: Vec<i64>,
+}
+
+/// Parse the harness's JSON report (last non-empty stdout line) into
+/// (exit, state). A malformed report is a harness fault, not a divergence —
+/// panic loudly so the gate never silently passes on garbage.
+fn parse_wasm_report(stdout: &str) -> WasmReport {
+    let line = stdout.lines().rev().find(|l| !l.trim().is_empty());
+    serde_json::from_str(line.unwrap_or("{}")).expect("harness emitted no JSON report")
+}
+
+/// Run a wasm module through the Node harness; return its recorded exit
+/// code and final state slots.
 ///
 /// The fixture is silent by contract, so *any* stderr output means the harness
 /// itself failed rather than the program producing a bad status. Reporting that
 /// distinctly matters: the opaque "wasm exit 1" from an uncaught JS exception
 /// looks exactly like a genuine cross-backend divergence.
-fn run_wasm(harness: &Path, wasm: &Path) -> i32 {
+fn run_wasm(harness: &Path, wasm: &Path) -> (i32, Vec<i64>) {
     let output = Command::new("node")
         .arg(harness)
         .arg(wasm)
@@ -183,14 +280,25 @@ fn run_wasm(harness: &Path, wasm: &Path) -> i32 {
         .expect("failed to spawn node");
     let code = output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if matches!(code, 120 | 121 | 124 | 125) || !stderr.trim().is_empty() {
+    if matches!(code, 120 | 121 | 124 | 125 | 126) || !stderr.trim().is_empty() {
         panic!(
             "wasm harness could not run {}: exit {code}\n{}",
             wasm.display(),
             stderr
         );
     }
-    code
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let report = parse_wasm_report(&stdout);
+    // The harness process exits with the recorded code (or 127 when none
+    // fired), so disagreement means a garbled report — never trust the
+    // process code over the report (or vice versa) silently.
+    let expected_process = if report.exit >= 0 { report.exit } else { 127 };
+    assert_eq!(
+        code, expected_process,
+        "harness process exit {code} disagrees with reported exit {}",
+        report.exit
+    );
+    (report.exit, report.state)
 }
 
 #[test]
@@ -222,28 +330,78 @@ fn wasm32_and_native_agree_on_the_exit_status() {
 
     let mut checked = 0;
     let mut divergences = Vec::new();
+    let mut state_checked = 0;
+    let mut equilibrium = 0;
+    let mut notes = Vec::new();
     for fixture in &fixtures {
         let name = fixture
             .file_stem()
             .expect("stem")
             .to_string_lossy()
             .to_string();
-        let native = build(fixture, &native_dir, None);
+        let meta = load_meta(fixtures_dir, &name);
         let wasm = build(fixture, &wasm_dir, Some("webstack"));
-        let expected = run_native(&native);
-        let actual = run_wasm(&harness, &wasm);
+        let (wasm_exit, wasm_state) = run_wasm(&harness, &wasm);
         checked += 1;
-        if expected != actual {
+        let equilibrium_meta = meta.as_ref().filter(|m| m.equilibrium);
+        if equilibrium_meta.is_some() {
+            // Equilibrium shape: no endprogram, so the native side is
+            // documented-skipped (a native process with no terminating path
+            // idles and its final state is not host-readable). The only
+            // observable is the host-read state sink, declared in metadata.
+            equilibrium += 1;
+            notes.push(format!(
+                "{name}: equilibrium shape — native side skipped by design (no terminating path); state sink checked"
+            ));
+            let Some(meta) = meta.as_ref() else {
+                unreachable!("equilibrium branch only taken when meta exists");
+            };
+            let Some(expected_state) = meta.state.as_ref() else {
+                panic!(
+                    "{name}: equilibrium fixture must declare its expected final state in {name}.json"
+                );
+            };
+            assert!(
+                state_slots_match(expected_state, &wasm_state),
+                "{name}: equilibrium state diverges: expected {expected_state:?}, wasm {wasm_state:?}"
+            );
+            state_checked += 1;
+            continue;
+        }
+        // Terminating shape: the exit code is the cross-backend observable.
+        let native = build(fixture, &native_dir, None);
+        let native_exit = run_native(&native);
+        if native_exit != wasm_exit {
             divergences.push(format!(
-                "{name}: native exit {expected} != wasm exit {actual}"
+                "{name}: native exit {native_exit} != wasm exit {wasm_exit}"
             ));
         }
+        if let Some(expected_state) = meta.and_then(|m| m.state) {
+            assert!(
+                state_slots_match(&expected_state, &wasm_state),
+                "{name}: final state diverges: expected {expected_state:?}, wasm {wasm_state:?}"
+            );
+            state_checked += 1;
+        }
+    }
+    for note in &notes {
+        eprintln!("note: {note}");
     }
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(
         divergences.is_empty(),
-        "wasm32/native divergence in {} of {checked} fixture(s):\n{}",
+        "wasm32/native divergence in {} of {} fixture(s) ({} with state sink, {} equilibrium):\n{}",
         divergences.len(),
+        checked,
+        state_checked,
+        equilibrium,
         divergences.join("\n")
     );
+}
+
+/// Slot values are declared in `state_layout` table order and compared
+/// positionally — the table rows are ordered by field handle, which both
+/// the emitter and the harness read in the same order.
+fn state_slots_match(expected: &[i64], actual: &[i64]) -> bool {
+    expected.len() == actual.len() && expected.iter().zip(actual).all(|(e, a)| e == a)
 }
