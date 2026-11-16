@@ -2042,7 +2042,11 @@ fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
         Expr::UnaryOp(_, x) => expr_reason(x, sums),
         Expr::AddrOf(x) | Expr::Consume(x) => expr_reason(x, sums),
         Expr::Call(name, args, _) => {
-            if !sums.contains_key(name) {
+            // A `Load#` with a modellable literal width is admitted: its value
+            // is a zero-extended word, so the prover can bound it. Everything
+            // else still needs a summary (or stays out of reach).
+            let modelled_load = name == "Load#" && crate::symbolic::load_width(args).is_some();
+            if !modelled_load && !sums.contains_key(name) {
                 return Some(format!("a call to `{name}`, which has no value summary"));
             }
             args.iter().find_map(|a| expr_reason(a, sums))
@@ -2229,6 +2233,11 @@ fn inline_expr(expr: &Expr, sums: &HashMap<String, Summary>, depth: usize) -> Re
         ),
         Expr::UnaryOp(kind, x) => Expr::UnaryOp(*kind, Box::new(inline_expr(x, sums, depth)?)),
         Expr::Call(name, args, _) => {
+            // A modelled intrinsic keeps its call form: it has no summary to
+            // inline, but `eval_symbolic` gives it an interval directly.
+            if name == "Load#" && crate::symbolic::load_width(args).is_some() {
+                return Ok(expr.clone());
+            }
             let Some(sum) = sums.get(name) else {
                 return Err(());
             };
