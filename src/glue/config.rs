@@ -366,7 +366,6 @@ fn known_keys_for(section: &str) -> Option<&'static [&'static str]> {
         "state" => Some(&["decl", "arg", "ffi_type"]),
         // `conversions` children are protocol names (handled like the others).
         "conversions" => Some(&["to_abi", "from_abi"]),
-        "to" | "from" => Some(&["op", "copy"]),
         _ => None,
     }
 }
@@ -475,9 +474,21 @@ fn validate_named_entries(
     let entry_keys: &[&str] = if section == "protocols" {
         &["native", "c_abi", "wasm_abi"]
     } else {
+        // 2026-11-16: flat by necessity — the .dbv quoted-mode parser nests two
+        // levels, and `values.<Class>.to` would be a third. The `_op` suffix
+        // makes it obvious the value names an operation, not a nested record.
         &[
-            "class", "zero_copy", "layout", "to", "from", "len", "retain_op", "release_op",
-            "kind", "copy",
+            "class",
+            "zero_copy",
+            "layout",
+            "len",
+            "len_op",
+            "to_op",
+            "from_op",
+            "from_copy",
+            "retain_op",
+            "release_op",
+            "kind",
         ]
     };
     for (name, body) in entries {
@@ -485,24 +496,9 @@ fn validate_named_entries(
         let DataValue::Map(fields) = body else {
             continue;
         };
-        for (field, field_value) in fields {
+        for field in fields.keys() {
             reject_unknown_key(&path, field, entry_keys)?;
-            validate_direction(&path, field, field_value)?;
         }
-    }
-    Ok(())
-}
-
-/// One more level for `values.<Class>.to` / `.from`: `{ op; copy }`.
-fn validate_direction(path: &str, field: &str, value: &DataValue) -> Result<(), String> {
-    let Some(dir_keys) = known_keys_for(field) else {
-        return Ok(());
-    };
-    let DataValue::Map(dir) = value else {
-        return Ok(());
-    };
-    for key in dir.keys() {
-        reject_unknown_key(&format!("{path}.{field}"), key, dir_keys)?;
     }
     Ok(())
 }
@@ -954,6 +950,31 @@ rust: { version: 1; types_module: "glue/rust/types.bv"; extension: "rs"; bridge_
         );
     }
 
+    /// The C adapter's boundary value class, in the flat schema form. Only
+    /// `String` needs an entry: the scalar classes are already determined by the
+    /// protocol plus the ABI core (S2), so naming them here would restate a fact
+    /// the compiler derives — the thing the descriptor must never do. `String` is
+    /// the case with genuine asymmetry: outbound is zero-copy (the `[len][bytes]`
+    /// data region IS a C string), inbound must copy (a C string has no length
+    /// prefix).
+    #[test]
+    fn the_c_adapter_declares_its_string_value_class() {
+        let source = std::fs::read_to_string("lib/glue/c/glue.dbv").expect("read c adapter");
+        let target = parse_glue_dbvl(&source)
+            .expect("c adapter parses")
+            .remove("c")
+            .expect("c target");
+        assert_eq!(target.abi.as_deref(), Some("sysv-x86_64"));
+        assert!(
+            source.contains("to_op: \"str_to_c\""),
+            "the outbound C-string lane must name its zero-copy op"
+        );
+        assert!(
+            source.contains("from_op: \"cstr_to_briev\"; from_copy: true"),
+            "the inbound C-string lane must be declared as a copy"
+        );
+    }
+
     #[test]
     fn the_c_adapter_declares_its_abi_core() {
         // Only where `c_abi` values are genuine C types; the managed-language
@@ -971,7 +992,7 @@ rust: { version: 1; types_module: "glue/rust/types.bv"; extension: "rs"; bridge_
         // consumers land.
         let target = parse_one(
             "glue_boundary_sections.dbvl",
-            r#"c: { version: 1; types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi"; values: { String: { class: borrowed_bytes; zero_copy: true; to: { op: str_to_c }; from: { op: cstr_to_briev; copy: true } } }; frees: { owned_buffer: "caller" }; discipline: { blocking: false; reentrant: false; needs_main_thread: false }; errors: { class: status; success: 0 }; supports: [scalar, borrowed_bytes, owned_buffer] };"#,
+            r#"c: { version: 1; types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi"; values: { "String": { class: "borrowed_bytes"; zero_copy: true; to_op: "str_to_c"; from_op: "cstr_to_briev"; from_copy: true } }; frees: { owned_buffer: "caller" }; discipline: { blocking: false; reentrant: false; needs_main_thread: false }; errors: { class: "status"; success: 0 } };"#,
         )
         .expect("well-formed boundary sections must parse");
         assert_eq!(target.version, 1);
