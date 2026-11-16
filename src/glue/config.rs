@@ -27,6 +27,10 @@ use std::path::{Path, PathBuf};
 /// not about Briev-internal type names.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GlueTarget {
+    /// 2026-11-16 (FFI contract plan D3): descriptor schema version. A file
+    /// written for a schema the compiler does not implement is refused rather
+    /// than silently read with defaults — see `validate_target_entry`.
+    pub version: i64,
     /// Language identifier (e.g., "python", "rust", "node")
     pub language: String,
     /// Path to .bv file declaring foreign type representations
@@ -256,6 +260,7 @@ fn parse_glue_dbvl(source: &str) -> Result<HashMap<String, GlueTarget>, String> 
         let Some(DataValue::Map(entry)) = db.field(&key, 0) else {
             continue;
         };
+        validate_target_entry(&key, entry)?;
         let Some(target) = glue_target_from_entry(&key, entry, &templates_by_lang) else {
             continue;
         };
@@ -301,7 +306,178 @@ fn template_line(db: &ConfigDb, key: &str) -> Option<(String, String, String)> {
     }
 }
 
-/// Build one GlueTarget from a `<lang>: { … }` entry map.
+/// The descriptor schema version this compiler implements.
+///
+/// 2026-11-16 (FFI contract plan D3): `glue.dbv` now carries semantics
+/// (ownership conventions, discipline, capability list), so an unversioned file
+/// is a silent-wrong-answer generator in both directions — a newer descriptor
+/// read by an older compiler loses sections, and an older one read by a newer
+/// compiler takes defaults for them. Version + unknown-key rejection turns both
+/// into a loud error, which is the only acceptable failure mode for a file that
+/// decides how a program talks to the outside world.
+pub const GLUE_SCHEMA_VERSION: i64 = 1;
+
+/// Keys a `<lang>: { … }` target entry may carry.
+const KNOWN_TARGET_KEYS: &[&str] = &[
+    "version",
+    "types_module",
+    "extension",
+    "bridge_kind",
+    "calling_convention",
+    "module_init",
+    "protocols",
+    "conversions",
+    "state",
+    "param_decl",
+    "fn_param_decl",
+    "templates",
+    "native_include_cmd",
+    "host_fns",
+    "native_suffix",
+    "native_suffix_cmd",
+    "native_link_cmd",
+    "native_cc",
+    "native_prefix",
+    // 2026-11-16: the boundary-contract sections (FFI plan §4.3). Declared here
+    // so a descriptor may state them before their consumers land; each is
+    // additive and defaults to "absent".
+    "values",
+    "frees",
+    "discipline",
+    "errors",
+    "supports",
+];
+
+/// Nested key sets, so a typo inside a section is caught as well as at the top.
+fn known_keys_for(section: &str) -> Option<&'static [&'static str]> {
+    match section {
+        "values" => Some(&[
+            "class", "zero_copy", "layout", "to", "from", "len", "retain_op", "release_op", "kind",
+            "copy",
+        ]),
+        "discipline" => Some(&["blocking", "reentrant", "needs_main_thread"]),
+        "errors" => Some(&["class", "success"]),
+        "state" => Some(&["decl", "arg", "ffi_type"]),
+        // `conversions` children are protocol names (handled like the others).
+        "conversions" => Some(&["to_abi", "from_abi"]),
+        "to" | "from" => Some(&["op", "copy"]),
+        _ => None,
+    }
+}
+
+/// Reject an unknown key with what/why/fix, the way every other descriptor
+/// diagnostic reads. `path` is the key path (`c : values.String`) so the author
+/// can find it without a span — `.dbv` values carry none (`dbriev/v2.rs:88`).
+fn reject_unknown_key(path: &str, key: &str, known: &[&str]) -> Result<(), String> {
+    if known.contains(&key) {
+        return Ok(());
+    }
+    let mut sorted: Vec<&str> = known.to_vec();
+    sorted.sort_unstable();
+    Err(format!(
+        "unknown key `{key}` in glue descriptor at `{path}` — known keys: {}. \
+         A key the compiler does not recognise is refused rather than ignored: \
+         a silently-dropped section would change how the boundary is marshalled \
+         without any diagnostic.",
+        sorted.join(", ")
+    ))
+}
+
+/// Validate one `<lang>` entry: schema version present and supported, and no
+/// unknown key at any level this compiler reads.
+fn validate_target_entry(lang: &str, entry: &HashMap<String, DataValue>) -> Result<(), String> {
+    validate_version(lang, entry)?;
+    for (key, value) in entry {
+        reject_unknown_key(lang, key, KNOWN_TARGET_KEYS)?;
+        validate_section(lang, key, value)?;
+    }
+    Ok(())
+}
+
+/// The version gate: present, integral, and within what this compiler reads.
+fn validate_version(lang: &str, entry: &HashMap<String, DataValue>) -> Result<(), String> {
+    match entry.get("version") {
+        Some(DataValue::Int(n)) if *n >= 1 && *n <= GLUE_SCHEMA_VERSION => Ok(()),
+        Some(DataValue::Int(n)) => Err(format!(
+            "glue descriptor for `{lang}` declares version {n} but this compiler \
+             implements {GLUE_SCHEMA_VERSION}. Upgrade the compiler, or write the \
+             descriptor for version {GLUE_SCHEMA_VERSION}."
+        )),
+        Some(_) => Err(format!(
+            "glue descriptor for `{lang}`: `version` must be an integer (this \
+             compiler implements {GLUE_SCHEMA_VERSION})"
+        )),
+        None => Err(format!(
+            "glue descriptor for `{lang}` has no `version`. Add `version: \
+             {GLUE_SCHEMA_VERSION};` — an unversioned descriptor cannot be read \
+             safely once the schema carries semantics."
+        )),
+    }
+}
+
+/// Validate one top-level section whose children are fixed keys (`discipline`,
+/// `errors`, `state`, `conversions`) or named entries with fixed fields
+/// (`protocols.<Name>`, `values.<Class>[.to|.from]`).
+fn validate_section(lang: &str, key: &str, value: &DataValue) -> Result<(), String> {
+    let Some(nested) = known_keys_for(key) else {
+        return Ok(());
+    };
+    let DataValue::Map(fields) = value else {
+        return Ok(());
+    };
+    if key == "protocols" || key == "values" {
+        return validate_named_entries(lang, key, fields, nested);
+    }
+    for field in fields.keys() {
+        reject_unknown_key(lang, field, nested)?;
+    }
+    Ok(())
+}
+
+/// `protocols.<Name>` / `values.<Class>`: the child names are user-chosen, so
+/// only their fields are checked — plus one more level for `values.<Class>.to`.
+fn validate_named_entries(
+    lang: &str,
+    section: &str,
+    entries: &HashMap<String, DataValue>,
+    _known: &[&str],
+) -> Result<(), String> {
+    let entry_keys: &[&str] = if section == "protocols" {
+        &["native", "c_abi", "wasm_abi"]
+    } else {
+        &[
+            "class", "zero_copy", "layout", "to", "from", "len", "retain_op", "release_op",
+            "kind", "copy",
+        ]
+    };
+    for (name, body) in entries {
+        let path = format!("{lang} : {section}.{name}");
+        let DataValue::Map(fields) = body else {
+            continue;
+        };
+        for (field, field_value) in fields {
+            reject_unknown_key(&path, field, entry_keys)?;
+            validate_direction(&path, field, field_value)?;
+        }
+    }
+    Ok(())
+}
+
+/// One more level for `values.<Class>.to` / `.from`: `{ op; copy }`.
+fn validate_direction(path: &str, field: &str, value: &DataValue) -> Result<(), String> {
+    let Some(dir_keys) = known_keys_for(field) else {
+        return Ok(());
+    };
+    let DataValue::Map(dir) = value else {
+        return Ok(());
+    };
+    for key in dir.keys() {
+        reject_unknown_key(&format!("{path}.{field}"), key, dir_keys)?;
+    }
+    Ok(())
+}
+
+/// Build one GlueTarget from a `<lang>: { … }` entry map./// Build one GlueTarget from a `<lang>: { … }` entry map.
 fn glue_target_from_entry(
     key: &str,
     entry: &HashMap<String, DataValue>,
@@ -324,6 +500,10 @@ fn glue_target_from_entry(
                 .collect(),
             _ => HashMap::new(),
         }
+    };
+    let version = match entry.get("version") {
+        Some(DataValue::Int(n)) => *n,
+        _ => 0,
     };
     let types_module = str_field("types_module")?;
     let extension = str_field("extension")?;
@@ -369,6 +549,7 @@ fn glue_target_from_entry(
     let param_decl = str_field("param_decl").unwrap_or_else(|| "{name}: {type}".to_string());
     let fn_param_decl = str_field("fn_param_decl").unwrap_or_else(|| "{name}: {type}".to_string());
     Some(GlueTarget {
+        version,
         language: key.to_string(),
         types_module: PathBuf::from(types_module),
         extension,
@@ -604,9 +785,9 @@ mod tests {
     fn test_load_glue_config_custom_path() {
         let dir = std::env::temp_dir();
         let config_path = dir.join("test_glue_config.dbvl");
-        let content = r##"python: { types_module: "glue/python/types.bv"; extension: "py"; bridge_kind: "native_module"; calling_convention: "c_abi"; module_init: false; protocols: { "String": { native: "str"; c_abi: "ctypes.c_void_p" }; "Int": { native: "int"; c_abi: "ctypes.c_int64" } } };
+        let content = r##"python: { version: 1; types_module: "glue/python/types.bv"; extension: "py"; bridge_kind: "native_module"; calling_convention: "c_abi"; module_init: false; protocols: { "String": { native: "str"; c_abi: "ctypes.c_void_p" }; "Int": { native: "int"; c_abi: "ctypes.c_int64" } } };
 python.templates.0: "fn_template" "def {{name}}({{params}}):\n    return {{name}};\n";
-rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "extern_c_crate"; calling_convention: "lto"; module_init: false };"##;
+rust: { version: 1; types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "extern_c_crate"; calling_convention: "lto"; module_init: false };"##;
         std::fs::write(&config_path, content).unwrap();
 
         let result = load_glue_config(Some(&config_path));
@@ -661,6 +842,80 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
             "Default config/glue.dbv not found: {:?}",
             result.err()
         );
+    }
+
+    // ── 2026-11-16 (FFI contract plan D3): schema version + closed keys ─────
+
+    /// Write one descriptor to a temp file and parse it.
+    fn parse_one(name: &str, content: &str) -> Result<GlueTarget, String> {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, content).expect("write temp descriptor");
+        let map = load_glue_config(Some(&path))?;
+        map.into_values()
+            .next()
+            .ok_or_else(|| "no target parsed".to_string())
+    }
+
+    #[test]
+    fn descriptor_without_version_is_refused() {
+        // An unversioned descriptor cannot be read safely once the schema
+        // carries semantics: a missing section would silently take defaults.
+        let err = parse_one(
+            "glue_no_version.dbvl",
+            r#"c: { types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi" };"#,
+        )
+        .expect_err("missing version must be refused");
+        assert!(err.contains("has no `version`"), "got: {err}");
+    }
+
+    #[test]
+    fn descriptor_with_a_future_version_is_refused() {
+        let err = parse_one(
+            "glue_future_version.dbvl",
+            r#"c: { version: 99; types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi" };"#,
+        )
+        .expect_err("future version must be refused");
+        assert!(err.contains("declares version 99"), "got: {err}");
+        assert!(
+            err.contains(&format!("implements {}", GLUE_SCHEMA_VERSION)),
+            "the error must name the supported version, got: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_key_is_refused_at_target_and_section_level() {
+        // Target level — the classic typo.
+        let err = parse_one(
+            "glue_unknown_target.dbvl",
+            r#"c: { version: 1; types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi"; discpline: { blocking: false } };"#,
+        )
+        .expect_err("unknown target key must be refused");
+        assert!(err.contains("unknown key `discpline`"), "got: {err}");
+
+        // Section level — a typo inside `values` is just as dangerous.
+        let err = parse_one(
+            "glue_unknown_section.dbvl",
+            r#"c: { version: 1; types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi"; values: { String: { class: borrowed_bytes; zero_copy: true; zero_copied: true } } };"#,
+        )
+        .expect_err("unknown section key must be refused");
+        assert!(err.contains("unknown key `zero_copied`"), "got: {err}");
+        assert!(
+            err.contains("values.String"),
+            "the error must name the key path, got: {err}"
+        );
+    }
+
+    #[test]
+    fn boundary_sections_parse_when_well_formed() {
+        // The additive sections are declared but not yet consumed (S1/S3); they
+        // must parse now so a descriptor can state the contract before its
+        // consumers land.
+        let target = parse_one(
+            "glue_boundary_sections.dbvl",
+            r#"c: { version: 1; types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi"; values: { String: { class: borrowed_bytes; zero_copy: true; to: { op: str_to_c }; from: { op: cstr_to_briev; copy: true } } }; frees: { owned_buffer: "caller" }; discipline: { blocking: false; reentrant: false; needs_main_thread: false }; errors: { class: status; success: 0 }; supports: [scalar, borrowed_bytes, owned_buffer] };"#,
+        )
+        .expect("well-formed boundary sections must parse");
+        assert_eq!(target.version, 1);
     }
 
     /// Baked config golden: the compiler-shipped config/glue.dbv loads with

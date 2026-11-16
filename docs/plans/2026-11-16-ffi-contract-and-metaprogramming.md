@@ -614,3 +614,110 @@ which descriptor key produced which IR construct.
 | S4 (HIR fidelity) | `HirBoundary.ownership` is per-position, not per-language (**D1**) |
 | S5 (stage guard) | also refuses descriptor strategies if any ever appear (**D5**) |
 | Track D | D1 before S3, D2 parallel (**D4**) |
+
+---
+
+## 11. Refinement after S0 (2026-11-16)
+
+S0 changed three things in the sequencing, and one in a decision.
+
+### 11.1 A new S0.5, before any descriptor work
+
+S0(c) showed HIR reports `unsupported=0` on a boundary-bearing program. The
+cheapest way to lock that commitment is a **red test now**, before S1:
+`tests/` gains a fixture (the S0 spike program) and an assertion that the HIR
+boundary audit *does not* report "ok" while the contract is unrepresented. It
+fails today by design, and is `#[ignore]`d with a pointer to S4, so it cannot be
+forgotten and cannot block CI in the meantime. S4's job is to make it green by
+adding the nodes — not by deleting the test.
+
+Rationale: a plan whose central claim ("HIR must carry the contract") has no
+executable statement is a wish. One ignored test is the smallest honest anchor.
+
+### 11.2 D6 amended: trace to a **key path**, with a line by reverse lookup
+
+D6 said "traceable to a descriptor line". `src/dbriev/v2.rs:88` shows
+`DataValue` is `String | Int | Float | Bool | List | Map` — **no spans** — and it
+is shared by every `.dbvl`/`.dbv` consumer (`config_tuning`, `protocols`,
+`targets`, …). Adding spans is a parser-wide change with no other customer.
+
+Decision: trace by `(descriptor file, key path)` — e.g.
+`lib/glue/c/glue.dbvl : values.String.to.op` — plus a line number obtained by
+searching the descriptor text for the key literal. That is honest (it names the
+file and the key), needs no parser change, and can be upgraded to real spans
+later if another feature ever wants them. The diagnostic wording must not claim
+a precise line when it is a lookup: name the key path as the authoritative
+location and the line as "near".
+
+### 11.3 Order
+
+| Phase | Change from §6 |
+|---|---|
+| **S0.5** new | HIR boundary audit red test (ignored, pointing at S4) |
+| S1 | unchanged in intent; adds `version` to the six descriptors |
+| S2 | unchanged |
+| S3 | generator emits key-path provenance (D6 as amended) |
+| S4 | turns S0.5's test green; `HirProtocol` + `HirBoundary`; the audit's "ok" must become "missing boundary facts: N" |
+| S5–S7 | unchanged |
+
+### 11.4 S1 made concrete
+
+`src/glue/config.rs` only; no call-site changes if the new sections are additive:
+
+1. `GlueTarget` gains `version: i64`, `values: HashMap<String, ValueClass>`,
+   `frees: HashMap<String, String>`, `discipline: Discipline`,
+   `errors: Option<ErrorChannel>`, `supports: Vec<String>`.
+2. Per-level known-key sets (target, `values` entry, `discipline`, `errors`,
+   `state`, `protocols` entry, `conversions`) and a rejection path:
+   `unknown key 'discpline' in lib/glue/c/glue.dbvl (target 'c') — known keys: …`.
+3. `version` outside the compiler's accepted range → error naming both.
+4. The six descriptors under `lib/glue/*/glue.dbv` gain `version: 1`, and nothing
+   else — so the change is provably additive.
+5. Tests: an unknown key rejected; a missing `version` rejected; a version too
+   new rejected; all six descriptors load and every existing glue test stays
+   green (they exercise `frgn_dispatch` path selection and export generation).
+
+**Gate for S1:** six descriptors load; `tests/glue_*` unchanged and green;
+three new negative tests pass; no IR change (pure schema).
+
+---
+
+## 12. Progress log
+
+### S1 — DONE (2026-11-16)
+
+`src/glue/config.rs` only, additive:
+
+- `GlueTarget.version` + `GLUE_SCHEMA_VERSION = 1`; `validate_version` refuses a
+  missing, non-integral, or out-of-range version, naming the supported range.
+- **Closed keys**: `validate_target_entry` → `validate_section` /
+  `validate_named_entries` / `validate_direction` reject an unknown key at every
+  level the compiler reads, with the key *path* in the message
+  (`c : values.String`) — `.dbv` values carry no spans (`dbriev/v2.rs:88`), which
+  is why D6 traces by path.
+- The boundary-contract sections (`values`, `frees`, `discipline`, `errors`,
+  `supports`) are **declared and parsed**, not yet consumed — so a descriptor can
+  state the contract before S3 gives it consumers. Pinned by
+  `boundary_sections_parse_when_well_formed`.
+- All eight `lib/glue/*/glue.dbv` descriptors gained `version: 1;` — nothing else.
+- Three negative tests pin D3: missing version, future version, unknown key at
+  target and at section level.
+
+**Gate met:** 12 `glue::config` tests, `tests/glue_bridge_tests` (13) and
+`tests/glue_test` (11) green; `scripts/gate.sh quick` pass
+(`20261116T195810Z-3e45437d48c1`); no emitter reads `version`, so IR is
+unchanged by construction.
+
+**Deviation from §11.4:** the six-field `values`/`discipline`/`errors` typed
+model did not land here — validation runs on the raw entry map, which is enough
+to close D3. The typed structs belong with S3, where something consumes them;
+modelling them now would be unused knowledge (the derivation-not-recognition
+rule: a declared fact with no consumer is a liability).
+
+### S0.5 — folded into a BUGS entry (2026-11-16)
+
+The planned "red test before S1" could not be honest without the S4 field it
+would assert on. Replaced by `BUGS.md` §"HIR drops the FFI boundary surface",
+which records the measurement (`unsupported=0`), the two structural causes
+(`HirTypeDefKind` has no protocol; `HirForeign` drops `from`/contracts/flags),
+and names the S0 fixture as S4's acceptance test.
