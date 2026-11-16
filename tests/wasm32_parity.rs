@@ -57,8 +57,28 @@ function malloc(n) {
 }
 
 const observed = { exited: false, code: 0, flushes: 0 };
+
+// 2026-11-16: LLVM emits `memcpy`/`memset` for struct copies, and whether
+// `wasm-ld` inlines them or leaves them as `env` imports depends on the
+// toolchain version — the hosted runner keeps them as imports while a newer
+// local one does not. Providing them makes the fixture independent of that: a
+// missing import fails instantiation with a confusing "exit 121".
+const memoryBytes = () => new Uint8Array(memory.buffer);
+function memcpy(dst, src, n) {
+  const d = toNum(dst), s = toNum(src), len = toNum(n);
+  memoryBytes().copyWithin(d, s, s + len);
+  return dst;
+}
+function memset(dst, v, n) {
+  const d = toNum(dst), len = toNum(n), byte = toNum(v) & 0xff;
+  memoryBytes().fill(byte, d, d + len);
+  return dst;
+}
+
 const env = {
   malloc,
+  memcpy,
+  memset,
   free: () => {},
   __web_flush_state: () => { observed.flushes += 1; },
   briev_bits_to_str: () => 0,
