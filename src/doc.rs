@@ -14,10 +14,10 @@ pub fn generate_doc(input_path: &str) -> Result<(), String> {
     let source = std::fs::read_to_string(input_path)
         .map_err(|e| format!("cannot read '{}': {}", input_path, e))?;
 
-    let tokens = crate::lexer::tokenize(&source)
-        .map_err(|e| format!("lex error: {}", e))?;
+    let tokens = crate::lexer::tokenize(&source).map_err(|e| format!("lex error: {}", e))?;
     let mut parser = Parser::new(tokens, &source);
-    let program = parser.parse_program()
+    let program = parser
+        .parse_program()
         .map_err(|e| format!("parse error: {}", e))?;
 
     let html = render_html(&program, input_path);
@@ -80,12 +80,16 @@ fn render_html(program: &[TopLevel], source_path: &str) -> String {
 /// 2026-07-24: Render a single TopLevel item as an HTML section, if it has a doc comment.
 fn render_item(tl: &TopLevel) -> Option<String> {
     match tl {
-        TopLevel::Definition(d) => render_defn("defn", &d.name, &d.doc, &d.parameters, None, &d.body),
+        TopLevel::Definition(d) => {
+            render_defn("defn", &d.name, &d.doc, &d.parameters, None, &d.body)
+        }
         TopLevel::Transaction(t) => render_transaction(t),
         TopLevel::Cell(c) => render_cell(c),
         TopLevel::ForeignBinding(f) => render_frgn(f),
         TopLevel::StaticStruct(s) => render_struct(s),
-        TopLevel::CompileTimeDefn(d) => render_defn("$defn", &d.name, &d.doc, &d.parameters, None, &d.body),
+        TopLevel::CompileTimeDefn(d) => {
+            render_defn("$defn", &d.name, &d.doc, &d.parameters, None, &d.body)
+        }
         _ => None,
     }
 }
@@ -100,7 +104,9 @@ fn render_transaction(t: &Transaction) -> Option<String> {
 
 /// 2026-07-24: Render a cell (state holder).
 fn render_cell(c: &CellDef) -> Option<String> {
-    if c.doc.is_none() { return None; }
+    if c.doc.is_none() {
+        return None;
+    }
     let params = format_params(&c.parameters);
     Some(format!(
         r#"<div class="section">
@@ -120,8 +126,12 @@ fn render_cell(c: &CellDef) -> Option<String> {
 
 /// 2026-07-24: Render a foreign function declaration.
 fn render_frgn(f: &ForeignBinding) -> Option<String> {
-    if f.doc.is_none() { return None; }
-    let params = f.inputs.iter()
+    if f.doc.is_none() {
+        return None;
+    }
+    let params = f
+        .inputs
+        .iter()
         .map(|(n, t)| format!("{}: {}", n, format_type(t)))
         .collect::<Vec<_>>()
         .join(", ");
@@ -132,12 +142,16 @@ fn render_frgn(f: &ForeignBinding) -> Option<String> {
 /// 2026-07-24: Render a struct definition.
 fn render_struct(s: &StructDef) -> Option<String> {
     // 2026-07-24: StructDef has no doc field. Only render if metadata has a "doc" key.
-    if !s.metadata.contains_key("doc") { return None; }
+    if !s.metadata.contains_key("doc") {
+        return None;
+    }
     let doc_str = match s.metadata.get("doc") {
         Some(PropertyValue::String(d)) => d.clone(),
         _ => return None,
     };
-    let fields: String = s.fields.iter()
+    let fields: String = s
+        .fields
+        .iter()
         .map(|(name, ty)| format!("  {}: {};", name, format_type(ty)))
         .collect::<Vec<_>>()
         .join("\n");
@@ -163,16 +177,24 @@ fn render_defn(
     _outputs: Option<&[Type]>,
     body: &[Statement],
 ) -> Option<String> {
-    if doc.is_none() { return None; }
+    if doc.is_none() {
+        return None;
+    }
     let params_str = format_params(params);
     let sig = format!("{}{}", kind, params_str);
     render_section(name, &sig, doc, body)
 }
 
 /// 2026-07-24: Render a generic section with name, signature, doc comment, and body preview.
-fn render_section(name: &str, sig: &str, doc: &Option<String>, body: &[Statement]) -> Option<String> {
+fn render_section(
+    name: &str,
+    sig: &str,
+    doc: &Option<String>,
+    body: &[Statement],
+) -> Option<String> {
     let doc_text = doc.as_deref()?;
-    let body_lines: Vec<String> = body.iter()
+    let body_lines: Vec<String> = body
+        .iter()
         .take(5)
         .map(|s| format!("  {};", display_stmt(s)))
         .collect();
@@ -205,10 +227,14 @@ fn format_params(params: &[(String, Type)]) -> String {
     if params.is_empty() {
         String::new()
     } else {
-        format!("({})", params.iter()
-            .map(|(n, t)| format!("{}: {}", n, format_type(t)))
-            .collect::<Vec<_>>()
-            .join(", "))
+        format!(
+            "({})",
+            params
+                .iter()
+                .map(|(n, t)| format!("{}: {}", n, format_type(t)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -220,12 +246,22 @@ fn format_type(t: &Type) -> String {
         Type::Custom(name) => name.clone(),
         Type::Generic(name, args) => format_generic(name, args),
         Type::Applied(name, args) => format_type_applied(name, args),
-        Type::Union(ts) => format!("({})", ts.iter().map(format_type).collect::<Vec<_>>().join(" | ")),
-        Type::Tuple(ts) => format!("({})", ts.iter().map(format_type).collect::<Vec<_>>().join(", ")),
+        Type::Union(ts) => format!(
+            "({})",
+            ts.iter().map(format_type).collect::<Vec<_>>().join(" | ")
+        ),
+        Type::Tuple(ts) => format!(
+            "({})",
+            ts.iter().map(format_type).collect::<Vec<_>>().join(", ")
+        ),
         Type::TypeVar(v) => format!("'{}", v),
         Type::Ptr(inner) => format!("Ptr<{}>", format_type(inner)),
         Type::PtrConst(inner) => format!("Ptr&lt;const {}&gt;", format_type(inner)),
-        Type::Function(args, ret) => format!("({}) -> {}", args.iter().map(format_type).collect::<Vec<_>>().join(", "), format_type(ret)),
+        Type::Function(args, ret) => format!(
+            "({}) -> {}",
+            args.iter().map(format_type).collect::<Vec<_>>().join(", "),
+            format_type(ret)
+        ),
         Type::Width(n) => format!("Width({})", n),
         _ => format!("{:?}", t),
     }
@@ -236,7 +272,14 @@ fn format_generic(name: &str, args: &[Type]) -> String {
     if args.is_empty() {
         name.to_string()
     } else {
-        format!("{}<{}>", name, args.iter().map(|a| format_type(a)).collect::<Vec<_>>().join(", "))
+        format!(
+            "{}<{}>",
+            name,
+            args.iter()
+                .map(|a| format_type(a))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 

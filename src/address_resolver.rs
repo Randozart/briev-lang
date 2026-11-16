@@ -65,9 +65,10 @@ pub fn set_active_board(board: &str) {
             for key in isr_db.keys() {
                 // Slot values accept Int (decimal `TIM2: 28;`) or String
                 // (hex `TIM2: 0x1C;`) — the parser stores by literal shape.
-                let vec = isr_db.field_int(&key, 0).map(|v| v as u64)
-                    .or_else(|| isr_db.field_string(&key, 0)
-                        .and_then(radix_parse_hex));
+                let vec = isr_db
+                    .field_int(&key, 0)
+                    .map(|v| v as u64)
+                    .or_else(|| isr_db.field_string(&key, 0).and_then(radix_parse_hex));
                 if let Some(vec) = vec {
                     vectors.insert(key.to_uppercase(), vec);
                 }
@@ -82,7 +83,9 @@ pub fn set_active_board(board: &str) {
 /// errors with the board file and the fix).
 pub fn resolve_isr_vector(name: &str) -> Option<u64> {
     ACTIVE_ISR_TABLE.with(|slot| {
-        slot.borrow().as_ref().and_then(|m| m.get(&name.to_uppercase()).copied())
+        slot.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&name.to_uppercase()).copied())
     })
 }
 
@@ -96,9 +99,9 @@ pub fn resolve_isr_vector(name: &str) -> Option<u64> {
 pub fn resolve_address(id: &str) -> u64 {
     // Board map first (case-insensitive, like the config path below).
     let upper = id.to_uppercase();
-    if let Some(addr) = ACTIVE_BOARD.with(|slot| {
-        slot.borrow().as_ref().and_then(|m| m.get(&upper).copied())
-    }) {
+    if let Some(addr) =
+        ACTIVE_BOARD.with(|slot| slot.borrow().as_ref().and_then(|m| m.get(&upper).copied()))
+    {
         return addr;
     }
     // Config file second (deprecated alias).
@@ -190,12 +193,12 @@ fn radix_parse_hex(s: &str) -> Option<u64> {
 /// only after the board map and config both miss — and emits a warning.
 fn resolve_from_hardcoded(id: &str) -> Option<u64> {
     match id.to_lowercase().as_str() {
-        "uart"  | "uart0"  | "/dev/ttys0"  | "/dev/ttyama0"  => Some(0xFFE01000),
-        "gpio"  | "gpio0"  | "/dev/gpiochip0"                => Some(0xFE001000),
-        "timer" | "timer0" | "/dev/timer0"                   => Some(0xFE002000),
-        "spi"   | "spi0"   | "/dev/spidev0.0"                => Some(0xFE003000),
-        "i2c"   | "i2c0"   | "/dev/i2c-0"                    => Some(0xFE004000),
-        "dma"   | "dma0"   | "/dev/dma"                      => Some(0xFE005000),
+        "uart" | "uart0" | "/dev/ttys0" | "/dev/ttyama0" => Some(0xFFE01000),
+        "gpio" | "gpio0" | "/dev/gpiochip0" => Some(0xFE001000),
+        "timer" | "timer0" | "/dev/timer0" => Some(0xFE002000),
+        "spi" | "spi0" | "/dev/spidev0.0" => Some(0xFE003000),
+        "i2c" | "i2c0" | "/dev/i2c-0" => Some(0xFE004000),
+        "dma" | "dma0" | "/dev/dma" => Some(0xFE005000),
         _ => None,
     }
 }
@@ -274,8 +277,16 @@ mod isr_tests {
     #[test]
     fn board_isr_table_loads_and_resolves() {
         super::set_active_board("stm32f407");
-        assert_eq!(super::resolve_isr_vector("TIM2"), Some(28), "TIM2 must resolve through lib/boards/stm32f407/interrupts.dbvl");
-        assert_eq!(super::resolve_isr_vector("tim2"), Some(28), "case-insensitive lookup");
+        assert_eq!(
+            super::resolve_isr_vector("TIM2"),
+            Some(28),
+            "TIM2 must resolve through lib/boards/stm32f407/interrupts.dbvl"
+        );
+        assert_eq!(
+            super::resolve_isr_vector("tim2"),
+            Some(28),
+            "case-insensitive lookup"
+        );
         assert_eq!(super::resolve_isr_vector("NOPE"), None);
     }
 }

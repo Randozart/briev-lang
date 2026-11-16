@@ -29,24 +29,44 @@ fn python_native_extension_roundtrip() {
 
     let bv = format!("{}/examples/glue-host/boundary.bv", PROJECT_ROOT);
     let ext = Command::new(brievc)
-        .args(["extension", &bv, "python", "--out", &out_dir.to_string_lossy()])
-        .output().expect("failed brievc extension python");
-    assert!(ext.status.success(), "extension failed: {}", String::from_utf8_lossy(&ext.stderr));
+        .args([
+            "extension",
+            &bv,
+            "python",
+            "--out",
+            &out_dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("failed brievc extension python");
+    assert!(
+        ext.status.success(),
+        "extension failed: {}",
+        String::from_utf8_lossy(&ext.stderr)
+    );
 
     let py = out_dir.join("check.py");
-    std::fs::write(&py, r#"
+    std::fs::write(
+        &py,
+        r#"
 import boundary
 assert boundary.echo("hello") == "hello"
 assert boundary.greet("world") == "world"
 assert boundary.identity(3.5) == 3.5
 assert boundary.join("foo", "bar") == "foobar"
 print("OK")
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let run = Command::new("python3")
         .current_dir(&out_dir)
         .arg(&py)
-        .output().expect("failed python3");
-    assert!(run.status.success(), "python failed: {}", String::from_utf8_lossy(&run.stderr));
+        .output()
+        .expect("failed python3");
+    assert!(
+        run.status.success(),
+        "python failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert!(String::from_utf8_lossy(&run.stdout).contains("OK"));
 }

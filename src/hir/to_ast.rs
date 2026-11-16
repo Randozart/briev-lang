@@ -45,7 +45,8 @@ fn method_call(
         Box::new(expr(receiver).unwrap()),
         name.to_string(),
         args.iter().map(expr).collect::<Option<Vec<_>>>().unwrap(),
-        analysis_id)
+        analysis_id,
+    )
 }
 
 fn literal(lit: &HirLiteral) -> crate::ast::Expr {
@@ -67,7 +68,11 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
     Some(match &e.kind {
         HirExprKind::Literal(lit) => literal(lit),
         HirExprKind::Identifier(n) => Expr::Identifier(n.clone()),
-        HirExprKind::Call { callee, args, analysis_id } => Expr::Call(
+        HirExprKind::Call {
+            callee,
+            args,
+            analysis_id,
+        } => Expr::Call(
             callee.clone(),
             args.iter().map(expr).collect::<Option<Vec<_>>>()?,
             *analysis_id,
@@ -80,31 +85,53 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
             Expr::Field(Box::new(expr(receiver)?), name.clone())
         }
         HirExprKind::Cast { inner, to, .. } => Expr::Cast(Box::new(expr(inner)?), to.clone()),
-        HirExprKind::MethodCall { receiver, name, args, analysis_id } => {
-            method_call(receiver, name, args, *analysis_id)
-        }
-        HirExprKind::Reflect { receiver, name, kind } => {
-            Expr::Reflect(Box::new(expr(receiver)?), name.clone(), *kind)
-        }
+        HirExprKind::MethodCall {
+            receiver,
+            name,
+            args,
+            analysis_id,
+        } => method_call(receiver, name, args, *analysis_id),
+        HirExprKind::Reflect {
+            receiver,
+            name,
+            kind,
+        } => Expr::Reflect(Box::new(expr(receiver)?), name.clone(), *kind),
         HirExprKind::Index(a, b) => Expr::Index(Box::new(expr(a)?), Box::new(expr(b)?)),
         HirExprKind::Wildcard => Expr::Wildcard,
-        HirExprKind::Slice { array, start, end, stride } => Expr::Slice {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => Expr::Slice {
             array: Box::new(expr(array)?),
             start: opt_box(start)?,
             end: opt_box(end)?,
             stride: opt_box(stride)?,
         },
-        HirExprKind::Range { start, end, inclusive } => Expr::Range {
+        HirExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } => Expr::Range {
             start: Box::new(expr(start)?),
             end: Box::new(expr(end)?),
             inclusive: *inclusive,
         },
-        HirExprKind::Spawn { type_name, args, storage } => Expr::Spawn {
+        HirExprKind::Spawn {
+            type_name,
+            args,
+            storage,
+        } => Expr::Spawn {
             type_name: type_name.clone(),
             args: args.iter().map(expr).collect::<Option<Vec<_>>>()?,
             storage: *storage,
         },
-        HirExprKind::If { condition, then_branch, else_branch } => Expr::If(
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => Expr::If(
             Box::new(expr(condition)?),
             Box::new(expr(then_branch)?),
             opt_box(else_branch)?,
@@ -113,9 +140,7 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
             Box::new(expr(scrutinee)?),
             arms.iter().map(match_arm).collect::<Option<Vec<_>>>()?,
         ),
-        HirExprKind::Lambda { params, body } => {
-            Expr::Lambda(params.clone(), Box::new(expr(body)?))
-        }
+        HirExprKind::Lambda { params, body } => Expr::Lambda(params.clone(), Box::new(expr(body)?)),
         HirExprKind::IsType { inner, ty } => Expr::IsType(Box::new(expr(inner)?), ty.clone()),
         HirExprKind::Deref(inner) => Expr::Deref(Box::new(expr(inner)?)),
         HirExprKind::AddrOf(inner) => Expr::AddrOf(Box::new(expr(inner)?)),
@@ -128,10 +153,12 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
         HirExprKind::Tuple(items) => {
             Expr::Tuple(items.iter().map(expr).collect::<Option<Vec<_>>>()?)
         }
-        HirExprKind::List(items) => {
-            Expr::List(items.iter().map(expr).collect::<Option<Vec<_>>>()?)
-        }
-        HirExprKind::StructLiteral { type_name, fields, specs } => Expr::StructLiteral {
+        HirExprKind::List(items) => Expr::List(items.iter().map(expr).collect::<Option<Vec<_>>>()?),
+        HirExprKind::StructLiteral {
+            type_name,
+            fields,
+            specs,
+        } => Expr::StructLiteral {
             type_name: type_name.clone(),
             fields: fields
                 .iter()
@@ -142,18 +169,26 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
                 .map(|(n, e)| Some((n.clone(), expr(e)?)))
                 .collect::<Option<Vec<_>>>()?,
         },
-        HirExprKind::PluginIntercept { name, args, type_args, receiver } => {
-            Expr::PluginIntercept {
-                name: name.clone(),
-                args: args.iter().map(expr).collect::<Option<Vec<_>>>()?,
-                type_args: type_args.clone(),
-                receiver: match receiver {
-                    None => None,
-                    Some(r) => Some(Box::new(expr(r)?)),
-                },
-            }
-        }
+        HirExprKind::PluginIntercept {
+            name,
+            args,
+            type_args,
+            receiver,
+        } => Expr::PluginIntercept {
+            name: name.clone(),
+            args: args.iter().map(expr).collect::<Option<Vec<_>>>()?,
+            type_args: type_args.clone(),
+            receiver: match receiver {
+                None => None,
+                Some(r) => Some(Box::new(expr(r)?)),
+            },
+        },
         HirExprKind::Block(stmts) => Expr::Block(stmt_body(stmts)?),
+        // 2026-11-15 (HIR-fidelity): lossless reconstruction for the three
+        // previously-`Other` expression variants.
+        HirExprKind::Within(l, r) => Expr::Within(Box::new(expr(l)?), Box::new(expr(r)?)),
+        HirExprKind::Exists(name) => Expr::Exists(name.clone()),
+        HirExprKind::FormattingAnnotation(f) => Expr::FormattingAnnotation(f.clone()),
         HirExprKind::Other(_) => return None,
     })
 }
@@ -168,7 +203,11 @@ fn match_arm(arm: &HirMatchArm) -> Option<MatchArm> {
 
 fn stmt_match_arm(arm: &HirStmtMatchArm) -> Option<StmtMatchArm> {
     Some(StmtMatchArm {
-        patterns: arm.patterns.iter().map(pattern).collect::<Option<Vec<_>>>()?,
+        patterns: arm
+            .patterns
+            .iter()
+            .map(pattern)
+            .collect::<Option<Vec<_>>>()?,
         body: stmt_body(&arm.body)?,
     })
 }
@@ -204,8 +243,16 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
         return None;
     }
     Some(match &s.kind {
-        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. } => unreachable!("filtered above"),
-        HirStmtKind::Let { name, names, ty, expr: e, modifiers } => Statement::Let {
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. } => {
+            unreachable!("filtered above")
+        }
+        HirStmtKind::Let {
+            name,
+            names,
+            ty,
+            expr: e,
+            modifiers,
+        } => Statement::Let {
             name: name.clone(),
             names: names.clone(),
             ty: ty.clone(),
@@ -213,7 +260,11 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
             modifiers: modifiers.clone(),
         },
         HirStmtKind::Assign(l, r) => Statement::Assign(expr(l)?, expr(r)?),
-        HirStmtKind::ArrowAssign { target, value, consume } => Statement::ArrowAssign {
+        HirStmtKind::ArrowAssign {
+            target,
+            value,
+            consume,
+        } => Statement::ArrowAssign {
             target: opt_expr(target)?.map(Box::new),
             value: Box::new(expr(value)?),
             consume: *consume,
@@ -224,18 +275,29 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
         HirStmtKind::Expression(e) => Statement::Expression(expr(e)?),
         HirStmtKind::Guarded(c, b) => Statement::Guarded(expr(c)?, stmt_body(b)?),
         HirStmtKind::Block(b) => Statement::Block(stmt_body(b)?),
-        HirStmtKind::Foreach { item, list, body, modifiers } => Statement::Foreach {
+        HirStmtKind::Foreach {
+            item,
+            list,
+            body,
+            modifiers,
+        } => Statement::Foreach {
             item: item.clone(),
             list: Box::new(expr(list)?),
             body: stmt_body(body)?,
             modifiers: modifiers
                 .iter()
-                .map(|name| crate::ast::Annotation { name: name.clone(), value: None })
+                .map(|name| crate::ast::Annotation {
+                    name: name.clone(),
+                    value: None,
+                })
                 .collect(),
         },
         HirStmtKind::Match { expr: e, arms } => Statement::Match {
             expr: Box::new(expr(e)?),
-            arms: arms.iter().map(stmt_match_arm).collect::<Option<Vec<_>>>()?,
+            arms: arms
+                .iter()
+                .map(stmt_match_arm)
+                .collect::<Option<Vec<_>>>()?,
         },
         HirStmtKind::Break => Statement::Break,
         HirStmtKind::Trap => Statement::Trap,
@@ -257,11 +319,20 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
         HirStmtKind::MetadataAssignment(n, v) => {
             Statement::MetadataAssignment(n.clone(), v.clone())
         }
-        HirStmtKind::InlineAsm { asm_string, clobbers, span } => Statement::InlineAsm {
+        HirStmtKind::InlineAsm {
+            asm_string,
+            clobbers,
+            span,
+        } => Statement::InlineAsm {
             asm_string: asm_string.clone(),
             clobbers: clobbers.clone(),
             span: *span,
         },
+        // 2026-11-15 (HIR-fidelity): HIR carries the inline-defn name for
+        // analysis, but the AST's manual `PartialEq` treats `InlineDefn` as
+        // non-round-trippable, so `to_ast` cannot faithfully reconstruct it.
+        // Return `None` (as for `Other`) so the body seam falls back to AST.
+        HirStmtKind::InlineDefn(_) => return None,
         HirStmtKind::Other(_) => return None,
     })
 }

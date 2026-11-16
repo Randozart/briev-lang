@@ -6,7 +6,7 @@
 use crate::ast::*;
 use crate::errors::RuntimeError;
 use crate::interpreter::{
-    Atom, bool_to_bits, execute_intrinsic, f64_to_bits, i64_to_bits, zero_bits, Value, VirtualHeap,
+    Atom, Value, VirtualHeap, bool_to_bits, execute_intrinsic, f64_to_bits, i64_to_bits, zero_bits,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,7 +26,6 @@ pub fn eval_expr(
     heap: &mut VirtualHeap,
     bindings: &mut HashMap<String, Value>,
     functions: &HashMap<String, crate::interpreter::FunctionDef>,
-
 ) -> Result<Value, RuntimeError> {
     match expr {
         // ── Literals ────────────────────────────────────────────
@@ -68,7 +67,16 @@ pub fn eval_expr(
         }
 
         // ── Binary operators ─────────────────────────────────────
-        Expr::BinaryOp(kind, lhs, rhs) => eval_binary_op(kind, lhs, rhs, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
+        Expr::BinaryOp(kind, lhs, rhs) => eval_binary_op(
+            kind,
+            lhs,
+            rhs,
+            heap,
+            &mut EvalScope {
+                bindings: &mut *bindings,
+                functions: functions,
+            },
+        ),
 
         // ── Unary operators ──────────────────────────────────────
         Expr::UnaryOp(kind, expr) => eval_unary_op(kind, expr, heap, bindings, functions),
@@ -77,19 +85,32 @@ pub fn eval_expr(
         Expr::Block(stmts) => eval_block(stmts, heap, bindings, functions),
 
         // ── If ───────────────────────────────────────────────────
-        Expr::If(cond, then, else_) => eval_if(cond, then, else_, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
+        Expr::If(cond, then, else_) => eval_if(
+            cond,
+            then,
+            else_,
+            heap,
+            &mut EvalScope {
+                bindings: &mut *bindings,
+                functions: functions,
+            },
+        ),
 
         // ── Tuple ────────────────────────────────────────────────
         Expr::Tuple(exprs) => {
-            let values: Result<Vec<Value>, _> =
-                exprs.iter().map(|e| eval_expr(e, heap, bindings, functions)).collect();
+            let values: Result<Vec<Value>, _> = exprs
+                .iter()
+                .map(|e| eval_expr(e, heap, bindings, functions))
+                .collect();
             Ok(Value::product(values?))
         }
 
         // ── List ─────────────────────────────────────────────────
         Expr::List(exprs) => {
-            let values: Result<Vec<Value>, _> =
-                exprs.iter().map(|e| eval_expr(e, heap, bindings, functions)).collect();
+            let values: Result<Vec<Value>, _> = exprs
+                .iter()
+                .map(|e| eval_expr(e, heap, bindings, functions))
+                .collect();
             Ok(Value::product(values?))
         }
 
@@ -145,7 +166,9 @@ pub fn eval_expr(
                     _ => Ok(v),
                 },
                 "Float" => match v {
-                    Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Float(if b { 1.0 } else { 0.0 }))),
+                    Value::Atom(Atom::Bool(b)) => {
+                        Ok(Value::Atom(Atom::Float(if b { 1.0 } else { 0.0 })))
+                    }
                     Value::Atom(Atom::Char(c)) => Ok(Value::Atom(Atom::Float(c as i64 as f64))),
                     // 2026-11-10 (fuzz finding): `n as Float` must CONVERT an
                     // Int (LLVM sitofp), not fall through to identity.
@@ -153,7 +176,9 @@ pub fn eval_expr(
                     _ => Ok(v),
                 },
                 "Char" => match v {
-                    Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Char(char::from_u32(n as u32).unwrap_or('?')))),
+                    Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Char(
+                        char::from_u32(n as u32).unwrap_or('?'),
+                    ))),
                     _ => Ok(v),
                 },
                 // 2026-10-20 (interpreter parity trio): the casting graph's
@@ -169,10 +194,7 @@ pub fn eval_expr(
                 //      (char_to_str / int_to_str / float_to_str / bool_to_str).
                 "String" => {
                     if let Expr::Cast(inner, mid_ty) = expr.as_ref() {
-                        if matches!(
-                            target_protocol_category(mid_ty).as_str(),
-                            "Blob" | "Data"
-                        ) {
+                        if matches!(target_protocol_category(mid_ty).as_str(), "Blob" | "Data") {
                             return Ok(door_string_from_addr(&v, heap));
                         }
                     }
@@ -227,7 +249,11 @@ pub fn eval_expr(
         Expr::DerivationBlock(_) => Ok(Value::Void),
 
         // ── Struct literal ───────────────────────────────────────
-        Expr::StructLiteral { type_name, fields, specs: _ } => {
+        Expr::StructLiteral {
+            type_name,
+            fields,
+            specs: _,
+        } => {
             let mut names = Vec::with_capacity(fields.len());
             let values: Result<Vec<Value>, _> = fields
                 .iter()
@@ -292,16 +318,24 @@ pub fn eval_expr(
                     let target_id = *raw_id as u64;
                     if !crate::interpreter::task_is_done(target_id) {
                         'scheduler: loop {
-                            if crate::interpreter::task_is_done(target_id) { break; }
+                            if crate::interpreter::task_is_done(target_id) {
+                                break;
+                            }
                             let runnable = crate::interpreter::collect_runnable();
                             // Empty pool with the target unfinished = deadlock
                             // posture (every remaining task Waiting): return
                             // the handle (SPEC §12.2 — cooperative scheduler,
                             // no preemption, no hang).
-                            if runnable.is_empty() { break; }
+                            if runnable.is_empty() {
+                                break;
+                            }
                             for (tid, fn_name, arg_vals, segments, current) in &runnable {
-                                if crate::interpreter::task_is_done(*tid) { continue; }
-                                if *current >= segments.len() { continue; }
+                                if crate::interpreter::task_is_done(*tid) {
+                                    continue;
+                                }
+                                if *current >= segments.len() {
+                                    continue;
+                                }
                                 let job = SegmentJob {
                                     tid: *tid,
                                     fn_name,
@@ -313,14 +347,18 @@ pub fn eval_expr(
                                     SegmentOutcome::Blocked => {}
                                     SegmentOutcome::Term(v) => {
                                         crate::interpreter::mark_done_with_result(*tid, v);
-                                        if *tid == target_id { break 'scheduler; }
+                                        if *tid == target_id {
+                                            break 'scheduler;
+                                        }
                                     }
                                     SegmentOutcome::Completed(v) => {
                                         let finished =
                                             crate::interpreter::advance_segment_status(*tid);
                                         if finished {
                                             crate::interpreter::mark_done_with_result(*tid, v);
-                                            if *tid == target_id { break 'scheduler; }
+                                            if *tid == target_id {
+                                                break 'scheduler;
+                                            }
                                         }
                                     }
                                 }
@@ -340,10 +378,26 @@ pub fn eval_expr(
         }
 
         // ── Field / reflection / method ─────────────────────────
-        Expr::Reflect(recv, name, kind) => eval_reflect(recv, name, *kind, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
-        Expr::MethodCall(recv, name, args, _) => {
-            eval_method_call(recv, name, args, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions })
-        }
+        Expr::Reflect(recv, name, kind) => eval_reflect(
+            recv,
+            name,
+            *kind,
+            heap,
+            &mut EvalScope {
+                bindings: &mut *bindings,
+                functions: functions,
+            },
+        ),
+        Expr::MethodCall(recv, name, args, _) => eval_method_call(
+            recv,
+            name,
+            args,
+            heap,
+            &mut EvalScope {
+                bindings: &mut *bindings,
+                functions: functions,
+            },
+        ),
 
         // ── Formatting annotation ────────────────────────────────
         Expr::FormattingAnnotation(_) => Ok(Value::Void),
@@ -354,16 +408,21 @@ pub fn eval_expr(
         // Parsed stage; this native path keeps direct interpreter use correct
         // (rule #4: the interpreter is the reference) and reports a rename
         // hint for the deprecated PascalCase names.
-        Expr::PluginIntercept { name, args, receiver, .. } => eval_intercept(
+        Expr::PluginIntercept {
             name,
-            receiver.as_deref(),
             args,
-            heap,
-            bindings,
-            functions,
-        ),
-        Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Slice { array, start, end, stride } => eval_slice(
+            receiver,
+            ..
+        } => eval_intercept(name, receiver.as_deref(), args, heap, bindings, functions),
+        Expr::Exists(_) => {
+            unreachable!("fn? only in stage eval")
+        }
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => eval_slice(
             array,
             SliceBounds {
                 start: start.as_deref(),
@@ -376,17 +435,21 @@ pub fn eval_expr(
         ),
         // 2026-08-07 (Phase 7): an iterable range value — consumed by
         // `foreach` (SPEC §11.4).
-            Expr::Spawn { type_name, args, storage } => {
-                // 2026-08-07 (instance pools): the interpreter reference evaluates
-                // the spawn args; the handle is a synthetic atom (the codegen
-                // allocates the real pool row).
-                // 2026-08-09 (Phase 10): `spawn defn(args)` is a TASK spawn — the
-                // deterministic reference scheduler runs the task inline, so the
-                // handle IS the callable's result (SPEC §12.2). Distinguish a task
-                // (a registered function) from an obj base.
-                if functions.contains_key(type_name) {
-                    return eval_task_spawn(type_name, args, heap, bindings, functions);
-                }
+        Expr::Spawn {
+            type_name,
+            args,
+            storage,
+        } => {
+            // 2026-08-07 (instance pools): the interpreter reference evaluates
+            // the spawn args; the handle is a synthetic atom (the codegen
+            // allocates the real pool row).
+            // 2026-08-09 (Phase 10): `spawn defn(args)` is a TASK spawn — the
+            // deterministic reference scheduler runs the task inline, so the
+            // handle IS the callable's result (SPEC §12.2). Distinguish a task
+            // (a registered function) from an obj base.
+            if functions.contains_key(type_name) {
+                return eval_task_spawn(type_name, args, heap, bindings, functions);
+            }
             // 2026-08-22 (Phase 7b, SPEC §9.5): a PORTED obj spawn builds a
             // real instance — input ports bind positionally to the evaluated
             // arguments (an EventQ argument SHARES the producer's slot; plain
@@ -444,28 +507,37 @@ pub fn eval_expr(
             }
             Ok(Value::Atom(Atom::Int(0)))
         }
-        Expr::Range { start, end, inclusive } => {
-                let s = eval_expr(start, heap, bindings, functions)?
-                    .as_i64()
-                    .ok_or_else(|| RuntimeError::TypeError {
-                        expected: "an integer range bound".into(),
-                        found: "non-integer range bound".into(),
-                    })?;
-                let e = eval_expr(end, heap, bindings, functions)?
-                    .as_i64()
-                    .ok_or_else(|| RuntimeError::TypeError {
-                        expected: "an integer range bound".into(),
-                        found: "non-integer range bound".into(),
-                    })?;
-                Ok(Value::Range { start: s, end: e, inclusive: *inclusive })
-            }
-            Expr::UnitLiteral { value, unit } => {
-                // 2026-10-05 (Phase 0.6b): the reference interpreter must
-                // agree with codegen on the physical magnitude — SI, not the
-                // raw stored number (Rule 5: the interpreter is the reference).
-                Ok(f64_to_bits(crate::parser::quantity::literal_si(*value, unit)))
-            }
-
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let s = eval_expr(start, heap, bindings, functions)?
+                .as_i64()
+                .ok_or_else(|| RuntimeError::TypeError {
+                    expected: "an integer range bound".into(),
+                    found: "non-integer range bound".into(),
+                })?;
+            let e = eval_expr(end, heap, bindings, functions)?
+                .as_i64()
+                .ok_or_else(|| RuntimeError::TypeError {
+                    expected: "an integer range bound".into(),
+                    found: "non-integer range bound".into(),
+                })?;
+            Ok(Value::Range {
+                start: s,
+                end: e,
+                inclusive: *inclusive,
+            })
+        }
+        Expr::UnitLiteral { value, unit } => {
+            // 2026-10-05 (Phase 0.6b): the reference interpreter must
+            // agree with codegen on the physical magnitude — SI, not the
+            // raw stored number (Rule 5: the interpreter is the reference).
+            Ok(f64_to_bits(crate::parser::quantity::literal_si(
+                *value, unit,
+            )))
+        }
     }
 }
 
@@ -496,7 +568,11 @@ fn eval_task_spawn(
     // 2026-08-26 (Phase B): parameter names feed the port-read pre-split —
     // a blocking read must head its segment (plan §4).
     crate::interpreter::register_pending_task(
-        task_id, type_name.to_string(), arg_vals, defn.body.clone(), &defn.parameters,
+        task_id,
+        type_name.to_string(),
+        arg_vals,
+        defn.body.clone(),
+        &defn.parameters,
     );
     // Return a task-id marker — await triggers lazy segment-by-segment execution.
     Ok(Value::Atom(Atom::Int(task_id as i64)))
@@ -637,79 +713,88 @@ fn eval_call(
                     return Ok(Value::sum(bare, evaluated));
                 }
                 match functions.get(name) {
-                Some(fn_def) => {
-                    if fn_def.parameters.len() != evaluated.len() {
-                        return Err(RuntimeError::TypeError {
-                            expected: format!("{} arguments", fn_def.parameters.len()),
-                            found: format!("{} arguments", evaluated.len()),
-                        });
+                    Some(fn_def) => {
+                        if fn_def.parameters.len() != evaluated.len() {
+                            return Err(RuntimeError::TypeError {
+                                expected: format!("{} arguments", fn_def.parameters.len()),
+                                found: format!("{} arguments", evaluated.len()),
+                            });
+                        }
+                        let mut local: HashMap<String, Value> = bindings.clone();
+                        for (p, v) in fn_def.parameters.iter().zip(evaluated.into_iter()) {
+                            local.insert(p.clone(), v);
+                        }
+                        // 2026-10-05 (callable-txn convergence): a `txn` loops
+                        // until its postcondition holds; the pre gates each entry.
+                        // 2026-10-16 (term-semantics plan §1): `kind` decides the
+                        // shape — a txn converges (below); a defn is LINEAR (runs
+                        // once; its P-gated bare terms were lowered into the body
+                        // at registration, so the post lives at the term sites,
+                        // not in a dispatch loop). Mirrors the backend (Rule 5).
+                        if fn_def.kind == crate::interpreter::FnKind::Defn {
+                            let block = Expr::Block(fn_def.body.clone());
+                            return match eval_expr(&block, heap, &mut local, functions) {
+                                Ok(v) => Ok(v),
+                                Err(RuntimeError::TermReturn(v)) => Ok(v),
+                                Err(e) => Err(e),
+                            };
+                        }
+                        let mut result = Value::Atom(Atom::Int(0));
+                        loop {
+                            if let Some(c) = &fn_def.contract {
+                                if !matches!(c.pre_condition, Expr::Bool(true)) {
+                                    let pv =
+                                        eval_expr(&c.pre_condition, heap, &mut local, functions)?;
+                                    if !pv.is_true() {
+                                        break;
+                                    }
+                                }
+                            }
+                            let block = Expr::Block(fn_def.body.clone());
+                            match eval_expr(&block, heap, &mut local, functions) {
+                                Ok(v) => result = v,
+                                Err(RuntimeError::TermReturn(v)) => result = v,
+                                Err(e) => return Err(e),
+                            }
+                            match &fn_def.contract {
+                                Some(c) if !matches!(c.post_condition, Expr::Bool(true)) => {
+                                    let qv =
+                                        eval_expr(&c.post_condition, heap, &mut local, functions)?;
+                                    if qv.is_true() {
+                                        break;
+                                    }
+                                }
+                                _ => break,
+                            }
+                        }
+                        Ok(result)
                     }
-                    let mut local: HashMap<String, Value> = bindings.clone();
-                    for (p, v) in fn_def.parameters.iter().zip(evaluated.into_iter()) {
-                        local.insert(p.clone(), v);
-                    }
-                    // 2026-10-05 (callable-txn convergence): a `txn` loops
-                    // until its postcondition holds; the pre gates each entry.
-                    // 2026-10-16 (term-semantics plan §1): `kind` decides the
-                    // shape — a txn converges (below); a defn is LINEAR (runs
-                    // once; its P-gated bare terms were lowered into the body
-                    // at registration, so the post lives at the term sites,
-                    // not in a dispatch loop). Mirrors the backend (Rule 5).
-                    if fn_def.kind == crate::interpreter::FnKind::Defn {
-                        let block = Expr::Block(fn_def.body.clone());
-                        return match eval_expr(&block, heap, &mut local, functions) {
-                            Ok(v) => Ok(v),
-                            Err(RuntimeError::TermReturn(v)) => Ok(v),
-                            Err(e) => Err(e),
-                        };
-                    }
-                    let mut result = Value::Atom(Atom::Int(0));
-                    loop {
-                        if let Some(c) = &fn_def.contract {
-                            if !matches!(c.pre_condition, Expr::Bool(true)) {
-                                let pv = eval_expr(&c.pre_condition, heap, &mut local, functions)?;
-                                if !pv.is_true() {
-                                    break;
+                    // 2026-10-20 (interpreter parity trio): UFCS / free form of
+                    // an obj member — `put_u8(g, v)` where `put_u8` is declared
+                    // inside `obj GrowBuf`. No bare function is registered for
+                    // members, so dispatch on the first Instance argument.
+                    None => {
+                        if let Some(first) = evaluated.first() {
+                            if let Value::Instance { type_name, .. } = first {
+                                let key = format!("{}::{}", type_name, name);
+                                if functions.contains_key(&key) {
+                                    let rest: Vec<Value> = evaluated[1..].to_vec();
+                                    let mut scope = EvalScope {
+                                        bindings,
+                                        functions,
+                                    };
+                                    return dispatch_method_value(
+                                        first.clone(),
+                                        name,
+                                        rest,
+                                        heap,
+                                        &mut scope,
+                                    );
                                 }
                             }
                         }
-                        let block = Expr::Block(fn_def.body.clone());
-                        match eval_expr(&block, heap, &mut local, functions) {
-                            Ok(v) => result = v,
-                            Err(RuntimeError::TermReturn(v)) => result = v,
-                            Err(e) => return Err(e),
-                        }
-                        match &fn_def.contract {
-                            Some(c) if !matches!(c.post_condition, Expr::Bool(true)) => {
-                                let qv = eval_expr(&c.post_condition, heap, &mut local, functions)?;
-                                if qv.is_true() {
-                                    break;
-                                }
-                            }
-                            _ => break,
-                        }
+                        Err(RuntimeError::UndefinedFunction(name.into()))
                     }
-                    Ok(result)
-                }
-                // 2026-10-20 (interpreter parity trio): UFCS / free form of
-                // an obj member — `put_u8(g, v)` where `put_u8` is declared
-                // inside `obj GrowBuf`. No bare function is registered for
-                // members, so dispatch on the first Instance argument.
-                None => {
-                    if let Some(first) = evaluated.first() {
-                        if let Value::Instance { type_name, .. } = first {
-                            let key = format!("{}::{}", type_name, name);
-                            if functions.contains_key(&key) {
-                                let rest: Vec<Value> = evaluated[1..].to_vec();
-                                let mut scope = EvalScope { bindings, functions };
-                                return dispatch_method_value(
-                                    first.clone(), name, rest, heap, &mut scope,
-                                );
-                            }
-                        }
-                    }
-                    Err(RuntimeError::UndefinedFunction(name.into()))
-                }
                 }
             }
         }
@@ -760,8 +845,14 @@ fn door_string_from_addr(v: &Value, heap: &crate::interpreter::VirtualHeap) -> V
         return Value::bits(Vec::new());
     };
     let len = i64::from_le_bytes([
-        len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3],
-        len_bytes[4], len_bytes[5], len_bytes[6], len_bytes[7],
+        len_bytes[0],
+        len_bytes[1],
+        len_bytes[2],
+        len_bytes[3],
+        len_bytes[4],
+        len_bytes[5],
+        len_bytes[6],
+        len_bytes[7],
     ]);
     if len < 0 {
         return Value::bits(Vec::new());
@@ -815,11 +906,9 @@ fn eval_atomic_at(
     heap: &mut VirtualHeap,
     bindings: &mut HashMap<String, Value>,
 ) -> Result<Value, RuntimeError> {
-    let unsupported = || {
-        RuntimeError::TypeError {
-            expected: format!("{name}(buf, i, v) - buf is an Int array variable, i and v Ints"),
-            found: "argument shape".into(),
-        }
+    let unsupported = || RuntimeError::TypeError {
+        expected: format!("{name}(buf, i, v) - buf is an Int array variable, i and v Ints"),
+        found: "argument shape".into(),
     };
     if args.len() < 3 {
         return Err(unsupported());
@@ -827,8 +916,7 @@ fn eval_atomic_at(
     let Expr::Identifier(buf_name) = &args[0] else {
         return Err(RuntimeError::TypeError {
             expected: format!("{name} target is an array variable"),
-            found: "compound expression - element-addressed atomics name the binding"
-                .into(),
+            found: "compound expression - element-addressed atomics name the binding".into(),
         });
     };
     let iv = eval_expr(&args[1], heap, bindings, &HashMap::new())?;
@@ -841,16 +929,19 @@ fn eval_atomic_at(
         expected: "an Int value".into(),
         found: "non-integer value".into(),
     })?;
-    let cur = bindings.get(buf_name).cloned().ok_or_else(|| {
-        RuntimeError::UndefinedVariable { name: buf_name.clone() }
-    })?;
+    let cur = bindings
+        .get(buf_name)
+        .cloned()
+        .ok_or_else(|| RuntimeError::UndefinedVariable {
+            name: buf_name.clone(),
+        })?;
     let mut fields = match cur {
         Value::Product { fields, .. } => fields,
         other => {
             return Err(RuntimeError::TypeError {
                 expected: format!("an Int array binding for '{buf_name}'"),
                 found: format!("{}", describe_value(&other)),
-            })
+            });
         }
     };
     let len = fields.len() as i64;
@@ -888,7 +979,7 @@ fn eval_atomic_at(
             return Err(RuntimeError::TypeError {
                 expected: "an implemented At-family atomic".into(),
                 found: format!("{other} - Add, Sub, Xchg and Cas exist"),
-            })
+            });
         }
     }
     bindings.insert(buf_name.clone(), Value::product(fields));
@@ -910,12 +1001,10 @@ fn eval_index(
     if let Some(mask) = bool_mask_from_value(&idx_val) {
         return eval_masked_index(obj_val, &mask);
     }
-    let idx = idx_val
-        .as_i64()
-        .ok_or_else(|| RuntimeError::TypeError {
-            expected: "an integer index".into(),
-            found: "non-integer index".into(),
-        })?;
+    let idx = idx_val.as_i64().ok_or_else(|| RuntimeError::TypeError {
+        expected: "an integer index".into(),
+        found: "non-integer index".into(),
+    })?;
     if idx < 0 {
         return Err(RuntimeError::TypeError {
             expected: "a non-negative index".into(),
@@ -928,7 +1017,11 @@ fn eval_index(
             .get(idx)
             .cloned()
             .ok_or_else(|| index_oob(idx, fields.len())),
-        Value::Bits(bytes) => bytes.get(idx).copied().map(|b| Value::bits(vec![b])).ok_or_else(|| index_oob(idx, bytes.len())),
+        Value::Bits(bytes) => bytes
+            .get(idx)
+            .copied()
+            .map(|b| Value::bits(vec![b]))
+            .ok_or_else(|| index_oob(idx, bytes.len())),
         other => Err(RuntimeError::TypeError {
             expected: "an indexable value (list, tuple, or bits)".into(),
             found: format!("{}", describe_value(&other)),
@@ -985,7 +1078,10 @@ fn eval_masked_index(obj_val: Value, mask: &[bool]) -> Result<Value, RuntimeErro
                         .collect(),
                 )
             });
-            Ok(Value::Product { fields: selected, names: selected_names })
+            Ok(Value::Product {
+                fields: selected,
+                names: selected_names,
+            })
         }
         other => Err(RuntimeError::TypeError {
             expected: "byte data (Data) or a vector (list of elements)".into(),
@@ -1019,7 +1115,6 @@ fn value_has_type_shape(ty: &crate::ast::Type, val: &Value) -> bool {
         _ => true,
     }
 }
-
 
 /// 2026-08-22 (Phase 7b): zero-value defaults for obj slot fields.
 fn default_for_type(ty: &crate::ast::Type) -> Value {
@@ -1083,7 +1178,10 @@ fn eval_field(
                     }
                 });
             match index {
-                Some(i) => fields.get(i).cloned().ok_or_else(|| field_oob(name, fields.len())),
+                Some(i) => fields
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| field_oob(name, fields.len())),
                 None => Err(RuntimeError::TypeError {
                     expected: format!("a field named '{}'", name),
                     found: describe_value(&Value::Product { fields, names }),
@@ -1096,10 +1194,7 @@ fn eval_field(
             let f = fields.borrow();
             f.get(name).cloned().ok_or_else(|| RuntimeError::TypeError {
                 expected: format!("a declared port or slot named '{}'", name),
-                found: format!(
-                    "instance with fields {:?}",
-                    f.keys().collect::<Vec<_>>()
-                ),
+                found: format!("instance with fields {:?}", f.keys().collect::<Vec<_>>()),
             })
         }
         // An EVENT PORT: any name projects the current payload's members.
@@ -1108,9 +1203,7 @@ fn eval_field(
             // 2026-08-26 (async Phase B): decide suspension BEFORE taking the
             // match borrow — block_current_task_on_slot mutates the waiters
             // list and a held borrow would panic.
-            if q.borrow().payload.is_none()
-                && crate::interpreter::current_task_id().is_some()
-            {
+            if q.borrow().payload.is_none() && crate::interpreter::current_task_id().is_some() {
                 crate::interpreter::block_current_task_on_slot(&q);
                 return Err(RuntimeError::TaskBlocked);
             }
@@ -1178,8 +1271,10 @@ fn eval_method_call(
     scope: &mut EvalScope,
 ) -> Result<Value, RuntimeError> {
     let recv_val = eval_expr(recv, heap, scope.bindings, scope.functions)?;
-    let arg_vals: Result<Vec<Value>, _> =
-        args.iter().map(|a| eval_expr(a, heap, scope.bindings, scope.functions)).collect();
+    let arg_vals: Result<Vec<Value>, _> = args
+        .iter()
+        .map(|a| eval_expr(a, heap, scope.bindings, scope.functions))
+        .collect();
     dispatch_method_value(recv_val, name, arg_vals?, heap, scope)
 }
 
@@ -1201,9 +1296,15 @@ fn dispatch_method_value(
     // `Concrete::fn`, thread the receiver when the trait fn's first parameter
     // is `Self`, and run it in a caller-seeded scope (the interpreter's
     // dynamic-scoping convention for user code).
-    if let Value::Dyn { concrete, inner, .. } = &recv_val {
+    if let Value::Dyn {
+        concrete, inner, ..
+    } = &recv_val
+    {
         let key = format!("{}::{}", concrete, name);
-        let fn_def = scope.functions.get(&key).ok_or_else(|| RuntimeError::UndefinedFunction(key.clone()))?;
+        let fn_def = scope
+            .functions
+            .get(&key)
+            .ok_or_else(|| RuntimeError::UndefinedFunction(key.clone()))?;
         let mut params = fn_def.parameters.clone();
         let mut local: HashMap<String, Value> = scope.bindings.clone();
         // Receiver threading by shape: one more parameter than call-site
@@ -1327,7 +1428,10 @@ fn eval_slice(
                         .collect(),
                 )
             });
-            Ok(Value::Product { fields: sliced, names: sliced_names })
+            Ok(Value::Product {
+                fields: sliced,
+                names: sliced_names,
+            })
         }
         other => Err(RuntimeError::TypeError {
             expected: "a sliceable value (string or list)".into(),
@@ -1373,7 +1477,10 @@ fn slice_indices(
     let len = length as i64;
     if step > 0 {
         let lo = start.map(|s| wrap_bound(s, len)).unwrap_or(0).clamp(0, len);
-        let hi = stop.map(|s| wrap_bound(s, len)).unwrap_or(len).clamp(0, len);
+        let hi = stop
+            .map(|s| wrap_bound(s, len))
+            .unwrap_or(len)
+            .clamp(0, len);
         let mut out = Vec::new();
         let mut i = lo;
         while i < hi {
@@ -1440,9 +1547,10 @@ fn eval_reflect(
                 let bytes = val.string_bytes(heap).unwrap_or_default();
                 Ok(Value::int(bytes.len() as i64))
             }
-            (Value::Product { fields, .. } | Value::Sum { payload: fields, .. }) => {
-                Ok(Value::int(fields.len() as i64))
-            }
+            (Value::Product { fields, .. }
+            | Value::Sum {
+                payload: fields, ..
+            }) => Ok(Value::int(fields.len() as i64)),
             _ => Ok(Value::Void),
         },
         // 2026-08-14 (§6a.1 item 8): `.^^Size` and `.^^Bytes` are SPLIT —
@@ -1452,16 +1560,18 @@ fn eval_reflect(
         // Bits value. They were wrongly grouped before (Size returned byte
         // length).
         ("Size", true) => match val {
-            (Value::Product { fields, .. } | Value::Sum { payload: fields, .. }) => {
-                Ok(Value::int(fields.len() as i64))
-            }
+            (Value::Product { fields, .. }
+            | Value::Sum {
+                payload: fields, ..
+            }) => Ok(Value::int(fields.len() as i64)),
             _ => Ok(Value::int(1)),
         },
         ("Bytes", true) => match val {
             Value::Bits(bytes) => Ok(Value::int(bytes.len() as i64)),
-            (Value::Product { fields, .. } | Value::Sum { payload: fields, .. }) => {
-                Ok(Value::int(fields.len() as i64))
-            }
+            (Value::Product { fields, .. }
+            | Value::Sum {
+                payload: fields, ..
+            }) => Ok(Value::int(fields.len() as i64)),
             // 2026-10-25: scalar `Bytes` is the value width, matching codegen's
             // non-string type_size path. The strict JSON integer accumulator
             // derives its minimum from `0 .^^Bytes`; returning Void made the
@@ -1509,7 +1619,10 @@ fn reflect_type_code(v: &Value) -> i64 {
         }
         Value::Instance { fields, .. } => {
             let vals: Vec<Value> = fields.borrow().values().cloned().collect();
-            reflect_type_code(&Value::Product { fields: vals, names: None })
+            reflect_type_code(&Value::Product {
+                fields: vals,
+                names: None,
+            })
         }
         Value::Sum { .. } => 6,
         Value::Ref(_) => 7,
@@ -1528,10 +1641,7 @@ fn reflect_type_code(v: &Value) -> i64 {
 fn reflect_element_code(v: &Value) -> i64 {
     match v {
         Value::Bits(_) => 3, // Char — a `String` operand iterates codepoints
-        Value::Product { fields, .. } => fields
-            .first()
-            .map(reflect_type_code)
-            .unwrap_or(5), // empty product → its own category (Product)
+        Value::Product { fields, .. } => fields.first().map(reflect_type_code).unwrap_or(5), // empty product → its own category (Product)
         Value::Range { .. } => 0, // Int counter
         Value::Sum { .. } => 6,
         other => reflect_type_code(other),
@@ -1627,11 +1737,7 @@ impl PatternScope {
 /// `bindings`. A failed match may leave partial bindings — callers use a
 /// scratch binding map per arm. `EnumVariant` matches the derive CEGIS
 /// `Sum { name, payload }` carrier; `Tuple` matches `Product`.
-pub fn pattern_match(
-    pat: &Pattern,
-    val: &Value,
-    bindings: &mut HashMap<String, Value>,
-) -> bool {
+pub fn pattern_match(pat: &Pattern, val: &Value, bindings: &mut HashMap<String, Value>) -> bool {
     match pat {
         Pattern::Wildcard => true,
         Pattern::Binding(name) => {
@@ -1695,7 +1801,10 @@ pub fn pattern_match(
                     .all(|(p, item)| pattern_match(p, item, bindings))
         }
         Pattern::EnumVariant(name, subpats) => match val {
-            Value::Sum { name: cname, payload: fields } => {
+            Value::Sum {
+                name: cname,
+                payload: fields,
+            } => {
                 // 2026-08-26 (qualified enum paths): compare by LAST segment
                 // so `Res::Ok` patterns match bare-tagged sums and vice versa.
                 let pat_last = name.rsplit("::").next().unwrap_or(name);
@@ -1721,7 +1830,9 @@ fn literal_pattern_value(lit: &Expr) -> Option<Value> {
         Expr::Float(f) => Some(Value::float(*f)),
         Expr::Bool(b) => Some(Value::bool(*b)),
         Expr::Char(c) => Some(Value::char(*c)),
-        Expr::Quoted(bytes) | Expr::TaggedQuotedLiteral(bytes, _) => Some(Value::bits(bytes.clone())),
+        Expr::Quoted(bytes) | Expr::TaggedQuotedLiteral(bytes, _) => {
+            Some(Value::bits(bytes.clone()))
+        }
         _ => None,
     }
 }
@@ -1769,12 +1880,12 @@ fn eval_intercept(
             "'{}!' is deprecated — use the lowercase 'print!' / 'println!' macros",
             name
         ))),
-        "GetEnvInt" | "GetEnv" | "GetEnvOrDefault" => Err(RuntimeError::UnsupportedIntrinsic(
-            format!(
+        "GetEnvInt" | "GetEnv" | "GetEnvOrDefault" => {
+            Err(RuntimeError::UnsupportedIntrinsic(format!(
                 "'{}!' is deprecated — use the lowercase 'get_env_int!' / 'get_env!' macros",
                 name
-            ),
-        )),
+            )))
+        }
         _ => Err(RuntimeError::UnsupportedIntrinsic(format!(
             "plugin-intercept {}",
             name
@@ -1916,6 +2027,30 @@ fn eval_string_arg(
     }
 }
 
+/// Ordered numeric comparison: a Float operand promotes the comparison to f64;
+/// otherwise the operands compare as i64. Non-numeric operands are false.
+/// 2026-11-13 (BUGS.md interpreter float relationals): Lt/Gt/Le/Ge previously
+/// read `as_i64()` only, so every Float comparison fell through to `false`;
+/// this made the reference interpreter disagree with native code for all float
+/// ordering (on which the `test { expect … }` runner depends).
+fn ordered_compare(
+    lv: &Value,
+    rv: &Value,
+    int_pred: fn(i64, i64) -> bool,
+    float_pred: fn(f64, f64) -> bool,
+) -> bool {
+    if lv.is_float() || rv.is_float() {
+        return match (lv.as_number_f64(), rv.as_number_f64()) {
+            (Some(a), Some(b)) => float_pred(a, b),
+            _ => false,
+        };
+    }
+    match (lv.as_i64(), rv.as_i64()) {
+        (Some(a), Some(b)) => int_pred(a, b),
+        _ => false,
+    }
+}
+
 /// Evaluate a binary operation.
 fn eval_binary_op(
     kind: &BinaryOpKind,
@@ -2004,46 +2139,56 @@ fn eval_binary_op(
             // #4); the LLVM backend mirrors it in emit_expr.rs.
             match (lv.string_bytes(heap), rv.string_bytes(heap)) {
                 (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a == b))),
+                // 2026-11-13 (BUGS.md interpreter float relationals): a Float
+                // operand compares in the f64 domain. Reading as_i64() alone
+                // returned None for both Floats, so `None == None` made every
+                // float equality spuriously true in the interpreter.
+                _ if lv.is_float() || rv.is_float() => Ok(Value::Atom(Atom::Bool(
+                    match (lv.as_number_f64(), rv.as_number_f64()) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => false,
+                    },
+                ))),
                 _ => Ok(Value::Atom(Atom::Bool(lv.as_i64() == rv.as_i64()))),
             }
         }
-        BinaryOpKind::Lt => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a < b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
-        BinaryOpKind::Gt => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a > b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
-        BinaryOpKind::Le => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a <= b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
-        BinaryOpKind::Ge => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a >= b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
+        BinaryOpKind::Lt => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv,
+            &rv,
+            |a, b| a < b,
+            |a, b| a < b,
+        )))),
+        BinaryOpKind::Gt => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv,
+            &rv,
+            |a, b| a > b,
+            |a, b| a > b,
+        )))),
+        BinaryOpKind::Le => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv,
+            &rv,
+            |a, b| a <= b,
+            |a, b| a <= b,
+        )))),
+        BinaryOpKind::Ge => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv,
+            &rv,
+            |a, b| a >= b,
+            |a, b| a >= b,
+        )))),
         BinaryOpKind::Neq => {
             // 2026-08-01 (B1): content inequality — mirrors the Eq arm above
             // (deref both Strings, compare payload bytes).
             match (lv.string_bytes(heap), rv.string_bytes(heap)) {
                 (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a != b))),
+                // 2026-11-13 (BUGS.md interpreter float relationals): mirror the
+                // Eq arm — Float operands compare in the f64 domain.
+                _ if lv.is_float() || rv.is_float() => Ok(Value::Atom(Atom::Bool(
+                    match (lv.as_number_f64(), rv.as_number_f64()) {
+                        (Some(a), Some(b)) => a != b,
+                        _ => false,
+                    },
+                ))),
                 _ => Ok(Value::Atom(Atom::Bool(lv.as_i64() != rv.as_i64()))),
             }
         }
@@ -2064,31 +2209,35 @@ fn eval_binary_op(
                     execute_intrinsic(&format!("{:?}#", kind), &[lv, rv], heap)
                 }
                 _ => {
-            // 2026-08-01 (B1): String bitwise defaults — operate on content
-            // bytes and return a NEW string of the same length (interpreter
-            // half of B1; the backend mirrors it with briev_str_band/bor/bxor).
-            // When both operands deref as strings, apply the byte-wise op.
-            match (lv.string_bytes(heap), rv.string_bytes(heap)) {
-                (Some(a), Some(b)) => {
-                    if a.len() != b.len() {
-                        return Err(RuntimeError::TypeError {
-                            expected: "String bitwise operands of equal length".into(),
-                            found: format!("{} vs {} bytes", a.len(), b.len()),
-                        });
+                    // 2026-08-01 (B1): String bitwise defaults — operate on content
+                    // bytes and return a NEW string of the same length (interpreter
+                    // half of B1; the backend mirrors it with briev_str_band/bor/bxor).
+                    // When both operands deref as strings, apply the byte-wise op.
+                    match (lv.string_bytes(heap), rv.string_bytes(heap)) {
+                        (Some(a), Some(b)) => {
+                            if a.len() != b.len() {
+                                return Err(RuntimeError::TypeError {
+                                    expected: "String bitwise operands of equal length".into(),
+                                    found: format!("{} vs {} bytes", a.len(), b.len()),
+                                });
+                            }
+                            let result: Vec<u8> = a
+                                .iter()
+                                .zip(b.iter())
+                                .map(|(x, y)| match kind {
+                                    BinaryOpKind::BitAnd => x & y,
+                                    BinaryOpKind::BitOr => x | y,
+                                    _ => x ^ y,
+                                })
+                                .collect();
+                            Ok(Value::bits(result))
+                        }
+                        _ => {
+                            // 2026-08-03: Non-string operands fall through to
+                            // the integer bitwise intrinsics (BitAnd#/BitOr#/BitXor#).
+                            execute_intrinsic(&format!("{:?}#", kind), &[lv, rv], heap)
+                        }
                     }
-                    let result: Vec<u8> = a.iter().zip(b.iter()).map(|(x, y)| match kind {
-                        BinaryOpKind::BitAnd => x & y,
-                        BinaryOpKind::BitOr => x | y,
-                        _ => x ^ y,
-                    }).collect();
-                    Ok(Value::bits(result))
-                }
-                _ => {
-                    // 2026-08-03: Non-string operands fall through to
-                    // the integer bitwise intrinsics (BitAnd#/BitOr#/BitXor#).
-                    execute_intrinsic(&format!("{:?}#", kind), &[lv, rv], heap)
-                }
-            }
                 }
             }
         }
@@ -2171,7 +2320,9 @@ fn term_void_expr() -> Expr {
 
 /// Lower every bare `term;` in `body` against the item's postcondition.
 pub fn lower_bare_terms(body: &[Statement], post: &Expr) -> Vec<Statement> {
-    body.iter().map(|s| lower_stmt_bare_terms(s, post)).collect()
+    body.iter()
+        .map(|s| lower_stmt_bare_terms(s, post))
+        .collect()
 }
 
 fn lower_stmt_bare_terms(s: &Statement, post: &Expr) -> Statement {
@@ -2188,7 +2339,12 @@ fn lower_stmt_bare_terms(s: &Statement, post: &Expr) -> Statement {
         Statement::SyncBlock(b) => Statement::SyncBlock(lower_bare_terms(b, post)),
         Statement::Mutex(b) => Statement::Mutex(lower_bare_terms(b, post)),
         Statement::Defer(b) => Statement::Defer(lower_bare_terms(b, post)),
-        Statement::Foreach { item, list, body, modifiers } => Statement::Foreach {
+        Statement::Foreach {
+            item,
+            list,
+            body,
+            modifiers,
+        } => Statement::Foreach {
             item: item.clone(),
             list: list.clone(),
             body: lower_bare_terms(body, post),
@@ -2339,7 +2495,10 @@ fn event_fire(name: &str, val: &Value, bindings: &HashMap<String, Value>) -> boo
 /// is a positional `Value::Product`); anything else is the plain assign.
 fn push_element(name: &str, val: &Value, bindings: &mut HashMap<String, Value>) -> bool {
     match bindings.get_mut(name) {
-        Some(Value::Product { fields, names: None }) => {
+        Some(Value::Product {
+            fields,
+            names: None,
+        }) => {
             fields.push(val.clone());
             true
         }
@@ -2363,7 +2522,9 @@ fn collection_dyn_trait(ty: Option<&crate::ast::Type>) -> Option<String> {
         crate::ast::Type::Applied(_, args) | crate::ast::Type::Generic(_, args) => args,
         _ => return None,
     };
-    let arg = args.iter().find(|a| matches!(a, crate::ast::Type::Dyn(_)))?;
+    let arg = args
+        .iter()
+        .find(|a| matches!(a, crate::ast::Type::Dyn(_)))?;
     match arg {
         crate::ast::Type::Dyn(inner) => Some(match inner.as_ref() {
             crate::ast::Type::Custom(n) => n.clone(),
@@ -2387,7 +2548,11 @@ fn scalar_dyn_trait(ty: Option<&crate::ast::Type>) -> Option<String> {
 /// Resolve an element's concrete type name from its syntax — a constructor
 /// names itself; an identifier must be another dyn binding. The error states
 /// exactly what works today (the Phase 5c provenance limit, BUGS.md).
-fn dyn_concrete_name(expr: &Expr, bindings: &HashMap<String, Value>, trait_name: &str) -> Result<String, RuntimeError> {
+fn dyn_concrete_name(
+    expr: &Expr,
+    bindings: &HashMap<String, Value>,
+    trait_name: &str,
+) -> Result<String, RuntimeError> {
     match expr {
         Expr::StructLiteral { type_name, .. } => Ok(type_name.clone()),
         Expr::Identifier(src_name) => match bindings.get(src_name) {
@@ -2397,7 +2562,8 @@ fn dyn_concrete_name(expr: &Expr, bindings: &HashMap<String, Value>, trait_name:
                     "a constructor or another `dyn` binding to coerce into dyn {}",
                     trait_name
                 ),
-                found: "a plain value — bind it via a dyn-annotated let at the constructor site".into(),
+                found: "a plain value — bind it via a dyn-annotated let at the constructor site"
+                    .into(),
             }),
         },
         _ => Err(RuntimeError::TypeError {
@@ -2433,29 +2599,41 @@ fn eval_let_binding(
                         "a list literal whose elements are constructors or `dyn` bindings, for the {}<dyn {}> annotation",
                         // The annotation's own shape, not a guessed name.
                         match ty.unwrap() {
-                            crate::ast::Type::Applied(n, _) | crate::ast::Type::Generic(n, _) => n.clone(),
+                            crate::ast::Type::Applied(n, _) | crate::ast::Type::Generic(n, _) =>
+                                n.clone(),
                             _ => String::new(),
                         },
                         trait_name
                     ),
-                    found: "this expression form — element coercion happens only at the literal".into(),
-                })
+                    found: "this expression form — element coercion happens only at the literal"
+                        .into(),
+                });
             }
         };
         let mut elems = Vec::with_capacity(elem_exprs.len());
         for el in elem_exprs {
             let v = eval_expr(el, heap, bindings, functions)?;
             let concrete = dyn_concrete_name(el, bindings, &trait_name)?;
-            elems.push(Value::Dyn { trait_name: trait_name.clone(), concrete, inner: Box::new(v) });
+            elems.push(Value::Dyn {
+                trait_name: trait_name.clone(),
+                concrete,
+                inner: Box::new(v),
+            });
         }
         return Ok(Value::product(elems));
     }
     let val = eval_expr(expr, heap, bindings, functions)?;
     // Scalar `dyn Trait`: the annotation wraps the whole value — the
     // Phase 5b coercion site (concrete name from the expression syntactically).
-    let Some(trait_name) = scalar_dyn_trait(ty) else { return Ok(val) };
+    let Some(trait_name) = scalar_dyn_trait(ty) else {
+        return Ok(val);
+    };
     let concrete = dyn_concrete_name(expr, bindings, &trait_name)?;
-    Ok(Value::Dyn { trait_name, concrete, inner: Box::new(val) })
+    Ok(Value::Dyn {
+        trait_name,
+        concrete,
+        inner: Box::new(val),
+    })
 }
 
 /// 2026-11-10: bind a `let`. A single binder inserts under its own name; a
@@ -2518,7 +2696,13 @@ pub fn eval_statement(
         // program. Both engines agree a static-only check has no runtime
         // meaning; the former runtime ContractViolation is retired.
         Statement::Check(_cond) => Ok(Value::Void),
-        Statement::Let { name, names, ty, expr, .. } => {
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            ..
+        } => {
             if let Some(expr) = expr {
                 let val = eval_let_binding(ty.as_ref(), expr, heap, bindings, functions)?;
                 bind_let_binding(name, names, val, bindings)?;
@@ -2546,7 +2730,7 @@ pub fn eval_statement(
                                 return Err(RuntimeError::TypeError {
                                     expected: "Int index".into(),
                                     found: format!("{:?}", other),
-                                })
+                                });
                             }
                         };
                         let cur = bindings.get(name).cloned().ok_or_else(|| {
@@ -2558,7 +2742,7 @@ pub fn eval_statement(
                                 return Err(RuntimeError::TypeError {
                                     expected: format!("indexable value for '{}'", name),
                                     found: format!("{:?}", other),
-                                })
+                                });
                             }
                         };
                         let len = fields.len() as i64;
@@ -2583,7 +2767,7 @@ pub fn eval_statement(
                     return Err(RuntimeError::TypeError {
                         expected: "assignable target".into(),
                         found: format!("{:?}", other),
-                    })
+                    });
                 }
             }
             Ok(Value::Void)
@@ -2606,7 +2790,11 @@ pub fn eval_statement(
         // 2026-09-06 (halt slice): the bare-metal stop — check mode reports
         // it like the backend's wfi-spin/trap emission.
         Statement::Halt => Err(RuntimeError::Halt),
-        Statement::ArrowAssign { target, value, consume } => {
+        Statement::ArrowAssign {
+            target,
+            value,
+            consume,
+        } => {
             let val = eval_expr(value, heap, bindings, functions)?;
             arrow_write_target(target, value, val, *consume, bindings);
             Ok(Value::Void)
@@ -2703,11 +2891,17 @@ pub fn eval_statement(
             // (does NOT propagate outward), so it never surfaces to a caller.
             Err(RuntimeError::Break)
         }
-        Statement::Foreach { item, list, body , ..} => {
+        Statement::Foreach {
+            item, list, body, ..
+        } => {
             let iterable = eval_expr(list, heap, bindings, functions)?;
             let mut result = Value::Void;
             match iterable {
-                Value::Range { start, end, inclusive } => {
+                Value::Range {
+                    start,
+                    end,
+                    inclusive,
+                } => {
                     let last = if inclusive { end } else { end - 1 };
                     if start <= last {
                         for cur in start..=last {
@@ -2742,13 +2936,27 @@ pub fn eval_statement(
                         } else if b0 & 0xE0 == 0xC0 && i + 1 < bytes.len() {
                             (((b0 & 0x1F) as u32) << 6 | (bytes[i + 1] & 0x3F) as u32, 2)
                         } else if b0 & 0xF0 == 0xE0 && i + 2 < bytes.len() {
-                            (((b0 & 0x0F) as u32) << 12 | ((bytes[i + 1] & 0x3F) as u32) << 6 | (bytes[i + 2] & 0x3F) as u32, 3)
+                            (
+                                ((b0 & 0x0F) as u32) << 12
+                                    | ((bytes[i + 1] & 0x3F) as u32) << 6
+                                    | (bytes[i + 2] & 0x3F) as u32,
+                                3,
+                            )
                         } else if b0 & 0xF8 == 0xF0 && i + 3 < bytes.len() {
-                            (((b0 & 0x07) as u32) << 18 | ((bytes[i + 1] & 0x3F) as u32) << 12 | ((bytes[i + 2] & 0x3F) as u32) << 6 | (bytes[i + 3] & 0x3F) as u32, 4)
+                            (
+                                ((b0 & 0x07) as u32) << 18
+                                    | ((bytes[i + 1] & 0x3F) as u32) << 12
+                                    | ((bytes[i + 2] & 0x3F) as u32) << 6
+                                    | (bytes[i + 3] & 0x3F) as u32,
+                                4,
+                            )
                         } else {
                             (b0 as u32, 1)
                         };
-                        bindings.insert(item.clone(), Value::Atom(Atom::Char(char::from_u32(cp).unwrap_or('?'))));
+                        bindings.insert(
+                            item.clone(),
+                            Value::Atom(Atom::Char(char::from_u32(cp).unwrap_or('?'))),
+                        );
                         if !run_foreach_body(body, heap, bindings, functions, &mut result)? {
                             break;
                         }
@@ -2801,7 +3009,10 @@ mod tests {
     /// raw stored number (`10ms` is 0.01, not 10).
     #[test]
     fn unit_literal_evaluates_to_si() {
-        let v = eval1(&Expr::UnitLiteral { value: 10.0, unit: "ms".into() });
+        let v = eval1(&Expr::UnitLiteral {
+            value: 10.0,
+            unit: "ms".into(),
+        });
         assert_eq!(v, f64_to_bits(0.01));
     }
 
@@ -2866,11 +3077,13 @@ mod tests {
             Value::Atom(Atom::Int(0x234))
         );
         assert_eq!(
-            eval1(&Expr::Cast(Box::new(Expr::Decimal(0x1122334455667788)), Type::bits(64))),
+            eval1(&Expr::Cast(
+                Box::new(Expr::Decimal(0x1122334455667788)),
+                Type::bits(64)
+            )),
             Value::Atom(Atom::Int(0x1122334455667788))
         );
     }
-
 
     #[test]
     fn test_cast_char_to_int_is_code_point() {
@@ -2906,7 +3119,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_int_to_char_builds_character() {        assert_eq!(
+    fn test_cast_int_to_char_builds_character() {
+        assert_eq!(
             eval1(&Expr::Cast(Box::new(Expr::Decimal(65)), Type::char_())),
             Value::Atom(Atom::Char('A'))
         );
@@ -2931,7 +3145,10 @@ mod tests {
             Box::new(Expr::Quoted(b"bar".to_vec())),
         );
         let result = eval1(&expr);
-        assert_eq!(result.string_bytes(&VirtualHeap::new()), Some(b"foobar".to_vec()));
+        assert_eq!(
+            result.string_bytes(&VirtualHeap::new()),
+            Some(b"foobar".to_vec())
+        );
     }
 
     #[test]
@@ -2956,6 +3173,67 @@ mod tests {
         assert!(eval1(&eq).is_true());
     }
 
+    // 2026-11-13 (BUGS.md interpreter float relationals): the interpreter read
+    // `as_i64()` only for Lt/Gt/Le/Ge, so every Float comparison returned
+    // false, and Eq read `NaN == NaN`-style None==None as true. These lock the
+    // f64 domain and the mixed int/float promotion.
+
+    #[test]
+    fn test_float_relationals_compare_in_f64() {
+        let lt = Expr::BinaryOp(
+            BinaryOpKind::Lt,
+            Box::new(Expr::Float(0.5)),
+            Box::new(Expr::Float(1.0)),
+        );
+        assert_eq!(eval1(&lt), Value::Atom(Atom::Bool(true)));
+        let gt = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(Expr::Float(2.5)),
+            Box::new(Expr::Float(2.0)),
+        );
+        assert_eq!(eval1(&gt), Value::Atom(Atom::Bool(true)));
+        let le = Expr::BinaryOp(
+            BinaryOpKind::Le,
+            Box::new(Expr::Float(3.4)),
+            Box::new(Expr::Float(3.5)),
+        );
+        assert_eq!(eval1(&le), Value::Atom(Atom::Bool(true)));
+    }
+
+    #[test]
+    fn test_float_relationals_promote_mixed_int() {
+        let ge = Expr::BinaryOp(
+            BinaryOpKind::Ge,
+            Box::new(Expr::Float(1.0)),
+            Box::new(Expr::Decimal(1)),
+        );
+        assert_eq!(eval1(&ge), Value::Atom(Atom::Bool(true)));
+        let lt = Expr::BinaryOp(
+            BinaryOpKind::Lt,
+            Box::new(Expr::Decimal(2)),
+            Box::new(Expr::Float(2.5)),
+        );
+        assert_eq!(eval1(&lt), Value::Atom(Atom::Bool(true)));
+    }
+
+    #[test]
+    fn test_float_equality_is_value_based() {
+        // (31/9) != 3.0 — previously both sides read as_i64()==None, so this
+        // was spuriously true.
+        let neq = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Float(31.0 / 9.0)),
+            Box::new(Expr::Float(3.0)),
+        );
+        assert_eq!(eval1(&neq), Value::Atom(Atom::Bool(false)));
+        let eq = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Float(0.5)),
+            Box::new(Expr::Float(0.5)),
+        );
+        assert_eq!(eval1(&eq), Value::Atom(Atom::Bool(true)));
+    }
+
     // 2026-08-06 (Slice B): unnamed products, indexing, and membership.
 
     #[test]
@@ -2978,7 +3256,11 @@ mod tests {
 
     #[test]
     fn test_index_product_element() {
-        let l = Expr::List(vec![Expr::Decimal(10), Expr::Decimal(20), Expr::Decimal(30)]);
+        let l = Expr::List(vec![
+            Expr::Decimal(10),
+            Expr::Decimal(20),
+            Expr::Decimal(30),
+        ]);
         let idx = Expr::Index(Box::new(l), Box::new(Expr::Decimal(1)));
         assert_eq!(eval1(&idx).as_i64(), Some(20));
     }
@@ -3033,12 +3315,7 @@ defn go() -> Int {
         let mut interp = crate::interpreter::Interpreter::new();
         interp.load_program(&items);
         let out = interp.call_function("go", &[]).unwrap();
-        assert_eq!(
-            out,
-            crate::interpreter::Value::int(5),
-            "got {:?}",
-            out
-        );
+        assert_eq!(out, crate::interpreter::Value::int(5), "got {:?}", out);
     }
 
     #[test]
@@ -3067,12 +3344,7 @@ defn go() -> Int {
         let mut interp = crate::interpreter::Interpreter::new();
         interp.load_program(&items);
         let out = interp.call_function("go", &[]).unwrap();
-        assert_eq!(
-            out,
-            crate::interpreter::Value::int(41),
-            "got {:?}",
-            out
-        );
+        assert_eq!(out, crate::interpreter::Value::int(41), "got {:?}", out);
     }
 
     #[test]
@@ -3136,22 +3408,29 @@ defn go() -> Int {
             Box::new(Expr::Identifier("buf".to_string())),
             Box::new(Expr::Decimal(1)),
         );
-        assert_eq!(eval_expr(&read, &mut heap, &mut bindings, &HashMap::new()).unwrap(),
-                   Value::Atom(Atom::Int(42)));
+        assert_eq!(
+            eval_expr(&read, &mut heap, &mut bindings, &HashMap::new()).unwrap(),
+            Value::Atom(Atom::Int(42))
+        );
         // other lanes untouched
         let read0 = Expr::Index(
             Box::new(Expr::Identifier("buf".to_string())),
             Box::new(Expr::Decimal(0)),
         );
-        assert_eq!(eval_expr(&read0, &mut heap, &mut bindings, &HashMap::new()).unwrap(),
-                   Value::Atom(Atom::Int(1)));
+        assert_eq!(
+            eval_expr(&read0, &mut heap, &mut bindings, &HashMap::new()).unwrap(),
+            Value::Atom(Atom::Int(1))
+        );
     }
 
     #[test]
     fn test_element_assign_out_of_bounds_errors() {
         let mut heap = VirtualHeap::new();
         let mut bindings: HashMap<String, Value> = HashMap::new();
-        bindings.insert("buf".to_string(), Value::product(vec![Value::Atom(Atom::Int(7))]));
+        bindings.insert(
+            "buf".to_string(),
+            Value::product(vec![Value::Atom(Atom::Int(7))]),
+        );
         let assign = Statement::Assign(
             Expr::Index(
                 Box::new(Expr::Identifier("buf".to_string())),
@@ -3187,7 +3466,7 @@ defn go() -> Int {
                     Box::new(Expr::Identifier("i".to_string())),
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(15));
@@ -3214,7 +3493,7 @@ defn go() -> Int {
                     Box::new(Expr::Identifier("i".to_string())),
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(10));
@@ -3244,10 +3523,7 @@ defn go() -> Int {
                         Box::new(Expr::Decimal(3)),
                     ),
                     vec![
-                        Statement::Assign(
-                            Expr::Identifier("acc".to_string()),
-                            Expr::Decimal(42),
-                        ),
+                        Statement::Assign(Expr::Identifier("acc".to_string()), Expr::Decimal(42)),
                         Statement::Break,
                     ],
                 ),
@@ -3256,7 +3532,7 @@ defn go() -> Int {
                     Expr::Identifier("i".to_string()),
                 ),
             ],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(42));
@@ -3282,7 +3558,7 @@ defn go() -> Int {
                 Expr::Identifier("acc".to_string()),
                 Expr::Decimal(0),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(7));
@@ -3297,7 +3573,11 @@ defn go() -> Int {
         bindings.insert("acc".to_string(), Value::Atom(Atom::Int(0)));
         let foreach = Statement::Foreach {
             item: "x".to_string(),
-            list: Box::new(Expr::List(vec![Expr::Decimal(1), Expr::Decimal(2), Expr::Decimal(3)])),
+            list: Box::new(Expr::List(vec![
+                Expr::Decimal(1),
+                Expr::Decimal(2),
+                Expr::Decimal(3),
+            ])),
             body: vec![Statement::Assign(
                 Expr::Identifier("acc".to_string()),
                 Expr::BinaryOp(
@@ -3306,7 +3586,7 @@ defn go() -> Int {
                     Box::new(Expr::Identifier("x".to_string())),
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(6));
@@ -3332,7 +3612,7 @@ defn go() -> Int {
                     Box::new(Expr::Decimal(1)),
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(2));
@@ -3352,10 +3632,13 @@ defn go() -> Int {
                 Expr::BinaryOp(
                     BinaryOpKind::Add,
                     Box::new(Expr::Identifier("acc".to_string())),
-                    Box::new(Expr::Cast(Box::new(Expr::Identifier("c".to_string())), crate::ast::Type::int())),
+                    Box::new(Expr::Cast(
+                        Box::new(Expr::Identifier("c".to_string())),
+                        crate::ast::Type::int(),
+                    )),
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(0xE9));
@@ -3373,8 +3656,11 @@ defn go() -> Int {
         // the bytes at the true positions (SPEC §16.5).
         let data = Expr::Quoted(b"\x01\x02\x03\x04\x05".to_vec());
         let mask = Expr::List(vec![
-            Expr::Bool(true), Expr::Bool(false), Expr::Bool(true),
-            Expr::Bool(false), Expr::Bool(true),
+            Expr::Bool(true),
+            Expr::Bool(false),
+            Expr::Bool(true),
+            Expr::Bool(false),
+            Expr::Bool(true),
         ]);
         let idx = Expr::Index(Box::new(data), Box::new(mask));
         assert_eq!(eval1(&idx), Value::bits(vec![0x01, 0x03, 0x05]));
@@ -3383,7 +3669,11 @@ defn go() -> Int {
     #[test]
     fn test_mask_index_all_false_yields_empty() {
         let data = Expr::Quoted(b"abc".to_vec());
-        let mask = Expr::List(vec![Expr::Bool(false), Expr::Bool(false), Expr::Bool(false)]);
+        let mask = Expr::List(vec![
+            Expr::Bool(false),
+            Expr::Bool(false),
+            Expr::Bool(false),
+        ]);
         let idx = Expr::Index(Box::new(data), Box::new(mask));
         assert_eq!(eval1(&idx), Value::bits(vec![]));
     }
@@ -3405,7 +3695,11 @@ defn go() -> Int {
         let data = Expr::Decimal(42);
         let mask = Expr::List(vec![Expr::Bool(true)]);
         let idx = Expr::Index(Box::new(data), Box::new(mask));
-        assert!(eval1_err(&idx).contains("byte data"), "got: {}", eval1_err(&idx));
+        assert!(
+            eval1_err(&idx).contains("byte data"),
+            "got: {}",
+            eval1_err(&idx)
+        );
     }
 
     #[test]
@@ -3423,7 +3717,11 @@ defn go() -> Int {
         // 2026-08-07 (Phase 7): a Boolean mask over a product (a typed
         // vector) yields a new product of the selected fields — the
         // interpreter reference for `Int[N][mask]` → `List<Int>`.
-        let v = Expr::List(vec![Expr::Decimal(10), Expr::Decimal(20), Expr::Decimal(30)]);
+        let v = Expr::List(vec![
+            Expr::Decimal(10),
+            Expr::Decimal(20),
+            Expr::Decimal(30),
+        ]);
         let mask = Expr::List(vec![Expr::Bool(true), Expr::Bool(false), Expr::Bool(true)]);
         let idx = Expr::Index(Box::new(v), Box::new(mask));
         match eval1(&idx) {
@@ -3482,10 +3780,7 @@ defn go() -> Int {
             guard: None,
             body: Box::new(Expr::Decimal(7)),
         };
-        let m_int = Expr::Match(
-            Box::new(Expr::Decimal(42)),
-            vec![int_arm.clone(), str_arm],
-        );
+        let m_int = Expr::Match(Box::new(Expr::Decimal(42)), vec![int_arm.clone(), str_arm]);
         assert_eq!(eval1(&m_int).as_i64(), Some(42));
 
         let m_str = Expr::Match(
@@ -3536,7 +3831,11 @@ defn go() -> Int {
         let m = Expr::Match(
             Box::new(Expr::Decimal(5)),
             vec![
-                arm(Pattern::Literal(Expr::Decimal(5)), Some(Expr::Bool(false)), 10),
+                arm(
+                    Pattern::Literal(Expr::Decimal(5)),
+                    Some(Expr::Bool(false)),
+                    10,
+                ),
                 arm(Pattern::Wildcard, None, 99),
             ],
         );
@@ -3621,11 +3920,7 @@ defn go() -> Int {
             Expr::Match(
                 Box::new(Expr::Decimal(n)),
                 vec![
-                    arm(
-                        Pattern::Range(Expr::Decimal(1), Expr::Decimal(5)),
-                        None,
-                        7,
-                    ),
+                    arm(Pattern::Range(Expr::Decimal(1), Expr::Decimal(5)), None, 7),
                     arm(Pattern::Wildcard, None, 0),
                 ],
             )
@@ -3658,7 +3953,10 @@ defn go() -> Int {
 
     #[test]
     fn test_match_enum_variant_over_sum() {
-        let scrut = Value::Sum { name: "Foo".into(), payload: vec![Value::int(1), Value::int(2)] };
+        let scrut = Value::Sum {
+            name: "Foo".into(),
+            payload: vec![Value::int(1), Value::int(2)],
+        };
         let m = Expr::Match(
             Box::new(Expr::Identifier("scrut".into())),
             vec![MatchArm {
@@ -3822,7 +4120,11 @@ defn go() -> Int {
         let old = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(old.as_i64(), Some(0), "first add returns the old value");
         let old2 = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).unwrap();
-        assert_eq!(old2.as_i64(), Some(5), "second add returns the accumulated value");
+        assert_eq!(
+            old2.as_i64(),
+            Some(5),
+            "second add returns the accumulated value"
+        );
         match bindings.get("total") {
             Some(Value::Product { fields, .. }) => {
                 assert_eq!(fields[0].as_i64(), Some(10), "the binding holds the sum");
@@ -3890,7 +4192,11 @@ defn go() -> Int {
             None,
         );
         let old5 = eval_expr(&cas_miss, &mut heap, &mut bindings, &HashMap::new()).unwrap();
-        assert_eq!(old5.as_i64(), Some(99), "the miss still returns the current");
+        assert_eq!(
+            old5.as_i64(),
+            Some(99),
+            "the miss still returns the current"
+        );
         match bindings.get("total") {
             Some(Value::Product { fields, .. }) => {
                 assert_eq!(fields[0].as_i64(), Some(99), "a miss does not write");
@@ -3919,7 +4225,10 @@ defn go() -> Int {
         let bad = Expr::Call(
             "AtomicAddAt#".into(),
             vec![
-                Expr::Index(Box::new(Expr::Identifier("total".into())), Box::new(Expr::Decimal(0))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("total".into())),
+                    Box::new(Expr::Decimal(0)),
+                ),
                 Expr::Decimal(0),
                 Expr::Decimal(1),
             ],
@@ -3945,7 +4254,12 @@ defn go() -> Int {
         let f = eval_expr(&lam, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         bindings.insert("f".into(), f);
         let call = Expr::Call("f".into(), vec![Expr::Decimal(1)], None);
-        assert_eq!(eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).unwrap().as_i64(), Some(6));
+        assert_eq!(
+            eval_expr(&call, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .as_i64(),
+            Some(6)
+        );
     }
 
     #[test]
@@ -3954,7 +4268,10 @@ defn go() -> Int {
         let mut bindings = HashMap::new();
         bindings.insert("f".into(), eval1(&inc_by_one()));
         let call = Expr::Call("f".into(), vec![Expr::Decimal(1), Expr::Decimal(2)], None);
-        let err = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).err().unwrap().to_string();
+        let err = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new())
+            .err()
+            .unwrap()
+            .to_string();
         assert!(err.contains("arguments"), "got: {err}");
     }
 
@@ -3963,7 +4280,10 @@ defn go() -> Int {
         let mut heap = VirtualHeap::new();
         let mut bindings = HashMap::new();
         let call = Expr::Call("missing".into(), vec![], None);
-        let err = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).err().unwrap().to_string();
+        let err = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new())
+            .err()
+            .unwrap()
+            .to_string();
         assert!(err.contains("undefined function"), "got: {err}");
     }
 
@@ -3987,7 +4307,12 @@ defn go() -> Int {
         assert!(matches!(g, Value::Closure { .. }));
         bindings.insert("g".into(), g);
         let call2 = Expr::Call("g".into(), vec![Expr::Decimal(3)], None);
-        assert_eq!(eval_expr(&call2, &mut heap, &mut bindings, &HashMap::new()).unwrap().as_i64(), Some(5));
+        assert_eq!(
+            eval_expr(&call2, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .as_i64(),
+            Some(5)
+        );
     }
 
     #[test]
@@ -3998,9 +4323,19 @@ defn go() -> Int {
         let mut bindings = HashMap::new();
         bindings.insert("f".into(), eval1(&inc_by_one()));
         let c1 = Expr::Call("f".into(), vec![Expr::Decimal(1)], None);
-        assert_eq!(eval_expr(&c1, &mut heap, &mut bindings, &HashMap::new()).unwrap().as_i64(), Some(2));
+        assert_eq!(
+            eval_expr(&c1, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .as_i64(),
+            Some(2)
+        );
         let c2 = Expr::Call("f".into(), vec![Expr::Decimal(100)], None);
-        assert_eq!(eval_expr(&c2, &mut heap, &mut bindings, &HashMap::new()).unwrap().as_i64(), Some(101));
+        assert_eq!(
+            eval_expr(&c2, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .as_i64(),
+            Some(101)
+        );
     }
 
     // 2026-08-06 (fix): user-defined functions apply through the registry.
@@ -4025,8 +4360,18 @@ defn go() -> Int {
         );
         let mut functions = HashMap::new();
         functions.insert("my_add".into(), term_fn("my_add", vec!["a", "b"], add));
-        let call = Expr::Call("my_add".into(), vec![Expr::Decimal(2), Expr::Decimal(3)], None);
-        let r = eval_expr(&call, &mut VirtualHeap::new(), &mut HashMap::new(), &functions).unwrap();
+        let call = Expr::Call(
+            "my_add".into(),
+            vec![Expr::Decimal(2), Expr::Decimal(3)],
+            None,
+        );
+        let r = eval_expr(
+            &call,
+            &mut VirtualHeap::new(),
+            &mut HashMap::new(),
+            &functions,
+        )
+        .unwrap();
         assert_eq!(r.as_i64(), Some(5));
     }
 
@@ -4046,7 +4391,13 @@ defn go() -> Int {
         let mut functions = HashMap::new();
         functions.insert("g".into(), term_fn("g", vec!["x", "y"], body));
         let call = Expr::Call("g".into(), vec![Expr::Decimal(1), Expr::Decimal(7)], None);
-        let r = eval_expr(&call, &mut VirtualHeap::new(), &mut HashMap::new(), &functions).unwrap();
+        let r = eval_expr(
+            &call,
+            &mut VirtualHeap::new(),
+            &mut HashMap::new(),
+            &functions,
+        )
+        .unwrap();
         assert_eq!(r.as_i64(), Some(17));
     }
 
@@ -4071,12 +4422,20 @@ defn go() -> Int {
     #[test]
     fn test_user_function_arity_mismatch_errors() {
         let mut functions = HashMap::new();
-        functions.insert("f".into(), term_fn("f", vec!["x"], Expr::Identifier("x".into())));
+        functions.insert(
+            "f".into(),
+            term_fn("f", vec!["x"], Expr::Identifier("x".into())),
+        );
         let call = Expr::Call("f".into(), vec![Expr::Decimal(1), Expr::Decimal(2)], None);
-        let err = eval_expr(&call, &mut VirtualHeap::new(), &mut HashMap::new(), &functions)
-            .err()
-            .unwrap()
-            .to_string();
+        let err = eval_expr(
+            &call,
+            &mut VirtualHeap::new(),
+            &mut HashMap::new(),
+            &functions,
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert!(err.contains("arguments"), "got: {err}");
     }
 
@@ -4145,7 +4504,11 @@ defn go() -> Int {
 
     #[test]
     fn test_slice_list_product() {
-        let l = Expr::List(vec![Expr::Decimal(10), Expr::Decimal(20), Expr::Decimal(30)]);
+        let l = Expr::List(vec![
+            Expr::Decimal(10),
+            Expr::Decimal(20),
+            Expr::Decimal(30),
+        ]);
         let r = eval1(&slice_expr(l, Some(1), None, None));
         assert_eq!(r, Value::product(vec![Value::int(20), Value::int(30)]));
     }
@@ -4167,21 +4530,13 @@ defn go() -> Int {
 
     #[test]
     fn test_reflect_len_on_product_is_field_count() {
-        let r = Expr::Reflect(
-            Box::new(person()),
-            "Length".into(),
-            ReflectKind::Runtime,
-        );
+        let r = Expr::Reflect(Box::new(person()), "Length".into(), ReflectKind::Runtime);
         assert_eq!(eval1(&r).as_i64(), Some(2));
     }
 
     #[test]
     fn test_reflect_size_on_product_is_field_count() {
-        let r = Expr::Reflect(
-            Box::new(person()),
-            "Size".into(),
-            ReflectKind::CompileTime,
-        );
+        let r = Expr::Reflect(Box::new(person()), "Size".into(), ReflectKind::CompileTime);
         assert_eq!(eval1(&r).as_i64(), Some(2));
     }
 
@@ -4195,13 +4550,21 @@ defn go() -> Int {
             "Size".into(),
             ReflectKind::CompileTime,
         );
-        assert_eq!(eval1(&size_r).as_i64(), Some(1), ".^^Size on a scalar is its shape (1)");
+        assert_eq!(
+            eval1(&size_r).as_i64(),
+            Some(1),
+            ".^^Size on a scalar is its shape (1)"
+        );
         let bytes_r = Expr::Reflect(
             Box::new(Expr::Quoted(b"abc".to_vec())),
             "Bytes".into(),
             ReflectKind::CompileTime,
         );
-        assert_eq!(eval1(&bytes_r).as_i64(), Some(3), ".^^Bytes on a Bits value is its byte length");
+        assert_eq!(
+            eval1(&bytes_r).as_i64(),
+            Some(3),
+            ".^^Bytes on a Bits value is its byte length"
+        );
     }
 
     #[test]
@@ -4320,7 +4683,11 @@ let g: dyn Greeter = Dog { base: 7 };
     }
     let g_val = interp.state.get("g").cloned().expect("g bound");
     match &g_val {
-        Value::Dyn { concrete, trait_name, .. } => {
+        Value::Dyn {
+            concrete,
+            trait_name,
+            ..
+        } => {
             assert_eq!(concrete, "Dog");
             assert_eq!(trait_name, "Greeter");
         }
@@ -4328,9 +4695,7 @@ let g: dyn Greeter = Dog { base: 7 };
     }
     // g.greet(3): receiver threaded → 7*100+3 = 703. Run through the real
     // statement path so dispatch, coercion, and scoping are all exercised.
-    let tokens2 = crate::lexer::tokenize(
-        "let r: Int = g.greet(3);"
-    ).unwrap();
+    let tokens2 = crate::lexer::tokenize("let r: Int = g.greet(3);").unwrap();
     let mut p2 = crate::parser::Parser::new(tokens2, "let r: Int = g.greet(3);");
     let stmts = p2.parse_program().unwrap();
     for item in &stmts {
@@ -4406,7 +4771,9 @@ fn spec_object_ports_example_runs() {
             assert!(slot.ready);
             match &slot.payload {
                 Some(Value::Product { fields, names }) => {
-                    let idx = names.as_ref().and_then(|ns| ns.iter().position(|n| n == "amount"));
+                    let idx = names
+                        .as_ref()
+                        .and_then(|ns| ns.iter().position(|n| n == "amount"));
                     assert_eq!(idx, Some(0));
                     assert_eq!(fields[0].as_i64(), Some(10));
                 }
@@ -4463,7 +4830,9 @@ fn async_phase_b_example_runs() {
     // Both tasks reached Done; nothing left schedulable.
     let snapshot = crate::interpreter::task_table_snapshot().unwrap();
     assert!(
-        snapshot.values().all(|e| e.status == crate::interpreter::TaskStatus::Done),
+        snapshot
+            .values()
+            .all(|e| e.status == crate::interpreter::TaskStatus::Done),
         "every spawned task finished: {snapshot:?}"
     );
 }
@@ -4502,7 +4871,12 @@ fn async_phase_d_compiled_twin_interpreter_parity() {
     let mut bindings: HashMap<String, Value> = HashMap::new();
     for item in &items {
         if let TopLevel::Statement(s) = item {
-            if let Statement::Let { name, expr: Some(e), .. } = s.as_ref() {
+            if let Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } = s.as_ref()
+            {
                 if let Ok(v) = eval_expr(e, &mut interp.heap, &mut bindings, &interp.functions) {
                     bindings.insert(name.clone(), v);
                 }
@@ -4549,7 +4923,12 @@ fn async_phase_d_ready_gate_interpreter_parity() {
     let mut bindings: HashMap<String, Value> = HashMap::new();
     for item in &items {
         if let TopLevel::Statement(s) = item {
-            if let Statement::Let { name, expr: Some(e), .. } = s.as_ref() {
+            if let Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } = s.as_ref()
+            {
                 if let Ok(v) = eval_expr(e, &mut interp.heap, &mut bindings, &interp.functions) {
                     bindings.insert(name.clone(), v);
                 }
@@ -4647,7 +5026,11 @@ mod pgated_term {
     /// MET returns — statements after it never run.
     #[test]
     fn bare_term_returns_when_post_met() {
-        let body = vec![assign("probe", 1), Statement::Term(None), assign("probe", 9)];
+        let body = vec![
+            assign("probe", 1),
+            Statement::Term(None),
+            assign("probe", 9),
+        ];
         let (r, probe) = run_lowered(&body, &probe_eq(1));
         assert!(matches!(r, Err(RuntimeError::TermReturn(_))), "returns");
         assert_eq!(probe, 1, "post met at the term site — tail never ran");
@@ -4656,7 +5039,11 @@ mod pgated_term {
     /// Post UNMET at the bare term: the body CONTINUES past the guard.
     #[test]
     fn bare_term_continues_when_post_unmet() {
-        let body = vec![assign("probe", 1), Statement::Term(None), assign("probe", 9)];
+        let body = vec![
+            assign("probe", 1),
+            Statement::Term(None),
+            assign("probe", 9),
+        ];
         let (r, probe) = run_lowered(&body, &probe_eq(9));
         assert!(r.is_ok(), "continues, body completes: {r:?}");
         assert_eq!(probe, 9, "unmet post — tail ran");
@@ -4677,7 +5064,9 @@ mod pgated_term {
                 interp.exec_stmt(s).expect("seed state");
             }
         }
-        interp.call_function("step", &[]).expect("completes — no livelock");
+        interp
+            .call_function("step", &[])
+            .expect("completes — no livelock");
         let probe = interp
             .eval_expr(&Expr::Identifier("probe".into()))
             .expect("probe reads");
@@ -4712,7 +5101,11 @@ mod pgated_term {
         let probe = interp
             .eval_expr(&Expr::Identifier("probe".into()))
             .expect("probe reads");
-        assert_eq!(probe.as_i64(), Some(9), "P unmet (-1 > 0 false) — continued");
+        assert_eq!(
+            probe.as_i64(),
+            Some(9),
+            "P unmet (-1 > 0 false) — continued"
+        );
     }
 }
 
@@ -4744,9 +5137,7 @@ mod tail_expr {
     /// is the body's value (Rust `()` discipline: void tails are legal).
     #[test]
     fn void_defn_void_tail_ok() {
-        let items = parse(
-            "defn inner() -> Void { term; }\ndefn nudge() -> Void { inner() };",
-        );
+        let items = parse("defn inner() -> Void { term; }\ndefn nudge() -> Void { inner() };");
         let mut interp = Interpreter::new();
         interp.load_program(&items);
         let v = interp.call_function("nudge", &[]).expect("call");
@@ -4757,9 +5148,7 @@ mod tail_expr {
     /// still run (a tail is not an early jump).
     #[test]
     fn tail_runs_preceding_statements() {
-        let items = parse(
-            "defn f(x: Int) -> Int {\n    let y: Int = x + 1;\n    y * 3\n};",
-        );
+        let items = parse("defn f(x: Int) -> Int {\n    let y: Int = x + 1;\n    y * 3\n};");
         let mut interp = Interpreter::new();
         interp.load_program(&items);
         let v = interp
@@ -4771,17 +5160,19 @@ mod tail_expr {
     /// A match tail (json-shaped) — the arm's value is the defn's value.
     #[test]
     fn match_tail_returns_arm_value() {
-        let items = parse(
-            "defn pick(x: Int) -> Int { match x { 0 => 7, _ => 9 } };",
-        );
+        let items = parse("defn pick(x: Int) -> Int { match x { 0 => 7, _ => 9 } };");
         let mut interp = Interpreter::new();
         interp.load_program(&items);
         assert_eq!(
-            interp.call_function("pick", &[Value::Atom(Atom::Int(0))]).unwrap(),
+            interp
+                .call_function("pick", &[Value::Atom(Atom::Int(0))])
+                .unwrap(),
             Value::Atom(Atom::Int(7))
         );
         assert_eq!(
-            interp.call_function("pick", &[Value::Atom(Atom::Int(5))]).unwrap(),
+            interp
+                .call_function("pick", &[Value::Atom(Atom::Int(5))])
+                .unwrap(),
             Value::Atom(Atom::Int(9))
         );
     }

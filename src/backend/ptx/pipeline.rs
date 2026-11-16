@@ -83,14 +83,22 @@ impl SmemLayout {
         let a_per_stage = mw * mhr * 512;
         let b_per_stage = nw * gr * 256;
         let total_bytes = stages * (a_per_stage + b_per_stage) + pad;
-        Self { a_per_stage, b_per_stage, total_bytes }
+        Self {
+            a_per_stage,
+            b_per_stage,
+            total_bytes,
+        }
     }
 
     /// Layout for a fused-attention-style kernel where each panel is
     /// a row-strip of Q/Kt/V of `panel_bytes` per stage.
     pub fn fused(panel_bytes: usize, n_panels: usize, stages: usize) -> Self {
         let total_bytes = stages * n_panels * panel_bytes;
-        Self { a_per_stage: panel_bytes, b_per_stage: 0, total_bytes }
+        Self {
+            a_per_stage: panel_bytes,
+            b_per_stage: 0,
+            total_bytes,
+        }
     }
 }
 
@@ -124,7 +132,12 @@ pub fn emit_fill_stage(out: &mut String, stages: usize) {
 /// Emit the stage-counter XOR for a 2-stage ring (the CUTLASS/cuBLAS
 /// convention: `UR ^= 1`). For >2 stages, use `emit_stage_modulo` instead.
 pub fn emit_stage_xor2(out: &mut String, ur: &str) {
-    write!(out, "    lop3.lut {}, {}, 0x1, {}, 0xc0, !PT;\n", ur, ur, "URZ").unwrap();
+    write!(
+        out,
+        "    lop3.lut {}, {}, 0x1, {}, 0xc0, !PT;\n",
+        ur, ur, "URZ"
+    )
+    .unwrap();
 }
 
 /// Emit LDGDEPBAR (the cp.async commit fence). This orders all preceding
@@ -234,11 +247,26 @@ impl FillConfig {
     pub fn derive(per_thread: usize, thread_count: usize) -> Self {
         let per = per_thread * thread_count;
         if per % 4 == 0 {
-            Self { width: 16, cache_modifier: "cg", copies_per_thread: per / 4, copy_stride: thread_count * 16 }
+            Self {
+                width: 16,
+                cache_modifier: "cg",
+                copies_per_thread: per / 4,
+                copy_stride: thread_count * 16,
+            }
         } else if per % 2 == 0 {
-            Self { width: 8, cache_modifier: "ca", copies_per_thread: per / 2, copy_stride: thread_count * 8 }
+            Self {
+                width: 8,
+                cache_modifier: "ca",
+                copies_per_thread: per / 2,
+                copy_stride: thread_count * 8,
+            }
         } else {
-            Self { width: 4, cache_modifier: "ca", copies_per_thread: per, copy_stride: thread_count * 4 }
+            Self {
+                width: 4,
+                cache_modifier: "ca",
+                copies_per_thread: per,
+                copy_stride: thread_count * 4,
+            }
         }
     }
 }
@@ -271,7 +299,11 @@ pub fn emit_sync_fill(out: &mut String, dst_reg: &str, src_reg: &str, fc: &FillC
             .unwrap();
         }
         8 => {
-            write!(out, "    ld.global.nc.v2.u32 {{%r29, %r30}}, [{src_reg}];\n").unwrap();
+            write!(
+                out,
+                "    ld.global.nc.v2.u32 {{%r29, %r30}}, [{src_reg}];\n"
+            )
+            .unwrap();
             write!(out, "    st.shared.v2.u32 [{dst_reg}], {{%r29, %r30}};\n").unwrap();
         }
         _ => {
@@ -298,7 +330,11 @@ pub struct LdmatrixConfig {
 
 impl LdmatrixConfig {
     pub fn gemm(mhr: usize, gr: usize) -> Self {
-        Self { b_groups: gr, a_groups: mhr, b_transposed: true }
+        Self {
+            b_groups: gr,
+            a_groups: mhr,
+            b_transposed: true,
+        }
     }
 }
 
@@ -339,7 +375,10 @@ pub fn emit_ldmatrix_a_x4(out: &mut String, set_off: usize, base_reg: &str) {
     write!(
         out,
         "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {{%a{}, %a{}, %a{}, %a{}}}, [{base_reg}];\n",
-        set_off, set_off + 1, set_off + 2, set_off + 3
+        set_off,
+        set_off + 1,
+        set_off + 2,
+        set_off + 3
     )
     .unwrap();
 }
@@ -349,7 +388,8 @@ pub fn emit_ldmatrix_a_x2(out: &mut String, set_off: usize, base_reg: &str) {
     write!(
         out,
         "    ldmatrix.sync.aligned.m8n8.x2.shared.b16 {{%a{}, %a{}}}, [{base_reg}];\n",
-        set_off, set_off + 1
+        set_off,
+        set_off + 1
     )
     .unwrap();
 }
@@ -359,7 +399,8 @@ pub fn emit_ldmatrix_b_x2_trans(out: &mut String, set_off: usize, base_reg: &str
     write!(
         out,
         "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{%b{}, %b{}}}, [{base_reg}];\n",
-        set_off, set_off + 1
+        set_off,
+        set_off + 1
     )
     .unwrap();
 }

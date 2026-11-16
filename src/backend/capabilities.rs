@@ -283,9 +283,7 @@ fn check_toplevel(item: &TopLevel, caps: &BackendCapabilities, errs: &mut Vec<St
         // 2026-08-27 (Slice A): extern imports are PURE port headers — no
         // body to lower. Backends declaring extern_cells accept them even
         // while defined cell bodies remain interpreter-staged.
-        TopLevel::Cell(c)
-            if c.extern_source.is_some() && !caps.extern_cells =>
-        {
+        TopLevel::Cell(c) if c.extern_source.is_some() && !caps.extern_cells => {
             errs.push(format!(
                 "error: {} does not support foreign hardware imports\n  why: \
                  software binaries have no RTL linkage — the 'extern' cell \
@@ -313,8 +311,16 @@ fn check_toplevel(item: &TopLevel, caps: &BackendCapabilities, errs: &mut Vec<St
                  staged.",
                 caps.name,
                 caps.nature,
-                td.ports_in.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
-                td.ports_out.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+                td.ports_in
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                td.ports_out
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 td.name
             ));
         }
@@ -435,7 +441,12 @@ fn check_expr_call_access(e: &Expr, caps: &BackendCapabilities, out: &mut Vec<St
             check_expr(obj, caps, out);
             check_expr(idx, caps, out);
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             require(caps.slices_ranges, "slices", caps, out);
             check_expr(array, caps, out);
             for part in [start.as_deref(), end.as_deref(), stride.as_deref()]
@@ -524,7 +535,9 @@ fn check_expr_composite(e: &Expr, caps: &BackendCapabilities, out: &mut Vec<Stri
                 check_expr(&ex.output, caps, out);
             }
         }
-        Expr::BeginProgram | Expr::Exists(_) | Expr::Identifier(_)
+        Expr::BeginProgram
+        | Expr::Exists(_)
+        | Expr::Identifier(_)
         | Expr::FormattingAnnotation(_) => {}
         _ => return false,
     }
@@ -537,12 +550,7 @@ fn walk_args(args: &[Expr], caps: &BackendCapabilities, out: &mut Vec<String>) {
     }
 }
 
-fn require(
-    supported: bool,
-    what: &str,
-    caps: &BackendCapabilities,
-    out: &mut Vec<String>,
-) {
+fn require(supported: bool, what: &str, caps: &BackendCapabilities, out: &mut Vec<String>) {
     if !supported {
         out.push(caps.missing(what));
     }
@@ -572,7 +580,11 @@ fn check_stmt_binding(s: &Statement, caps: &BackendCapabilities, out: &mut Vec<S
             check_expr(lhs, caps, out);
             check_expr(rhs, caps, out);
         }
-        Statement::ArrowAssign { target, value, consume: _ } => {
+        Statement::ArrowAssign {
+            target,
+            value,
+            consume: _,
+        } => {
             require(caps.arrow_assign, "arrow assignment (<-)", caps, out);
             if let Some(t) = target {
                 check_expr(t, caps, out);
@@ -660,7 +672,10 @@ fn check_stmt_body(s: &Statement, caps: &BackendCapabilities, out: &mut Vec<Stri
             require(caps.defer_stmt, "defer blocks", caps, out);
             walk_body(body, caps, out);
         }
-        Statement::Match { expr: scrutinee, arms } => {
+        Statement::Match {
+            expr: scrutinee,
+            arms,
+        } => {
             require(caps.match_stmt, "match statements", caps, out);
             check_expr(scrutinee, caps, out);
             for arm in arms {
@@ -698,7 +713,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: HashMap::new(),
             derivation: None,
@@ -722,7 +738,10 @@ mod tests {
             ),
             Statement::Term(None),
         ]);
-        assert!(validate_program(&prog, &VM).is_empty(), "integer program must pass");
+        assert!(
+            validate_program(&prog, &VM).is_empty(),
+            "integer program must pass"
+        );
     }
 
     #[test]
@@ -731,7 +750,11 @@ mod tests {
         let errs = validate_program(&prog, &VM);
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("tamer VM"), "names target: {}", errs[0]);
-        assert!(errs[0].contains("float literals"), "names feature: {}", errs[0]);
+        assert!(
+            errs[0].contains("float literals"),
+            "names feature: {}",
+            errs[0]
+        );
         assert!(errs[0].contains("fix:"), "gives fix: {}", errs[0]);
     }
 
@@ -741,7 +764,7 @@ mod tests {
             item: "x".into(),
             list: Box::new(Expr::List(vec![Expr::Decimal(1)])),
             body: vec![Statement::Expression(Expr::Identifier("x".into()))],
-        modifiers: vec![],
+            modifiers: vec![],
         }]);
         let errs = validate_program(&prog, &VM);
         assert!(!errs.is_empty());
@@ -769,7 +792,11 @@ mod tests {
         // declaration turning a flag ON without walker coverage would
         // produce no diagnostic for that construct.)
         let all_false_count = count_false_fields(&BackendCapabilities::NONE);
-        assert!(all_false_count > 40, "matrix baseline populated: {}", all_false_count);
+        assert!(
+            all_false_count > 40,
+            "matrix baseline populated: {}",
+            all_false_count
+        );
     }
 
     fn count_false_fields(c: &BackendCapabilities) -> usize {

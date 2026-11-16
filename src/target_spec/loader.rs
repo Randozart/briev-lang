@@ -18,8 +18,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::TargetSpec;
 use super::LoadError;
+use super::TargetSpec;
 
 /// Searches multiple directories for Target Spec TOML files
 pub struct TargetSpecLoader {
@@ -27,20 +27,21 @@ pub struct TargetSpecLoader {
 }
 
 impl TargetSpecLoader {
-/// Create a new loader with default search paths
+    /// Create a new loader with default search paths
     pub fn new() -> Self {
         Self {
-            search_paths: vec![
-                PathBuf::from("lib/targets"),
-                PathBuf::from("."),
-            ],
+            search_paths: vec![PathBuf::from("lib/targets"), PathBuf::from(".")],
         }
     }
 
     /// Try to find a target spec, checking multiple locations
     pub fn find(&self, name: &str) -> Option<PathBuf> {
-        let name = if name.ends_with(".toml") { name.to_string() } else { format!("{}.toml", name) };
-        
+        let name = if name.ends_with(".toml") {
+            name.to_string()
+        } else {
+            format!("{}.toml", name)
+        };
+
         // Try each search path
         for base in &self.search_paths {
             let path = base.join(&name);
@@ -54,10 +55,7 @@ impl TargetSpecLoader {
     /// Create loader for project root (where binary is run)
     pub fn project_root() -> Self {
         Self {
-            search_paths: vec![
-                PathBuf::from("lib/targets"),
-                PathBuf::from("."),
-            ],
+            search_paths: vec![PathBuf::from("lib/targets"), PathBuf::from(".")],
         }
     }
 
@@ -104,11 +102,9 @@ impl TargetSpecLoader {
 
     /// Load and parse a TOML file
     fn load_file(&self, path: &Path) -> Result<TargetSpec, LoadError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| LoadError::IoError(e))?;
+        let content = std::fs::read_to_string(path).map_err(|e| LoadError::IoError(e))?;
 
-        toml::from_str(&content)
-            .map_err(|e| LoadError::ParseError(e.to_string()))
+        toml::from_str(&content).map_err(|e| LoadError::ParseError(e.to_string()))
     }
 }
 

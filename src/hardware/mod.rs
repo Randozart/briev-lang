@@ -83,7 +83,7 @@ impl HardwareLib {
         // Load targets
         if targets_dir.exists() {
             for entry in std::fs::read_dir(&targets_dir)
-                .map_err(|e| HardwareLibError::IoError(e.to_string()))? 
+                .map_err(|e| HardwareLibError::IoError(e.to_string()))?
             {
                 let entry = entry.map_err(|e| HardwareLibError::IoError(e.to_string()))?;
                 let path = entry.path();
@@ -92,7 +92,8 @@ impl HardwareLib {
                         .map_err(|e| HardwareLibError::IoError(e.to_string()))?;
                     let target: TargetProfile = toml::from_str(&content)
                         .map_err(|e| HardwareLibError::ParseError(e.to_string()))?;
-                    let name = path.file_stem()
+                    let name = path
+                        .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown")
                         .to_string();
@@ -104,7 +105,7 @@ impl HardwareLib {
         // Load interfaces
         if interfaces_dir.exists() {
             for entry in std::fs::read_dir(&interfaces_dir)
-                .map_err(|e| HardwareLibError::IoError(e.to_string()))? 
+                .map_err(|e| HardwareLibError::IoError(e.to_string()))?
             {
                 let entry = entry.map_err(|e| HardwareLibError::IoError(e.to_string()))?;
                 let path = entry.path();
@@ -118,7 +119,10 @@ impl HardwareLib {
             }
         }
 
-        Ok(HardwareLib { targets, interfaces })
+        Ok(HardwareLib {
+            targets,
+            interfaces,
+        })
     }
 
     pub fn get_memory_pragma(&self, target: &str, mem_type: &str) -> Option<String> {
@@ -162,7 +166,7 @@ mod tests {
             targets: HashMap::new(),
             interfaces: HashMap::new(),
         };
-        
+
         assert!(lib.get_memory_pragma("nonexistent", "bram").is_none());
         assert!(lib.get_interface("nonexistent").is_none());
     }

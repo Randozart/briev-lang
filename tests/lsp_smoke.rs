@@ -74,8 +74,7 @@ fn lsp_initialize_responds_with_capabilities() {
 
     // The response must carry server capabilities.
     let resp = read_framed(&mut stdout).expect("initialize response");
-    let v: serde_json::Value =
-        serde_json::from_str(&resp).expect("response is JSON");
+    let v: serde_json::Value = serde_json::from_str(&resp).expect("response is JSON");
     assert_eq!(v["id"], 1, "response id");
     assert!(
         v["result"]["capabilities"].is_object(),

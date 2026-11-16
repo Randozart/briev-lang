@@ -119,7 +119,7 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             format_callable(
                 out,
                 level,
-                &format!("{}{}", async_prefix, prefix),
+                &format!("{}{}{}", thread_pin_prefix(txn), async_prefix, prefix),
                 &Callable {
                     name: &txn.name,
                     parameters: &txn.parameters,
@@ -197,7 +197,9 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             writeln!(out, "bad {}(", bf.name).ok();
             // params
             for (i, (pn, pt)) in bf.params.iter().enumerate() {
-                if i > 0 { write!(out, ", ").ok(); }
+                if i > 0 {
+                    write!(out, ", ").ok();
+                }
                 write!(out, "{}: {}", pn, pt).ok();
             }
             writeln!(out, ") -> {} {{", bf.ret_type).ok();
@@ -409,7 +411,9 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
 /// 2026-09-06: Returns a map of field name → ordering ("seq", "relaxed",
 /// "acquire", "release", "bartered") from the `atomic_fields` metadata.
 /// Entries are stored as `"field_name:ordering"`.
-fn atomic_field_map(metadata: &std::collections::HashMap<String, crate::ast::PropertyValue>) -> std::collections::HashMap<&str, &str> {
+fn atomic_field_map(
+    metadata: &std::collections::HashMap<String, crate::ast::PropertyValue>,
+) -> std::collections::HashMap<&str, &str> {
     match metadata.get("atomic_fields") {
         Some(crate::ast::PropertyValue::List(entries)) => entries
             .iter()
@@ -425,11 +429,7 @@ fn atomic_field_map(metadata: &std::collections::HashMap<String, crate::ast::Pro
     }
 }
 
-fn format_struct_into(
-    out: &mut String,
-    level: usize,
-    def: &crate::ast::top::StructDef,
-) {
+fn format_struct_into(out: &mut String, level: usize, def: &crate::ast::top::StructDef) {
     indent(out, level);
     if def.seq {
         out.push_str("seq ");
@@ -475,7 +475,10 @@ fn format_struct_into(
 /// physical-layout keys in the declared `spec <PascalCase>` form, everything
 /// else as `attr <key>: <value>`. Deterministic: sorted keys. The internal
 /// `atomic_fields` carrier is skipped (the `atomic` field prefix encodes it).
-fn print_metadata_clauses(out: &mut String, metadata: &std::collections::HashMap<String, crate::ast::PropertyValue>) {
+fn print_metadata_clauses(
+    out: &mut String,
+    metadata: &std::collections::HashMap<String, crate::ast::PropertyValue>,
+) {
     let mut meta_keys: Vec<&String> = metadata.keys().collect();
     meta_keys.sort();
     for key in meta_keys {
@@ -544,12 +547,23 @@ struct Callable<'a> {
 }
 
 /// 2026-08-05: format a callable declaration (`defn`, `txn`, `node`, `$defn`).
-fn format_callable(
-    out: &mut String,
-    level: usize,
-    keyword: &str,
-    c: &Callable,
-) {
+/// 2026-11-15 (thread-assignment plan): the canonical `on thread` prefix for a
+/// node/txn. A `thread` annotation with no value is `on thread any` (the
+/// compiler's own choice, written explicitly); an integer value is a pin
+/// (`on thread 3`). Absent annotation → empty string (the default, unwritten
+/// form). Any other payload shape is not produced by the parser and is
+/// rendered as the explicit-any form rather than silently dropped.
+fn thread_pin_prefix(txn: &Transaction) -> String {
+    let Some(annotation) = txn.modifiers.iter().find(|m| m.name == "thread") else {
+        return String::new();
+    };
+    match &annotation.value {
+        Some(Expr::Decimal(n)) => format!("on thread {n} "),
+        _ => "on thread any ".to_string(),
+    }
+}
+
+fn format_callable(out: &mut String, level: usize, keyword: &str, c: &Callable) {
     indent(out, level);
     let _ = write!(out, "{} {}", keyword, c.name);
     if !c.parameters.is_empty() {
@@ -666,7 +680,13 @@ fn format_block(stmts: &[Statement], level: usize, out: &mut String) {
 fn format_stmt_into(stmt: &Statement, out: &mut String, level: usize) {
     match stmt {
         Statement::Guarded(cond, body) => format_guarded(out, level, cond, body),
-        Statement::Foreach { item, list, body, modifiers, .. } => {
+        Statement::Foreach {
+            item,
+            list,
+            body,
+            modifiers,
+            ..
+        } => {
             let prefix: String = modifiers.iter().map(|m| format!("{} ", m.name)).collect();
             format_braced(
                 out,
@@ -686,8 +706,7 @@ fn format_stmt_into(stmt: &Statement, out: &mut String, level: usize) {
                 let _ = write!(
                     out,
                     "{} =>",
-                    arm
-                        .patterns
+                    arm.patterns
                         .iter()
                         .map(|p| p.to_string())
                         .collect::<Vec<_>>()
@@ -783,7 +802,13 @@ fn format_import_into(import: &Import, out: &mut String, level: usize) {
     let symbols: Vec<String> = import
         .symbols
         .iter()
-        .map(|(l, e)| if l == e { l.clone() } else { format!("{}: {}", l, e) })
+        .map(|(l, e)| {
+            if l == e {
+                l.clone()
+            } else {
+                format!("{}: {}", l, e)
+            }
+        })
         .collect();
     let symbols = symbols.join(", ");
     match &import.kind {

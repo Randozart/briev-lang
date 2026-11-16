@@ -8,8 +8,8 @@
 // Until then, this code is preserved as-is for correctness.
 
 use crate::ast::{BinaryOpKind, Expr, TopLevel, Transaction};
-use crate::backend::llvm::DispatchMode;
 use crate::backend::AnalysisResults;
+use crate::backend::llvm::DispatchMode;
 use std::collections::{HashMap, HashSet};
 
 use crate::backend::llvm::LlvmBackend;
@@ -335,7 +335,10 @@ fn is_trigger_gated(pre: &Expr, trigger_names: &HashSet<&str>) -> bool {
             matches!(l.as_ref(), Expr::Identifier(name) if trigger_names.contains(name.as_str()))
                 || matches!(r.as_ref(), Expr::Identifier(name) if trigger_names.contains(name.as_str()))
         }
-        Expr::BinaryOp(BinaryOpKind::And, l, r) => is_trigger_gated(l.as_ref(), trigger_names) || is_trigger_gated(r.as_ref(), trigger_names),
+        Expr::BinaryOp(BinaryOpKind::And, l, r) => {
+            is_trigger_gated(l.as_ref(), trigger_names)
+                || is_trigger_gated(r.as_ref(), trigger_names)
+        }
         _ => false,
     }
 }

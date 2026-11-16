@@ -93,3 +93,27 @@ proto C_String: String {
 
 type CStr:    String<C_String> { };
 type CDouble: Float<C_Double> { };
+
+// ── List<T> ↔ C array zero-copy helpers ────────────────────────────────
+// 2026-11-15 (list-ffi-zero-copy): the `coll obj` boxed handle layout is
+// [data_ptr(i64, offset +0), cap(i64, offset +8), len(i64, offset +16)].
+// These helpers extract the data pointer and length for C array FFI —
+// zero-copy, mirrors str_to_c. C receives (ptr, len) and borrows the
+// buffer for the duration of the call (lifetime proof required).
+//
+// NOTE: params are Int (the boxed handle word). Generic List<T> cannot
+// appear in bridge/export signatures — the bridge emits concrete names.
+// Callers pass the list handle directly.
+
+// list_to_c_ptr — zero-copy: return the element data pointer of a list.
+// The boxed handle's first word IS the data pointer (offset +0).
+// No offset adjustment — returns the handle as-is.
+defn list_to_c_ptr(handle: Int) -> Int [true][term >= 0] {
+    term handle;
+};
+
+// list_len — return the element count of a list.
+// Loads the hidden `len` slot at offset +16 from the boxed handle.
+defn list_len(handle: Int) -> Int [true][term >= 0] {
+    term Load#(handle + 16, 8);
+};

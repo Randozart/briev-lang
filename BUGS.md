@@ -153,6 +153,240 @@ Trade-off: real stack growth per level. For deep recursion prefer an
 accumulator shape that never allocates per iteration.
 
 ---
+## 2026-11-15 — rebound fields read another variable's old value
+
+**Reproduced against incoming main 052cf5e03.** The standalone word AST body
+`y.n = 1; x = y; x.n = 2; term 0` certified the false postcondition `x.n == 1`.
+The field evaluator followed the saved base atom `y` and read its old field map
+entry instead of the directly tracked write to `x.n`. The public assignment API
+also left field entries intact outside the statement walk.
+
+**Repair.** Read tracked fields by their lexical base name. Clear a base's field
+entries inside `SymbolicState::assign`, after evaluating the right-hand side,
+so both assignment and declaration callers share the invalidation rule. Tests
+reject the old-value proof, preserve the latest-value proof, and check common-API
+invalidation and mixed Boolean/word rejection. Structural field postconditions
+retain explicit word-model sort admission without acquiring an SMT encoding;
+typed source admission is unchanged. Incoming test fixtures now use Boolean
+`true` rather than a free identifier with that spelling. Pointer identity also
+cannot establish equality of Unknown values or trees containing them.
+
+These are mathematical-AST regressions; no source/native object-alias refinement
+or whole field-map proof is claimed. The incoming HIR fidelity and division guard
+changes are retained and included in the combined compiler gates.
+
+## 2026-11-15 — reversed bounds, endpoint overflow and unsafe SMT fallbacks
+
+**Reproduced.** `[0 < x][term < 0] { term x; }` was reported proven: the range
+extractor read the literal-left comparison as `x < 0`. A valid guard `x > MAX`
+panicked in debug builds while tightening its lower bound with `MAX + 1`.
+Contradictory facts and unreachable branches could also produce hard violations
+for valid contracts. Baseline package regressions reproduce these failures.
+
+**Repair.** Normalize comparisons through a shared relation mirror/negation;
+represent empty signed-word intervals explicitly. Checked strict endpoints
+produce an empty interval. Conclusive range verdicts apply to every member;
+interior disequalities retain a conservative hull. A hard violation now requires
+a feasible path, established by an evaluated witness or Z3. Infeasible paths are
+vacuous, and unknown feasibility remains advisory. Production Kani harnesses
+check intersection, restriction, classification, mirroring and negation over
+arbitrary i64 inputs; source/CLI tests preserve genuine violations.
+
+**SMT boundary.** The public VC writer encoded unsupported `If` syntax as true,
+allowing a false conditional predicate to become UNSAT. Unsupported unary
+operators could also lose their operator. Supported terms now carry Boolean or
+Word64 sorts; unsupported or ill-sorted queries emit only a diagnostic and yield
+Unknown. Names use hexadecimal UTF-8 in a separate namespace from canonical
+`#Self`/`#self`. The previous `#Foo`/`hash_Foo` and self/ordinary-name collisions
+caused solver errors and proof loss in the reproduced queries; no false proof
+from those collisions was demonstrated. Contract parameters remain a closed set.
+Protocol consumers share the same fallible word encoder and identifier naming.
+
+The byte codec has a production injectivity/alphabet Kani harness, distinct from
+a proof of the whole String encoder. Copied sanitizer examples were retired from
+`kani/prove_smt_cache.rs`; its two cache-cap models remain scalar models. Real-Z3
+controls cover unsupported syntax, sort mismatches, namespace collisions and
+protocol inverse/non-inverse queries. See the
+[interval/SMT plan](docs/plans/2026-11-15-144601-interval-and-smt-boundaries.md).
+
+## 2026-11-15 — saved symbolic values were rebound by later assignments
+
+**Reproduced.** `defn f(x: Int64) [true][term == 0] -> Int64 { let y: Int64 = x; x = 0; term y; };`
+was reported proven. At input 7, the reference interpreter and native AST/HIR
+programs at clang O0/O3 all return 7. The helper-summary path also certified the
+wrong constant return. A second false proof used `[x == 1]`, then `x = 2`, then
+`when x == 2`: recording the guard as the entry-name fact `x == 2` made the SMT
+facts contradictory and licensed an arbitrary postcondition `term == y`.
+
+**Cause/fix.** Assignment evaluation already copies symbolic values eagerly,
+but solver conversion and helper summaries followed identifiers inside those
+copies through the final assignment map. Saved identifiers now remain immutable
+entry atoms. Current-expression leaves alone consult the map. Guard/check facts
+are converted at recording time; unrepresentable facts are omitted conservatively.
+Guards already decided by the current state retain only their feasible branch.
+Excessive saved-expression depth fails closed rather than becoming a free name.
+Public-API and source/CLI regressions reject all three false-proof routes and
+preserve valid saved-value and known-guard proofs. Input-dependent counterexamples
+retain the existing advisory policy; the fix removes their erroneous proven status.
+
+## 2026-11-15 — required verifier selection missed the new typed boundary
+
+Integrating `0400749f` revealed that the explicit verifier suite list omitted
+the new `typed_boundary` binary. Ordinary workspace runs also skip its ignored
+real-Z3 floating-increment regression. Add all six typed-boundary cases by
+exact name to quick/verifier selections, including that ignored case. Both
+adapters must discover every name and report its execution; missing cases fail
+closed. Controls also keep unrelated ignored cases excluded. See the
+[hosted qualification record](docs/plans/2026-11-15-a0-hosted-qualification.md).
+
+## 2026-11-15 — formatting parity fixtures still divide by zero after native trap parity
+
+**Symptom.** `benchmarks/parity/run.sh` traps in `float_cases` with SIGILL;
+`float_fmt_cases` contains the same stale constructions. Both the original
+release build and its transferred CI artifact reproduce the failure.
+
+**Cause.** These formatting fixtures construct infinity/NaN using `/ 0.0`.
+Native Float division now intentionally traps on zero, matching the reference
+interpreter and the regression contract in `tests/cli_args_test.rs`. The format
+goldens remain valid; their input construction no longer reaches formatting.
+
+**Fix.** Supply infinity through the existing float32 overflow literal and NaN
+through the existing `Sqrt#` intrinsic, preserving both signs and all existing
+golden output lines. Keep division-trap regressions as the division oracle.
+Validation is recorded in the [CI split plan](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
+
+## 2026-11-15 — Data-to-Float width mismatch emits an invalid bitcast (OPEN)
+
+An alternative exceptional-value probe, `(0x7F800000 as Data) as Float`, emits
+`bitcast i64 ... to float`, rejected by LLVM verification. Narrowing the input
+through `Int32` before `Data` still produces i64. An unequal-width bitcast must
+be diagnosed or explicitly resized according to the declared cast contract;
+it cannot emit invalid IR. Reproduced with the release compiler at `2b64e8c8`;
+diagnostics are in `/tmp/opencode/briev-ci-split-validation/float-special-values-build.log`
+and `float-special-values-build-int32.log`. The formatting corpus uses the
+existing intrinsic/literal construction instead of this cast route.
+
+## 2026-11-15 — a library failure suppresses unrelated required CI evidence
+
+**Cause.** The single `Default gates` job ran verifier, library, native,
+workspace, browser and census commands serially. A failing early step skipped
+all later checks, obscuring independent failures. Its “Contract census (deny)”
+label also overstated the existing script, which explicitly uses a warn-policy
+overlay for diagnostic counting.
+
+**Fix.** Independent required jobs share only the release-build prerequisite
+where needed. The native matrix disables fail-fast. An `always()` aggregate
+retains the `Default gates` name and requires every required job to succeed;
+skipped/cancelled/missing results cannot turn green. Quarantine/Counsel remain
+explicitly non-blocking. Each job retains attempt-specific logs/artifacts.
+The census label now states its actual warn-policy diagnostic scope.
+
+The shared build includes both runtime archives consumed by `src/compile.rs`,
+not just `brievc`; revision/hash/mode checks protect the job boundary. Controls
+exercise failed/skipped aggregate results, malformed evidence, missing build
+inputs, lost executable mode, wrong revisions, and corrupted transfers. See
+[CI split execution](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
+
+## 2026-11-15 — quick fallback loses suites and omits required verifier execution
+
+**Symptom.** The nextest quick path selected 12 integration binaries; the Cargo
+fallback selected seven. Neither path included `briev-verify`'s 27 unit tests,
+two arithmetic tests, or three ignored solver-boundary regressions. CI's
+non-blocking ignored-test command did not establish required solver coverage.
+The conflict scan also accepted Git errors as no conflicts and shared a
+temporary output filename between invocations.
+
+**Cause.** Independent shell selection lists drifted. A zero process exit was
+the only runner-level evidence, with no shared discovered-test inventory or
+terminal-result accounting.
+
+**Fix.** `scripts/gate_selection.py` defines both adapters' selection, including
+the original 12 integrations plus `gate_runner`, verifier tests, and the three
+exact solver names. Quick/verifier preflight required tools, cross-check
+discovery/results/totals, retain `briev-gate/v1` manifests and raw logs, and
+reject missing/empty/invalid evidence. Git exit 1 alone establishes no conflict
+matches. CI requires the verifier gate and preserves its evidence. Behavioral
+controls: `scripts/tests/test_gate.py`, also run through `tests/gate_runner.rs`.
+Execution results: [A0 record](docs/plans/2026-11-15-a0-gate-integrity.md).
+
+## 2026-11-15 — nextest JSON reporter double-counts explicitly enabled ignored tests
+
+**Symptom.** nextest 0.9.151 executes all three solver-boundary cases successfully
+but emits repeated suite starts, empty successful finishes with `ignored: 3`,
+and a final `filtered_out: 18446744073709551613`. Both `--include-ignored` and
+`--run-ignored only` reproduce this in `libtest-json-plus` 0.1 output. The new
+strict gate correctly rejects the stream despite the successful process exit.
+
+An independent mixed ordinary/ignored suite also emits premature finishes and
+repeated starts when its ignored case stays disabled.
+
+**Containment.** Keep nextest discovery, execute binaries containing ignored
+tests and explicitly named selections through Cargo, and record the real
+execution runner per suite. Unaffected binaries remain batched in nextest. The malformed
+JSON control continues to reject the observed reporter behavior. Retire this
+routing when the pinned nextest reporter produces coherent ignored-suite
+lifecycles and counts with ignored cases enabled and disabled; do not relax
+the evidence contract. Upstream reporter
+repair remains external to this repository.
+
+## 2026-11-15 — a right operand supplied an unsupported Boolean operator
+
+**Reproduced.** `defn f(b: Bool) [true][term == b + 1] -> Bool { term b + 1; };`
+passed source checking and body verification. With the function retained/called,
+LLVM declared `f` returning i8 but emitted an i64 sum at its return. Both clang
+-O0 and -O3 rejected `ret i8 %t0` because `%t0` was i64. This is an invalid-IR
+compiler bug and an assurance coverage gap; no native execution was claimed.
+
+**Cause/fix.** Binary resolution fell through to the right operand's Int
+operator, while arithmetic inference always returned the left receiver's type.
+Remove that unrelated-operand fallback; retain receiver declarations, inherited
+bindings and protocol bindings, including explicit cross-type operators. Tests
+reject Bool and Bool-derived aliases for arithmetic with integer literals and
+preserve a declared cross-type implementation. The word prover also excludes
+declared Boolean storage until its distinct expression semantics are modeled.
+
+## 2026-11-15 — body verification erased arithmetic types
+
+**Reproduced.** The public body prover certified Float `x + 1 != x` using
+64-bit integer SMT and certified `(x + 1) - 1 == x` through a typed Float local.
+The first has an f32 counterexample at 16777216; rounding also refutes the second
+in that arithmetic. Both new regressions failed before the fix. Parameter,
+result and local types had been discarded; helper summaries provided another
+route around declaration semantics.
+
+**Fix.** Admit resolved standard signed 64-bit types before proving
+bodies or summarizing helpers. Preserve the compiler's actual target width;
+reject unsupported types, global state and unresolved/custom arithmetic.
+Standalone source clients now supply their type resolver explicitly. Dynamic
+or exceptional division/remainder is skipped until definedness is modeled,
+rather than relying on total SMT operations. Regressions cover Float parameters,
+locals, helpers, globals, aliases, narrow/unsigned types and 32-bit targets.
+The optional Lean exporter uses the same type boundary and keeps exporter/native
+refinement explicitly unproved.
+
+## 2026-11-13 — interpreter mis-evaluates every Float relational (and Float equality)
+
+**Symptom.** In the reference interpreter (`brievc test --tests-only`), float
+`<`, `>`, `<=`, `>=` never evaluate to true, and float `==`/`!=` are
+degenerate. `expect 0.5 < 1.0;` and `expect lt(0.5, 1.0);` (with
+`defn lt(a: Float, b: Float) -> Bool { term a < b; }`) both report
+`evaluated to false`. Native (compiled) execution is correct. Float `==` is
+worse: `31.0/9.0 == 3.0` and `31.0/9.0 == 3.44444442` are *both* true.
+
+**Cause.** `eval_binary_op`'s `Lt/Gt/Le/Ge` arms read only `as_i64()`. A Float
+atom is `Atom::Float(f)`, for which `as_i64()` is `None`, so the
+`_ => Bool(false)` arm fired for every float comparison. `Eq/Neq` read
+`lv.as_i64() == rv.as_i64()`; with both sides `None`, `None == None` is `true`,
+making all float (in)equalities compare equal.
+
+**Fix.** Added `Value::is_float` / `Value::as_number_f64` (integers, bools,
+chars, and bit patterns widen into f64) and an `ordered_compare` helper in
+`src/interpreter/eval.rs`. `Lt/Gt/Le/Ge` now select the f64 domain when either
+operand is a Float (promoting a mixed Int/Float operand), else the i64 domain.
+`Eq/Neq` gain the same float branch, preserving the existing non-float and
+string-content paths. Regression tests:
+`interpreter::eval::tests::test_float_relationals_compare_in_f64`,
+`test_float_relationals_promote_mixed_int`, `test_float_equality_is_value_based`.
 
 ## 2026-11-13 — aggregate value passed to a defn forwards an i64 handle as `ptr`
 
@@ -13738,3 +13972,158 @@ so proof-time values and runtime loads disagreed. The emitter now folds
 integer-arithmetic const expressions through the analysis-owned const table
 (`gemm_shape::fold_consts` + `lit`) before the literal-shape match;
 unresolved shapes keep the old behavior.
+
+## 2026-11-14 — SAT models and solver errors misclassified as UNSAT
+
+**Symptom.** A satisfiable SMT query declaring a variable named `unsat` returns
+`SmtResult::Unsat` when its model is requested. Error messages containing that
+word can also be accepted as a proof, including a rejected assertion followed
+by UNSAT for the remaining assertions. Reproduced with managed Z3 4.13.0.
+
+**Cause.** Both public solver entry points searched all stdout for the substring
+`unsat` before checking `sat`, so model identifiers and error text overrode the
+actual response. The body-prover regression confirms an actual false `Proven` verdict for
+`square(unsat)` with body `unsat * unsat` and postcondition `term == 1`
+(counterexample: `unsat = 0`).
+
+**Change.** Both use a shared exact-leading-status parser. Errors before a
+status remain unknown; trailing model text cannot override a completed answer.
+Regression coverage: `solver_response` unit tests and the two explicit real-Z3
+`solver_boundary` integration tests. See the
+[solver response contract](docs/architecture/solver-response.md) for the exact
+trust boundary and test commands. The bounded Kani harness is not an accepted
+proof: its initial verification attempt timed out.
+
+## 2026-11-14 — symbolic arithmetic panics on valid wrapping integer expressions
+
+Both symbolic entry points folded integer literals with host Rust `+`, `-`, `*`
+and `/`. `MAX + 1` panicked in debug builds; `MIN / -1` panicked in both profiles.
+The interpreter wraps add/sub/mul and the SMT encoder uses 64-bit bitvectors.
+The fold now wraps those three operators explicitly and uses `checked_div`,
+retaining exceptional divisions as symbolic terms. Boundary regressions failed
+on the old source. See [the arithmetic contract](docs/architecture/verifier-arithmetic.md)
+for implementation harnesses and remaining semantic boundaries.
+
+## 2026-11-14 — native arithmetic no-wrap flags conflict with interpreter wrapping
+
+**Initial status: discovered; native repair and full Briev reproduction pending.**
+General integer expression emission uses `add nuw nsw`, `sub nsw`, `mul nsw`
+without a per-operation overflow proof. At an overflow boundary this differs
+from the interpreter and SMT model. An isolated IR reproduction using the
+emitter's addition flags lets LLVM O3 replace `(x + 1) > x` by constant true,
+which is false for wrapping signed MAX. The arithmetic contract above records
+the source mapping and prevents treating verifier results as native guarantees.
+
+### 2026-11-14 — native arithmetic repair
+
+The full `integer_wrapping.bv` executable reproduces the old O3 failure at signed
+MAX: arithmetic values wrap, but `x + 1 > x` prints 1 instead of 0. Shared
+intrinsic templates and general expression emission now use flag-free integer
+add/sub/mul; the shared negation template also drops `nsw`. Legacy bindings agree.
+Instruction-shape tests still assert the same operations/register dataflow,
+without demanding invalid overflow promises. Specialized loop-counter assertions
+are retained. The new runtime-input regression covers O0/O3 and both AST/HIR,
+including MIN negation and add/sub/mul overflow; the quick gate runs it.
+
+## 2026-11-15 — floating division guard compared incompatible SSA types
+
+A permitted integer-spelled literal in `7 / denom` (Float denominator) built
+LLVM containing `fcmp oeq i64 %float_register, 0.0`; clang rejected it. The
+new zero check preceded operand normalization and took its type from the
+numerator. The binary-expression boundary now uses the existing numeric
+mixed-operand adapter before checking the promoted divisor's Float category
+and emitting division. This also removes the older trunc/bitcast approximation.
+CLI regressions cover literal operands on either side, zero/nonzero behavior,
+and both AST/HIR paths. Variable Int/Float mixing still requires explicit casts.
+
+## 2026-11-15 — Float64 printing lacked its C declaration and lost buffered output
+
+A Float64 println called `__print_float64(double)` without a declaration,
+although the runtime implemented it. After declaring it, a piped program using
+endprogram still exited 0 with no numeric output: libc buffered printf while
+Briev's newline and exit used direct syscalls. The printer declaration phase
+now includes the double ABI and respects existing Briev/foreign providers.
+The retained C formatter flushes before returning; its %.9g format is unchanged.
+The native regression requires exact `0.5\n` output at O3 and checks Float64
+zero/negative-zero traps under both emission paths. This does not establish a
+full Float64 formatting or precision theorem.
+
+## 2026-11-15 — parity corpora encoded pre-alignment IEEE div-by-zero
+
+**Symptom.** Tip CI (817f1d698) failed the Parity corpora step: `float_cases`
+(and then `float_fmt_cases`) hit `Illegal instruction` (exit 132, `ud2`) at
+runtime.
+
+**Cause.** Both corpora contained explicit division-by-zero probes
+(`1.0 / 0.0`, `-1.0 / 0.0`, `0.0 / 0.0`, `-0.0 / 0.0`) with goldens expecting
+IEEE 754 `inf`/`-inf`/`nan`. These lines predate the Float div-by-zero
+alignment (corpora frozen 2026-09-09, before the guard landed 2026-11-14).
+The interpreter — the semantic authority — raises
+`RuntimeError::DivisionByZero` for `Float / 0.0` (`exec_div`,
+`src/interpreter/intrinsics.rs`), and native codegen now matches via
+`@llvm.trap()` emitted before `fdiv`. The guard is correct; the corpora were
+stale.
+
+**Fix.** Removed the four div-by-zero `println!` lines from
+`benchmarks/parity/corpus/float_cases.bv` and `float_fmt_cases.bv` and
+regenerated the two goldens (39 → 35 lines each; the dropped lines were the
+trailing `inf`/`-inf`/`nan`/`nan`). All six CI parity corpora now pass.
+Division-by-zero behaviour is covered by the native CLI regressions
+(`tests/cli_args_test.rs` float div/zero traps), not by the float-formatting
+parity corpora — those remain the `%.9g` precision gate.
+
+## sweep_mid / sweep_sparse parity goldens are stale — PRE-EXISTING, OBSERVED 2026-11-15
+
+**Symptom:** `bash benchmarks/parity/run.sh` reports 12 passed, 2 failed:
+`sweep_mid` and `sweep_sparse` differ from their goldens in the 5th significant
+digit (`1.99243784` vs `1.99238849`; `1.87476909` vs `1.87476027`).
+
+**Controlled A/B (done before logging, per the no-blame-without-A/B rule):**
+restored `lib/std/float_fmt.bv` to its pre-2026-11-15 content (`git show
+HEAD~1:lib/std/float_fmt.bv`), rebuilt both benchmarks, re-ran parity — **both
+still fail**. The failure is therefore not caused by the float-contract work in
+`4a24b3a21`. The goldens were frozen once (`5324b6765 parity: P0 golden freeze`)
+and the presenting code has changed since.
+
+**State:** unresolved. The values differ in the computed float, not the
+formatting (the `float_fmt_cases` and `cast_cases` `%.9g` corpora both pass,
+which is the formatting gate). Whether the presenter drifted or the goldens were
+recorded on a different target is not yet established.
+
+**Next step:** determine which side is correct — run the corresponding C
+reference for the same shapes and compare, then either fix the presenter or
+regenerate the two goldens with a note in the results file.
+
+## 2026-11-15: Conformance sweep 387-failure cascade (exponent_val/mantissa_val precondition tightening)
+
+**Root cause**: `4a24b3a21` tightened `exponent_val` and `mantissa_val` preconditions
+in `lib/std/float_fmt.bv` to require `exp8 >= 0 && exp8 <= 254` and
+`mant <= 0x7FFFFF`. The declared-edge call-site checker (`src/proof_engine/callgate.rs`)
+does NOT propagate callee postconditions into the caller's fact set, and does NOT
+perform mask-bound reasoning. So every call site of `exponent_val`/`mantissa_val`
+fails the precondition check, cascading through `float_fmt.bv` to nearly every file
+that imports it (387 sources).
+
+**The `mantissa_val`/`exponent_val` precondition tightenings were reverted in
+`6bee69082`** — but the `exponent_val` tightening in `float_fmt.bv` itself was NOT
+reverted (only the `mantissa_val` tightening was). This is the active cause.
+
+**Fix path**: Either (a) revert the `exponent_val` precondition to `[true]` (losing
+the body-proof benefit), or (b) teach the declared-edge checker to propagate
+callee postconditions (a significant change to `callgate.rs`), or (c) add explicit
+`check` statements at every call site of `exponent_val`/`mantissa_val` (tedious,
+fragile).
+
+**Status**: OPEN. The conformance sweep has been failing since `4a24b3a21`.
+The 2 `ascii_lower` failures in `http.bv`/`task_board/main.bv` are the same class:
+`byte_at`'s postcondition `[term >= 0 && term <= 255]` is not propagated to the
+call-site checker, so `ascii_lower`'s `[b >= 0]` precondition is unprovable.
+
+**A/B evidence**: Stashing all my changes (Bool admission, SMT encoding,
+http.bv) still produces the 387 failures. The cascade is pre-existing.
+**Integration follow-up.** The correctness branch independently replaced those
+four constructions with overflow literals and `Sqrt#(-1.0)`. On merging
+`8b69cbe2`, retain these supported inputs and restore all 39 original golden
+lines. The trap contract and its CLI regressions remain in force; exceptional
+formatting values are supplied without zero division. See the formatting
+fixture diagnosis above and the hosted qualification record.

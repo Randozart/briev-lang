@@ -39,3 +39,37 @@ pub fn typecheck(data: &[u8]) {
 pub fn welltyped(data: &[u8]) {
     briev_compiler::typed_program::check(data);
 }
+
+/// 2026-11-15 (P4 growth slice): fuzz literal `List<Int>` programs and assert
+/// the interpreter's sum+length reduction agrees with the independent oracle.
+/// Exercises list construction, `foreach` reduction, and `Count#`.
+pub fn collections(data: &[u8]) {
+    semantic::check_collections(data);
+}
+
+/// 2026-11-15 (P4 growth slice): fuzz enum construction, `match` dispatch and
+/// cross-definition payload transport; assert the interpreter agrees with the
+/// independent fold.
+pub fn enums(data: &[u8]) {
+    semantic::check_enums(data);
+}
+
+/// 2026-11-15 (P4 growth slice): fuzz string concatenation and `CharCount#`
+/// reduction, including a two-byte UTF-8 character so byte-counting
+/// implementations disagree.
+pub fn strings(data: &[u8]) {
+    semantic::check_strings(data);
+}
+
+/// 2026-11-15 (P4 growth slice, second oracle): the enum slice with a
+/// returned-value oracle — the generated program returns its result instead of
+/// binding a top-level `let`, and the interpreter is re-run over that text.
+pub fn enum_dispatch(data: &[u8]) {
+    semantic::check_enum_dispatch(data);
+}
+
+/// 2026-11-15 (P4 growth slice, second oracle): the string slice with a
+/// returned-value oracle, same shape as `enum_dispatch`.
+pub fn string_ops(data: &[u8]) {
+    semantic::check_string_ops(data);
+}

@@ -29,11 +29,7 @@ pub struct BountySection {
 }
 
 /// Write a .bounty file from its component parts (3-section: lair + beastpack + manifest).
-pub fn write_bounty(
-    lair_data: &[u8],
-    beastpack_data: &[u8],
-    manifest: &str,
-) -> Vec<u8> {
+pub fn write_bounty(lair_data: &[u8], beastpack_data: &[u8], manifest: &str) -> Vec<u8> {
     let sections = vec![
         (SECTION_LAIR, lair_data.len()),
         (SECTION_BEASTPACK, beastpack_data.len()),
@@ -43,7 +39,8 @@ pub fn write_bounty(
         (SECTION_LAIR, lair_data as &[u8]),
         (SECTION_BEASTPACK, beastpack_data as &[u8]),
         (SECTION_MANIFEST, manifest.as_bytes()),
-    ].into();
+    ]
+    .into();
     write_bounty_impl(&sections, &data_map)
 }
 
@@ -65,12 +62,16 @@ pub fn write_bounty_full(
         (SECTION_BEASTPACK, beastpack as &[u8]),
         (SECTION_MANIFEST, manifest.as_bytes()),
         (SECTION_USER_LAIR, user_lair as &[u8]),
-    ].into();
+    ]
+    .into();
     write_bounty_impl(&sections, &data_map)
 }
 
 /// Shared layout writer.
-fn write_bounty_impl(sections: &[(u8, usize)], data_map: &std::collections::HashMap<u8, &[u8]>) -> Vec<u8> {
+fn write_bounty_impl(
+    sections: &[(u8, usize)],
+    data_map: &std::collections::HashMap<u8, &[u8]>,
+) -> Vec<u8> {
     let section_count = sections.len() as u32;
     // Header: magic(9) + version(4) + flags(4) + count(4) = 21 bytes
     let header_size = 21usize;
@@ -126,7 +127,10 @@ pub fn read_sections(data: &[u8]) -> Result<Vec<BountySection>, String> {
     }
     let version = u32::from_le_bytes([data[9], data[10], data[11], data[12]]);
     if version != BOUNTY_VERSION {
-        return Err(format!("bounty: version mismatch (expected {}, got {})", BOUNTY_VERSION, version));
+        return Err(format!(
+            "bounty: version mismatch (expected {}, got {})",
+            BOUNTY_VERSION, version
+        ));
     }
     let section_count = u32::from_le_bytes([data[17], data[18], data[19], data[20]]) as usize;
     let table_start = 21;
@@ -139,18 +143,30 @@ pub fn read_sections(data: &[u8]) -> Result<Vec<BountySection>, String> {
         }
         let type_id = data[entry_start];
         let offset = u64::from_le_bytes([
-            data[entry_start + 1], data[entry_start + 2],
-            data[entry_start + 3], data[entry_start + 4],
-            data[entry_start + 5], data[entry_start + 6],
-            data[entry_start + 7], data[entry_start + 8],
+            data[entry_start + 1],
+            data[entry_start + 2],
+            data[entry_start + 3],
+            data[entry_start + 4],
+            data[entry_start + 5],
+            data[entry_start + 6],
+            data[entry_start + 7],
+            data[entry_start + 8],
         ]);
         let size = u64::from_le_bytes([
-            data[entry_start + 9], data[entry_start + 10],
-            data[entry_start + 11], data[entry_start + 12],
-            data[entry_start + 13], data[entry_start + 14],
-            data[entry_start + 15], data[entry_start + 16],
+            data[entry_start + 9],
+            data[entry_start + 10],
+            data[entry_start + 11],
+            data[entry_start + 12],
+            data[entry_start + 13],
+            data[entry_start + 14],
+            data[entry_start + 15],
+            data[entry_start + 16],
         ]);
-        sections.push(BountySection { type_id, offset, size });
+        sections.push(BountySection {
+            type_id,
+            offset,
+            size,
+        });
     }
     Ok(sections)
 }

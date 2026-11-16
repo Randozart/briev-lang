@@ -5,7 +5,7 @@
 
 use crate::ast::{DerivationBlock, Expr, Statement, TopLevel, Type};
 use crate::derive::engine::{CostModel, SynthesizedProgram};
-use crate::derive::{synthesize, SynthesizeError};
+use crate::derive::{SynthesizeError, synthesize};
 use std::fs;
 use std::path::Path;
 
@@ -56,25 +56,29 @@ pub fn parse_derive_flags(args: &[String]) -> Result<(DeriveConfig, Vec<String>)
         } else if arg == "--iterations" {
             i += 1;
             let val = args.get(i).ok_or("--iterations requires a value")?;
-            config.iterations = val.parse::<usize>()
+            config.iterations = val
+                .parse::<usize>()
                 .map_err(|_| format!("invalid --iterations value '{}'", val))?;
             i += 1;
         } else if arg == "--temperature" {
             i += 1;
             let val = args.get(i).ok_or("--temperature requires a value")?;
-            config.temperature = val.parse::<f64>()
+            config.temperature = val
+                .parse::<f64>()
                 .map_err(|_| format!("invalid --temperature value '{}'", val))?;
             i += 1;
         } else if arg == "--enumerative-depth" {
             i += 1;
             let val = args.get(i).ok_or("--enumerative-depth requires a value")?;
-            config.enumerative_depth = val.parse::<usize>()
+            config.enumerative_depth = val
+                .parse::<usize>()
                 .map_err(|_| format!("invalid --enumerative-depth value '{}'", val))?;
             i += 1;
         } else if arg == "--verify-samples" {
             i += 1;
             let val = args.get(i).ok_or("--verify-samples requires a value")?;
-            config.verify_samples = val.parse::<usize>()
+            config.verify_samples = val
+                .parse::<usize>()
                 .map_err(|_| format!("invalid --verify-samples value '{}'", val))?;
             i += 1;
         } else if arg.starts_with("--") {
@@ -92,8 +96,8 @@ pub fn parse_derive_flags(args: &[String]) -> Result<(DeriveConfig, Vec<String>)
 /// optionally runs MCMC superoptimization, writes doppelganger output.
 pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(), String> {
     let path = Path::new(file_path);
-    let source = fs::read_to_string(path)
-        .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
+    let source =
+        fs::read_to_string(path).map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
 
     // Lex, parse, find derivation blocks
     let token_spans = lex_source_with_spans(&source)?;
@@ -125,7 +129,8 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
 
     // 2026-07-29: Build reference function lookup from the program.
     // Reference functions are named defns in the same compilation unit.
-    let mut ref_lookup: std::collections::HashMap<String, &TopLevel> = std::collections::HashMap::new();
+    let mut ref_lookup: std::collections::HashMap<String, &TopLevel> =
+        std::collections::HashMap::new();
     for item in &program {
         if let TopLevel::Definition(d) = item {
             ref_lookup.insert(d.name.clone(), item);
@@ -141,7 +146,10 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
     // Synthesize each derivation block
     let mut syntheses: Vec<(String, SynthesizedProgram)> = Vec::new();
     for (name, params, block) in &derivations {
-        eprintln!("[derive] synthesizing '{}' (depth={})...", name, config.enumerative_depth);
+        eprintln!(
+            "[derive] synthesizing '{}' (depth={})...",
+            name, config.enumerative_depth
+        );
         // Use Type::int() as default return type for derivation blocks
         // TODO: extract actual return type from function signature
         let ret_type = Type::int();
@@ -150,14 +158,14 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
             if let Some(ref ref_name) = block.ref_name {
                 if let Some(ref_body) = block.ref_name.as_ref().and_then(|rn| {
                     ref_lookup.get(rn).and_then(|item| match item {
-                        TopLevel::Definition(d) => {
-                            d.body.iter().find_map(|s| {
-                                if let Statement::Term(Some(e)) = s {
-                                    let expr_ref: &Expr = e;
-                                    Some(expr_ref)
-                                } else { None }
-                            })
-                        }
+                        TopLevel::Definition(d) => d.body.iter().find_map(|s| {
+                            if let Statement::Term(Some(e)) = s {
+                                let expr_ref: &Expr = e;
+                                Some(expr_ref)
+                            } else {
+                                None
+                            }
+                        }),
                         _ => None,
                     })
                 }) {
@@ -168,11 +176,17 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
                         depth: 0,
                         helpers: vec![],
                     };
-                    eprintln!("[derive] '{}': reference-only (using '{}' body, cost {})", name, ref_name, cost);
+                    eprintln!(
+                        "[derive] '{}': reference-only (using '{}' body, cost {})",
+                        name, ref_name, cost
+                    );
                     syntheses.push((name.clone(), prog));
                     continue;
                 } else {
-                    eprintln!("warn: reference function '{}' not found for '{}'", ref_name, name);
+                    eprintln!(
+                        "warn: reference function '{}' not found for '{}'",
+                        ref_name, name
+                    );
                 }
             }
         }
@@ -192,19 +206,26 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
             params: Vec<String>,
         }
         let mut ref_fn_bundles: Vec<RefFnBundle> = Vec::new();
-        let ref_fn_expr: Option<(&Expr, &[String])> = block.ref_name.as_ref().and_then(|ref_name| {
-            ref_lookup.get(ref_name).and_then(|item| match item {
-                TopLevel::Definition(d) => {
-                    if d.body.is_empty() { return None; }
-                    let body_expr = Expr::Block(d.body.clone());
-                    let ref_params: Vec<String> = d.parameters.iter().map(|(n, _)| n.clone()).collect();
-                    ref_fn_bundles.push(RefFnBundle { body: body_expr, params: ref_params });
-                    let bundle = ref_fn_bundles.last()?;
-                    Some((&bundle.body, bundle.params.as_slice()))
-                }
-                _ => None,
-            })
-        });
+        let ref_fn_expr: Option<(&Expr, &[String])> =
+            block.ref_name.as_ref().and_then(|ref_name| {
+                ref_lookup.get(ref_name).and_then(|item| match item {
+                    TopLevel::Definition(d) => {
+                        if d.body.is_empty() {
+                            return None;
+                        }
+                        let body_expr = Expr::Block(d.body.clone());
+                        let ref_params: Vec<String> =
+                            d.parameters.iter().map(|(n, _)| n.clone()).collect();
+                        ref_fn_bundles.push(RefFnBundle {
+                            body: body_expr,
+                            params: ref_params,
+                        });
+                        let bundle = ref_fn_bundles.last()?;
+                        Some((&bundle.body, bundle.params.as_slice()))
+                    }
+                    _ => None,
+                })
+            });
         // 2026-07-29: Chain resolution — if the block has a multi-segment := chain,
         // resolve it first. If a matching body is found, use it directly.
         // The chain resolver cross-verifies each body against all others.
@@ -215,13 +236,17 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
             for (ref_name, item) in &ref_lookup {
                 match item {
                     TopLevel::AsmFn(af) => {
-                        chain_registry.insert(ref_name.clone(), crate::derive::chain::Body::Asm(af.clone()));
+                        chain_registry.insert(
+                            ref_name.clone(),
+                            crate::derive::chain::Body::Asm(af.clone()),
+                        );
                     }
                     TopLevel::Definition(d) => {
                         // Wrap the full body (including let bindings) in a Block.
                         // Param names are matched by position in the chain resolver.
                         let block = Expr::Block(d.body.clone());
-                        chain_registry.insert(ref_name.clone(), crate::derive::chain::Body::Ref(block));
+                        chain_registry
+                            .insert(ref_name.clone(), crate::derive::chain::Body::Ref(block));
                     }
                     _ => {}
                 }
@@ -253,23 +278,48 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
             match selected {
                 crate::derive::chain::Body::Ref(expr) => {
                     let cost = crate::derive::engine::CostModel::default().cost_of_expr(&expr);
-                    syntheses.push((name.clone(), crate::derive::engine::SynthesizedProgram {
-                        body: vec![expr], cost, depth: 0, helpers: vec![],
-                    }));
+                    syntheses.push((
+                        name.clone(),
+                        crate::derive::engine::SynthesizedProgram {
+                            body: vec![expr],
+                            cost,
+                            depth: 0,
+                            helpers: vec![],
+                        },
+                    ));
                 }
                 crate::derive::chain::Body::Asm(_af) => {
                     // Asm body — the LLVM backend's emit_asm_fn produces the
                     // actual asm sideeffect. The SynthesizedProgram placeholder
                     // records the selection for the doppelganger output.
-                    syntheses.push((name.clone(), crate::derive::engine::SynthesizedProgram {
-                        body: vec![Expr::Decimal(0)], cost: 0, depth: 0, helpers: vec![],
-                    }));
+                    syntheses.push((
+                        name.clone(),
+                        crate::derive::engine::SynthesizedProgram {
+                            body: vec![Expr::Decimal(0)],
+                            cost: 0,
+                            depth: 0,
+                            helpers: vec![],
+                        },
+                    ));
                 }
                 crate::derive::chain::Body::Synthesized(_) => {
                     // Fall through to regular synthesis
-                    match synthesize(name, block, params, &ret_type, config.enumerative_depth, config.verify_samples, block.postcondition.as_ref(), block.precondition.as_ref(), ref_fn_expr) {
+                    match synthesize(
+                        name,
+                        block,
+                        params,
+                        &ret_type,
+                        config.enumerative_depth,
+                        config.verify_samples,
+                        block.postcondition.as_ref(),
+                        block.precondition.as_ref(),
+                        ref_fn_expr,
+                    ) {
                         Ok(prog) => {
-                            eprintln!("[derive] '{}': synthesized body with cost {}", name, prog.cost);
+                            eprintln!(
+                                "[derive] '{}': synthesized body with cost {}",
+                                name, prog.cost
+                            );
                             syntheses.push((name.clone(), prog));
                         }
                         Err(e) => {
@@ -279,9 +329,22 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
                 }
             }
         } else {
-            match synthesize(name, block, params, &ret_type, config.enumerative_depth, config.verify_samples, block.postcondition.as_ref(), block.precondition.as_ref(), ref_fn_expr) {
+            match synthesize(
+                name,
+                block,
+                params,
+                &ret_type,
+                config.enumerative_depth,
+                config.verify_samples,
+                block.postcondition.as_ref(),
+                block.precondition.as_ref(),
+                ref_fn_expr,
+            ) {
                 Ok(prog) => {
-                    eprintln!("[derive] '{}': synthesized body with cost {}", name, prog.cost);
+                    eprintln!(
+                        "[derive] '{}': synthesized body with cost {}",
+                        name, prog.cost
+                    );
                     syntheses.push((name.clone(), prog));
                 }
                 Err(e) => {
@@ -296,7 +359,8 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
     }
 
     // 2026-07-28: Extract (name, block) pairs for doppelganger writer
-    let derivations_blocks: Vec<(String, DerivationBlock)> = derivations.iter()
+    let derivations_blocks: Vec<(String, DerivationBlock)> = derivations
+        .iter()
         .map(|(n, _, b)| (n.clone(), b.clone()))
         .collect();
 
@@ -311,17 +375,24 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
         let mut mcmc_syntheses: Vec<(String, SynthesizedProgram)> = Vec::new();
         for (name, prog) in &syntheses {
             // Find the derivation block for examples
-            let block = derivations.iter()
+            let block = derivations
+                .iter()
                 .find(|(n, _, _)| n == name)
                 .map(|(_, _, b)| b);
             if let Some(block) = block {
                 match crate::derive::mcmc::optimize(prog.clone(), &block.examples, &mcmc_config) {
                     Ok(improved) => {
-                        eprintln!("[derive] '{}': MCMC optimized cost {} -> {}", name, prog.cost, improved.cost);
+                        eprintln!(
+                            "[derive] '{}': MCMC optimized cost {} -> {}",
+                            name, prog.cost, improved.cost
+                        );
                         mcmc_syntheses.push((name.clone(), improved));
                     }
                     Err(e) => {
-                        eprintln!("warn: MCMC failed for '{}': {} — keeping synthesized", name, e);
+                        eprintln!(
+                            "warn: MCMC failed for '{}': {} — keeping synthesized",
+                            name, e
+                        );
                         mcmc_syntheses.push((name.clone(), prog.clone()));
                     }
                 }
@@ -329,12 +400,24 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
         }
         // Write .opt.bv with MCMC results
         let opt_path = crate::derive::doppelganger::Doppelganger::opt_path_for(path);
-        crate::derive::doppelganger::write_doppelganger(path, source.as_bytes(), &mcmc_syntheses, &derivations_blocks, &opt_path)?;
+        crate::derive::doppelganger::write_doppelganger(
+            path,
+            source.as_bytes(),
+            &mcmc_syntheses,
+            &derivations_blocks,
+            &opt_path,
+        )?;
         eprintln!("[derive] wrote {}", opt_path.display());
     } else {
         // Write .derive.bv with synthesis results
         let derive_path = crate::derive::doppelganger::Doppelganger::derive_path_for(path);
-        crate::derive::doppelganger::write_doppelganger(path, source.as_bytes(), &syntheses, &derivations_blocks, &derive_path)?;
+        crate::derive::doppelganger::write_doppelganger(
+            path,
+            source.as_bytes(),
+            &syntheses,
+            &derivations_blocks,
+            &derive_path,
+        )?;
         eprintln!("[derive] wrote {}", derive_path.display());
     }
 
@@ -343,7 +426,9 @@ pub fn handle_derive_command(config: &DeriveConfig, file_path: &str) -> Result<(
 
 /// Lex a Briev source into (Token, byte_range) pairs using logos.
 /// 2026-07-28: Preserves byte spans so derivation block positions are correct.
-fn lex_source_with_spans(source: &str) -> Result<Vec<(crate::lexer::Token, std::ops::Range<usize>)>, String> {
+fn lex_source_with_spans(
+    source: &str,
+) -> Result<Vec<(crate::lexer::Token, std::ops::Range<usize>)>, String> {
     use logos::Logos;
     let mut lexer = crate::lexer::Token::lexer(source);
     let mut result = Vec::new();
@@ -365,7 +450,9 @@ fn parse_tokens(
     source: &str,
 ) -> Result<Vec<TopLevel>, String> {
     let mut parser = crate::parser::Parser::new(token_spans.to_vec(), source);
-    parser.parse_program().map_err(|e| format!("parse error: {}", e))
+    parser
+        .parse_program()
+        .map_err(|e| format!("parse error: {}", e))
 }
 
 #[cfg(test)]
@@ -419,9 +506,12 @@ mod tests {
     fn test_parse_flags_custom_values() {
         let args: Vec<String> = vec![
             "--stochastic".into(),
-            "--iterations".into(), "5000".into(),
-            "--temperature".into(), "0.5".into(),
-            "--enumerative-depth".into(), "8".into(),
+            "--iterations".into(),
+            "5000".into(),
+            "--temperature".into(),
+            "0.5".into(),
+            "--enumerative-depth".into(),
+            "8".into(),
             "--all".into(),
             "foo.bv".into(),
         ];

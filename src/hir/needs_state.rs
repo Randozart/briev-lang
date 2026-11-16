@@ -21,10 +21,25 @@ use std::collections::{HashMap, HashSet};
 
 /// Intrinsics whose lowering emits `ptr %state` (mirrors the AST list).
 const STATE_INTRINSICS: &[&str] = &[
-    "Malloc#", "Memcpy#", "Memmove#", "Memset#", "Print#",
-    "FileRead#", "FileWrite#", "ShellCmd#", "SysQuery#", "EnvGet#", "HttpFetch#",
-    "AllocArray#", "AllocInitArray#", "StringNew#", "StringFromPtr#", "StringConcat#",
-    "TaskCall#", "GetCwd#", "ChDir#",
+    "Malloc#",
+    "Memcpy#",
+    "Memmove#",
+    "Memset#",
+    "Print#",
+    "FileRead#",
+    "FileWrite#",
+    "ShellCmd#",
+    "SysQuery#",
+    "EnvGet#",
+    "HttpFetch#",
+    "AllocArray#",
+    "AllocInitArray#",
+    "StringNew#",
+    "StringFromPtr#",
+    "StringConcat#",
+    "TaskCall#",
+    "GetCwd#",
+    "ChDir#",
 ];
 
 fn member_key(owner: &str, name: &str) -> String {
@@ -47,9 +62,7 @@ fn index<'a>(
             // Member transactions are reactor-threaded but are NOT indexed as
             // fixpoint nodes by the AST (index_type_members indexes Definition
             // members only), so mirror that.
-            HirCallableKind::Transaction | HirCallableKind::CompileTimeTxn
-                if c.owner.is_none() =>
-            {
+            HirCallableKind::Transaction | HirCallableKind::CompileTimeTxn if c.owner.is_none() => {
                 txns.insert(c.name.clone());
             }
             // Compile-time callables are not runtime emitters and are not
@@ -142,9 +155,13 @@ fn fixpoint(
     always: &HashSet<String>,
     with_locals: bool,
 ) -> HashMap<String, bool> {
-    let ctx = FixCtx { regular, txns, tracked_fields, always };
-    let mut needs: HashMap<String, bool> =
-        regular.keys().map(|k| (k.clone(), false)).collect();
+    let ctx = FixCtx {
+        regular,
+        txns,
+        tracked_fields,
+        always,
+    };
+    let mut needs: HashMap<String, bool> = regular.keys().map(|k| (k.clone(), false)).collect();
     while fixpoint_round(&ctx, with_locals, &mut needs) {}
     needs
 }
@@ -201,7 +218,9 @@ fn stmt_needs_state(stmt: &HirStmt, ctx: &Ctx<'_>) -> bool {
         HirStmtKind::Term(opt) | HirStmtKind::EndProgram(opt) | HirStmtKind::Rollback(opt) => {
             opt.as_ref().is_some_and(|e| rec(e))
         }
-        HirStmtKind::Tail(e) | HirStmtKind::Check(e) | HirStmtKind::Gate(e)
+        HirStmtKind::Tail(e)
+        | HirStmtKind::Check(e)
+        | HirStmtKind::Gate(e)
         | HirStmtKind::Expression(e) => rec(e),
         HirStmtKind::Guarded(cond, body) => rec(cond) || rec_stmts(body),
         HirStmtKind::Block(body)
@@ -209,9 +228,7 @@ fn stmt_needs_state(stmt: &HirStmt, ctx: &Ctx<'_>) -> bool {
         | HirStmtKind::Defer(body)
         | HirStmtKind::Mutex(body) => rec_stmts(body),
         HirStmtKind::Foreach { list, body, .. } => rec(list) || rec_stmts(body),
-        HirStmtKind::Match { expr, arms } => {
-            rec(expr) || arms.iter().any(|a| rec_stmts(&a.body))
-        }
+        HirStmtKind::Match { expr, arms } => rec(expr) || arms.iter().any(|a| rec_stmts(&a.body)),
         HirStmtKind::TrgBinding { instance, .. } => rec(instance),
         HirStmtKind::Open(l, r) => rec(l) || rec(r),
         HirStmtKind::Break
@@ -221,7 +238,11 @@ fn stmt_needs_state(stmt: &HirStmt, ctx: &Ctx<'_>) -> bool {
         | HirStmtKind::FreeHint(_)
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(..)
-        | HirStmtKind::InlineAsm { .. } => false,
+        | HirStmtKind::InlineAsm { .. }
+        // 2026-11-15: an inline defn's body is analyzed as its own callable,
+        // not through the enclosing state walk — treat as stateless here
+        // (matches the AST walker, which indexes defs separately).
+        | HirStmtKind::InlineDefn(_) => false,
         // Compiler-inserted storage release: no state. Temp-transfer behaves
         // like the expression it wraps plus its (stateless) release list.
         HirStmtKind::ReleaseOwned { .. } => false,
@@ -243,9 +264,12 @@ fn expr_needs_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
         HirExprKind::Other(_) | HirExprKind::Spawn { .. } | HirExprKind::Await(_) => true,
         HirExprKind::Wildcard => true,
         HirExprKind::Call { callee, args, .. } => call_needs_state(callee, args, ctx),
-        HirExprKind::MethodCall { receiver, name, args, .. } => {
-            method_needs_state(receiver, name, args, ctx)
-        }
+        HirExprKind::MethodCall {
+            receiver,
+            name,
+            args,
+            ..
+        } => method_needs_state(receiver, name, args, ctx),
         HirExprKind::Binary { left, right, .. } => {
             expr_needs_state(left, ctx) || expr_needs_state(right, ctx)
         }
@@ -255,29 +279,44 @@ fn expr_needs_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
         | HirExprKind::Deref(inner)
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        }
         | HirExprKind::Lambda { body: inner, .. } => expr_needs_state(inner, ctx),
         HirExprKind::PluginIntercept { args, receiver, .. } => {
-            receiver.as_ref().map_or(false, |r| expr_needs_state(r, ctx))
+            receiver
+                .as_ref()
+                .map_or(false, |r| expr_needs_state(r, ctx))
                 || args.iter().any(|a| expr_needs_state(a, ctx))
         }
         HirExprKind::Index(..) | HirExprKind::Slice { .. } | HirExprKind::Range { .. } => {
             subexprs_need_state(expr, ctx)
         }
-        HirExprKind::StructLiteral { .. }
-        | HirExprKind::Tuple(_)
-        | HirExprKind::List(_) => elements_need_state(expr, ctx),
+        HirExprKind::StructLiteral { .. } | HirExprKind::Tuple(_) | HirExprKind::List(_) => {
+            elements_need_state(expr, ctx)
+        }
         HirExprKind::Block(stmts) => body_needs_state(stmts, ctx),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             expr_needs_state(condition, ctx)
                 || expr_needs_state(then_branch, ctx)
-                || else_branch.as_ref().is_some_and(|e| expr_needs_state(e, ctx))
+                || else_branch
+                    .as_ref()
+                    .is_some_and(|e| expr_needs_state(e, ctx))
         }
         HirExprKind::Match { scrutinee, arms } => {
-            expr_needs_state(scrutinee, ctx)
-                || arms.iter().any(|a| expr_needs_state(&a.body, ctx))
+            expr_needs_state(scrutinee, ctx) || arms.iter().any(|a| expr_needs_state(&a.body, ctx))
         }
+        // 2026-11-15: `within` recurses into both operands; `exists` and
+        // `formatting-annotation` are compile-time metadata with no state.
+        HirExprKind::Within(l, r) => expr_needs_state(l, ctx) || expr_needs_state(r, ctx),
+        HirExprKind::Exists(_) | HirExprKind::FormattingAnnotation(_) => false,
     }
 }
 
@@ -296,12 +335,7 @@ fn call_needs_state(callee: &str, args: &[HirExpr], ctx: &Ctx<'_>) -> bool {
 
 /// Method call: any stateful same-named member on any owner type makes it
 /// stateful (mirrors the AST's conservative cross-type reach).
-fn method_needs_state(
-    receiver: &HirExpr,
-    name: &str,
-    args: &[HirExpr],
-    ctx: &Ctx<'_>,
-) -> bool {
+fn method_needs_state(receiver: &HirExpr, name: &str, args: &[HirExpr], ctx: &Ctx<'_>) -> bool {
     expr_needs_state(receiver, ctx)
         || args.iter().any(|a| expr_needs_state(a, ctx))
         || method_stateful_on_any_type(name, ctx.regular, ctx.needs)
@@ -310,10 +344,13 @@ fn method_needs_state(
 /// Index/Slice/Range operand recursion.
 fn subexprs_need_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
     match &expr.kind {
-        HirExprKind::Index(a, b) => {
-            expr_needs_state(a, ctx) || expr_needs_state(b, ctx)
-        }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Index(a, b) => expr_needs_state(a, ctx) || expr_needs_state(b, ctx),
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             expr_needs_state(array, ctx)
                 || start.as_ref().is_some_and(|e| expr_needs_state(e, ctx))
                 || end.as_ref().is_some_and(|e| expr_needs_state(e, ctx))
@@ -416,9 +453,7 @@ fn collect_expr_locals(expr: &HirExpr, out: &mut HashSet<String>) {
             }
         }
         HirExprKind::Block(stmts) => collect_stmt_locals(stmts, out),
-        HirExprKind::Call { args, .. }
-        | HirExprKind::Tuple(args)
-        | HirExprKind::List(args) => {
+        HirExprKind::Call { args, .. } | HirExprKind::Tuple(args) | HirExprKind::List(args) => {
             for a in args {
                 collect_expr_locals(a, out);
             }
@@ -433,8 +468,12 @@ fn collect_expr_locals(expr: &HirExpr, out: &mut HashSet<String>) {
         | HirExprKind::Deref(inner)
         | HirExprKind::AddrOf(inner)
         | HirExprKind::Consume(inner)
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        }
         | HirExprKind::Lambda { body: inner, .. } => collect_expr_locals(inner, out),
         HirExprKind::Index(a, b) => {
             collect_expr_locals(a, out);
@@ -446,7 +485,12 @@ fn collect_expr_locals(expr: &HirExpr, out: &mut HashSet<String>) {
                 collect_expr_locals(a, out);
             }
         }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_expr_locals(array, out);
             if let Some(s) = start {
                 collect_expr_locals(s, out);
@@ -467,7 +511,11 @@ fn collect_expr_locals(expr: &HirExpr, out: &mut HashSet<String>) {
                 collect_expr_locals(a, out);
             }
         }
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr_locals(condition, out);
             collect_expr_locals(then_branch, out);
             if let Some(e) = else_branch {

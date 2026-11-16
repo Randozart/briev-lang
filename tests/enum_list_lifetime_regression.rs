@@ -16,15 +16,30 @@ fn enum_list_elements_survive_later_calls() {
     let _ = std::fs::remove_dir_all(out);
 
     let build = Command::new(Path::new(root).join("target/release/brievc"))
-        .args(["build", fixture.to_str().unwrap(), "--out", out.to_str().unwrap()])
+        .args([
+            "build",
+            fixture.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ])
         .env("BOUND", "1000")
         .output()
         .expect("run brievc");
-    assert!(build.status.success(), "build failed:\n{}", String::from_utf8_lossy(&build.stderr));
+    assert!(
+        build.status.success(),
+        "build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let binary = out.join("enum_list_lifetime");
-    let run = Command::new(&binary).env("BOUND", "1000").output().expect("run fixture");
+    let run = Command::new(&binary)
+        .env("BOUND", "1000")
+        .output()
+        .expect("run fixture");
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(run.status.success(), "fixture trapped:\n{stdout}");
-    assert!(stdout.contains("enum_list_lifetime=true"), "wrong element contents: {stdout}");
+    assert!(
+        stdout.contains("enum_list_lifetime=true"),
+        "wrong element contents: {stdout}"
+    );
 }

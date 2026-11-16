@@ -14,7 +14,7 @@ use crate::type_universe::TypeUniverse;
 /// Extraction (endian-invariant): load `cov` consecutive bytes starting at
 /// `byte`, interpret them as a little-endian integer (LE) or big-endian
 /// integer (BE), right-shift by `shift`, mask to `bits`.
-                                                              ///
+///
 ///   LE: value = (loadN_le(byte, cov) >> shift) & mask   (shift = within)
 ///   BE: value = (loadN_be(byte, cov) >> shift) & mask   (shift = cov*8 - within - bits)
 /// where `within` = the field's bit position inside `byte` measured from that
@@ -83,12 +83,10 @@ pub fn field_bits(ty: &Type, universe: Option<&TypeUniverse>) -> u64 {
         // 2026-08-13: `Bits<48>` parses as Applied("Bits", [Number(48)]) — the
         // exact-width alias — resolve it here so packed layout never sees the
         // generic-application default (64).
-        Type::Applied(name, args) if name == "Bits" => {
-            match args.first() {
-                Some(Type::Number(n)) => (*n).max(0) as u64,
-                _ => 64,
-            }
-        }
+        Type::Applied(name, args) if name == "Bits" => match args.first() {
+            Some(Type::Number(n)) => (*n).max(0) as u64,
+            _ => 64,
+        },
         _ => universe
             .and_then(|u| crate::type_universe::resolve_type(u, ty))
             .map(|b| b.max_bits)
@@ -204,15 +202,39 @@ mod tests {
     fn sub_byte_little_lsb_first() {
         let fields = vec![f("a", 12), f("b", 4), f("c", 8)];
         let offs = packed_field_offsets(&fields, Some("Little"), None);
-        assert_eq!(offs[0], PackedField {
-            name: "a".into(), bits: 12, byte: 0, cov: 2, shift: 0, endian: EndianKind::Little,
-        });
-        assert_eq!(offs[1], PackedField {
-            name: "b".into(), bits: 4, byte: 1, cov: 1, shift: 4, endian: EndianKind::Little,
-        });
-        assert_eq!(offs[2], PackedField {
-            name: "c".into(), bits: 8, byte: 2, cov: 1, shift: 0, endian: EndianKind::Little,
-        });
+        assert_eq!(
+            offs[0],
+            PackedField {
+                name: "a".into(),
+                bits: 12,
+                byte: 0,
+                cov: 2,
+                shift: 0,
+                endian: EndianKind::Little,
+            }
+        );
+        assert_eq!(
+            offs[1],
+            PackedField {
+                name: "b".into(),
+                bits: 4,
+                byte: 1,
+                cov: 1,
+                shift: 4,
+                endian: EndianKind::Little,
+            }
+        );
+        assert_eq!(
+            offs[2],
+            PackedField {
+                name: "c".into(),
+                bits: 8,
+                byte: 2,
+                cov: 1,
+                shift: 0,
+                endian: EndianKind::Little,
+            }
+        );
         assert!(!is_whole_byte_packed(&fields, None));
         assert_eq!(packed_bytes(&fields, None), 3);
     }
@@ -223,15 +245,31 @@ mod tests {
         let offs = packed_field_offsets(&fields, Some("Big"), None);
         // a: bits 0..11 → byte0 whole + upper nibble of byte1. BE integer of
         // bytes {b0,b1} = b0<<8|b1; a occupies the top → shift 16−0−12 = 4.
-        assert_eq!(offs[0], PackedField {
-            name: "a".into(), bits: 12, byte: 0, cov: 2, shift: 4, endian: EndianKind::Big,
-        });
+        assert_eq!(
+            offs[0],
+            PackedField {
+                name: "a".into(),
+                bits: 12,
+                byte: 0,
+                cov: 2,
+                shift: 4,
+                endian: EndianKind::Big,
+            }
+        );
         // b: bits 12..15 → LOWER nibble of byte1 (a's low nibble holds the
         // upper four bits). Single-byte BE integer = the byte; b is its low
         // nibble → shift 8−4−4 = 0.
-        assert_eq!(offs[1], PackedField {
-            name: "b".into(), bits: 4, byte: 1, cov: 1, shift: 0, endian: EndianKind::Big,
-        });
+        assert_eq!(
+            offs[1],
+            PackedField {
+                name: "b".into(),
+                bits: 4,
+                byte: 1,
+                cov: 1,
+                shift: 0,
+                endian: EndianKind::Big,
+            }
+        );
         // c: whole byte at b2.
         assert_eq!(offs[2].byte, 2);
         assert_eq!(offs[2].cov, 1);
@@ -251,6 +289,10 @@ mod tests {
     fn packed_bytes_ceil() {
         assert_eq!(packed_bytes(&eth(), None), 14);
         assert_eq!(packed_bytes(&vec![f("x", 4), f("y", 4)], None), 1);
-        assert_eq!(packed_bytes(&vec![f("x", 0)], None), 0, "zero-width stays empty");
+        assert_eq!(
+            packed_bytes(&vec![f("x", 0)], None),
+            0,
+            "zero-width stays empty"
+        );
     }
 }

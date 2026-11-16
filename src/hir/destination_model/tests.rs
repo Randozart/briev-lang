@@ -18,9 +18,7 @@ use crate::analysis::destination_model::{
     GeneralizedDestinationOwnershipPlan, OwnershipClass, ProofReason, ProofStatus,
     RecursiveCarrierArgClass, ValueShapeKind,
 };
-use crate::analysis::destination_ownership::{
-    analyze as ast_analyze, EscapeKind, ParamObligation,
-};
+use crate::analysis::destination_ownership::{EscapeKind, ParamObligation, analyze as ast_analyze};
 use crate::ast::TopLevel;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -223,7 +221,10 @@ fn dump_loops(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationO
             .collect::<Vec<_>>()
             .join(",");
         out.insert(
-            format!("loop/{}/{}", loop_plan.loop_id.owner, loop_plan.loop_id.path),
+            format!(
+                "loop/{}/{}",
+                loop_plan.loop_id.owner, loop_plan.loop_id.path
+            ),
             format!(
                 "carriers=[{carriers}];iter={};proof={}",
                 loop_plan
@@ -303,7 +304,10 @@ fn dump_enums(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationO
     }
 }
 
-fn dump_enum_callables(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationOwnershipPlan) {
+fn dump_enum_callables(
+    out: &mut BTreeMap<String, String>,
+    plan: &GeneralizedDestinationOwnershipPlan,
+) {
     for (id, callable) in &plan.enum_callables {
         out.insert(
             format!("enum-callable/{}", callable_key(id)),
@@ -329,12 +333,18 @@ fn dump_objects(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinatio
             .join(",");
         out.insert(
             format!("object/{name}"),
-            format!("params=[{}];fields=[{fields}]", object.type_params.join(",")),
+            format!(
+                "params=[{}];fields=[{fields}]",
+                object.type_params.join(",")
+            ),
         );
     }
 }
 
-fn dump_object_values(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationOwnershipPlan) {
+fn dump_object_values(
+    out: &mut BTreeMap<String, String>,
+    plan: &GeneralizedDestinationOwnershipPlan,
+) {
     for (id, value) in &plan.object_values {
         out.insert(
             format!("object-value/{}", value_key(id)),
@@ -370,7 +380,10 @@ fn dump_sinks(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationO
 fn dump_tuples(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationOwnershipPlan) {
     for (id, tuple) in &plan.tuples {
         out.insert(
-            format!("tuple/{}/{}", tuple.destination.owner, tuple.destination.path),
+            format!(
+                "tuple/{}/{}",
+                tuple.destination.owner, tuple.destination.path
+            ),
             format!(
                 "value={};elements={};class={};mat={};proof={}",
                 value_key(&tuple.value),
@@ -383,7 +396,10 @@ fn dump_tuples(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestination
     }
 }
 
-fn dump_recursive_carriers(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationOwnershipPlan) {
+fn dump_recursive_carriers(
+    out: &mut BTreeMap<String, String>,
+    plan: &GeneralizedDestinationOwnershipPlan,
+) {
     for (id, carrier_plan) in &plan.recursive_carriers {
         let carriers = carrier_plan
             .carriers
@@ -405,27 +421,32 @@ fn dump_recursive_carriers(out: &mut BTreeMap<String, String>, plan: &Generalize
             .join(",");
         out.insert(
             format!("carrier/{}", callable_key(id)),
-            format!("carriers=[{carriers}];proof={}", proof_str(&carrier_plan.proof)),
+            format!(
+                "carriers=[{carriers}];proof={}",
+                proof_str(&carrier_plan.proof)
+            ),
         );
     }
 }
 
-fn dump_loop_engines(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationOwnershipPlan) {
+fn dump_loop_engines(
+    out: &mut BTreeMap<String, String>,
+    plan: &GeneralizedDestinationOwnershipPlan,
+) {
     for (node, engine) in &plan.loop_engines {
         let fields = engine
             .fields
             .iter()
-            .map(|(name, field)| {
-                format!(
-                    "{}={:?}/{:?}",
-                    name, field.storage, field.representation
-                )
-            })
+            .map(|(name, field)| format!("{}={:?}/{:?}", name, field.storage, field.representation))
             .collect::<Vec<_>>()
             .join(",");
         out.insert(
             format!("loop-engine/{node}"),
-            format!("counter={};fields=[{fields}];proof={}", engine.counter, proof_str(&engine.proof)),
+            format!(
+                "counter={};fields=[{fields}];proof={}",
+                engine.counter,
+                proof_str(&engine.proof)
+            ),
         );
     }
 }
@@ -461,9 +482,10 @@ fn callable_parameters_and_results_match() {
     assert_eq!(parameter.obligation, ParamObligation::Value);
     assert!(parameter.ty.is_some());
     assert!(plan.values.contains_key(&parameter.value));
-    assert!(plan
-        .values
-        .contains_key(callable.result.value.as_ref().expect("result value")));
+    assert!(
+        plan.values
+            .contains_key(callable.result.value.as_ref().expect("result value"))
+    );
 }
 
 #[test]
@@ -523,12 +545,14 @@ defn run(n: Int) -> P {
 "#,
     );
     let loop_plan = plan.loops.values().next().expect("aggregate carrier");
-    assert!(loop_plan
-        .carrier_values
-        .iter()
-        .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
-            && carrier.requires_backedge_copy
-            && matches!(carrier.proof, ProofStatus::Proven { .. })));
+    assert!(
+        loop_plan
+            .carrier_values
+            .iter()
+            .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
+                && carrier.requires_backedge_copy
+                && matches!(carrier.proof, ProofStatus::Proven { .. }))
+    );
     let obligations = plan.foreach_carrier_obligations("defn:run");
     assert!(!obligations.is_empty());
     assert!(obligations.values().all(|obligation| {
@@ -563,9 +587,18 @@ fn exported_callables_create_boundary_plans() {
     let plan = assert_parity("export defn add(a: Int, b: Int) -> Int { term a + b; };\n");
     let boundary = plan.boundaries.values().next().expect("boundary plan");
     assert_eq!(boundary.kind, BoundaryKind::Export);
-    assert_eq!(boundary.direction, crate::analysis::destination_model::BoundaryDirection::Export);
-    assert_eq!(boundary.conversion, crate::analysis::destination_model::BoundaryConversion::None);
-    assert_eq!(boundary.ownership, crate::analysis::destination_model::OwnershipClass::Unknown);
+    assert_eq!(
+        boundary.direction,
+        crate::analysis::destination_model::BoundaryDirection::Export
+    );
+    assert_eq!(
+        boundary.conversion,
+        crate::analysis::destination_model::BoundaryConversion::None
+    );
+    assert_eq!(
+        boundary.ownership,
+        crate::analysis::destination_model::OwnershipClass::Unknown
+    );
     assert_eq!(boundary.values.len(), 3);
     assert!(boundary.values.iter().all(|value| {
         value.internal_class == GeneralDestinationClass::ScalarValue
@@ -631,6 +664,34 @@ fn foreign_binding_creates_import_boundary_values() {
     assert_eq!(
         boundary.values[1].conversion,
         crate::analysis::destination_model::BoundaryConversion::None
+    );
+}
+
+/// 2026-11-15 (FFI zero-copy audit): AST/HIR parity for the C-string boundary
+/// classification — `CStr` result = `ZeroCopyWithLifetimeProof` (`str_to_c`
+/// pointer offset), `CStr` param = `CopyAtBoundary` (`cstr_to_briev`).
+#[test]
+fn cstr_boundary_classifies_zero_copy_and_copy() {
+    let plan = assert_parity(
+        r#"type CStr: String<C_String> { };
+frgn to_c(s: CStr) -> CStr from "libc";"#,
+    );
+    let boundary = plan
+        .boundaries
+        .values()
+        .find(|b| b.kind == BoundaryKind::ForeignCall)
+        .expect("foreign boundary");
+    let param = &boundary.values[0];
+    let result = &boundary.values[1];
+    assert_eq!(
+        param.conversion,
+        crate::analysis::destination_model::BoundaryConversion::CopyAtBoundary,
+        "CStr param must classify CopyAtBoundary"
+    );
+    assert_eq!(
+        result.conversion,
+        crate::analysis::destination_model::BoundaryConversion::ZeroCopyWithLifetimeProof,
+        "CStr result must classify ZeroCopyWithLifetimeProof"
     );
 }
 
@@ -760,9 +821,10 @@ defn other(x: Int) -> R { term B(x); };
     let hir_legacy = crate::hir::destination_ownership::analyze(&program);
     let hir_generalized = hir_build(&program, &hir_legacy);
     let representation = crate::hir::enum_repr::build_enum_representation_plan(&program);
-    let expected: BTreeSet<String> = crate::hir::enum_repr::sret_safe_defns(&program, &representation)
-        .into_iter()
-        .collect();
+    let expected: BTreeSet<String> =
+        crate::hir::enum_repr::sret_safe_defns(&program, &representation)
+            .into_iter()
+            .collect();
     assert_eq!(hir_generalized.enum_hidden_result_callables(), expected);
     // The HIR-derived set must also equal the AST oracle's set.
     let ast_representation = crate::analysis::enum_repr::build_enum_representation_plan(&items);
@@ -770,7 +832,10 @@ defn other(x: Int) -> R { term B(x); };
         crate::analysis::enum_repr::sret_safe_defns(&items, &ast_representation)
             .into_iter()
             .collect();
-    assert_eq!(ast_plan.generalized.enum_hidden_result_callables(), ast_expected);
+    assert_eq!(
+        ast_plan.generalized.enum_hidden_result_callables(),
+        ast_expected
+    );
     assert_eq!(hir_generalized.enum_hidden_result_callables(), ast_expected);
 }
 
@@ -857,10 +922,12 @@ defn make(x: Int) -> (P, Int) {
         .expect("tuple child object");
     assert!(child.requires_materialization);
     assert!(child.escapes.contains(&EscapeKind::TupleLifetime));
-    assert!(!plan
-        .stack_object_types_by_owner()
-        .get("defn:make")
-        .is_some_and(|types| types.contains("P")));
+    assert!(
+        !plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("P"))
+    );
 }
 
 #[test]
@@ -880,10 +947,12 @@ defn make(x: Int) -> List<P> {
         .expect("collection child object");
     assert!(child.requires_materialization);
     assert!(child.escapes.contains(&EscapeKind::CollectionLifetime));
-    assert!(!plan
-        .stack_object_types_by_owner()
-        .get("defn:make")
-        .is_some_and(|types| types.contains("P")));
+    assert!(
+        !plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("P"))
+    );
 }
 
 #[test]
@@ -901,15 +970,15 @@ defn address(x: Int) -> Int {
     let escaped = plan
         .object_values
         .values()
-        .find(|value| {
-            value.object == "P" && value.escapes.contains(&EscapeKind::AddressLifetime)
-        })
+        .find(|value| value.object == "P" && value.escapes.contains(&EscapeKind::AddressLifetime))
         .expect("addressed object");
     assert!(escaped.requires_materialization);
-    assert!(!plan
-        .stack_object_types_by_owner()
-        .get("defn:address")
-        .is_some_and(|types| types.contains("P")));
+    assert!(
+        !plan
+            .stack_object_types_by_owner()
+            .get("defn:address")
+            .is_some_and(|types| types.contains("P"))
+    );
 }
 
 #[test]
@@ -935,10 +1004,12 @@ defn make(n: Int) -> Parent {
         })
         .expect("loop-assigned field child");
     assert!(child.requires_materialization);
-    assert!(!plan
-        .stack_object_types_by_owner()
-        .get("defn:make")
-        .is_some_and(|types| types.contains("Child")));
+    assert!(
+        !plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("Child"))
+    );
 }
 
 #[test]
@@ -959,10 +1030,12 @@ defn make(x: Int) -> Parent {
         .expect("child object");
     assert!(child.requires_materialization);
     assert!(child.escapes.contains(&EscapeKind::ObjectLifetime));
-    assert!(!plan
-        .stack_object_types_by_owner()
-        .get("defn:make")
-        .is_some_and(|types| types.contains("Child")));
+    assert!(
+        !plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("Child"))
+    );
 }
 
 #[test]
@@ -990,10 +1063,12 @@ defn assign(w: Wrap) -> Void {
         "a nested field store must own the constructed object"
     );
     assert!(inner.escapes.contains(&EscapeKind::ObjectLifetime));
-    assert!(!plan
-        .stack_object_types_by_owner()
-        .get("defn:assign")
-        .is_some_and(|types| types.contains("Inner")));
+    assert!(
+        !plan
+            .stack_object_types_by_owner()
+            .get("defn:assign")
+            .is_some_and(|types| types.contains("Inner"))
+    );
 }
 
 #[test]
@@ -1007,10 +1082,12 @@ defn read(x: Int) -> Int {
 };
 "#,
     );
-    assert!(local
-        .stack_object_types_by_owner()
-        .get("defn:read")
-        .is_some_and(|types| types.contains("P")));
+    assert!(
+        local
+            .stack_object_types_by_owner()
+            .get("defn:read")
+            .is_some_and(|types| types.contains("P"))
+    );
 
     let escaping = assert_parity(
         r#"
@@ -1022,10 +1099,12 @@ defn caller(x: Int) -> Int {
 };
 "#,
     );
-    assert!(!escaping
-        .stack_object_types_by_owner()
-        .get("defn:caller")
-        .is_some_and(|types| types.contains("P")));
+    assert!(
+        !escaping
+            .stack_object_types_by_owner()
+            .get("defn:caller")
+            .is_some_and(|types| types.contains("P"))
+    );
 }
 
 #[test]
@@ -1043,18 +1122,21 @@ defn run(v: Int) -> Int {
 };
 "#,
     );
-    assert!(plan
-        .sinks
-        .values()
-        .any(|sink| sink.kind == DestinationSinkKind::State && sink.requires_copy));
-    assert!(plan
-        .sinks
-        .values()
-        .any(|sink| sink.kind == DestinationSinkKind::ObjectField));
-    assert!(plan
-        .sinks
-        .values()
-        .any(|sink| sink.kind == DestinationSinkKind::Collection));
+    assert!(
+        plan.sinks
+            .values()
+            .any(|sink| sink.kind == DestinationSinkKind::State && sink.requires_copy)
+    );
+    assert!(
+        plan.sinks
+            .values()
+            .any(|sink| sink.kind == DestinationSinkKind::ObjectField)
+    );
+    assert!(
+        plan.sinks
+            .values()
+            .any(|sink| sink.kind == DestinationSinkKind::Collection)
+    );
     let tuple = plan.tuples.values().next().expect("tuple construction");
     assert_eq!(tuple.element_count, 2);
     assert_eq!(tuple.class, GeneralDestinationClass::PackedMemory);
@@ -1076,14 +1158,17 @@ defn run(n: Int) -> Int {
 };
 "#,
     );
-    assert!(!plan
-        .stack_object_types_by_owner()
-        .get("defn:run")
-        .is_some_and(|types| types.contains("P")));
-    assert!(plan
-        .object_values
-        .values()
-        .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime)));
+    assert!(
+        !plan
+            .stack_object_types_by_owner()
+            .get("defn:run")
+            .is_some_and(|types| types.contains("P"))
+    );
+    assert!(
+        plan.object_values
+            .values()
+            .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime))
+    );
 }
 
 #[test]
@@ -1170,10 +1255,15 @@ defn caller(v: Int) -> Int { term helper(v); };
     let ast_second = ast_analyze(&parse(src)).generalized;
     assert_eq!(ast_first, ast_second);
     let program = crate::hir::lower_program(&items);
-    let hir_first = hir_build(&program, &crate::hir::destination_ownership::analyze(&program));
+    let hir_first = hir_build(
+        &program,
+        &crate::hir::destination_ownership::analyze(&program),
+    );
     let program2 = crate::hir::lower_program(&parse(src));
-    let hir_second =
-        hir_build(&program2, &crate::hir::destination_ownership::analyze(&program2));
+    let hir_second = hir_build(
+        &program2,
+        &crate::hir::destination_ownership::analyze(&program2),
+    );
     assert_eq!(hir_first, hir_second);
     assert_eq!(hir_first, ast_first);
 }

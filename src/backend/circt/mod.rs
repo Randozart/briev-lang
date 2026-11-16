@@ -5,7 +5,9 @@ pub mod mem_policy;
 pub mod normalizer;
 
 use crate::analysis::dependency_graph::DependencyGraph;
-use crate::ast::{BinaryOpKind, Contract, Expr, OutputType, Statement, TopLevel, Type, UnaryOpKind};
+use crate::ast::{
+    BinaryOpKind, Contract, Expr, OutputType, Statement, TopLevel, Type, UnaryOpKind,
+};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -74,7 +76,7 @@ pub struct MemPlan {
     pub wire: String,
     /// Macro module name (companion file stem): <var>_<D>x<W>.
     pub macro_name: String,
- }
+}
 
 /// Per-generation counters for unique MLIR value names.
 #[derive(Debug, Default)]
@@ -102,15 +104,15 @@ impl NameGen {
     }
 }
 
-    /// 2026-08-25 (§3.4): per-module obligation wires — refusals feed
-    /// `halt`, post-guard verdicts feed `check`.
-    #[derive(Default)]
-    struct Obligations {
-        pre_fails: Vec<String>,
-        post_oks: Vec<String>,
-    }
+/// 2026-08-25 (§3.4): per-module obligation wires — refusals feed
+/// `halt`, post-guard verdicts feed `check`.
+#[derive(Default)]
+struct Obligations {
+    pre_fails: Vec<String>,
+    post_oks: Vec<String>,
+}
 
-    /// 2026-08-25 (§3.4 extension): a liveness-watchdog monitor plan — the
+/// 2026-08-25 (§3.4 extension): a liveness-watchdog monitor plan — the
 /// countdown register + timeout port derived from `?[cond]/![cond]
 /// within N cyc` on a transaction contract.
 struct WdMonitor {
@@ -121,24 +123,24 @@ struct WdMonitor {
 }
 
 /// 2026-08-25: the mutable wire maps one transaction emits against,
-    /// bundled so emitters stay under the parameter budget (Praetor rule).
-    /// `name` is the txn's own name (wire prefixes); `contract` its pair.
-    struct TxnMaps<'a> {
-        name: String,
-        contract: &'a Contract,
-        reg_names: &'a mut HashMap<String, String>,
-        pending: &'a mut HashMap<String, String>,
-        ob: &'a mut Obligations,
-        /// This txn's pre-guard wire (§3.4 commit gate) — memory-macro
-        /// write ports fold it into their ENABLE. None = trivially true.
-        gate: Option<String>,
-        /// Active `when` conditions (stack — nested guards AND). Every
-        /// state write underneath must respect them; empty = unconditional.
-        /// 2026-08-26: previously ONLY scalar assigns saw the innermost
-        /// condition — element writes were SILENTLY DROPPED and deeper
-        /// statements ran ungated.
-        gates: Vec<String>,
-    }
+/// bundled so emitters stay under the parameter budget (Praetor rule).
+/// `name` is the txn's own name (wire prefixes); `contract` its pair.
+struct TxnMaps<'a> {
+    name: String,
+    contract: &'a Contract,
+    reg_names: &'a mut HashMap<String, String>,
+    pending: &'a mut HashMap<String, String>,
+    ob: &'a mut Obligations,
+    /// This txn's pre-guard wire (§3.4 commit gate) — memory-macro
+    /// write ports fold it into their ENABLE. None = trivially true.
+    gate: Option<String>,
+    /// Active `when` conditions (stack — nested guards AND). Every
+    /// state write underneath must respect them; empty = unconditional.
+    /// 2026-08-26: previously ONLY scalar assigns saw the innermost
+    /// condition — element writes were SILENTLY DROPPED and deeper
+    /// statements ran ungated.
+    gates: Vec<String>,
+}
 
 impl CirctBackend {
     /// 2026-08-23 (Plan 0.2): CIRCT's declared surface — synthesizable
@@ -223,15 +225,14 @@ impl CirctBackend {
         // self-compute the dependency graph exactly as the pipeline's
         // analyze_program does — identical build call + identical empty
         // fallback — so both paths agree.
-        let dep_graph = DependencyGraph::build(items)
-            .unwrap_or_else(|_| DependencyGraph {
-                topo_order: Vec::new(),
-                bit_index: HashMap::new(),
-                dependencies: HashMap::new(),
-                dependents: HashMap::new(),
-                is_trg: std::collections::HashSet::new(),
-                all_vars: std::collections::HashSet::new(),
-            });
+        let dep_graph = DependencyGraph::build(items).unwrap_or_else(|_| DependencyGraph {
+            topo_order: Vec::new(),
+            bit_index: HashMap::new(),
+            dependencies: HashMap::new(),
+            dependents: HashMap::new(),
+            is_trg: std::collections::HashSet::new(),
+            all_vars: std::collections::HashSet::new(),
+        });
         self.generate_with_dep_graph(items, &dep_graph)
     }
 
@@ -244,7 +245,11 @@ impl CirctBackend {
         items: &[TopLevel],
         dep_graph: &DependencyGraph,
     ) -> String {
-        self.generate_with_dep_graph_universe(items, dep_graph, &crate::type_universe::TypeUniverse::new())
+        self.generate_with_dep_graph_universe(
+            items,
+            dep_graph,
+            &crate::type_universe::TypeUniverse::new(),
+        )
     }
 
     /// Pipeline entry — consumes the shared dependency graph AND the
@@ -311,7 +316,13 @@ impl CirctBackend {
                 // never reached var_types — counters emitted as i64 defaults
                 // or vanished from outputs entirely.
                 TopLevel::Statement(stmt) => {
-                    if let Statement::Let { name, ty: Some(ty), expr, .. } = &**stmt {
+                    if let Statement::Let {
+                        name,
+                        ty: Some(ty),
+                        expr,
+                        ..
+                    } = &**stmt
+                    {
                         self.var_types.insert(name.clone(), ty.clone());
                         self.var_exprs.insert(name.clone(), expr.clone());
                     }
@@ -338,11 +349,16 @@ impl CirctBackend {
                     self.cell_defs.insert(cell.name.clone(), cell.clone());
                     if !is_extern {
                         for (field_name, field_ty) in &cell.fields {
-                            self.var_types.insert(format!("{}${}", cell.name, field_name), field_ty.clone());
-                            self.var_exprs.insert(format!("{}${}", cell.name, field_name), Some(Expr::Decimal(0)));
+                            self.var_types
+                                .insert(format!("{}${}", cell.name, field_name), field_ty.clone());
+                            self.var_exprs.insert(
+                                format!("{}${}", cell.name, field_name),
+                                Some(Expr::Decimal(0)),
+                            );
                         }
                         for (param_name, param_ty) in &cell.parameters {
-                            self.var_types.insert(format!("{}${}", cell.name, param_name), param_ty.clone());
+                            self.var_types
+                                .insert(format!("{}${}", cell.name, param_name), param_ty.clone());
                         }
                     }
                 }
@@ -372,7 +388,11 @@ impl CirctBackend {
 
     fn emit_header(&self, out: &mut String) {
         writeln!(out, "// Generated by briev-compiler CIRCT backend").ok();
-        writeln!(out, "// Run: circt-opt program.mlir | circt-translate --export-verilog").ok();
+        writeln!(
+            out,
+            "// Run: circt-opt program.mlir | circt-translate --export-verilog"
+        )
+        .ok();
         writeln!(out).ok();
     }
 
@@ -426,8 +446,7 @@ impl CirctBackend {
 
     /// Time-unit watchdog bound → cycles: ceil(hz * ns / 1e9), u128-safe.
     fn ns_to_cycles(hz: u64, ns: u64) -> u64 {
-        ((hz as u128 * ns as u128 + 999_999_999) / 1_000_000_000)
-            .min(u64::MAX as u128) as u64
+        ((hz as u128 * ns as u128 + 999_999_999) / 1_000_000_000).min(u64::MAX as u128) as u64
     }
 
     /// Address width for a depth-D macro: ceil(log2(D)), minimum 1 — the
@@ -539,8 +558,12 @@ impl CirctBackend {
         // handlers are capability errors, never silent drops.
         let mut wd_monitors: Vec<WdMonitor> = Vec::new();
         for item in items {
-            let TopLevel::Transaction(txn) = item else { continue };
-            let Some(wd) = &txn.contract.watchdog else { continue };
+            let TopLevel::Transaction(txn) = item else {
+                continue;
+            };
+            let Some(wd) = &txn.contract.watchdog else {
+                continue;
+            };
             if let Expr::Identifier(id) = &wd.condition {
                 if self.trg_ports.iter().any(|t| &t.trg_name == id) {
                     self.record_unsupported(&format!(
@@ -607,7 +630,8 @@ impl CirctBackend {
         }
         ordered.sort();
         let ordered: &[String] = &ordered;
-        let trg_names: std::collections::HashSet<String> = self.trg_ports.iter().map(|t| t.trg_name.clone()).collect();
+        let trg_names: std::collections::HashSet<String> =
+            self.trg_ports.iter().map(|t| t.trg_name.clone()).collect();
         // 2026-08-25 (seq-firmem plan): bounded state arrays lower to
         // REGISTER FILES (per-lane firregs + mux/decode trees) or — past
         // the policy threshold, unpinned and semantics-compatible — the
@@ -626,7 +650,9 @@ impl CirctBackend {
             if trg_names.contains(var_name) {
                 continue;
             }
-            let Some(ty) = self.var_types.get(var_name) else { continue };
+            let Some(ty) = self.var_types.get(var_name) else {
+                continue;
+            };
             if let Type::Vector(elem, dims) = ty {
                 let elem_ty = self.mlir_type(elem);
                 match Self::concrete_dim(dims.first()) {
@@ -649,10 +675,7 @@ impl CirctBackend {
                         ) {
                             Ok(d) => d,
                             Err(e) => {
-                                self.record_unsupported(&format!(
-                                    "array '{}': {}",
-                                    var_name, e
-                                ));
+                                self.record_unsupported(&format!("array '{}': {}", var_name, e));
                                 continue;
                             }
                         };
@@ -666,16 +689,12 @@ impl CirctBackend {
                                     .trim_start_matches('i')
                                     .parse::<usize>()
                                     .unwrap_or(64);
-                                let wire =
-                                    ng.fresh_wire(&format!("{}_mem", var_name));
+                                let wire = ng.fresh_wire(&format!("{}_mem", var_name));
                                 // SeqToSV derives the generated-module name
                                 // from the firmem SSA NAME: <name>_<D>x<W>.
                                 // The companion must match it exactly.
-                                let macro_name = format!(
-                                    "{}_{}x{}",
-                                    wire.trim_start_matches('%'),
-                                    n, width
-                                );
+                                let macro_name =
+                                    format!("{}_{}x{}", wire.trim_start_matches('%'), n, width);
                                 self.array_mems.insert(
                                     var_name.clone(),
                                     MemPlan {
@@ -685,8 +704,7 @@ impl CirctBackend {
                                         wire,
                                     },
                                 );
-                                self.array_elem_ty
-                                    .insert(var_name.clone(), elem_ty.clone());
+                                self.array_elem_ty.insert(var_name.clone(), elem_ty.clone());
                                 if let Some(why) = decision.why {
                                     self.notices.borrow_mut().push(format!(
                                         "  {} ({} x {}) -> seq.firmem macro   [why: {}]",
@@ -695,8 +713,7 @@ impl CirctBackend {
                                 }
                             }
                             mem_policy::ArrayLowering::RegFile => {
-                                let init_list =
-                                    self.var_exprs.get(var_name).cloned().flatten();
+                                let init_list = self.var_exprs.get(var_name).cloned().flatten();
                                 let mut lanes: Vec<String> = Vec::new();
                                 for j in 0..n {
                                     let lane = format!("{}_{}", var_name, j);
@@ -712,10 +729,8 @@ impl CirctBackend {
                                     lanes.push(lane.clone());
                                     output_ports.push((lane.clone(), elem_ty.clone()));
                                 }
-                                self.array_groups
-                                    .insert(var_name.clone(), lanes);
-                                self.array_elem_ty
-                                    .insert(var_name.clone(), elem_ty.clone());
+                                self.array_groups.insert(var_name.clone(), lanes);
+                                self.array_elem_ty.insert(var_name.clone(), elem_ty.clone());
                                 if let Some(why) = decision.why {
                                     self.notices.borrow_mut().push(format!(
                                         "  {} ({} x {}) -> register file      [why: {}]",
@@ -726,10 +741,7 @@ impl CirctBackend {
                         }
                     }
                     Some(_) => {
-                        self.record_unsupported(&format!(
-                            "zero-length array '{}'",
-                            var_name
-                        ));
+                        self.record_unsupported(&format!("zero-length array '{}'", var_name));
                     }
                     None => {
                         self.record_unsupported(&format!(
@@ -755,7 +767,9 @@ impl CirctBackend {
             ports.push(format!("out {}: {}", name, mlir_ty));
         }
         for (i, port) in ports.iter().enumerate() {
-            if i > 0 { write!(out, ", ").ok(); }
+            if i > 0 {
+                write!(out, ", ").ok();
+            }
             write!(out, "{}", port).ok();
         }
         writeln!(out, ") {{").ok();
@@ -848,10 +862,7 @@ impl CirctBackend {
         // Phase C: define the forward-referenced next wires. Reset forces
         // the init value; an unwritten var holds its register output.
         for (var_name, mlir_ty) in &output_ports {
-            if var_name == "halt"
-                || var_name == "check"
-                || var_name.starts_with("wd_")
-            {
+            if var_name == "halt" || var_name == "check" || var_name.starts_with("wd_") {
                 continue; // obligation/watchdog outputs driven below
             }
             let next_w = next_names.get(var_name).cloned().unwrap_or_default();
@@ -900,7 +911,12 @@ impl CirctBackend {
             let is_zero = ng.fresh_wire(&format!("{}_isz", wd.port));
             writeln!(out, "  {} = comb.icmp eq {}, {} : i64", is_zero, cnt, zero).ok();
             let sat = ng.fresh_wire(&format!("{}_sat", wd.port));
-            writeln!(out, "  {} = comb.mux {}, {}, {} : i64", sat, is_zero, zero, sub).ok();
+            writeln!(
+                out,
+                "  {} = comb.mux {}, {}, {} : i64",
+                sat, is_zero, zero, sub
+            )
+            .ok();
             writeln!(
                 out,
                 "  {} = comb.mux {}, {}, {} : i64",
@@ -908,7 +924,12 @@ impl CirctBackend {
             )
             .ok();
             let tmo_raw = ng.fresh_wire(&format!("{}_raw", wd.port));
-            writeln!(out, "  {} = comb.and {}, {} : i1", tmo_raw, not_cond, is_zero).ok();
+            writeln!(
+                out,
+                "  {} = comb.and {}, {} : i1",
+                tmo_raw, not_cond, is_zero
+            )
+            .ok();
             if wd.required {
                 ob.pre_fails.push(tmo_raw.clone());
             }
@@ -934,20 +955,8 @@ impl CirctBackend {
         // cycle (state held); check = AND of post-guard verdicts on the
         // committed next values. No txns with obligations ⇒ halt stays low,
         // check stays high. Registered like every output; reset clears.
-        let halt_src = Self::reduce_tree(
-            &mut ng,
-            out,
-            "comb.or",
-            &ob.pre_fails,
-            "%false",
-        );
-        let check_src = Self::reduce_tree(
-            &mut ng,
-            out,
-            "comb.and",
-            &ob.post_oks,
-            "%true",
-        );
+        let halt_src = Self::reduce_tree(&mut ng, out, "comb.or", &ob.pre_fails, "%false");
+        let check_src = Self::reduce_tree(&mut ng, out, "comb.and", &ob.post_oks, "%true");
         for (ob_name, src) in [("halt", halt_src), ("check", check_src)] {
             let next_w = next_names.get(ob_name).cloned().unwrap_or_default();
             let init_wire = init_wires.get(ob_name).cloned().unwrap_or_default();
@@ -975,8 +984,13 @@ impl CirctBackend {
             }
         }
         if !out_vals.is_empty() {
-            writeln!(out, "  hw.output {} : {}", out_vals.join(", "), out_tys.join(", "))
-                .ok();
+            writeln!(
+                out,
+                "  hw.output {} : {}",
+                out_vals.join(", "),
+                out_tys.join(", ")
+            )
+            .ok();
         }
         // Close the hw.module region.
         writeln!(out, "}}").ok();
@@ -995,7 +1009,13 @@ impl CirctBackend {
     fn format_init_expr(expr: &Expr) -> String {
         match expr {
             Expr::Decimal(n) => format!("{}", n),
-            Expr::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+            Expr::Bool(b) => {
+                if *b {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                }
+            }
             Expr::Float(f) => format!("{}", f),
             _ => "0".to_string(),
         }
@@ -1010,7 +1030,14 @@ impl CirctBackend {
         }
     }
 
-    fn emit_expr(&self, ng: &mut NameGen, out: &mut String, expr: &Expr, reg_names: &HashMap<String, String>, result_ty: &str) -> Option<String> {
+    fn emit_expr(
+        &self,
+        ng: &mut NameGen,
+        out: &mut String,
+        expr: &Expr,
+        reg_names: &HashMap<String, String>,
+        result_ty: &str,
+    ) -> Option<String> {
         match expr {
             Expr::Decimal(n) => {
                 let c = ng.fresh_const("int");
@@ -1031,7 +1058,11 @@ impl CirctBackend {
             Expr::Identifier(name) => {
                 if let Some(reg) = reg_names.get(name) {
                     Some(reg.clone())
-                } else if self.trg_ports.iter().any(|t| t.trg_name == *name || t.port_name == *name) {
+                } else if self
+                    .trg_ports
+                    .iter()
+                    .any(|t| t.trg_name == *name || t.port_name == *name)
+                {
                     Some(format!("%{}", name))
                 } else {
                     None
@@ -1039,11 +1070,21 @@ impl CirctBackend {
             }
             Expr::BinaryOp(kind, l, r) => {
                 match kind {
-                    BinaryOpKind::Add => self.emit_binary_comb(ng, out, "comb.add", l, r, reg_names, result_ty),
-                    BinaryOpKind::Sub => self.emit_binary_comb(ng, out, "comb.sub", l, r, reg_names, result_ty),
-                    BinaryOpKind::Mul => self.emit_binary_comb(ng, out, "comb.mul", l, r, reg_names, result_ty),
-                    BinaryOpKind::Div => self.emit_binary_comb(ng, out, "comb.divu", l, r, reg_names, result_ty),
-                    BinaryOpKind::Mod => self.emit_binary_comb(ng, out, "comb.mod", l, r, reg_names, result_ty),
+                    BinaryOpKind::Add => {
+                        self.emit_binary_comb(ng, out, "comb.add", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::Sub => {
+                        self.emit_binary_comb(ng, out, "comb.sub", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::Mul => {
+                        self.emit_binary_comb(ng, out, "comb.mul", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::Div => {
+                        self.emit_binary_comb(ng, out, "comb.divu", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::Mod => {
+                        self.emit_binary_comb(ng, out, "comb.mod", l, r, reg_names, result_ty)
+                    }
                     // 2026-08-25: comparisons emit OPERANDS at the operand
                     // register width (result is implicitly i1). The old
                     // hardcoded "i1" compared i64 registers as 1-bit — latent
@@ -1072,23 +1113,43 @@ impl CirctBackend {
                         let w = self.compare_width(l, r);
                         self.emit_binary_comb(ng, out, "comb.icmp uge", l, r, reg_names, &w)
                     }
-                    BinaryOpKind::And => self.emit_binary_comb(ng, out, "comb.and", l, r, reg_names, "i1"),
-                    BinaryOpKind::Or => self.emit_binary_comb(ng, out, "comb.or", l, r, reg_names, "i1"),
-                    BinaryOpKind::BitAnd => self.emit_binary_comb(ng, out, "comb.and", l, r, reg_names, result_ty),
-                    BinaryOpKind::BitOr => self.emit_binary_comb(ng, out, "comb.or", l, r, reg_names, result_ty),
-                    BinaryOpKind::BitXor => self.emit_binary_comb(ng, out, "comb.xor", l, r, reg_names, result_ty),
-                    BinaryOpKind::Shl => self.emit_binary_comb(ng, out, "comb.shl", l, r, reg_names, result_ty),
-                    BinaryOpKind::Shr => self.emit_binary_comb(ng, out, "comb.shr", l, r, reg_names, result_ty),
-                    BinaryOpKind::Concat => self.emit_binary_comb(ng, out, "comb.concat", l, r, reg_names, result_ty),
+                    BinaryOpKind::And => {
+                        self.emit_binary_comb(ng, out, "comb.and", l, r, reg_names, "i1")
+                    }
+                    BinaryOpKind::Or => {
+                        self.emit_binary_comb(ng, out, "comb.or", l, r, reg_names, "i1")
+                    }
+                    BinaryOpKind::BitAnd => {
+                        self.emit_binary_comb(ng, out, "comb.and", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::BitOr => {
+                        self.emit_binary_comb(ng, out, "comb.or", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::BitXor => {
+                        self.emit_binary_comb(ng, out, "comb.xor", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::Shl => {
+                        self.emit_binary_comb(ng, out, "comb.shl", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::Shr => {
+                        self.emit_binary_comb(ng, out, "comb.shr", l, r, reg_names, result_ty)
+                    }
+                    BinaryOpKind::Concat => {
+                        self.emit_binary_comb(ng, out, "comb.concat", l, r, reg_names, result_ty)
+                    }
                 }
             }
-            Expr::UnaryOp(kind, inner) => {
-                match kind {
-                    UnaryOpKind::Neg => self.emit_unary_comb(ng, out, "comb.neg", inner, reg_names, result_ty),
-                    UnaryOpKind::Not => self.emit_unary_comb(ng, out, "comb.xor", inner, reg_names, "i1"),
-                    UnaryOpKind::BitNot => self.emit_unary_comb(ng, out, "comb.xor", inner, reg_names, result_ty),
+            Expr::UnaryOp(kind, inner) => match kind {
+                UnaryOpKind::Neg => {
+                    self.emit_unary_comb(ng, out, "comb.neg", inner, reg_names, result_ty)
                 }
-            }
+                UnaryOpKind::Not => {
+                    self.emit_unary_comb(ng, out, "comb.xor", inner, reg_names, "i1")
+                }
+                UnaryOpKind::BitNot => {
+                    self.emit_unary_comb(ng, out, "comb.xor", inner, reg_names, result_ty)
+                }
+            },
             Expr::Cast(inner, target_ty) => {
                 let inner_mlir_ty = self.mlir_type(&crate::ast::Type::int());
                 let target_mlir_ty = self.mlir_type(target_ty);
@@ -1097,7 +1158,12 @@ impl CirctBackend {
                 if inner_mlir_ty == target_mlir_ty {
                     Some(val)
                 } else {
-                    writeln!(out, "  {} = comb.extract {} from 0 : ({}) -> {}", w, val, inner_mlir_ty, target_mlir_ty).ok();
+                    writeln!(
+                        out,
+                        "  {} = comb.extract {} from 0 : ({}) -> {}",
+                        w, val, inner_mlir_ty, target_mlir_ty
+                    )
+                    .ok();
                     Some(w)
                 }
             }
@@ -1110,26 +1176,43 @@ impl CirctBackend {
                 match name.as_str() {
                     "Abs#" => {
                         let mut arg = |i: usize| -> String {
-                            args.get(i).and_then(|a| {
-                                self.emit_expr(ng, out, a, reg_names, result_ty)
-                            }).unwrap_or_else(|| "%0".to_string())
+                            args.get(i)
+                                .and_then(|a| self.emit_expr(ng, out, a, reg_names, result_ty))
+                                .unwrap_or_else(|| "%0".to_string())
                         };
                         let x = arg(0);
                         let neg_x = ng.fresh_wire("neg");
                         let cmp = ng.fresh_wire("cmp_neg");
                         writeln!(out, "  {} = comb.neg {} : {}", neg_x, x, result_ty).ok();
-                        writeln!(out, "  {} = comb.icmp slt {}, %c0_0 : {}", cmp, x, result_ty).ok();
+                        writeln!(
+                            out,
+                            "  {} = comb.icmp slt {}, %c0_0 : {}",
+                            cmp, x, result_ty
+                        )
+                        .ok();
                         let w = ng.fresh_wire("abs");
-                        writeln!(out, "  {} = comb.mux {}, {}, {} : {}", w, cmp, neg_x, x, result_ty).ok();
+                        writeln!(
+                            out,
+                            "  {} = comb.mux {}, {}, {} : {}",
+                            w, cmp, neg_x, x, result_ty
+                        )
+                        .ok();
                         Some(w)
                     }
                     "AddressOf#" => {
                         // 2026-07-15: CIRCT (hardware) backend — AddressOf# resolves to a
                         // physical address, emit as a constant integer. In HW synthesis this
                         // becomes a constant wire driving the address bus.
-                        let id_str = args.first().and_then(|a| {
-                            if let Expr::Quoted(b) = a { Some(String::from_utf8_lossy(b).to_string()) } else { None }
-                        }).unwrap_or_else(|| "unknown".to_string());
+                        let id_str = args
+                            .first()
+                            .and_then(|a| {
+                                if let Expr::Quoted(b) = a {
+                                    Some(String::from_utf8_lossy(b).to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "unknown".to_string());
                         let addr = crate::address_resolver::resolve_address(&id_str);
                         let c = ng.fresh_const("addr");
                         writeln!(out, "  {} = hw.constant {} : {}", c, addr, result_ty).ok();
@@ -1184,22 +1267,37 @@ impl CirctBackend {
                             });
                         let mut arg_parts = Vec::new();
                         for (i, arg) in args.iter().enumerate() {
-                            let port = param_names.get(i).cloned().unwrap_or_else(|| format!("in{}", i));
+                            let port = param_names
+                                .get(i)
+                                .cloned()
+                                .unwrap_or_else(|| format!("in{}", i));
                             let arg_mlir_ty = if i == 0 { "i64" } else { result_ty };
-                            if let Some(arg_val) = self.emit_expr(ng, out, arg, reg_names, arg_mlir_ty) {
+                            if let Some(arg_val) =
+                                self.emit_expr(ng, out, arg, reg_names, arg_mlir_ty)
+                            {
                                 arg_parts.push(format!("{}: {}: {}", port, arg_val, arg_mlir_ty));
                             }
                         }
                         let out_port = self
                             .cell_defs
                             .get(&inst_name)
-                            .and_then(|c| Self::extract_output_names_llvm(&c.output_type).into_iter().next())
+                            .and_then(|c| {
+                                Self::extract_output_names_llvm(&c.output_type)
+                                    .into_iter()
+                                    .next()
+                            })
                             .unwrap_or_else(|| "out".to_string());
-                        writeln!(out, "  {} = hw.instance \"{}\" @{} ({}) -> ({}: {})",
-                            result_wire, inst_name, inst_name,
+                        writeln!(
+                            out,
+                            "  {} = hw.instance \"{}\" @{} ({}) -> ({}: {})",
+                            result_wire,
+                            inst_name,
+                            inst_name,
                             arg_parts.join(", "),
-                            out_port, result_ty,
-                        ).ok();
+                            out_port,
+                            result_ty,
+                        )
+                        .ok();
                         Some(result_wire)
                     }
                 }
@@ -1252,8 +1350,7 @@ impl CirctBackend {
                             let cj = ng.fresh_const("aidx");
                             writeln!(out, "  {} = hw.constant {} : i64", cj, j).ok();
                             let eq = ng.fresh_wire("aeq");
-                            writeln!(out, "  {} = comb.icmp eq {}, {} : i64", eq, idx_val, cj)
-                                .ok();
+                            writeln!(out, "  {} = comb.icmp eq {}, {} : i64", eq, idx_val, cj).ok();
                             let lane_val = reg_names.get(lane).cloned().unwrap_or_default();
                             let m = ng.fresh_wire("amux");
                             writeln!(
@@ -1286,7 +1383,16 @@ impl CirctBackend {
         }
     }
 
-    fn emit_binary_comb(&self, ng: &mut NameGen, out: &mut String, op: &str, l: &Expr, r: &Expr, reg_names: &HashMap<String, String>, result_ty: &str) -> Option<String> {
+    fn emit_binary_comb(
+        &self,
+        ng: &mut NameGen,
+        out: &mut String,
+        op: &str,
+        l: &Expr,
+        r: &Expr,
+        reg_names: &HashMap<String, String>,
+        result_ty: &str,
+    ) -> Option<String> {
         let left = self.emit_expr(ng, out, l, reg_names, result_ty)?;
         let right = self.emit_expr(ng, out, r, reg_names, result_ty)?;
         let w = ng.fresh_wire("bin");
@@ -1294,7 +1400,15 @@ impl CirctBackend {
         Some(w)
     }
 
-    fn emit_unary_comb(&self, ng: &mut NameGen, out: &mut String, op: &str, inner: &Expr, reg_names: &HashMap<String, String>, result_ty: &str) -> Option<String> {
+    fn emit_unary_comb(
+        &self,
+        ng: &mut NameGen,
+        out: &mut String,
+        op: &str,
+        inner: &Expr,
+        reg_names: &HashMap<String, String>,
+        result_ty: &str,
+    ) -> Option<String> {
         let val = self.emit_expr(ng, out, inner, reg_names, result_ty)?;
         let w = ng.fresh_wire("un");
         if op == "comb.neg" || op == "comb.not" {
@@ -1321,7 +1435,11 @@ impl CirctBackend {
         let Some(first) = wires.first() else {
             return unit.to_string();
         };
-        let tag = if op.ends_with("or") { "or_red" } else { "and_red" };
+        let tag = if op.ends_with("or") {
+            "or_red"
+        } else {
+            "and_red"
+        };
         let mut acc = first.clone();
         for w in &wires[1..] {
             let x = ng.fresh_wire(tag);
@@ -1367,7 +1485,8 @@ impl CirctBackend {
         for stmt in body {
             self.emit_stmt_pending(ng, out, stmt, m);
         }
-        let mut written: Vec<String> = m.pending
+        let mut written: Vec<String> = m
+            .pending
             .keys()
             .filter(|k| !before.contains(*k))
             .cloned()
@@ -1453,13 +1572,11 @@ impl CirctBackend {
                                 .get(name)
                                 .cloned()
                                 .unwrap_or_else(|| "i64".to_string());
-                            let Some(data) =
-                                self.emit_expr(ng, out, expr, m.reg_names, &elem_ty)
+                            let Some(data) = self.emit_expr(ng, out, expr, m.reg_names, &elem_ty)
                             else {
                                 return;
                             };
-                            let Some(idx_val) =
-                                self.emit_expr(ng, out, idx, m.reg_names, "i64")
+                            let Some(idx_val) = self.emit_expr(ng, out, idx, m.reg_names, "i64")
                             else {
                                 return;
                             };
@@ -1485,8 +1602,7 @@ impl CirctBackend {
                                 0 => String::new(),
                                 1 => format!(" enable {}", ens[0]),
                                 _ => {
-                                    let a =
-                                        Self::reduce_tree(ng, out, "comb.and", &ens, "%true");
+                                    let a = Self::reduce_tree(ng, out, "comb.and", &ens, "%true");
                                     format!(" enable {}", a)
                                 }
                             };
@@ -1510,12 +1626,10 @@ impl CirctBackend {
                             .get(name)
                             .cloned()
                             .unwrap_or_else(|| "i64".to_string());
-                        let Some(val) = self.emit_expr(ng, out, expr, m.reg_names, &elem_ty)
-                        else {
+                        let Some(val) = self.emit_expr(ng, out, expr, m.reg_names, &elem_ty) else {
                             return;
                         };
-                        let Some(idx_val) = self.emit_expr(ng, out, idx, m.reg_names, "i64")
-                        else {
+                        let Some(idx_val) = self.emit_expr(ng, out, idx, m.reg_names, "i64") else {
                             return;
                         };
                         // Active `when` gates AND into every lane select.
@@ -1524,22 +1638,18 @@ impl CirctBackend {
                             let cj = ng.fresh_const("aidx");
                             writeln!(out, "  {} = hw.constant {} : i64", cj, j).ok();
                             let eq = ng.fresh_wire("aeq");
-                            writeln!(out, "  {} = comb.icmp eq {}, {} : i64", eq, idx_val, cj)
-                                .ok();
+                            writeln!(out, "  {} = comb.icmp eq {}, {} : i64", eq, idx_val, cj).ok();
                             let sel = match &wmask {
                                 Some(gmask) => {
                                     let gsel = ng.fresh_wire("asel");
-                                    writeln!(
-                                        out,
-                                        "  {} = comb.and {}, {} : i1",
-                                        gsel, eq, gmask
-                                    )
-                                    .ok();
+                                    writeln!(out, "  {} = comb.and {}, {} : i1", gsel, eq, gmask)
+                                        .ok();
                                     gsel
                                 }
                                 None => eq,
                             };
-                            let current = m.pending
+                            let current = m
+                                .pending
                                 .get(lane)
                                 .cloned()
                                 .or_else(|| m.reg_names.get(lane).cloned())
@@ -1560,7 +1670,8 @@ impl CirctBackend {
                     let mlir_ty =
                         self.mlir_type(self.var_types.get(var_name).unwrap_or(&Type::int()));
                     if let Some(val) = self.emit_expr(ng, out, expr, m.reg_names, &mlir_ty) {
-                        let current = m.pending
+                        let current = m
+                            .pending
                             .get(var_name)
                             .cloned()
                             .or_else(|| m.reg_names.get(var_name).cloned());
@@ -1571,12 +1682,8 @@ impl CirctBackend {
                                 // declare its init constant now.
                                 let init_val = self.initial_value(var_name);
                                 let c = ng.fresh_const(&format!("{}_init", var_name));
-                                writeln!(
-                                    out,
-                                    "  {} = hw.constant {} : {}",
-                                    c, init_val, mlir_ty
-                                )
-                                .ok();
+                                writeln!(out, "  {} = hw.constant {} : {}", c, init_val, mlir_ty)
+                                    .ok();
                                 m.reg_names.insert(var_name.to_string(), c.clone());
                                 c
                             }
@@ -1643,7 +1750,12 @@ impl CirctBackend {
         }
     }
 
-    fn emit_cell_module(&mut self, out: &mut String, dep_graph: &DependencyGraph, cell: &crate::ast::CellDef) {
+    fn emit_cell_module(
+        &mut self,
+        out: &mut String,
+        dep_graph: &DependencyGraph,
+        cell: &crate::ast::CellDef,
+    ) {
         let cell_name = &cell.name;
         let mut ng = NameGen::default();
 
@@ -1652,7 +1764,12 @@ impl CirctBackend {
             // blackbox with the SAME implicit clock/reset + declared ports
             // shape defined cells get, so hw.instance sites match
             // byte-for-byte against both kinds of modules.
-            writeln!(out, "// extern {} — definition lives in \"{}\"", cell_name, src_path).ok();
+            writeln!(
+                out,
+                "// extern {} — definition lives in \"{}\"",
+                cell_name, src_path
+            )
+            .ok();
             // Authoritative grammar (HWStructure.td / ModuleImplementation.cpp):
             // ONE paren list holds ALL ports; inputs print `%name`, outputs
             // print BARE names; there is no `-> (outputs)` wrapper on
@@ -1672,7 +1789,9 @@ impl CirctBackend {
                 out_names
             };
             for (i, out_name) in out_names.iter().enumerate() {
-                let out_ty = cell.ports_out.get(i)
+                let out_ty = cell
+                    .ports_out
+                    .get(i)
                     .map(|(_, t)| self.mlir_type(t))
                     .unwrap_or_else(|| "i64".to_string());
                 port_text.push(format!("out {}: {}", out_name, out_ty));
@@ -1690,7 +1809,9 @@ impl CirctBackend {
         }
         let output_names = Self::extract_output_names_llvm(&cell.output_type);
         if let Some(first_out) = output_names.first() {
-            let out_mlir_ty = cell.parameters.first()
+            let out_mlir_ty = cell
+                .parameters
+                .first()
                 .map(|(_, t)| self.mlir_type(t))
                 .unwrap_or_else(|| "i64".to_string());
             write!(out, ") -> ({}: {})", first_out, out_mlir_ty).ok();
@@ -1705,15 +1826,33 @@ impl CirctBackend {
             let mlir_ty = self.mlir_type(field_ty);
             let init_val = "0".to_string();
             let reg = ng.fresh_reg(cell_name);
-            writeln!(out, "  {} = seq.firreg initial_value {{ init_value = {} : {} }} : {}", reg, init_val, mlir_ty, mlir_ty).ok();
+            writeln!(
+                out,
+                "  {} = seq.firreg initial_value {{ init_value = {} : {} }} : {}",
+                reg, init_val, mlir_ty, mlir_ty
+            )
+            .ok();
             reg_names.insert(field_name.clone(), reg);
         }
 
         for txn in &cell.transactions {
             if !matches!(&txn.contract.pre_condition, Expr::Bool(true)) {
                 let pre_mlir_ty = "i1";
-                if let Some(pre_val) = self.emit_expr(&mut ng, out, &txn.contract.pre_condition, &reg_names, pre_mlir_ty) {
-                    writeln!(out, "  %when_{} = comb.icmp eq {} %true : {}", ng.fresh_wire("wc"), pre_val, pre_mlir_ty).ok();
+                if let Some(pre_val) = self.emit_expr(
+                    &mut ng,
+                    out,
+                    &txn.contract.pre_condition,
+                    &reg_names,
+                    pre_mlir_ty,
+                ) {
+                    writeln!(
+                        out,
+                        "  %when_{} = comb.icmp eq {} %true : {}",
+                        ng.fresh_wire("wc"),
+                        pre_val,
+                        pre_mlir_ty
+                    )
+                    .ok();
                 }
             }
             for stmt in &txn.body {
@@ -1748,14 +1887,21 @@ impl CirctBackend {
         }
     }
 
-    fn emit_stmt_body(&self, ng: &mut NameGen, out: &mut String, stmt: &Statement, reg_names: &HashMap<String, String>) {
+    fn emit_stmt_body(
+        &self,
+        ng: &mut NameGen,
+        out: &mut String,
+        stmt: &Statement,
+        reg_names: &HashMap<String, String>,
+    ) {
         match stmt {
             Statement::Expression(expr) => {
                 self.emit_expr(ng, out, expr, reg_names, "i64");
             }
             Statement::Assign(lhs, expr) => {
                 if let Some(var_name) = lhs.as_var_name() {
-                    let mlir_ty = self.mlir_type(self.var_types.get(var_name).unwrap_or(&Type::int()));
+                    let mlir_ty =
+                        self.mlir_type(self.var_types.get(var_name).unwrap_or(&Type::int()));
                     if let Some(reg) = reg_names.get(var_name) {
                         let val = self.emit_expr(ng, out, expr, reg_names, &mlir_ty);
                         if let Some(v) = val {
@@ -1776,7 +1922,11 @@ impl CirctBackend {
                     self.emit_stmt_body(ng, out, s, reg_names);
                 }
             }
-            Statement::Let { name, expr: Some(e), .. } => {
+            Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } => {
                 let mlir_ty = self.mlir_type(&Type::int());
                 if let Some(val) = self.emit_expr(ng, out, e, reg_names, &mlir_ty) {
                     let w = ng.fresh_wire("let");
@@ -1806,11 +1956,7 @@ impl CirctBackend {
     }
 
     /// AND-reduce of the active `when` gates (None = unconditional).
-    fn when_mask(
-        ng: &mut NameGen,
-        out: &mut String,
-        m: &TxnMaps<'_>,
-    ) -> Option<String> {
+    fn when_mask(ng: &mut NameGen, out: &mut String, m: &TxnMaps<'_>) -> Option<String> {
         if m.gates.is_empty() {
             return None;
         }
@@ -1826,7 +1972,14 @@ impl CirctBackend {
         self.operand_width(r)
     }
 
-    fn emit_contract_condition(&self, out: &mut String, ng: &mut NameGen, cond: &Expr, result_wire: &str, reg_names: &HashMap<String, String>) {
+    fn emit_contract_condition(
+        &self,
+        out: &mut String,
+        ng: &mut NameGen,
+        cond: &Expr,
+        result_wire: &str,
+        reg_names: &HashMap<String, String>,
+    ) {
         match cond {
             Expr::Bool(true) => {
                 writeln!(out, "  {} = hw.constant 1 : i1", result_wire).ok();
@@ -1836,54 +1989,114 @@ impl CirctBackend {
             }
             Expr::BinaryOp(BinaryOpKind::Lt, l, r) => {
                 let w = self.compare_width(l, r);
-                let left = self.emit_expr(ng, out, l, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                let right = self.emit_expr(ng, out, r, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                writeln!(out, "  {} = comb.icmp ult {}, {} : {}", result_wire, left, right, w).ok();
+                let left = self
+                    .emit_expr(ng, out, l, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                let right = self
+                    .emit_expr(ng, out, r, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                writeln!(
+                    out,
+                    "  {} = comb.icmp ult {}, {} : {}",
+                    result_wire, left, right, w
+                )
+                .ok();
             }
             Expr::BinaryOp(BinaryOpKind::Le, l, r) => {
                 let w = self.compare_width(l, r);
-                let left = self.emit_expr(ng, out, l, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                let right = self.emit_expr(ng, out, r, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                writeln!(out, "  {} = comb.icmp ule {}, {} : {}", result_wire, left, right, w).ok();
+                let left = self
+                    .emit_expr(ng, out, l, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                let right = self
+                    .emit_expr(ng, out, r, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                writeln!(
+                    out,
+                    "  {} = comb.icmp ule {}, {} : {}",
+                    result_wire, left, right, w
+                )
+                .ok();
             }
             Expr::BinaryOp(BinaryOpKind::Gt, l, r) => {
                 let w = self.compare_width(l, r);
-                let left = self.emit_expr(ng, out, l, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                let right = self.emit_expr(ng, out, r, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                writeln!(out, "  {} = comb.icmp ugt {}, {} : {}", result_wire, left, right, w).ok();
+                let left = self
+                    .emit_expr(ng, out, l, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                let right = self
+                    .emit_expr(ng, out, r, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                writeln!(
+                    out,
+                    "  {} = comb.icmp ugt {}, {} : {}",
+                    result_wire, left, right, w
+                )
+                .ok();
             }
             Expr::BinaryOp(BinaryOpKind::Ge, l, r) => {
                 let w = self.compare_width(l, r);
-                let left = self.emit_expr(ng, out, l, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                let right = self.emit_expr(ng, out, r, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                writeln!(out, "  {} = comb.icmp uge {}, {} : {}", result_wire, left, right, w).ok();
+                let left = self
+                    .emit_expr(ng, out, l, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                let right = self
+                    .emit_expr(ng, out, r, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                writeln!(
+                    out,
+                    "  {} = comb.icmp uge {}, {} : {}",
+                    result_wire, left, right, w
+                )
+                .ok();
             }
             Expr::BinaryOp(BinaryOpKind::Eq, l, r) => {
                 let w = self.compare_width(l, r);
-                let left = self.emit_expr(ng, out, l, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                let right = self.emit_expr(ng, out, r, reg_names, &w).unwrap_or_else(|| "%0".to_string());
-                writeln!(out, "  {} = comb.icmp eq {}, {} : {}", result_wire, left, right, w).ok();
+                let left = self
+                    .emit_expr(ng, out, l, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                let right = self
+                    .emit_expr(ng, out, r, reg_names, &w)
+                    .unwrap_or_else(|| "%0".to_string());
+                writeln!(
+                    out,
+                    "  {} = comb.icmp eq {}, {} : {}",
+                    result_wire, left, right, w
+                )
+                .ok();
             }
             Expr::BinaryOp(BinaryOpKind::And, l, r) => {
                 let left_wire = ng.fresh_wire("cond_l");
                 self.emit_contract_condition(out, ng, l, &left_wire, reg_names);
                 let right_wire = ng.fresh_wire("cond_r");
                 self.emit_contract_condition(out, ng, r, &right_wire, reg_names);
-                writeln!(out, "  {} = comb.and {}, {} : i1", result_wire, left_wire, right_wire).ok();
+                writeln!(
+                    out,
+                    "  {} = comb.and {}, {} : i1",
+                    result_wire, left_wire, right_wire
+                )
+                .ok();
             }
             Expr::BinaryOp(BinaryOpKind::Or, l, r) => {
                 let left_wire = ng.fresh_wire("cond_l");
                 self.emit_contract_condition(out, ng, l, &left_wire, reg_names);
                 let right_wire = ng.fresh_wire("cond_r");
                 self.emit_contract_condition(out, ng, r, &right_wire, reg_names);
-                writeln!(out, "  {} = comb.or {}, {} : i1", result_wire, left_wire, right_wire).ok();
+                writeln!(
+                    out,
+                    "  {} = comb.or {}, {} : i1",
+                    result_wire, left_wire, right_wire
+                )
+                .ok();
             }
             Expr::UnaryOp(UnaryOpKind::Not, inner) => {
                 let inner_wire = ng.fresh_wire("cond_not");
                 self.emit_contract_condition(out, ng, inner, &inner_wire, reg_names);
                 let c = ng.fresh_const("true");
                 writeln!(out, "  {} = hw.constant 1 : i1", c).ok();
-                writeln!(out, "  {} = comb.xor {}, {} : i1", result_wire, inner_wire, c).ok();
+                writeln!(
+                    out,
+                    "  {} = comb.xor {}, {} : i1",
+                    result_wire, inner_wire, c
+                )
+                .ok();
             }
             _ => {
                 writeln!(out, "  {} = hw.constant 1 : i1", result_wire).ok();
@@ -1911,20 +2124,28 @@ mod tests {
         TopLevel::Trigger(Trigger {
             name: name.to_string(),
             instance: Expr::Decimal(1),
-                        span: None,
+            span: None,
         })
     }
 
     fn make_txn(name: &str, body: Vec<Statement>, pre: Expr, post: Expr) -> TopLevel {
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            is_async: false, is_reactive: true,
+            is_async: false,
+            is_reactive: true,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![],
             output_type: None,
             outputs: vec![],
-            contract: Contract { pre_condition: pre, post_condition: post, watchdog: None, explicit: false, span: None, post_authority: false},
+            contract: Contract {
+                pre_condition: pre,
+                post_condition: post,
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body,
             metadata: HashMap::new(),
             derivation: None,
@@ -1946,71 +2167,103 @@ mod tests {
     #[test]
     fn test_circt_trg_port() {
         let mut backend = CirctBackend::new();
-        let output = backend.generate(&[
-            make_trigger("sensor", "sensor"),
-        ]);
+        let output = backend.generate(&[make_trigger("sensor", "sensor")]);
         assert!(output.contains("sensor: i64"));
     }
 
     #[test]
     fn test_circt_state_var_has_seq_register() {
         let mut backend = CirctBackend::new();
-        let output = backend.generate(&[
-            make_state_decl("counter", Type::int()),
-        ]);
-        assert!(output.contains("seq.firreg"), "State vars should use seq.firreg. Got:\n{}", output);
+        let output = backend.generate(&[make_state_decl("counter", Type::int())]);
+        assert!(
+            output.contains("seq.firreg"),
+            "State vars should use seq.firreg. Got:\n{}",
+            output
+        );
     }
 
     #[test]
     fn test_circt_expr_add() {
         let mut backend = CirctBackend::new();
-        let output = backend.generate(&[
-            make_state_decl("x", Type::int()),
-        ]);
+        let output = backend.generate(&[make_state_decl("x", Type::int())]);
         // Just verify basic generation works
-        assert!(output.contains("x: i64"), "State should render the signed Int protocol. Got:\n{}", output);
+        assert!(
+            output.contains("x: i64"),
+            "State should render the signed Int protocol. Got:\n{}",
+            output
+        );
     }
 
     #[test]
     fn test_circt_expr_mul() {
         let mut backend = CirctBackend::new();
-        let output = backend.generate(&[
-            make_state_decl("y", Type::int()),
-        ]);
-        assert!(output.contains("y: i64"), "State should render the signed Int protocol. Got:\n{}", output);
+        let output = backend.generate(&[make_state_decl("y", Type::int())]);
+        assert!(
+            output.contains("y: i64"),
+            "State should render the signed Int protocol. Got:\n{}",
+            output
+        );
     }
 
     #[test]
     fn test_circt_modern_output_ports() {
         let mut backend = CirctBackend::new();
-        let output = backend.generate(&[
-            make_state_decl("counter", Type::int()),
-        ]);
-        assert!(output.contains("in %clock: !seq.clock"), "Should use 'in %' prefix for inputs. Got:\n{}", output);
-        assert!(output.contains("in %reset: i1"), "Should use 'in %' prefix for inputs. Got:\n{}", output);
-        assert!(output.contains("halt: i1"), "Outputs should include halt. Got:\n{}", output);
-        assert!(output.contains("counter: i64"), "Outputs should include counter. Got:\n{}", output);
-        assert!(!output.contains("hw.output_assign"), "Should not use deprecated hw.output_assign. Got:\n{}", output);
+        let output = backend.generate(&[make_state_decl("counter", Type::int())]);
+        assert!(
+            output.contains("in %clock: !seq.clock"),
+            "Should use 'in %' prefix for inputs. Got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("in %reset: i1"),
+            "Should use 'in %' prefix for inputs. Got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("halt: i1"),
+            "Outputs should include halt. Got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("counter: i64"),
+            "Outputs should include counter. Got:\n{}",
+            output
+        );
+        assert!(
+            !output.contains("hw.output_assign"),
+            "Should not use deprecated hw.output_assign. Got:\n{}",
+            output
+        );
     }
 
     #[test]
     fn test_circt_sized_int() {
         let mut backend = CirctBackend::new();
-        let ty = Type::Constrained(Box::new(Type::Custom("UInt".to_string())), crate::ast::BitRange::Single(8));
-        let output = backend.generate(&[
-            make_state_decl("byte", ty),
-        ]);
-        assert!(output.contains(": i8)"), "Sized UInt[8] should map to i8. Got:\n{}", output);
+        let ty = Type::Constrained(
+            Box::new(Type::Custom("UInt".to_string())),
+            crate::ast::BitRange::Single(8),
+        );
+        let output = backend.generate(&[make_state_decl("byte", ty)]);
+        assert!(
+            output.contains(": i8)"),
+            "Sized UInt[8] should map to i8. Got:\n{}",
+            output
+        );
     }
 
     #[test]
     fn test_circt_sized_int_32() {
         let mut backend = CirctBackend::new();
-        let ty = Type::Constrained(Box::new(Type::Custom("UInt".to_string())), crate::ast::BitRange::Single(32));
-        let output = backend.generate(&[
-            make_state_decl("word", ty),
-        ]);
-        assert!(output.contains(": i32)"), "Sized UInt[32] should map to i32. Got:\n{}", output);
+        let ty = Type::Constrained(
+            Box::new(Type::Custom("UInt".to_string())),
+            crate::ast::BitRange::Single(32),
+        );
+        let output = backend.generate(&[make_state_decl("word", ty)]);
+        assert!(
+            output.contains(": i32)"),
+            "Sized UInt[32] should map to i32. Got:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -2018,20 +2271,38 @@ mod tests {
         let mut backend = CirctBackend::new();
         let output = backend.generate(&[
             make_state_decl("counter", Type::int()),
-            make_txn("count", vec![
-                Statement::Assign(
+            make_txn(
+                "count",
+                vec![Statement::Assign(
                     Expr::Identifier("counter".to_string()),
-                    Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("counter".to_string())), Box::new(Expr::Decimal(1))),
-                ),
-            ], Expr::Bool(true), Expr::Bool(true)),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("counter".to_string())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                )],
+                Expr::Bool(true),
+                Expr::Bool(true),
+            ),
         ]);
-        assert!(output.contains("seq.firreg"), "FSM should have state reg. Got:\n{}", output);
-        assert!(output.contains("comb.mux"), "FSM should have state transition mux. Got:\n{}", output);
+        assert!(
+            output.contains("seq.firreg"),
+            "FSM should have state reg. Got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("comb.mux"),
+            "FSM should have state transition mux. Got:\n{}",
+            output
+        );
         // 2026-08-23 (Plan 3): seq.alwas was fantasy syntax — the register
         // consumes a next-value wire via typed `seq.firreg %next clock`.
         // Register consumes the computed next wire (suffix from NameGen).
-        assert!(output.contains("= seq.firreg %counter_next"),
-            "register must consume the computed next wire. Got:\n{}", output);
+        assert!(
+            output.contains("= seq.firreg %counter_next"),
+            "register must consume the computed next wire. Got:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -2039,11 +2310,22 @@ mod tests {
         let mut backend = CirctBackend::new();
         let output = backend.generate(&[
             make_state_decl("done", Type::int()),
-            make_txn("loop", vec![],
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(Expr::Identifier("done".to_string())), Box::new(Expr::Decimal(10))),
-                Expr::Bool(true)),
+            make_txn(
+                "loop",
+                vec![],
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("done".to_string())),
+                    Box::new(Expr::Decimal(10)),
+                ),
+                Expr::Bool(true),
+            ),
         ]);
-        assert!(output.contains("comb.icmp"), "Precondition should emit comb.icmp. Got:\n{}", output);
+        assert!(
+            output.contains("comb.icmp"),
+            "Precondition should emit comb.icmp. Got:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -2051,11 +2333,22 @@ mod tests {
         let mut backend = CirctBackend::new();
         let output = backend.generate(&[
             make_state_decl("done", Type::int()),
-            make_txn("loop", vec![],
+            make_txn(
+                "loop",
+                vec![],
                 Expr::Bool(true),
-                Expr::BinaryOp(BinaryOpKind::Eq, Box::new(Expr::Identifier("done".to_string())), Box::new(Expr::Decimal(10)))),
+                Expr::BinaryOp(
+                    BinaryOpKind::Eq,
+                    Box::new(Expr::Identifier("done".to_string())),
+                    Box::new(Expr::Decimal(10)),
+                ),
+            ),
         ]);
-        assert!(output.contains("comb.icmp"), "Postcondition should emit comb.icmp eq. Got:\n{}", output);
+        assert!(
+            output.contains("comb.icmp"),
+            "Postcondition should emit comb.icmp eq. Got:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -2064,28 +2357,39 @@ mod tests {
         let output = backend.generate(&[
             make_state_decl("a", Type::int()),
             make_state_decl("b", Type::int()),
-            make_txn("test", vec![
-                Statement::SyncBlock(vec![
-                    Statement::Assign(
-                        Expr::Identifier("a".to_string()),
-                        Expr::Decimal(10),
-                    ),
-                    Statement::Assign(
-                        Expr::Identifier("b".to_string()),
-                        Expr::Decimal(20),
-                    ),
-                ]),
-            ], Expr::Bool(true), Expr::Bool(true)),
+            make_txn(
+                "test",
+                vec![Statement::SyncBlock(vec![
+                    Statement::Assign(Expr::Identifier("a".to_string()), Expr::Decimal(10)),
+                    Statement::Assign(Expr::Identifier("b".to_string()), Expr::Decimal(20)),
+                ])],
+                Expr::Bool(true),
+                Expr::Bool(true),
+            ),
         ]);
         // 2026-08-23 (Plan 3): sync blocks lower through the same pending-
         // wire path — both registers consume computed next wires.
-        assert!(output.contains("= seq.firreg %a_next"), "a register consumes next. Got:\n{}", output);
-        assert!(output.contains("= seq.firreg %b_next"), "b register consumes next. Got:\n{}", output);
+        assert!(
+            output.contains("= seq.firreg %a_next"),
+            "a register consumes next. Got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("= seq.firreg %b_next"),
+            "b register consumes next. Got:\n{}",
+            output
+        );
         // a := 10: an enabled mux selects the constant over the init wire.
-        assert!(output.contains("OpConstant") || output.contains("hw.constant 10"),
-            "constant 10 must be materialized. Got:\n{}", output);
-        assert!(output.matches("comb.mux %true,").count() >= 2,
-            "both assignments produce enabled muxes. Got:\n{}", output);
+        assert!(
+            output.contains("OpConstant") || output.contains("hw.constant 10"),
+            "constant 10 must be materialized. Got:\n{}",
+            output
+        );
+        assert!(
+            output.matches("comb.mux %true,").count() >= 2,
+            "both assignments produce enabled muxes. Got:\n{}",
+            output
+        );
     }
 
     /// 2026-08-27 (undefined-instance fix): a call whose callee has no cell
@@ -2118,7 +2422,11 @@ mod tests {
         assert_eq!(backend.mmio_vars.len(), 2, "{:?}", backend.mmio_vars);
         assert_eq!(backend.mmio_vars[0], ("a_pin".to_string(), 0x1000));
         assert_eq!(backend.mmio_vars[1], ("b_pin".to_string(), 0x2000));
-        assert!(backend.errors.borrow().is_empty(), "{:?}", backend.errors.borrow());
+        assert!(
+            backend.errors.borrow().is_empty(),
+            "{:?}",
+            backend.errors.borrow()
+        );
     }
 
     /// Slice B boundary: dynamic (@ *ptr) and symbolic trigger addresses
@@ -2139,10 +2447,17 @@ mod tests {
         let items = parser.parse_program().unwrap();
         let _ = backend.generate(&items);
         let errs = backend.errors.borrow();
-        assert!(errs.iter().any(|e| e.contains("'dyn_pin'") && e.contains("static")),
-            "dynamic pin must error: {:?}", errs);
-        assert!(errs.iter().any(|e| e.contains("'sym_pin'")),
-            "symbolic pin must error: {:?}", errs);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("'dyn_pin'") && e.contains("static")),
+            "dynamic pin must error: {:?}",
+            errs
+        );
+        assert!(
+            errs.iter().any(|e| e.contains("'sym_pin'")),
+            "symbolic pin must error: {:?}",
+            errs
+        );
     }
 
     #[test]
@@ -2154,14 +2469,23 @@ mod tests {
         let items = parser.parse_program().unwrap();
         let output = backend.generate(&items);
         // Exactly one blackbox, right shape:
-        assert_eq!(output.matches("hw.module.extern").count(), 1,
-            "one blackbox expected:\n{output}");
+        assert_eq!(
+            output.matches("hw.module.extern").count(),
+            1,
+            "one blackbox expected:\n{output}"
+        );
         assert!(output.contains("hw.module.extern @UartTop(in %clock: !seq.clock, in %reset: i1, in %rx: i64, out byte_out: i64);"),
             "blackbox shape mismatch (ports inside one paren list, bare output names):\n{output}");
         // Foreign pins are NOT program state — no UartTop$ leak on @top.
-        assert!(!output.contains("UartTop$"), "extern cell must not leak program vars:\n{output}");
-        assert!(backend.errors.borrow().is_empty(), "{:?}",
-            backend.errors.borrow());
+        assert!(
+            !output.contains("UartTop$"),
+            "extern cell must not leak program vars:\n{output}"
+        );
+        assert!(
+            backend.errors.borrow().is_empty(),
+            "{:?}",
+            backend.errors.borrow()
+        );
     }
 
     #[test]
@@ -2169,12 +2493,19 @@ mod tests {
         let mut backend = CirctBackend::new();
         let _ = backend.generate(&[
             make_state_decl("x", Type::int()),
-            make_txn("compute", vec![
-                Statement::Assign(
+            make_txn(
+                "compute",
+                vec![Statement::Assign(
                     Expr::Identifier("x".to_string()),
-                    Expr::Call("add".to_string(), vec![Expr::Decimal(1), Expr::Decimal(2)], None),
-                ),
-            ], Expr::Bool(true), Expr::Bool(true)),
+                    Expr::Call(
+                        "add".to_string(),
+                        vec![Expr::Decimal(1), Expr::Decimal(2)],
+                        None,
+                    ),
+                )],
+                Expr::Bool(true),
+                Expr::Bool(true),
+            ),
         ]);
         let errs = backend.errors.borrow();
         assert!(
@@ -2189,15 +2520,26 @@ mod tests {
         let mut backend = CirctBackend::new();
         let output = backend.generate(&[
             make_state_decl("x", Type::int()),
-            make_txn("test", vec![
-                Statement::Assign(
+            make_txn(
+                "test",
+                vec![Statement::Assign(
                     Expr::Identifier("x".to_string()),
                     Expr::Call("Abs#".to_string(), vec![Expr::Decimal(-5)], None),
-                ),
-            ], Expr::Bool(true), Expr::Bool(true)),
+                )],
+                Expr::Bool(true),
+                Expr::Bool(true),
+            ),
         ]);
-        assert!(output.contains("comb.neg"), "Abs intrinsic should emit comb.neg. Got:\n{}", output);
-        assert!(output.contains("comb.mux"), "Abs intrinsic should emit comb.mux. Got:\n{}", output);
+        assert!(
+            output.contains("comb.neg"),
+            "Abs intrinsic should emit comb.neg. Got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("comb.mux"),
+            "Abs intrinsic should emit comb.mux. Got:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -2205,18 +2547,24 @@ mod tests {
         let mut backend = CirctBackend::new();
         let output = backend.generate(&[
             make_state_decl("x", Type::int()),
-            make_txn("test", vec![
-                Statement::Assign(
+            make_txn(
+                "test",
+                vec![Statement::Assign(
                     Expr::Identifier("x".to_string()),
                     Expr::Call("Ctpop#".to_string(), vec![Expr::Decimal(255)], None),
-                ),
-            ], Expr::Bool(true), Expr::Bool(true)),
+                )],
+                Expr::Bool(true),
+                Expr::Bool(true),
+            ),
         ]);
         // 2026-08-23 (Plan 3.2): comb has NO ctpop — the old arm emitted
         // MLIR no toolchain could parse. Now a recorded capability error.
         let errs = backend.errors.borrow();
-        assert!(!errs.is_empty() && errs[0].contains("Ctpop#"),
-            "Ctpop must be a recorded capability error. Got:\n{}", output);
+        assert!(
+            !errs.is_empty() && errs[0].contains("Ctpop#"),
+            "Ctpop must be a recorded capability error. Got:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -2224,27 +2572,36 @@ mod tests {
         let mut backend = CirctBackend::new();
         let output = backend.generate(&[
             make_state_decl("x", Type::int()),
-            make_txn("test", vec![
-                Statement::Assign(
+            make_txn(
+                "test",
+                vec![Statement::Assign(
                     Expr::Identifier("x".to_string()),
                     Expr::Call("Bitreverse#".to_string(), vec![Expr::Decimal(1)], None),
-                ),
-            ], Expr::Bool(true), Expr::Bool(true)),
+                )],
+                Expr::Bool(true),
+                Expr::Bool(true),
+            ),
         ]);
         // 2026-08-23 (Plan 3.2): comb has NO rev — recorded capability error.
         let errs = backend.errors.borrow();
-        assert!(!errs.is_empty() && errs[0].contains("Bitreverse#"),
-            "Bitreverse must be a recorded capability error. Got:\n{}", output);
+        assert!(
+            !errs.is_empty() && errs[0].contains("Bitreverse#"),
+            "Bitreverse must be a recorded capability error. Got:\n{}",
+            output
+        );
     }
 
     #[test]
     fn test_circt_duplicate_trg_fixed() {
         let mut backend = CirctBackend::new();
-        let output = backend.generate(&[
-            make_trigger("sensor", "sensor"),
-        ]);
+        let output = backend.generate(&[make_trigger("sensor", "sensor")]);
         let count = output.matches("sensor: i64").count();
-        assert!(count >= 1, "Trigger should appear as port. Got {} occurrences. Output:\n{}", count, output);
+        assert!(
+            count >= 1,
+            "Trigger should appear as port. Got {} occurrences. Output:\n{}",
+            count,
+            output
+        );
     }
     fn make_array_let(name: &str, depth: usize, hint: Option<&str>) -> TopLevel {
         // Top-level typed let (the array surface): Statement::Let with a
@@ -2252,7 +2609,10 @@ mod tests {
         use crate::ast::{Annotation, Statement as S, TopLevel as T};
         let mut modifiers = Vec::new();
         if let Some(h) = hint {
-            modifiers.push(Annotation { name: h.to_string(), value: None });
+            modifiers.push(Annotation {
+                name: h.to_string(),
+                value: None,
+            });
         }
         T::Statement(Box::new(S::Let {
             name: name.to_string(),
@@ -2338,8 +2698,16 @@ mod tests {
         ];
         let mut backend = CirctBackend::new();
         let output = backend.generate(&items);
-        assert!(output.contains("buf_3_lane"), "lane decode missing:\n{}", output);
-        assert!(output.contains("comb.and"), "when mask missing:\n{}", output);
+        assert!(
+            output.contains("buf_3_lane"),
+            "lane decode missing:\n{}",
+            output
+        );
+        assert!(
+            output.contains("comb.and"),
+            "when mask missing:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -2378,11 +2746,17 @@ mod tests {
     fn test_ns_to_cycles_conversion() {
         // 2026-08-26 (watchdog time units): 100 MHz clock —
         // 10ms = 1_000_000 cycles exactly; sub-cycle deadlines round UP.
-        assert_eq!(CirctBackend::ns_to_cycles(100_000_000, 10_000_000), 1_000_000);
-        assert_eq!(CirctBackend::ns_to_cycles(100_000_000, 1), 1);       // ceil to 1
+        assert_eq!(
+            CirctBackend::ns_to_cycles(100_000_000, 10_000_000),
+            1_000_000
+        );
+        assert_eq!(CirctBackend::ns_to_cycles(100_000_000, 1), 1); // ceil to 1
         assert_eq!(CirctBackend::ns_to_cycles(1_000_000_000, 500), 500); // exact
-        assert_eq!(CirctBackend::ns_to_cycles(100_000_000, 15), 2);      // ceil 1.5 -> 2
-        assert_eq!(CirctBackend::ns_to_cycles(60_000_000, 1_500_000_000), 90_000_000);
+        assert_eq!(CirctBackend::ns_to_cycles(100_000_000, 15), 2); // ceil 1.5 -> 2
+        assert_eq!(
+            CirctBackend::ns_to_cycles(60_000_000, 1_500_000_000),
+            90_000_000
+        );
     }
 
     #[test]
@@ -2470,7 +2844,8 @@ mod tests {
         let _ = backend.generate(&items);
         let errs = backend.errors.borrow();
         assert!(
-            errs.iter().any(|e| e.contains("postcondition reads elements")),
+            errs.iter()
+                .any(|e| e.contains("postcondition reads elements")),
             "expected capability error, got: {:?}",
             *errs
         );
@@ -2503,7 +2878,10 @@ mod tests {
                 Expr::Bool(true),
             ),
         ]);
-        assert!(backend.errors.borrow().is_empty(), "fixture must be in-surface");
+        assert!(
+            backend.errors.borrow().is_empty(),
+            "fixture must be in-surface"
+        );
 
         let dir = std::env::temp_dir().join(format!("briev_circt_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

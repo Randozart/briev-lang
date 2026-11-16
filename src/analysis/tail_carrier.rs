@@ -16,8 +16,8 @@ use crate::analysis::destination_model::{
     ProofStatus, RecursiveCarrierArgClass, RecursiveCarrierPlan, RecursiveCarrierValue,
     SemanticValueId, SemanticValueKind,
 };
-use crate::analysis::enum_repr::{build_enum_representation_plan, EnumRepresentation};
-use crate::analysis::tail_recursion::{build_tail_recursion_plan, TailRecursionClass};
+use crate::analysis::enum_repr::{EnumRepresentation, build_enum_representation_plan};
+use crate::analysis::tail_recursion::{TailRecursionClass, build_tail_recursion_plan};
 use crate::ast::{Expr, Statement, TopLevel, Type};
 use std::collections::BTreeMap;
 

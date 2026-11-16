@@ -13,9 +13,9 @@
 // `ast::visit` exhaustive (no `_` arms) — a new `Expr`/`Statement` variant
 // fails to compile there by design.
 
-use std::collections::HashSet;
 use crate::ast::visit;
 use crate::ast::*;
+use std::collections::HashSet;
 
 /// A collected intrinsic call from the AST.
 #[derive(Debug, Clone)]
@@ -54,10 +54,7 @@ pub fn collect_intrinsic_calls(items: &[TopLevel]) -> Vec<IntrinsicCall> {
 /// members — their dispatch names are mangled at emission, so they are
 /// emitted whether or not a textual call site exists), closed over
 /// transitively-called defns.
-pub fn validate_intrinsics<'a>(
-    items: &'a [TopLevel],
-    supported: &HashSet<String>,
-) -> Vec<String> {
+pub fn validate_intrinsics<'a>(items: &'a [TopLevel], supported: &HashSet<String>) -> Vec<String> {
     // Definitions by name for call-graph expansion. Every definition
     // STRUCTURALLY present in the unit is registered — member methods and
     // impl functions are reachable through dispatch by name (UFCS and op
@@ -100,7 +97,10 @@ pub fn validate_intrinsics<'a>(
     let mut errors = Vec::new();
     for call in &intrinsics {
         if !supported.contains(call) {
-            errors.push(format!("intrinsic '{}' is not supported by this backend", call));
+            errors.push(format!(
+                "intrinsic '{}' is not supported by this backend",
+                call
+            ));
         }
     }
     errors
@@ -168,10 +168,11 @@ fn collect_definitions<'a>(
 ) {
     for item in items {
         match item {
-        // 2026-11-10 (SPEC §8.11): test blocks are typecheck-only; the
-        // reference interpreter runs them. Never normalized/emitted.
-        TopLevel::TestBlock(_) => {}
-            TopLevel::Definition(d) | TopLevel::TypeDefOperator(d)
+            // 2026-11-10 (SPEC §8.11): test blocks are typecheck-only; the
+            // reference interpreter runs them. Never normalized/emitted.
+            TopLevel::TestBlock(_) => {}
+            TopLevel::Definition(d)
+            | TopLevel::TypeDefOperator(d)
             | TopLevel::CompileTimeDefn(d) => {
                 out.entry(d.name.as_str()).or_default().push(d);
             }
@@ -184,9 +185,7 @@ fn collect_definitions<'a>(
             TopLevel::SyncGroup { item, .. } => {
                 collect_definitions(std::slice::from_ref(item), out)
             }
-            TopLevel::Fuzzed { item, .. } => {
-                collect_definitions(std::slice::from_ref(item), out)
-            }
+            TopLevel::Fuzzed { item, .. } => collect_definitions(std::slice::from_ref(item), out),
             _ => {}
         }
     }
@@ -235,12 +234,11 @@ fn seed_typedef<'a>(td: &'a crate::ast::top::TypeDef, work: &mut Vec<Seed<'a>>) 
 
 /// Fuzzed-case bindings and expected values are evaluated by the fuzzer
 /// harness; split out to keep `seed_toplevel` within the 100-line budget.
-fn seed_fuzz_cases<'a>(
-    cases: &'a [crate::ast::top::FuzzCase],
-    work: &mut Vec<Seed<'a>>,
-) {
+fn seed_fuzz_cases<'a>(cases: &'a [crate::ast::top::FuzzCase], work: &mut Vec<Seed<'a>>) {
     for case in cases {
-        case.bindings.iter().for_each(|(_, e)| work.push(Seed::Expr(e)));
+        case.bindings
+            .iter()
+            .for_each(|(_, e)| work.push(Seed::Expr(e)));
         work.push(Seed::Expr(&case.expected));
     }
 }
@@ -282,10 +280,7 @@ fn seed_toplevel<'a>(item: &'a TopLevel, work: &mut Vec<Seed<'a>>) {
         TopLevel::Cell(c) => seed_cell(c, work),
         TopLevel::Obj(o) => seed_obj(o, work),
         TopLevel::TypeDef(td) => seed_typedef(td, work),
-        TopLevel::Trait(_)
-        | TopLevel::Impl(_)
-        | TopLevel::ProtocolDef(_)
-        | TopLevel::Codec(_) => {
+        TopLevel::Trait(_) | TopLevel::Impl(_) | TopLevel::ProtocolDef(_) | TopLevel::Codec(_) => {
             // Same liveness boundary as TypeDef: trait/impl functions and
             // op bindings emit only when reached through dispatch; the
             // Harvester's call/method-call expansion covers the reached
@@ -316,8 +311,10 @@ fn seed_toplevel<'a>(item: &'a TopLevel, work: &mut Vec<Seed<'a>>) {
         // through those forms). `cfg` conditions are string comparisons
         // resolved at parse time; asm-fn bodies are raw instruction TEXT
         // (no Expr nodes).
-        TopLevel::StageBlock(_) | TopLevel::CompileTimeLet(_, _)
-        | TopLevel::CompileTimeConst(_, _) | TopLevel::AsmFn(_) => {}
+        TopLevel::StageBlock(_)
+        | TopLevel::CompileTimeLet(_, _)
+        | TopLevel::CompileTimeConst(_, _)
+        | TopLevel::AsmFn(_) => {}
 
         // ── Declarations with no executable expression ──────────────
         TopLevel::Unpop(_)
@@ -349,8 +346,9 @@ where
     F: FnMut(&Expr),
 {
     match item {
-        TopLevel::Definition(d) | TopLevel::TypeDefOperator(d)
-        | TopLevel::CompileTimeDefn(d) => visit::walk_definition(d, f),
+        TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) | TopLevel::CompileTimeDefn(d) => {
+            visit::walk_definition(d, f)
+        }
         TopLevel::Transaction(t) | TopLevel::CompileTimeTxn(t) => {
             visit::walk_contract(&t.contract, f);
             visit::walk_stmts(&t.body, f);

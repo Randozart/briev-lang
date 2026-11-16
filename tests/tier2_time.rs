@@ -41,7 +41,13 @@ node main [done == false][done == true] {
     .unwrap();
 
     let build = Command::new(brievc)
-        .args(["build", &bv.to_string_lossy(), "--llvm", "--out", &out_dir.to_string_lossy()])
+        .args([
+            "build",
+            &bv.to_string_lossy(),
+            "--llvm",
+            "--out",
+            &out_dir.to_string_lossy(),
+        ])
         .output()
         .expect("spawn brievc build");
     assert!(
@@ -84,6 +90,9 @@ node main [done == false][done == true] {
     assert_eq!(lines[0], "0", "sleep_ms returns 0 on completion");
     let elapsed: i64 = lines[1].parse().expect("elapsed ms printed");
     assert!(elapsed >= 25, "sleep_ms(30) measured only {elapsed} ms");
-    assert!(elapsed < 5000, "sleep_ms(30) measured {elapsed} ms — runaway");
+    assert!(
+        elapsed < 5000,
+        "sleep_ms(30) measured {elapsed} ms — runaway"
+    );
     assert_eq!(lines[2], "true", "monotonic clock never goes backwards");
 }

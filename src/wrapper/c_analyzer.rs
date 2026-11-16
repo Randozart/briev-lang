@@ -22,7 +22,7 @@
 
 //! C Header Analyzer - Parses C header files to extract function signatures
 
-use super::{c_type_is_pointer, c_type_to_briev, parse_c_signature, AnalyzedFunction};
+use super::{AnalyzedFunction, c_type_is_pointer, c_type_to_briev, parse_c_signature};
 use std::fs;
 use std::path::Path;
 

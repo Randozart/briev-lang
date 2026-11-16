@@ -7,7 +7,7 @@
 //
 // Cells are skipped with a warning (state setup is deferred).
 
-use crate::ast::{Expr, TopLevel, FuzzCase, Definition, Transaction};
+use crate::ast::{Definition, Expr, FuzzCase, TopLevel, Transaction};
 use crate::errors::{FuzzError, Span};
 use crate::interpreter::{Interpreter, Value};
 use std::collections::HashMap;
@@ -94,7 +94,14 @@ fn verify_defn_fuzz(
     };
 
     // Build state overrides for non-parameter bindings.
-    if let Err(e) = apply_state_overrides(&defn.parameters, fuzz_case, interpreter, &function, case_idx, &span) {
+    if let Err(e) = apply_state_overrides(
+        &defn.parameters,
+        fuzz_case,
+        interpreter,
+        &function,
+        case_idx,
+        &span,
+    ) {
         return vec![e];
     }
 
@@ -156,7 +163,14 @@ fn verify_txn_fuzz(
     };
 
     // Apply state overrides.
-    if let Err(e) = apply_state_overrides(&txn.parameters, fuzz_case, interpreter, &function, case_idx, &span) {
+    if let Err(e) = apply_state_overrides(
+        &txn.parameters,
+        fuzz_case,
+        interpreter,
+        &function,
+        case_idx,
+        &span,
+    ) {
         return vec![e];
     }
 
@@ -210,7 +224,9 @@ fn build_args(
 ) -> Result<Vec<Expr>, FuzzError> {
     let mut args = Vec::new();
     for (param_name, _) in params {
-        let found = fuzz_case.bindings.iter()
+        let found = fuzz_case
+            .bindings
+            .iter()
             .find(|(name, _)| name == param_name);
         match found {
             Some((_, expr)) => args.push(expr.clone()),
@@ -236,7 +252,8 @@ fn apply_state_overrides(
     _case_idx: usize,
     _span: &Span,
 ) -> Result<(), FuzzError> {
-    let param_names: std::collections::HashSet<&str> = params.iter().map(|(n, _)| n.as_str()).collect();
+    let param_names: std::collections::HashSet<&str> =
+        params.iter().map(|(n, _)| n.as_str()).collect();
     for (name, expr) in &fuzz_case.bindings {
         if !param_names.contains(name.as_str()) {
             // This is a state/top-level override — evaluate and set.
@@ -256,7 +273,9 @@ fn apply_state_overrides(
 }
 
 fn format_bindings(fuzz_case: &FuzzCase) -> String {
-    fuzz_case.bindings.iter()
+    fuzz_case
+        .bindings
+        .iter()
         .map(|(name, _)| name.clone())
         .collect::<Vec<_>>()
         .join(", ")
@@ -288,7 +307,10 @@ fn format_value(val: &Value) -> String {
 }
 
 /// Execute a block of statements using the interpreter and return the last value.
-fn exec_body(body: &[crate::ast::Statement], interpreter: &mut Interpreter) -> Result<Value, crate::errors::RuntimeError> {
+fn exec_body(
+    body: &[crate::ast::Statement],
+    interpreter: &mut Interpreter,
+) -> Result<Value, crate::errors::RuntimeError> {
     let mut result = Value::Void;
     for stmt in body {
         result = interpreter.exec_stmt(stmt)?;

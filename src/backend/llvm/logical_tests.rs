@@ -7,29 +7,55 @@ use crate::ast::{BinaryOpKind, Expr, Statement};
 use std::process::Command;
 
 pub(super) fn clang_ir(ir: &str, optimization: &str, run: bool) {
-    if Command::new("clang").arg("--version").output().is_err() { return; }
+    if Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
     let directory = tempfile::TempDir::new().expect("IR fixture directory");
     let input = directory.path().join("logical.ll");
-    let output = directory.path().join(if run { "logical" } else { "logical.o" });
+    let output = directory
+        .path()
+        .join(if run { "logical" } else { "logical.o" });
     std::fs::write(&input, ir).expect("write logical IR");
     let mut command = Command::new("clang");
-    command.args([optimization, "-Wno-override-module", "-ffunction-sections", "-fdata-sections"]);
+    command.args([
+        optimization,
+        "-Wno-override-module",
+        "-ffunction-sections",
+        "-fdata-sections",
+    ]);
     command.arg(&input).arg("-o").arg(&output);
     if run {
         let runtime = directory.path().join("exit.c");
         std::fs::write(&runtime, "#include <stdint.h>\n#include <stdlib.h>\n_Noreturn void __exit(int64_t code) { exit((int)code); }\n").expect("exit ABI shim");
         command.arg(runtime).arg("-Wl,--gc-sections");
-    } else { command.arg("-c"); }
+    } else {
+        command.arg("-c");
+    }
     let compiled = command.output().expect("run clang");
-    assert!(compiled.status.success(), "invalid logical IR: {}\n{ir}", String::from_utf8_lossy(&compiled.stderr));
-    if !run { return; }
-    let executed = Command::new(output).output().expect("execute logical fixture");
-    assert!(executed.status.success(), "logical effects/guard failed: {:?}\n{}", executed.status, String::from_utf8_lossy(&executed.stderr));
+    assert!(
+        compiled.status.success(),
+        "invalid logical IR: {}\n{ir}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    if !run {
+        return;
+    }
+    let executed = Command::new(output)
+        .output()
+        .expect("execute logical fixture");
+    assert!(
+        executed.status.success(),
+        "logical effects/guard failed: {:?}\n{}",
+        executed.status,
+        String::from_utf8_lossy(&executed.stderr)
+    );
 }
 
 #[test]
 fn logical_guards_skip_invalid_reads_and_execute_required_rhs_once() {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let source = r#"
         defn touch(address: Int) -> Bool {
             Store#(address,Load#(address,8)+1,8);
@@ -86,25 +112,43 @@ fn logical_guards_skip_invalid_reads_and_execute_required_rhs_once() {
             tick = 1; endprogram;
         };
     "#;
-    let (items, universe) = crate::library::parse_and_check("scratch/logical_guard.bv", source).expect("typed logical fixture");
-    let ir = LlvmBackend::new().with_type_universe(universe).generate(&items, None);
-    for optimization in ["-O0", "-O2"] { clang_ir(&ir, optimization, true); }
+    let (items, universe) = crate::library::parse_and_check("scratch/logical_guard.bv", source)
+        .expect("typed logical fixture");
+    let ir = LlvmBackend::new()
+        .with_type_universe(universe)
+        .generate(&items, None);
+    for optimization in ["-O0", "-O2"] {
+        clang_ir(&ir, optimization, true);
+    }
 }
 
 #[test]
 fn nested_exit_predicates_merge_before_widening() {
-    let (items, universe) = crate::library::parse_and_check("scratch/logical_exit.bv",
-        "defn keep(flag: Bool) -> Bool { term flag; };").expect("typed Bool universe");
+    let (items, universe) = crate::library::parse_and_check(
+        "scratch/logical_exit.bv",
+        "defn keep(flag: Bool) -> Bool { term flag; };",
+    )
+    .expect("typed Bool universe");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     backend.generate(&items, None);
     backend.fun = FunctionContext::new();
-    let expression = Expr::BinaryOp(BinaryOpKind::And, Box::new(Expr::Bool(false)),
-        Box::new(Expr::BinaryOp(BinaryOpKind::Or, Box::new(Expr::Bool(true)), Box::new(Expr::Bool(false)))));
+    let expression = Expr::BinaryOp(
+        BinaryOpKind::And,
+        Box::new(Expr::Bool(false)),
+        Box::new(Expr::BinaryOp(
+            BinaryOpKind::Or,
+            Box::new(Expr::Bool(true)),
+            Box::new(Expr::Bool(false)),
+        )),
+    );
     let mut ir = "define i64 @exit_probe() {\nentry:\n".to_string();
     let value = backend.emit_exit_expr(&mut ir, &expression, "  ");
     ir.push_str(&format!("  ret i64 {value}\n}}\n"));
     assert_eq!(ir.matches("phi i8").count(), 2);
-    assert!(ir.contains("zext i8"), "exit ABI widens the final Bool: {ir}");
+    assert!(
+        ir.contains("zext i8"),
+        "exit ABI widens the final Bool: {ir}"
+    );
     clang_ir(&ir, "-O0", false);
 }
 
@@ -116,7 +160,10 @@ fn terminating_rhs_has_no_fabricated_phi_incoming() {
     let value = backend.emit_short_circuit(&mut ir, (&Expr::Bool(false), &right), false, "  ");
     ir.push_str(&format!("  ret i8 {}\n}}\n", value.name));
     assert!(!backend.fun.terminated, "the short edge continues");
-    assert!(!ir.contains("logical.value."), "a trapping edge has no value predecessor: {ir}");
+    assert!(
+        !ir.contains("logical.value."),
+        "a trapping edge has no value predecessor: {ir}"
+    );
     clang_ir(&ir, "-O0", false);
 }
 
@@ -138,9 +185,20 @@ hold true { reside; };
         .expect("typed reactive program");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
-    let start = ir.find("define internal i8 @pre_boot").expect("pre_boot emitted");
-    let end = ir[start..].find("\n}\n").map(|offset| start + offset).unwrap_or(ir.len());
+    let start = ir
+        .find("define internal i8 @pre_boot")
+        .expect("pre_boot emitted");
+    let end = ir[start..]
+        .find("\n}\n")
+        .map(|offset| start + offset)
+        .unwrap_or(ir.len());
     let segment = &ir[start..end];
-    assert!(segment.contains("phi i8"), "the beginprogram guard must keep its lazy value: {segment}");
-    assert!(!segment.contains("ret i8 0"), "stale terminated folded the guard to zero: {segment}");
+    assert!(
+        segment.contains("phi i8"),
+        "the beginprogram guard must keep its lazy value: {segment}"
+    );
+    assert!(
+        !segment.contains("ret i8 0"),
+        "stale terminated folded the guard to zero: {segment}"
+    );
 }

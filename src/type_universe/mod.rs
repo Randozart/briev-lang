@@ -152,38 +152,44 @@ impl TypeUniverse {
         // 2026-08-15 (fundamentals): Bit was the axiomatic anchor; Data
         // replaces it as the universal parent (raw storage root). Bit<N>
         // is the bit type, still composed of Cast.Bit (treat-as-bits).
-        self.types.insert("Data".to_string(), ResolvedType {
-            type_params: vec![],
+        self.types.insert(
+            "Data".to_string(),
+            ResolvedType {
+                type_params: vec![],
 
-            name: "Data".to_string(),
-            base: "Data".to_string(),
-            bytes: 0,
-            min_bits: 0,
-            max_bits: 0,
-            alignment: 0,
-            properties: {
-                let mut p = std::collections::HashMap::new();
-                p.insert("Cast.Data".into(), crate::ast::PropertyValue::Bool(true));
-                p
+                name: "Data".to_string(),
+                base: "Data".to_string(),
+                bytes: 0,
+                min_bits: 0,
+                max_bits: 0,
+                alignment: 0,
+                properties: {
+                    let mut p = std::collections::HashMap::new();
+                    p.insert("Cast.Data".into(), crate::ast::PropertyValue::Bool(true));
+                    p
+                },
+                fields: vec![],
             },
-            fields: vec![],
-        });
-        self.types.insert("Bit".to_string(), ResolvedType {
-            type_params: vec![],
+        );
+        self.types.insert(
+            "Bit".to_string(),
+            ResolvedType {
+                type_params: vec![],
 
-            name: "Bit".to_string(),
-            base: "Data".to_string(),
-            bytes: 0,
-            min_bits: 0,
-            max_bits: 0,
-            alignment: 0,
-            properties: {
-                let mut p = std::collections::HashMap::new();
-                p.insert("Cast.Bit".into(), crate::ast::PropertyValue::Bool(true));
-                p
+                name: "Bit".to_string(),
+                base: "Data".to_string(),
+                bytes: 0,
+                min_bits: 0,
+                max_bits: 0,
+                alignment: 0,
+                properties: {
+                    let mut p = std::collections::HashMap::new();
+                    p.insert("Cast.Bit".into(), crate::ast::PropertyValue::Bool(true));
+                    p
+                },
+                fields: vec![],
             },
-            fields: vec![],
-        });
+        );
 
         // Table: (name, bytes, min_bits, max_bits, alignment, &[(&str, &str)])
         // bytes is the exact width for fixed types; min_bits/max_bits is
@@ -196,48 +202,294 @@ impl TypeUniverse {
         const PRIMORDIALS: &[(&str, u64, u64, u64, u64, &[(&str, &str)])] = &[
             // 2026-07-29: Flexible protocol types — all fields resolved by normalizer from int_bits.
             // No baked-in width, alignment, or bytes. Every value is 0 = "not yet resolved."
-            ("Int",    0, 0, 0,  0, &[("Cast.Int", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("UInt",   0, 0, 0,  0, &[("Cast.UInt", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
+            (
+                "Int",
+                0,
+                0,
+                0,
+                0,
+                &[
+                    ("Cast.Int", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "UInt",
+                0,
+                0,
+                0,
+                0,
+                &[
+                    ("Cast.UInt", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
             // Fixed-width integer types — exact bit width is absolute
-            ("Int8",   1, 8, 8,  1, &[("Cast.Int", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("UInt8",  1, 8, 8,  1, &[("Cast.UInt", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("Int16",  2, 16, 16, 2, &[("Cast.Int", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("UInt16", 2, 16, 16, 2, &[("Cast.UInt", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("Int32",  4, 32, 32, 4, &[("Cast.Int", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("UInt32", 4, 32, 32, 4, &[("Cast.UInt", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("Int64",  8, 64, 64, 8, &[("Cast.Int", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("UInt64", 8, 64, 64, 8, &[("Cast.UInt", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("Int128", 16, 128, 128, 16, &[("Cast.Int", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("UInt128",16, 128, 128, 16, &[("Cast.UInt", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
+            (
+                "Int8",
+                1,
+                8,
+                8,
+                1,
+                &[
+                    ("Cast.Int", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "UInt8",
+                1,
+                8,
+                8,
+                1,
+                &[
+                    ("Cast.UInt", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "Int16",
+                2,
+                16,
+                16,
+                2,
+                &[
+                    ("Cast.Int", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "UInt16",
+                2,
+                16,
+                16,
+                2,
+                &[
+                    ("Cast.UInt", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "Int32",
+                4,
+                32,
+                32,
+                4,
+                &[
+                    ("Cast.Int", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "UInt32",
+                4,
+                32,
+                32,
+                4,
+                &[
+                    ("Cast.UInt", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "Int64",
+                8,
+                64,
+                64,
+                8,
+                &[
+                    ("Cast.Int", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "UInt64",
+                8,
+                64,
+                64,
+                8,
+                &[
+                    ("Cast.UInt", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "Int128",
+                16,
+                128,
+                128,
+                16,
+                &[
+                    ("Cast.Int", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "UInt128",
+                16,
+                128,
+                128,
+                16,
+                &[
+                    ("Cast.UInt", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
             // Floating-point types — bit-width is accuracy, not maximum storage.
             // Each float type carries an explicit bits property for the normalizer.
-            ("Half",   2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16")]),
+            (
+                "Half",
+                2,
+                16,
+                16,
+                2,
+                &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16")],
+            ),
             // 2026-11-09 (float-formats plan): `Half` is canonical (LLVM-
             // matching); `Float16` is the ergonomic ALIAS, registered here as
             // the hardware-format fact row so every consumer (typechecker's
             // fresh universe, parser, backends) sees it without an import.
             // The parent extra keeps ONE width/format fact on Half.
-            ("Float16",2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16"), ("parent", "Half"), ("alias", "Half")]),
-            ("BFloat", 2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16"), ("disamb", "bfloat")]),
-            ("Float",  4, 32, 32, 4, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")]),
-            ("Float32",4, 32, 32, 4, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")]),
-            ("Float64",8, 64, 64, 8, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "64")]),
-            ("Double", 8, 64, 64, 8, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "64")]),
-            ("X86_FP80",10, 80, 80, 4, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "80")]),
-            ("FP128",  16, 128, 128, 16, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "128")]),
+            (
+                "Float16",
+                2,
+                16,
+                16,
+                2,
+                &[
+                    ("Cast.Float", "true"),
+                    ("Cast.Bit", "true"),
+                    ("bits", "16"),
+                    ("parent", "Half"),
+                    ("alias", "Half"),
+                ],
+            ),
+            (
+                "BFloat",
+                2,
+                16,
+                16,
+                2,
+                &[
+                    ("Cast.Float", "true"),
+                    ("Cast.Bit", "true"),
+                    ("bits", "16"),
+                    ("disamb", "bfloat"),
+                ],
+            ),
+            (
+                "Float",
+                4,
+                32,
+                32,
+                4,
+                &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")],
+            ),
+            (
+                "Float32",
+                4,
+                32,
+                32,
+                4,
+                &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")],
+            ),
+            (
+                "Float64",
+                8,
+                64,
+                64,
+                8,
+                &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "64")],
+            ),
+            (
+                "Double",
+                8,
+                64,
+                64,
+                8,
+                &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "64")],
+            ),
+            (
+                "X86_FP80",
+                10,
+                80,
+                80,
+                4,
+                &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "80")],
+            ),
+            (
+                "FP128",
+                16,
+                128,
+                128,
+                16,
+                &[
+                    ("Cast.Float", "true"),
+                    ("Cast.Bit", "true"),
+                    ("bits", "128"),
+                ],
+            ),
             // Other
-            ("Bool",   1, 8, 8,  1, &[("Cast.Bool", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
+            (
+                "Bool",
+                1,
+                8,
+                8,
+                1,
+                &[
+                    ("Cast.Bool", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
             // 2026-07-31: Phase 3 (§8.4) — Char gains Cast.Char so the casting
             // graph resolves Char → category "Char" → Fixed("i32") instead of
             // the generic "Bit" fallback (which produced i64). The graph already
             // had a Char lane (Fixed("i32")).
-            ("Char",   4, 32, 32, 4, &[("Cast.Char", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("Blob",   8, 64, 64, 8, &[("Cast.Blob", "true"), ("Cast.Data", "true"), ("Cast.Bit", "true")]),
-            ("Void",   0, 0,  0,  0, &[]),
+            (
+                "Char",
+                4,
+                32,
+                32,
+                4,
+                &[
+                    ("Cast.Char", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            (
+                "Blob",
+                8,
+                64,
+                64,
+                8,
+                &[
+                    ("Cast.Blob", "true"),
+                    ("Cast.Data", "true"),
+                    ("Cast.Bit", "true"),
+                ],
+            ),
+            ("Void", 0, 0, 0, 0, &[]),
         ];
         for &(name, bytes, min_bits, max_bits, alignment, extras) in PRIMORDIALS {
             let mut properties = std::collections::HashMap::new();
-            properties.insert("alignment".into(), crate::ast::PropertyValue::Int(alignment as i64));
+            properties.insert(
+                "alignment".into(),
+                crate::ast::PropertyValue::Int(alignment as i64),
+            );
             // 2026-11-09: a `("parent", Name)` extra makes the row an ALIAS of
             // another fact (Float16 -> Half) instead of a Data child.
             let mut parent: Option<String> = None;
@@ -250,24 +502,30 @@ impl TypeUniverse {
                 if let Ok(n) = v.parse::<i64>() {
                     properties.insert(k.to_string(), crate::ast::PropertyValue::Int(n));
                 } else {
-                    properties.insert(k.to_string(), crate::ast::PropertyValue::String(v.to_string()));
+                    properties.insert(
+                        k.to_string(),
+                        crate::ast::PropertyValue::String(v.to_string()),
+                    );
                 }
             }
-            self.types.insert(name.to_string(), ResolvedType {
-                type_params: vec![],
+            self.types.insert(
+                name.to_string(),
+                ResolvedType {
+                    type_params: vec![],
 
-                name: name.to_string(),
-                // 2026-08-15 (fundamentals): every type refines through Data
-                // (the universal parent / raw storage root), unless the row
-                // declares a `parent` alias (Float16 -> Half).
-                base: parent.clone().unwrap_or_else(|| "Data".to_string()),
-                bytes,
-                min_bits,
-                max_bits,
-                alignment,
-                properties,
-                fields: vec![],
-            });
+                    name: name.to_string(),
+                    // 2026-08-15 (fundamentals): every type refines through Data
+                    // (the universal parent / raw storage root), unless the row
+                    // declares a `parent` alias (Float16 -> Half).
+                    base: parent.clone().unwrap_or_else(|| "Data".to_string()),
+                    bytes,
+                    min_bits,
+                    max_bits,
+                    alignment,
+                    properties,
+                    fields: vec![],
+                },
+            );
         }
         // 2026-07-18: String primordial — 2-field struct (data: Int, len: Int)
         // The casting graph resolves String's LLVM type as Fixed("{ i64, i64 }")
@@ -290,19 +548,25 @@ impl TypeUniverse {
         {
             let mut p = std::collections::HashMap::new();
             p.insert("alignment".into(), crate::ast::PropertyValue::Int(8));
-            p.insert("Cast.String".into(), crate::ast::PropertyValue::String("true".into()));
-            self.types.insert("String".to_string(), ResolvedType {
-                type_params: vec![],
+            p.insert(
+                "Cast.String".into(),
+                crate::ast::PropertyValue::String("true".into()),
+            );
+            self.types.insert(
+                "String".to_string(),
+                ResolvedType {
+                    type_params: vec![],
 
-                name: "String".to_string(),
-                base: "Data".to_string(),
-                bytes: 0,
-                min_bits: 0,
-                max_bits: 0,
-                alignment: 8,
-                properties: p,
-                fields: vec![],
-            });
+                    name: "String".to_string(),
+                    base: "Data".to_string(),
+                    bytes: 0,
+                    min_bits: 0,
+                    max_bits: 0,
+                    alignment: 8,
+                    properties: p,
+                    fields: vec![],
+                },
+            );
         }
     }
 
@@ -378,20 +642,28 @@ impl TypeUniverse {
 }
 
 #[cfg(test)]
- mod tests {
+mod tests {
     use super::*;
     use crate::ast::Expr;
 
     #[test]
     fn test_get_extension_exists() {
         let mut u = TypeUniverse::new();
-        u.types.insert("String.c".into(), ResolvedType {
-            type_params: vec![],
+        u.types.insert(
+            "String.c".into(),
+            ResolvedType {
+                type_params: vec![],
 
-            name: "String.c".into(), base: "String".into(), bytes: 8, alignment: 8,
-            min_bits: 64, max_bits: 64,
-            properties: HashMap::new(), fields: vec![],
-        });
+                name: "String.c".into(),
+                base: "String".into(),
+                bytes: 8,
+                alignment: 8,
+                min_bits: 64,
+                max_bits: 64,
+                properties: HashMap::new(),
+                fields: vec![],
+            },
+        );
         assert!(u.get_extension("String", "c").is_some());
     }
 
@@ -406,19 +678,38 @@ impl TypeUniverse {
         // type Matrix<T, R, C> { spec Rows: R; spec Cols: C; } +
         // Matrix<Float16, 128, 64> → (128, 64, 1)
         let mut u = TypeUniverse::new();
-        u.types.insert("Matrix".into(), ResolvedType {
-            type_params: vec!["T".into(), "R".into(), "C".into()],
-            name: "Matrix".into(), base: "Data".into(), bytes: 8, alignment: 8,
-            min_bits: 64, max_bits: 64,
-            properties: [
-                ("rows".into(), crate::ast::PropertyValue::Identifier("R".into())),
-                ("cols".into(), crate::ast::PropertyValue::Identifier("C".into())),
-            ].into_iter().collect(),
-            fields: vec![],
-        });
+        u.types.insert(
+            "Matrix".into(),
+            ResolvedType {
+                type_params: vec!["T".into(), "R".into(), "C".into()],
+                name: "Matrix".into(),
+                base: "Data".into(),
+                bytes: 8,
+                alignment: 8,
+                min_bits: 64,
+                max_bits: 64,
+                properties: [
+                    (
+                        "rows".into(),
+                        crate::ast::PropertyValue::Identifier("R".into()),
+                    ),
+                    (
+                        "cols".into(),
+                        crate::ast::PropertyValue::Identifier("C".into()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                fields: vec![],
+            },
+        );
         let ty = Type::Applied(
             "Matrix".into(),
-            vec![Type::Custom("Float16".into()), Type::Number(128), Type::Number(64)],
+            vec![
+                Type::Custom("Float16".into()),
+                Type::Number(128),
+                Type::Number(64),
+            ],
         );
         assert_eq!(u.matrix_shape(&ty), Some((128, 64, 1)));
         // non-shape type → None
@@ -430,18 +721,26 @@ impl TypeUniverse {
     fn test_matrix_shape_literal() {
         // type Mat4x4 : Float { spec Rows: 4; spec Cols: 4; } → (4, 4, 1)
         let mut u = TypeUniverse::new();
-        u.types.insert("Mat4x4".into(), ResolvedType {
-            type_params: vec![],
-            name: "Mat4x4".into(), base: "Float".into(), bytes: 4, alignment: 4,
-            min_bits: 32, max_bits: 32,
-            properties: [
-                ("rows".into(), crate::ast::PropertyValue::Int(4)),
-                ("cols".into(), crate::ast::PropertyValue::Int(4)),
-            ].into_iter().collect(),
-            fields: vec![],
-        });
+        u.types.insert(
+            "Mat4x4".into(),
+            ResolvedType {
+                type_params: vec![],
+                name: "Mat4x4".into(),
+                base: "Float".into(),
+                bytes: 4,
+                alignment: 4,
+                min_bits: 32,
+                max_bits: 32,
+                properties: [
+                    ("rows".into(), crate::ast::PropertyValue::Int(4)),
+                    ("cols".into(), crate::ast::PropertyValue::Int(4)),
+                ]
+                .into_iter()
+                .collect(),
+                fields: vec![],
+            },
+        );
         let ty = Type::Applied("Mat4x4".into(), vec![]);
         assert_eq!(u.matrix_shape(&ty), Some((4, 4, 1)));
     }
 }
-

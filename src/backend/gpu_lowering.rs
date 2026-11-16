@@ -24,7 +24,7 @@
 //! sequencing.
 
 use crate::analysis::accel::KernelShape;
-use crate::analysis::kernel_plan::{KernelPlan, TargetKind, TargetProfile, PlanOp};
+use crate::analysis::kernel_plan::{KernelPlan, PlanOp, TargetKind, TargetProfile};
 use crate::ast::TopLevel;
 use crate::backend::spirv::runner::{RunnerKernel, SsboLayout};
 use crate::type_universe::TypeUniverse;
@@ -89,10 +89,7 @@ fn check_profile(plan: &KernelPlan, kind: TargetKind, p: &TargetProfile) -> Resu
 /// `Some(plan)` must BE this node's plan and must carry the
 /// disjoint-work-item proof — emission never starts without both. `None`
 /// is the legacy arm (flag 0): no plan, no gates.
-pub(crate) fn admission_gates(
-    name: &str,
-    plan: Option<&KernelPlan>,
-) -> Result<(), String> {
+pub(crate) fn admission_gates(name: &str, plan: Option<&KernelPlan>) -> Result<(), String> {
     let Some(plan) = plan else {
         return Ok(());
     };
@@ -147,10 +144,7 @@ impl GpuLowering for PtxGeneralLowering<'_> {
         check_profile(plan, TargetKind::Ptx, p)?;
         check_family(plan, false)?;
         let (kernels, warnings) = crate::backend::ptx::emit_general_node(&self.ctx, Some(plan))?;
-        Ok(LoweredNode {
-            kernels,
-            warnings,
-        })
+        Ok(LoweredNode { kernels, warnings })
     }
 }
 
@@ -303,7 +297,10 @@ mod tests {
         // The tensor lowering is the mirror image: it refuses plans
         // without matrix ops.
         let e = check_family(&plan("g"), true).unwrap_err();
-        assert!(e.contains("no matrix ops") && e.contains("general lowering"), "{e}");
+        assert!(
+            e.contains("no matrix ops") && e.contains("general lowering"),
+            "{e}"
+        );
         assert!(check_family(&p, true).is_ok());
     }
 }

@@ -12,7 +12,11 @@ fn suite(files: &[(&str, &str)], extra: &[&str]) -> (bool, String) {
     }
     let out = dir.path().join("out");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_brievc"));
-    cmd.arg("test").arg(dir.path()).arg("--out").arg(&out).arg("--tests-only");
+    cmd.arg("test")
+        .arg(dir.path())
+        .arg("--out")
+        .arg(&out)
+        .arg("--tests-only");
     cmd.args(extra);
     cmd.env("BRIEV_HOME", env!("CARGO_MANIFEST_DIR"))
         .current_dir(env!("CARGO_MANIFEST_DIR"));
@@ -44,7 +48,10 @@ test wrong { expect add(1, 2) == 4; };
     let (ok, log) = suite(&[("math.bv", src)], &["--domain", "missing"]);
     assert!(!ok, "an unmatched domain is an error:\n{log}");
     assert!(log.contains("no test blocks in domain 'missing'"), "{log}");
-    assert!(log.contains("arithmetic, wrong"), "lists available domains:\n{log}");
+    assert!(
+        log.contains("arithmetic, wrong"),
+        "lists available domains:\n{log}"
+    );
 }
 
 #[test]
@@ -77,7 +84,10 @@ fn expect_requires_bool_and_reactive_forms_are_rejected() {
 
     let (ok, log) = suite(&[("term.bv", "test bad { term 1; };")], &[]);
     assert!(!ok, "term inside a test is rejected:\n{log}");
-    assert!(log.contains("`term` is not allowed inside a `test` block"), "{log}");
+    assert!(
+        log.contains("`term` is not allowed inside a `test` block"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -87,9 +97,7 @@ let done: Bool = false;
 defn add(a: Int, b: Int) -> Int { term a + b; };
 node main [done == false][done] { Print#(add(1, 2)); done = true; term; };
 "#;
-    let with_test = format!(
-        "{plain}test math {{ expect add(1, 2) == 3; }};\n"
-    );
+    let with_test = format!("{plain}test math {{ expect add(1, 2) == 3; }};\n");
     let dir = tempfile::tempdir().unwrap();
     let mut lls = Vec::new();
     for (name, src) in [("plain", plain), ("withtest", &with_test)] {

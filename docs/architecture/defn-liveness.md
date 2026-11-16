@@ -39,6 +39,28 @@ compiled button resolves a missing wasm export and the click throws at
 runtime (BUGS.md 2026-10-06 view-handler drop). `build` = `build_with_roots`
 with an empty set — native programs get the same verdict as before.
 
+## Native observability roots
+
+The Roots table above is FFI-centric: `#export` items, `asm<…>` functions, and
+reactive `node`/`txn` are observable because the host or the ABI consumes them
+by name. But a value can be live through a **native sink** — a compiler-emitted
+artifact the host reads directly, without a per-observation function call. These
+are the observability roots that the FFI-centric framing misses:
+
+| Native root | Why it is observable without an FFI call |
+|---|---|
+| `vol let` / `vol` state-field & Ptr stores | emit `store volatile` / `load volatile` (MMIO semantics); the volatile memory location IS the anchor — the optimizer cannot cache or eliminate it. Host-readable state slot or hardware register. |
+| Webstack state-slot writes | every state-field write emits a flush record into `@__web_flush_buf`; `__web_boot` emits the initial flush; the host's binding table (`state_layout` → `bindingTable`) maps handles to state offsets and reads slots directly from linear memory. No FFI per observation. |
+| Reactive node-firing | the reactor IS the observable scheduler; a fired node is an observable event. A program is live while the reactor can still fire a node (not yet at equilibrium). |
+| `hold G { reside; }` | declares open-ended residency; the *absence of termination* is the observable. The program never reaches equilibrium. |
+| `endprogram code` | `briev_syscall(231, code)` — technically an FFI (specialized syscall), but it is the terminating observable: the host reads the exit code. |
+
+These native roots are what the P3 wasm32 cross-backend parity gate anchors on:
+the parity observable is a **native sink value** (a state-slot value read via the
+binding table, or a `vol`-anchored value), not "the DOM shim" and not
+"`endprogram` is required." See `docs/plans/2026-11-15-verification-next-steps.md`
+§"P3 harness root cause".
+
 ## The intrinsic→helper table
 
 Intrinsic lowerings may emit calls to pure-Briev helper defns

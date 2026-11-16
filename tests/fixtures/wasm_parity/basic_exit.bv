@@ -1,0 +1,26 @@
+// wasm32 cross-backend parity fixture (2026-11-15).
+//
+// Purpose: give the native-vs-wasm gate an observable it can compare honestly.
+// The program computes a checksum and ends with `endprogram code + 3`; the
+// observable is the process exit status, which is an FFI sink
+// (`briev_syscall(231, code)`) per the Observability-as-Liveness doctrine.
+//
+// Deliberately does NOT print. The webstack print path validates string
+// bitcasts (`print_str_bitcast_invalid`) and needs the browser/DOM host to
+// supply the flush + stdout contract; keeping the fixture silent means the
+// gate compares the exit code alone, which a minimal Node host can service.
+// Stdout parity is a separate, larger piece of work.
+//
+// Expected exit status: ((11 * 7 + 5) % 94) + 3 = 82 + 3 = 85.
+
+let done: Int = 0;
+
+defn checksum(a: Int, b: Int) -> Int {
+    term (a * 7 + b) % 94;
+};
+
+node entry [done == 0][done == 1] {
+    let code: Int = checksum(11, 5);
+    done = 1;
+    endprogram code + 3;
+};

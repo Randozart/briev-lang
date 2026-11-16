@@ -91,7 +91,9 @@ fn check_all_paths(
                 );
             }
 
-            Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) | Statement::Tail(expr) => {
+            Statement::Term(Some(expr))
+            | Statement::EndProgram(Some(expr))
+            | Statement::Tail(expr) => {
                 found_term = true;
                 // Check if this term produces true
                 if is_provably_true(expr, &vars) {
@@ -145,8 +147,10 @@ fn extract_vars_from_expr(expr: &Expr, vars: &mut HashMap<String, Expr>) {
         Expr::Identifier(name) => {
             vars.entry(name.clone()).or_insert(Expr::Bool(false));
         }
-        Expr::BinaryOp(BinaryOpKind::And, l, r) | Expr::BinaryOp(BinaryOpKind::Or, l, r)
-        | Expr::BinaryOp(BinaryOpKind::Eq, l, r) | Expr::BinaryOp(BinaryOpKind::Neq, l, r) => {
+        Expr::BinaryOp(BinaryOpKind::And, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Or, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Eq, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Neq, l, r) => {
             extract_vars_from_expr(l, vars);
             extract_vars_from_expr(r, vars);
         }
@@ -169,7 +173,7 @@ mod tests {
         };
 
         let defn = Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: "always_true_defn".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -181,7 +185,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(Some(Expr::Bool(true)))],
             annotations: vec![],
             metadata: HashMap::new(),
@@ -204,7 +209,7 @@ mod tests {
         };
 
         let defn = Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: "always_false_defn".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -216,7 +221,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(Some(Expr::Bool(false)))],
             annotations: vec![],
             metadata: HashMap::new(),
@@ -239,7 +245,7 @@ mod tests {
         };
 
         let defn = Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: "check_x_defn".to_string(),
             type_params: vec![],
             parameters: vec![("x".to_string(), Type::bool_())],
@@ -251,7 +257,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(Expr::Identifier("result".to_string()), Expr::Bool(true)),
                 Statement::Term(Some(Expr::Identifier("result".to_string()))),
@@ -277,7 +284,7 @@ mod tests {
         };
 
         let defn = Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: "not_bool_defn".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -289,10 +296,9 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
-            body: vec![Statement::Term(Some(Expr::Quoted(
-                "not bool".into(),
-            )))],
+                post_authority: false,
+            },
+            body: vec![Statement::Term(Some(Expr::Quoted("not bool".into())))],
             annotations: vec![],
             metadata: HashMap::new(),
             modifiers: vec![],
@@ -314,7 +320,7 @@ mod tests {
         };
 
         let defn = Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: "regular_sig_defn".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -326,7 +332,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(Some(Expr::Bool(false)))],
             annotations: vec![],
             metadata: HashMap::new(),

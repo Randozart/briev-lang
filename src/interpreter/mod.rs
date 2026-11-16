@@ -215,14 +215,18 @@ impl Interpreter {
         let mut registered_objs: HashMap<String, ObjShape> = HashMap::new();
         for item in program {
             if let TopLevel::TypeDef(td) = item {
-                if td.ports_in.is_empty() && td.ports_out.is_empty() && td.body.members.is_empty()
-                {
+                if td.ports_in.is_empty() && td.ports_out.is_empty() && td.body.members.is_empty() {
                     continue;
                 }
                 let shape = ObjShape {
                     ports_in: td.ports_in.clone(),
                     ports_out: td.ports_out.clone(),
-                    fields: td.body.slots.iter().map(|s| (s.name.clone(), s.ty.clone())).collect(),
+                    fields: td
+                        .body
+                        .slots
+                        .iter()
+                        .map(|s| (s.name.clone(), s.ty.clone()))
+                        .collect(),
                 };
                 registered_objs.insert(td.name.clone(), shape.clone());
                 self.objs.insert(td.name.clone(), shape);
@@ -276,10 +280,8 @@ impl Interpreter {
                 for slot in &td.body.slots {
                     if let Some(vname) = slot.name.strip_prefix("__variant_") {
                         registered_variants.insert(vname.to_string(), td.name.clone());
-                        registered_variants.insert(
-                            format!("{}::{}", td.name, vname),
-                            td.name.clone(),
-                        );
+                        registered_variants
+                            .insert(format!("{}::{}", td.name, vname), td.name.clone());
                     }
                 }
             }
@@ -304,10 +306,12 @@ impl Interpreter {
         for item in program {
             match item {
                 TopLevel::Definition(d) => {
-                    self.functions.insert(d.name.clone(), FunctionDef::from_defn(d));
+                    self.functions
+                        .insert(d.name.clone(), FunctionDef::from_defn(d));
                 }
                 TopLevel::Transaction(t) => {
-                    self.functions.insert(t.name.clone(), FunctionDef::from_txn(t));
+                    self.functions
+                        .insert(t.name.clone(), FunctionDef::from_txn(t));
                 }
                 _ => {}
             }
@@ -327,12 +331,9 @@ impl Interpreter {
     fn seed_constants(&mut self, program: &[TopLevel]) {
         for item in program {
             if let TopLevel::Constant(c) = item {
-                if let Ok(v) = eval::eval_expr(
-                    &c.expr,
-                    &mut self.heap,
-                    &mut self.state,
-                    &self.functions,
-                ) {
+                if let Ok(v) =
+                    eval::eval_expr(&c.expr, &mut self.heap, &mut self.state, &self.functions)
+                {
                     self.state.insert(c.name.clone(), v);
                 }
             }
@@ -368,7 +369,8 @@ impl Interpreter {
         for type_name in &concrete_names {
             for (required, defaults) in &traits {
                 let conforms = required.iter().all(|req| {
-                    self.functions.contains_key(&format!("{}::{}", type_name, req))
+                    self.functions
+                        .contains_key(&format!("{}::{}", type_name, req))
                 });
                 if !conforms {
                     continue;
@@ -381,7 +383,6 @@ impl Interpreter {
             }
         }
     }
-
 
     /// 2026-08-09 (init kind, Phase 2): evaluate each `TopLevel::Init` seeding
     /// (value expr, or body statements once) into `state` and mark the name in
@@ -458,7 +459,8 @@ impl Interpreter {
     /// argument values. Binds parameters, executes body, returns result.
     /// Saves and restores any state keys that overlap with parameter names.
     pub fn call_function(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
-        let defn = self.lookup_function(name)
+        let defn = self
+            .lookup_function(name)
             .cloned()
             .ok_or_else(|| RuntimeError::UndefinedFunction(name.to_string()))?;
 
@@ -497,38 +499,42 @@ impl Interpreter {
             // fall-through AND term (the firing completed either way).
             let _ = self.flush_defers();
         } else {
-        loop {
-            if let Some(c) = &defn.contract {
-                if !matches!(c.pre_condition, Expr::Bool(true)) {
-                    let pv = self.eval_expr(&c.pre_condition)?;
-                    if !pv.is_true() {
-                        break;
+            loop {
+                if let Some(c) = &defn.contract {
+                    if !matches!(c.pre_condition, Expr::Bool(true)) {
+                        let pv = self.eval_expr(&c.pre_condition)?;
+                        if !pv.is_true() {
+                            break;
+                        }
                     }
                 }
-            }
-            if let Some(v) = self.run_body_once(&defn.body)? {
-                result = v;
-            }
-            // 2026-08-09 (Phase 10): deferred cleanup runs on EVERY exit —
-            // normal fall-through AND term (the firing completed either way).
-            let _ = self.flush_defers();
-            match &defn.contract {
-                Some(c) if !matches!(c.post_condition, Expr::Bool(true)) => {
-                    let qv = self.eval_expr(&c.post_condition)?;
-                    if qv.is_true() {
-                        break;
-                    }
+                if let Some(v) = self.run_body_once(&defn.body)? {
+                    result = v;
                 }
-                _ => break,
+                // 2026-08-09 (Phase 10): deferred cleanup runs on EVERY exit —
+                // normal fall-through AND term (the firing completed either way).
+                let _ = self.flush_defers();
+                match &defn.contract {
+                    Some(c) if !matches!(c.post_condition, Expr::Bool(true)) => {
+                        let qv = self.eval_expr(&c.post_condition)?;
+                        if qv.is_true() {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
             }
-        }
         }
 
         // Restore saved state
         for (name, saved_val) in saved {
             match saved_val {
-                Some(val) => { self.state.insert(name, val); }
-                None => { self.state.remove(&name); }
+                Some(val) => {
+                    self.state.insert(name, val);
+                }
+                None => {
+                    self.state.remove(&name);
+                }
             }
         }
 
@@ -572,7 +578,11 @@ impl Interpreter {
     /// Pattern match a value against a pattern. Delegates to the full
     /// implementation in eval.rs (used by eval_match and kept here for
     /// API compatibility).
-    pub fn pattern_match(pat: &crate::ast::Pattern, val: &Value, bindings: &mut HashMap<String, Value>) -> bool {
+    pub fn pattern_match(
+        pat: &crate::ast::Pattern,
+        val: &Value,
+        bindings: &mut HashMap<String, Value>,
+    ) -> bool {
         crate::interpreter::pattern_match(pat, val, bindings)
     }
 
@@ -580,7 +590,12 @@ impl Interpreter {
     pub fn list_nesting_depth(val: &Value) -> usize {
         match val {
             Value::Product { fields, .. } => {
-                fields.iter().map(|v| Self::list_nesting_depth(v)).max().unwrap_or(0) + 1
+                fields
+                    .iter()
+                    .map(|v| Self::list_nesting_depth(v))
+                    .max()
+                    .unwrap_or(0)
+                    + 1
             }
             _ => 0,
         }
@@ -592,7 +607,12 @@ impl Interpreter {
         for coord in coords {
             match coord {
                 Expr::Decimal(n) => result.push(Value::int(*n)),
-                _ => return Err(RuntimeError::TypeError { expected: "integer".to_string(), found: format!("{:?}", coord) }),
+                _ => {
+                    return Err(RuntimeError::TypeError {
+                        expected: "integer".to_string(),
+                        found: format!("{:?}", coord),
+                    });
+                }
             }
         }
         Ok(result)
@@ -742,12 +762,19 @@ pub enum Value {
     /// registry ever reaches the interpreter, replace the name with a tag.
     /// Renamed from `Constructor` (the synthesis-tree name was misleading —
     /// the value is a tagged compound, not a constructor expression).
-    Sum { name: String, payload: Vec<Value> },
+    Sum {
+        name: String,
+        payload: Vec<Value>,
+    },
 
     /// 2026-08-07 (Phase 7): an iterable range — `start..end` (half-open) or
     /// `start..=end` (inclusive). Produced by `Expr::Range`; consumed by
     /// `foreach` (SPEC §11.4 counted iteration).
-    Range { start: i64, end: i64, inclusive: bool },
+    Range {
+        start: i64,
+        end: i64,
+        inclusive: bool,
+    },
 }
 
 /// 2026-08-22 (Phase 7b): manual equality — shared-storage variants
@@ -758,8 +785,14 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::EventQ(a), Value::EventQ(b)) => std::rc::Rc::ptr_eq(a, b),
             (
-                Value::Instance { type_name: ta, fields: fa },
-                Value::Instance { type_name: tb, fields: fb },
+                Value::Instance {
+                    type_name: ta,
+                    fields: fa,
+                },
+                Value::Instance {
+                    type_name: tb,
+                    fields: fb,
+                },
             ) => ta == tb && std::rc::Rc::ptr_eq(fa, fb),
             _ => match std::mem::discriminant(self) == std::mem::discriminant(other) {
                 true => self.debug_eq(other),
@@ -823,15 +856,18 @@ pub fn register_pending_task(
     let segments = crate::analysis::task_segments::split_task_body(&body, param_names);
     TASK_TABLE.with(|t| {
         if let Some(table) = t.borrow_mut().as_mut() {
-            table.insert(id, TaskEntry {
+            table.insert(
                 id,
-                fn_name,
-                status: TaskStatus::Ready,
-                result: None,
-                pending_args: Some(args),
-                segments,
-                current_segment: 0,
-            });
+                TaskEntry {
+                    id,
+                    fn_name,
+                    status: TaskStatus::Ready,
+                    result: None,
+                    pending_args: Some(args),
+                    segments,
+                    current_segment: 0,
+                },
+            );
         }
     });
 }
@@ -882,21 +918,51 @@ impl Value {
             (Bits(a), Bits(b)) => a == b,
             (Atom(a), Atom(b)) => a == b,
             (
-                Product { fields: fa, names: na },
-                Product { fields: fb, names: nb },
+                Product {
+                    fields: fa,
+                    names: na,
+                },
+                Product {
+                    fields: fb,
+                    names: nb,
+                },
             ) => fa == fb && na == nb,
             (Void, Void) => true,
             (Ref(a), Ref(b)) => a == b,
-            (Sum { name: na, payload: pa }, Sum { name: nb, payload: pb }) => {
-                na == nb && pa == pb
-            }
             (
-                Range { start: sa, end: ea, inclusive: ia },
-                Range { start: sb, end: eb, inclusive: ib },
+                Sum {
+                    name: na,
+                    payload: pa,
+                },
+                Sum {
+                    name: nb,
+                    payload: pb,
+                },
+            ) => na == nb && pa == pb,
+            (
+                Range {
+                    start: sa,
+                    end: ea,
+                    inclusive: ia,
+                },
+                Range {
+                    start: sb,
+                    end: eb,
+                    inclusive: ib,
+                },
             ) => sa == sb && ea == eb && ia == ib,
-            (Dyn { trait_name: ta, concrete: ca, inner: ia }, Dyn { trait_name: tb, concrete: cb, inner: ib }) => {
-                ta == tb && ca == cb && ia == ib
-            }
+            (
+                Dyn {
+                    trait_name: ta,
+                    concrete: ca,
+                    inner: ia,
+                },
+                Dyn {
+                    trait_name: tb,
+                    concrete: cb,
+                    inner: ib,
+                },
+            ) => ta == tb && ca == cb && ia == ib,
             _ => format!("{:?}", self) == format!("{:?}", other),
         }
     }
@@ -935,7 +1001,10 @@ impl Value {
     }
 
     pub fn product(fields: Vec<Value>) -> Self {
-        Value::Product { fields, names: None }
+        Value::Product {
+            fields,
+            names: None,
+        }
     }
 
     pub fn named_product(fields: Vec<Value>, names: Vec<String>) -> Self {
@@ -985,6 +1054,28 @@ impl Value {
         }
     }
 
+    /// True for a Float-typed atom (drives numeric-domain selection: a Float
+    /// operand promotes an integer/comparison to f64).
+    pub fn is_float(&self) -> bool {
+        matches!(self, Value::Atom(Atom::Float(_)))
+    }
+
+    /// Numeric value in the f64 domain: Floats exactly, integers/bools/chars
+    /// widened. Used to compare/combine a Float with an integer operand.
+    pub fn as_number_f64(&self) -> Option<f64> {
+        match self {
+            Value::Atom(Atom::Float(f)) => Some(*f),
+            Value::Atom(Atom::Int(n)) => Some(*n as f64),
+            Value::Atom(Atom::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
+            Value::Atom(Atom::Char(c)) => Some(*c as i64 as f64),
+            Value::Bits(bytes) if bytes.len() >= 8 => {
+                let arr: [u8; 8] = bytes[..8].try_into().ok()?;
+                Some(f64::from_le_bytes(arr))
+            }
+            _ => None,
+        }
+    }
+
     /// Extract first byte as bool.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -1022,7 +1113,8 @@ impl Value {
                 let len = heap.read(*addr as u64, 8)?.to_vec();
                 let len = i64::from_le_bytes(len.try_into().unwrap_or([0u8; 8]));
                 if len > 0 {
-                    heap.read(*addr as u64 + 8, len as usize).map(|p| p.to_vec())
+                    heap.read(*addr as u64 + 8, len as usize)
+                        .map(|p| p.to_vec())
                 } else {
                     Some(Vec::new())
                 }
@@ -1410,9 +1502,7 @@ mod tests {
         // 2026-08-13 (layout-keywords plan Phase 4): `trap;` raises the abort
         // diagnostic in the reference interpreter (SPEC §8.8), mirroring the
         // LLVM `llvm.trap` + `unreachable` sequence.
-        let program = parse_program(
-            "defn f() -> Int {\n  trap;\n  term 1;\n};\n",
-        );
+        let program = parse_program("defn f() -> Int {\n  trap;\n  term 1;\n};\n");
         let mut interp = Interpreter::new();
         interp.load_program(&program);
         let err = interp.call_function("f", &[]).unwrap_err();
@@ -1428,9 +1518,7 @@ mod tests {
         // program stops here; check mode reports RuntimeError::Halt (the
         // backend emits the wfi spin loop on ARM-family targets, the trap
         // abort elsewhere).
-        let program = parse_program(
-            "defn f() -> Int {\n  halt;\n  term 1;\n};\n",
-        );
+        let program = parse_program("defn f() -> Int {\n  halt;\n  term 1;\n};\n");
         let mut interp = Interpreter::new();
         interp.load_program(&program);
         let err = interp.call_function("f", &[]).unwrap_err();
@@ -1446,7 +1534,10 @@ mod tests {
         let program = parse_program("init BufSize: Int = 64;\n");
         let mut interp = Interpreter::new();
         interp.load_program(&program);
-        assert_eq!(interp.state.get("BufSize").and_then(|v| v.as_i64()), Some(64));
+        assert_eq!(
+            interp.state.get("BufSize").and_then(|v| v.as_i64()),
+            Some(64)
+        );
         let expr = Expr::Identifier("BufSize".into());
         let v = interp.eval_expr(&expr).unwrap();
         assert_eq!(v.as_i64(), Some(64));
@@ -1455,12 +1546,13 @@ mod tests {
     #[test]
     fn init_body_form_term_yields_seed() {
         // Body form: statements run once; `term <expr>` yields the seed.
-        let program = parse_program(
-            "init Layout: [16 | 32 | 64] Int { term 32; };\n",
-        );
+        let program = parse_program("init Layout: [16 | 32 | 64] Int { term 32; };\n");
         let mut interp = Interpreter::new();
         interp.load_program(&program);
-        assert_eq!(interp.state.get("Layout").and_then(|v| v.as_i64()), Some(32));
+        assert_eq!(
+            interp.state.get("Layout").and_then(|v| v.as_i64()),
+            Some(32)
+        );
     }
 
     #[test]
@@ -1469,10 +1561,7 @@ mod tests {
         let program = parse_program("init BufSize: Int = 64;\n");
         let mut interp = Interpreter::new();
         interp.load_program(&program);
-        let stmt = Statement::Assign(
-            Expr::Identifier("BufSize".into()),
-            Expr::Decimal(128),
-        );
+        let stmt = Statement::Assign(Expr::Identifier("BufSize".into()), Expr::Decimal(128));
         let err = interp.exec_stmt(&stmt).unwrap_err();
         assert!(
             format!("{}", err).contains("immutable for the run"),
@@ -1483,9 +1572,7 @@ mod tests {
     #[test]
     fn duplicate_init_seed_is_a_runtime_error() {
         // Set-once: seeding the same init twice is an error.
-        let program = parse_program(
-            "init BufSize: Int = 64;\ninit BufSize: Int = 128;\n",
-        );
+        let program = parse_program("init BufSize: Int = 64;\ninit BufSize: Int = 128;\n");
         let mut interp = Interpreter::new();
         let err = interp.seed_inits(&program).unwrap_err();
         assert!(
@@ -1512,7 +1599,10 @@ mod tests {
         // The defer registers; after a term the stack drains (empty = ran).
         let v = interp.call_function("f", &[]).unwrap();
         assert_eq!(v.as_i64(), Some(7));
-        assert!(interp.defer_stack.is_empty(), "defers must drain after term");
+        assert!(
+            interp.defer_stack.is_empty(),
+            "defers must drain after term"
+        );
     }
 
     #[test]
@@ -1538,11 +1628,13 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.load_program(&program);
         // Spawn creates a Ready task entry, returns a task-id marker.
-        let handle = interp.eval_expr(&Expr::Spawn {
-            type_name: "compute".to_string(),
-            args: vec![Expr::Decimal(21)],
-            storage: crate::ast::SpawnStorage::Pooled,
-        }).unwrap();
+        let handle = interp
+            .eval_expr(&Expr::Spawn {
+                type_name: "compute".to_string(),
+                args: vec![Expr::Decimal(21)],
+                storage: crate::ast::SpawnStorage::Pooled,
+            })
+            .unwrap();
         let task_id = handle.as_i64().expect("handle is task-id Int");
         assert!(task_id >= 0, "task id is non-negative");
         // Verify the task table has a Ready entry (thread-local mirror).
@@ -1554,8 +1646,14 @@ mod tests {
         );
         // Bind the handle, then await triggers lazy execution.
         interp.state.insert("t".to_string(), handle);
-        let awaited = interp.eval_expr(&Expr::Await(Box::new(Expr::Identifier("t".to_string())))).unwrap();
-        assert_eq!(awaited.as_i64(), Some(42), "await must yield the task result");
+        let awaited = interp
+            .eval_expr(&Expr::Await(Box::new(Expr::Identifier("t".to_string()))))
+            .unwrap();
+        assert_eq!(
+            awaited.as_i64(),
+            Some(42),
+            "await must yield the task result"
+        );
         // After await, the table shows Done.
         let snapshot = crate::interpreter::task_table_snapshot().unwrap();
         assert_eq!(
@@ -1607,11 +1705,13 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.load_program(&program);
         interp.state.insert("wire".to_string(), unready_port());
-        let handle = interp.eval_expr(&Expr::Spawn {
-            type_name: "consume".to_string(),
-            args: vec![Expr::Identifier("wire".to_string())],
-            storage: crate::ast::SpawnStorage::Pooled,
-        }).unwrap();
+        let handle = interp
+            .eval_expr(&Expr::Spawn {
+                type_name: "consume".to_string(),
+                args: vec![Expr::Identifier("wire".to_string())],
+                storage: crate::ast::SpawnStorage::Pooled,
+            })
+            .unwrap();
         let tid = handle.as_i64().unwrap() as u64;
         interp.state.insert("t".to_string(), handle.clone());
         let await_t = || Expr::Await(Box::new(Expr::Identifier("t".to_string())));
@@ -1626,11 +1726,14 @@ mod tests {
         // Top-level fire: wire <- Damage{amount:42}; wakes the waiter.
         let fired = eval_statement(
             &fire_stmt("wire", 42),
-            &mut interp.heap, &mut interp.state, &interp.functions,
+            &mut interp.heap,
+            &mut interp.state,
+            &interp.functions,
         );
         assert!(fired.is_ok());
         assert_eq!(
-            status_of(tid), Some(TaskStatus::Ready),
+            status_of(tid),
+            Some(TaskStatus::Ready),
             "fire must wake the blocked task"
         );
 
@@ -1656,14 +1759,18 @@ mod tests {
         interp.load_program(&program);
         interp.state.insert("wire".to_string(), unready_port());
         for (name, fname) in [("c", "consume"), ("p", "produce")] {
-            let h = interp.eval_expr(&Expr::Spawn {
-                type_name: fname.to_string(),
-                args: vec![Expr::Identifier("wire".to_string())],
-                storage: crate::ast::SpawnStorage::Pooled,
-            }).unwrap();
+            let h = interp
+                .eval_expr(&Expr::Spawn {
+                    type_name: fname.to_string(),
+                    args: vec![Expr::Identifier("wire".to_string())],
+                    storage: crate::ast::SpawnStorage::Pooled,
+                })
+                .unwrap();
             interp.state.insert(name.to_string(), h);
         }
-        let v = interp.eval_expr(&Expr::Await(Box::new(Expr::Identifier("c".to_string())))).unwrap();
+        let v = interp
+            .eval_expr(&Expr::Await(Box::new(Expr::Identifier("c".to_string()))))
+            .unwrap();
         assert_eq!(v.as_i64(), Some(7), "producer's fire fed the consumer");
         // Both sides finished; nothing left schedulable.
         assert!(collect_runnable().is_empty(), "no zombie tasks remain");
@@ -1680,39 +1787,54 @@ mod tests {
         interp.state.insert("wire".to_string(), unready_port());
 
         // (a) free BEFORE any execution: never runs.
-        let h1 = interp.eval_expr(&Expr::Spawn {
-            type_name: "slow".to_string(),
-            args: vec![Expr::Identifier("wire".to_string())],
-            storage: crate::ast::SpawnStorage::Pooled,
-        }).unwrap();
+        let h1 = interp
+            .eval_expr(&Expr::Spawn {
+                type_name: "slow".to_string(),
+                args: vec![Expr::Identifier("wire".to_string())],
+                storage: crate::ast::SpawnStorage::Pooled,
+            })
+            .unwrap();
         let t1 = h1.as_i64().unwrap() as u64;
         interp.state.insert("t1".to_string(), h1);
         eval_statement(
             &Statement::FreeHint("t1".to_string()),
-            &mut interp.heap, &mut interp.state, &interp.functions,
-        ).unwrap();
+            &mut interp.heap,
+            &mut interp.state,
+            &interp.functions,
+        )
+        .unwrap();
         assert_eq!(status_of(t1), Some(TaskStatus::Cancelled));
 
         // (b) free AFTER a block: Waiting → Cancelled.
-        let h2 = interp.eval_expr(&Expr::Spawn {
-            type_name: "slow".to_string(),
-            args: vec![Expr::Identifier("wire".to_string())],
-            storage: crate::ast::SpawnStorage::Pooled,
-        }).unwrap();
+        let h2 = interp
+            .eval_expr(&Expr::Spawn {
+                type_name: "slow".to_string(),
+                args: vec![Expr::Identifier("wire".to_string())],
+                storage: crate::ast::SpawnStorage::Pooled,
+            })
+            .unwrap();
         let t2 = h2.as_i64().unwrap() as u64;
         interp.state.insert("t2".to_string(), h2);
-        interp.eval_expr(&Expr::Await(Box::new(Expr::Identifier("t2".to_string())))).unwrap();
+        interp
+            .eval_expr(&Expr::Await(Box::new(Expr::Identifier("t2".to_string()))))
+            .unwrap();
         assert_eq!(status_of(t2), Some(TaskStatus::Waiting));
         eval_statement(
             &Statement::FreeHint("t2".to_string()),
-            &mut interp.heap, &mut interp.state, &interp.functions,
-        ).unwrap();
+            &mut interp.heap,
+            &mut interp.state,
+            &interp.functions,
+        )
+        .unwrap();
 
         // Firing the port must NOT resurrect either task.
         eval_statement(
             &fire_stmt("wire", 99),
-            &mut interp.heap, &mut interp.state, &interp.functions,
-        ).unwrap();
+            &mut interp.heap,
+            &mut interp.state,
+            &interp.functions,
+        )
+        .unwrap();
         assert_eq!(status_of(t1), Some(TaskStatus::Cancelled));
         assert_eq!(status_of(t2), Some(TaskStatus::Cancelled));
         assert!(collect_runnable().is_empty(), "freed tasks never schedule");
@@ -1720,7 +1842,9 @@ mod tests {
         // Await of a freed handle returns the handle, not a result. The
         // binding is gone (freed locals read as errors), so await the raw
         // task id.
-        let v = interp.eval_expr(&Expr::Await(Box::new(Expr::Decimal(t1 as i64)))).unwrap();
+        let v = interp
+            .eval_expr(&Expr::Await(Box::new(Expr::Decimal(t1 as i64))))
+            .unwrap();
         assert_ne!(v.as_i64(), Some(99), "a cancelled task has no result");
     }
 
@@ -1729,10 +1853,12 @@ mod tests {
         // Top-level reads keep the SPEC §9.5 gate: .^Ready first, else error.
         let mut interp = Interpreter::new();
         interp.state.insert("wire".to_string(), unready_port());
-        let err = interp.eval_expr(&Expr::Field(
-            Box::new(Expr::Identifier("wire".to_string())),
-            "amount".to_string(),
-        )).unwrap_err();
+        let err = interp
+            .eval_expr(&Expr::Field(
+                Box::new(Expr::Identifier("wire".to_string())),
+                "amount".to_string(),
+            ))
+            .unwrap_err();
         match err {
             RuntimeError::TypeError { found, .. } => {
                 assert!(found.contains("not Ready"), "{found}");
@@ -1762,7 +1888,10 @@ mod tests {
         // The registration mirror is seeded per program — load first.
         Interpreter::new().load_program(&program);
         register_pending_task(
-            9_001, "job".to_string(), Vec::new(), body,
+            9_001,
+            "job".to_string(),
+            Vec::new(),
+            body,
             &["d".to_string(), "o".to_string()],
         );
         let (segments, current) = take_task_segments(9_001).expect("registered");
@@ -1777,8 +1906,6 @@ mod tests {
             "segment 1 HEADS with the blocking read"
         );
     }
-
-
 
     #[test]
     fn coll_count_and_capacity_intrinsic_parity() {
@@ -1888,7 +2015,9 @@ pub fn mark_done(id: u64) {
 pub fn collect_runnable() -> Vec<(u64, String, Vec<Value>, Vec<Vec<Statement>>, usize)> {
     TASK_TABLE.with(|t| {
         let table_ref = t.borrow();
-        let Some(table) = table_ref.as_ref() else { return Vec::new() };
+        let Some(table) = table_ref.as_ref() else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         let mut ids: Vec<&u64> = table.keys().collect();
         ids.sort();
@@ -1933,7 +2062,9 @@ pub fn get_task_result(id: u64) -> Option<Value> {
 pub fn advance_segment_status(id: u64) -> bool {
     TASK_TABLE.with(|t| {
         let mut table_ref = t.borrow_mut();
-        let Some(table) = table_ref.as_mut() else { return false };
+        let Some(table) = table_ref.as_mut() else {
+            return false;
+        };
         if let Some(entry) = table.get_mut(&id) {
             entry.current_segment += 1;
             if entry.current_segment >= entry.segments.len() {
@@ -1984,7 +2115,9 @@ pub fn block_current_task_on_slot(slot: &std::rc::Rc<std::cell::RefCell<EventSlo
 /// slot's `borrow_mut` (the fire path holds one).
 pub fn fire_slot_wake(slot: &std::rc::Rc<std::cell::RefCell<EventSlot>>) {
     let waiters = std::mem::take(&mut slot.borrow_mut().waiters);
-    if waiters.is_empty() { return; }
+    if waiters.is_empty() {
+        return;
+    }
     TASK_TABLE.with(|t| {
         if let Some(table) = t.borrow_mut().as_mut() {
             for tid in waiters {
@@ -2041,7 +2174,9 @@ mod cell_b2_tests {
         p.parse_program().unwrap()
     }
 
-    fn bindings_instance(interp: &Interpreter) -> std::rc::Rc<std::cell::RefCell<HashMap<String, Value>>> {
+    fn bindings_instance(
+        interp: &Interpreter,
+    ) -> std::rc::Rc<std::cell::RefCell<HashMap<String, Value>>> {
         match interp.state.get("src").expect("instance bound") {
             Value::Instance { fields, .. } => fields.clone(),
             other => panic!("not an instance: {:?}", std::mem::discriminant(other)),
@@ -2060,11 +2195,13 @@ mod cell_b2_tests {
         let mut interp = Interpreter::new();
         interp.load_program(&program);
         // Cell spawn constructs an instance with a fresh unready OUT port.
-        let h = interp.eval_expr(&Expr::Spawn {
-            type_name: "Source".to_string(),
-            args: vec![],
-            storage: crate::ast::SpawnStorage::Pooled,
-        }).unwrap();
+        let h = interp
+            .eval_expr(&Expr::Spawn {
+                type_name: "Source".to_string(),
+                args: vec![],
+                storage: crate::ast::SpawnStorage::Pooled,
+            })
+            .unwrap();
         interp.state.insert("src".to_string(), h.clone());
         match &h {
             Value::Instance { type_name, fields } => {
@@ -2077,17 +2214,23 @@ mod cell_b2_tests {
             other => panic!("expected instance, got {:?}", std::mem::discriminant(other)),
         }
         // Member dispatch mutates state and fires the port.
-        let fired = interp.eval_expr(&Expr::MethodCall(
-            Box::new(Expr::Identifier("src".to_string())),
-            "emit".to_string(),
-            vec![Expr::Decimal(42)],
-            None,
-        )).unwrap();
+        let fired = interp
+            .eval_expr(&Expr::MethodCall(
+                Box::new(Expr::Identifier("src".to_string())),
+                "emit".to_string(),
+                vec![Expr::Decimal(42)],
+                None,
+            ))
+            .unwrap();
         assert_eq!(fired.as_i64(), Some(1), "txn returns true (Bool as 1)");
         let src = bindings_instance(&interp);
         {
             let f = src.borrow();
-            assert_eq!(f.get("count").and_then(|v| v.as_i64()), Some(1), "slot write-back");
+            assert_eq!(
+                f.get("count").and_then(|v| v.as_i64()),
+                Some(1),
+                "slot write-back"
+            );
             if let Some(Value::EventQ(q)) = f.get("evt") {
                 let slot = q.borrow();
                 assert!(slot.ready, "emit fired the port");
@@ -2120,39 +2263,44 @@ mod cell_b2_tests {
         );
         let mut interp = Interpreter::new();
         interp.load_program(&program);
-        let h = interp.eval_expr(&Expr::Spawn {
-            type_name: "Source".to_string(),
-            args: vec![],
-            storage: crate::ast::SpawnStorage::Pooled,
-        }).unwrap();
+        let h = interp
+            .eval_expr(&Expr::Spawn {
+                type_name: "Source".to_string(),
+                args: vec![],
+                storage: crate::ast::SpawnStorage::Pooled,
+            })
+            .unwrap();
         interp.state.insert("src".to_string(), h);
 
         // Wire extraction: src.out yields the SHARED EventQ handle.
-        let wire = interp.eval_expr(&Expr::Field(
-            Box::new(Expr::Identifier("src".to_string())),
-            "evt".to_string(),
-        )).unwrap();
+        let wire = interp
+            .eval_expr(&Expr::Field(
+                Box::new(Expr::Identifier("src".to_string())),
+                "evt".to_string(),
+            ))
+            .unwrap();
         interp.state.insert("wire".to_string(), wire);
 
         for (name, fname, arg) in [("c", "consume", "wire"), ("p", "produce", "src")] {
-            let th = interp.eval_expr(&Expr::Spawn {
-                type_name: fname.to_string(),
-                args: vec![Expr::Identifier(arg.to_string())],
-                storage: crate::ast::SpawnStorage::Pooled,
-            }).unwrap();
+            let th = interp
+                .eval_expr(&Expr::Spawn {
+                    type_name: fname.to_string(),
+                    args: vec![Expr::Identifier(arg.to_string())],
+                    storage: crate::ast::SpawnStorage::Pooled,
+                })
+                .unwrap();
             interp.state.insert(name.to_string(), th);
         }
-        let v = interp.eval_expr(&Expr::Await(Box::new(Expr::Identifier("c".to_string())))).unwrap();
+        let v = interp
+            .eval_expr(&Expr::Await(Box::new(Expr::Identifier("c".to_string()))))
+            .unwrap();
         assert_eq!(v.as_i64(), Some(9), "cell fire woke the blocked consumer");
 
         // Both tasks Done; the cell's count ticked exactly once.
         let snapshot = task_table_snapshot().unwrap();
         assert!(snapshot.values().all(|e| e.status == TaskStatus::Done));
         let inst = bindings_instance(&interp);
-        assert_eq!(
-            inst.borrow().get("count").and_then(|v| v.as_i64()),
-            Some(1)
-        );
+        assert_eq!(inst.borrow().get("count").and_then(|v| v.as_i64()), Some(1));
     }
 }
 
@@ -2173,16 +2321,17 @@ mod phase_c_probe_tests {
         // undefined in later segments. This is what makes segmented-
         // continuation lowering exactly faithful (plan 2026-08-26-async-
         // phase-c §Reference).
-        let program = parse_program(
-            "defn job(n: Int) -> Int { let acc: Int = n * 2; yield; term acc; };",
-        );
+        let program =
+            parse_program("defn job(n: Int) -> Int { let acc: Int = n * 2; yield; term acc; };");
         let mut interp = Interpreter::new();
         interp.load_program(&program);
-        let h = interp.eval_expr(&Expr::Spawn {
-            type_name: "job".to_string(),
-            args: vec![Expr::Decimal(5)],
-            storage: crate::ast::SpawnStorage::Pooled,
-        }).unwrap();
+        let h = interp
+            .eval_expr(&Expr::Spawn {
+                type_name: "job".to_string(),
+                args: vec![Expr::Decimal(5)],
+                storage: crate::ast::SpawnStorage::Pooled,
+            })
+            .unwrap();
         interp.state.insert("t".to_string(), h);
         let v = interp.eval_expr(&Expr::Await(Box::new(Expr::Identifier("t".to_string()))));
         match v {
@@ -2216,24 +2365,27 @@ defn concat_demo() -> List<Int> {
         .expect("List + List must typecheck and elaborate");
         let mut interp = Interpreter::new();
         interp.load_program(&items);
-        let v = interp.call_function("concat_demo", &[]).expect("concat_demo must run");
+        let v = interp
+            .call_function("concat_demo", &[])
+            .expect("concat_demo must run");
         let Value::Product { fields, .. } = &v else {
             panic!("concat must return a list (product), got {v:?}");
         };
-        let got: Vec<i64> = fields.iter().map(|f| f.as_i64().expect("Int elements")).collect();
+        let got: Vec<i64> = fields
+            .iter()
+            .map(|f| f.as_i64().expect("Int elements"))
+            .collect();
         assert_eq!(got, vec![1, 2, 3], "[1,2] + [3] must concatenate");
     }
 }
-
-
 
 #[cfg(test)]
 mod json_interpreter_tests {
     use super::*;
 
     fn interp_with(src: &str) -> Interpreter {
-        let (items, _) = crate::library::parse_and_check("interp_json_test.bv", src)
-            .expect("must typecheck");
+        let (items, _) =
+            crate::library::parse_and_check("interp_json_test.bv", src).expect("must typecheck");
         let mut interp = Interpreter::new();
         interp.load_program(&items);
         interp
@@ -2256,11 +2408,16 @@ mod json_interpreter_tests {
         assert_eq!(name, "Ok", "json_parse(\"[1,2,3]\") must succeed");
         let v = payload.into_iter().next().unwrap();
         assert_eq!(
-            interp.call_function("json_length", &[v.clone()]).unwrap().as_i64(),
+            interp
+                .call_function("json_length", &[v.clone()])
+                .unwrap()
+                .as_i64(),
             Some(3),
             "[1,2,3] must parse to a 3-element array"
         );
-        let first = interp.call_function("json_get_by_index", &[v, Value::int(0)]).unwrap();
+        let first = interp
+            .call_function("json_get_by_index", &[v, Value::int(0)])
+            .unwrap();
         let Value::Sum { name, payload } = first else {
             panic!("json_get_by_index must return a Result");
         };
@@ -2283,12 +2440,18 @@ mod json_interpreter_tests {
         );
         let s = Value::bits(b"1".to_vec());
         assert_eq!(
-            interp.call_function("safe", &[s.clone(), Value::int(1)]).unwrap().as_bool(),
+            interp
+                .call_function("safe", &[s.clone(), Value::int(1)])
+                .unwrap()
+                .as_bool(),
             Some(true),
             "i >= len must short-circuit before char_at(s, i)"
         );
         assert_eq!(
-            interp.call_function("safe_and", &[s, Value::int(5)]).unwrap().as_bool(),
+            interp
+                .call_function("safe_and", &[s, Value::int(5)])
+                .unwrap()
+                .as_bool(),
             Some(false),
             "i < len false must short-circuit before char_at(s, i)"
         );
@@ -2299,8 +2462,20 @@ mod json_interpreter_tests {
     #[test]
     fn trailing_expression_is_the_reference_result() {
         let mut interp = interp_with("defn tail(n: Int) -> Int { match n { 1 => 10, _ => 20 } };");
-        assert_eq!(interp.call_function("tail", &[Value::int(1)]).unwrap().as_i64(), Some(10));
-        assert_eq!(interp.call_function("tail", &[Value::int(2)]).unwrap().as_i64(), Some(20));
+        assert_eq!(
+            interp
+                .call_function("tail", &[Value::int(1)])
+                .unwrap()
+                .as_i64(),
+            Some(10)
+        );
+        assert_eq!(
+            interp
+                .call_function("tail", &[Value::int(2)])
+                .unwrap()
+                .as_i64(),
+            Some(20)
+        );
     }
 
     /// 2026-10-06: a match arm's writes reach the enclosing scope (the arm body
@@ -2310,6 +2485,12 @@ mod json_interpreter_tests {
         let mut interp = interp_with(
             "defn arm(n: Int) -> Int { let acc: Int = 0; let _r = match n { 1 => { acc = 7; 0 } _ => 0 }; term acc; };",
         );
-        assert_eq!(interp.call_function("arm", &[Value::int(1)]).unwrap().as_i64(), Some(7));
+        assert_eq!(
+            interp
+                .call_function("arm", &[Value::int(1)])
+                .unwrap()
+                .as_i64(),
+            Some(7)
+        );
     }
 }

@@ -169,11 +169,11 @@ int64_t briev_sysconf(int64_t name) {
     return sysconf((int)name);
 }
 
-// 2026-08-01 (audit): the Print# convenience intrinsic routes Float64 (double)
-// values here — %.9g round-trips any double uniquely (~17 sig digits for the
-// mantissa+exponent range, more than enough for a canonical print).
+// Print# routes Float64 values here. Flush before returning so output stays
+// ordered with Briev's direct writes and survives its raw-syscall endprogram.
 __attribute__((always_inline)) int64_t __print_float64(double f) {
     printf("%.9g", f);
+    fflush(stdout);
     return 0;
 }
 
@@ -307,3 +307,111 @@ int64_t __briev_setenv(const uint8_t* k, const uint8_t* v) {
  * runtime link (compiler, harness, tests) defines it. Inert until a caller
  * opens a request (`coll_arena_begin`). */
 #include "../std/c/coll_arena.c"
+
+/* ── 2026-11-16 (per-worker arena plan, Stage 2a): explicit worker threads ──
+ *
+ * A program that declares `on thread <N>` runs each worker's reactive slice in
+ * its own OS thread. The compiler emits one tick function per worker
+ * (`@reactor_tick` for worker 0, `@reactor_tick_w<N>` for the rest) and calls
+ * this pool once per tick:
+ *
+ *   briev_workers_start(count, table, state)   — once, before the loop
+ *   briev_workers_release()                    — main: wait for the tick
+ * barrier
+ *   ... main runs worker 0's tick itself ...
+ *   briev_workers_wait()                       — main: wait for the tick to
+ * finish briev_workers_stop()                       — at .end
+ *
+ * The two barriers give the memory ordering for the whole tick: every worker's
+ * writes to `%State` are visible to the others after the `done` barrier, and no
+ * worker starts a tick before the previous one finished everywhere. That is why
+ * no per-tick fences are emitted.
+ *
+ * Soundness precondition: the compiler refuses a pinned program whose workers
+ * are not provably independent (distinct globals, at most one observable sink,
+ * at most one allocating worker while the arena cursor is shared). This file
+ * provides the mechanism; the frontend owns the proof.
+ */
+#define BRIEV_MAX_WORKERS 63
+
+static pthread_barrier_t briev_worker_release_barrier;
+static pthread_barrier_t briev_worker_done_barrier;
+static long briev_worker_count;
+static int briev_worker_stop;
+static void (*briev_worker_fn[BRIEV_MAX_WORKERS])(void *);
+static void *briev_worker_state;
+static pthread_t briev_worker_thread[BRIEV_MAX_WORKERS];
+
+static void *briev_worker_main(void *arg) {
+  long index = (long)arg;
+  for (;;) {
+    pthread_barrier_wait(&briev_worker_release_barrier);
+    if (briev_worker_stop) {
+      return 0;
+    }
+    void (*fn)(void *) = briev_worker_fn[index];
+    if (fn) {
+      fn(briev_worker_state);
+    }
+    pthread_barrier_wait(&briev_worker_done_barrier);
+  }
+}
+
+/* Start `count` workers (worker 0 is the calling thread). `table` is the
+ * compiler-emitted function-pointer array; entry 0 is unused. Returns 0 when a
+ * pool was started, 1 when the program needs no threads (count <= 1). */
+int64_t briev_workers_start(int64_t count, void *table, void *state) {
+  if (count <= 1 || count > BRIEV_MAX_WORKERS) {
+    return 1;
+  }
+  void **fns = (void **)table;
+  briev_worker_count = count;
+  briev_worker_stop = 0;
+  briev_worker_state = state;
+  for (long i = 0; i < count; i++) {
+    briev_worker_fn[i] = (void (*)(void *))fns[i];
+  }
+  pthread_barrier_init(&briev_worker_release_barrier, 0, (unsigned)count);
+  pthread_barrier_init(&briev_worker_done_barrier, 0, (unsigned)count);
+  for (long i = 1; i < count; i++) {
+    if (pthread_create(&briev_worker_thread[i], 0, briev_worker_main,
+                       (void *)i) != 0) {
+      /* Fall back to serial execution: mark the worker absent so main
+       * still balances the barriers, and let its slice run inline is NOT
+       * possible — the frontend proved independence, not order. Refuse
+       * loudly instead of running a wrong program. */
+      fprintf(stderr, "briev: worker thread %ld could not start\n", i);
+      exit(1);
+    }
+  }
+  return 0;
+}
+
+/* Main's side of the release barrier: every worker starts its tick now. */
+void briev_workers_release(void) {
+  if (briev_worker_count <= 1) {
+    return;
+  }
+  pthread_barrier_wait(&briev_worker_release_barrier);
+}
+
+/* Main's side of the done barrier: every worker finished this tick. */
+void briev_workers_wait(void) {
+  if (briev_worker_count <= 1) {
+    return;
+  }
+  pthread_barrier_wait(&briev_worker_done_barrier);
+}
+
+/* Release the workers and join them. Called once, at program end. */
+void briev_workers_stop(void) {
+  if (briev_worker_count <= 1) {
+    return;
+  }
+  briev_worker_stop = 1;
+  pthread_barrier_wait(&briev_worker_release_barrier);
+  for (long i = 1; i < briev_worker_count; i++) {
+    pthread_join(briev_worker_thread[i], 0);
+  }
+  briev_worker_count = 0;
+}

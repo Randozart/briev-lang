@@ -5,8 +5,8 @@
 use super::expr::{HirExpr, HirExprKind};
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
-use crate::analysis::coll_length::{CAPACITY_READS, CAPACITY_WRITES};
 use crate::analysis::coll_length::COLL_DEFAULT_CAP;
+use crate::analysis::coll_length::{CAPACITY_READS, CAPACITY_WRITES};
 use crate::ast::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -209,9 +209,7 @@ fn coll_base(ty: &Type, coll_obj: &HashSet<String>) -> Option<(String, Vec<Type>
             let base = n.split('<').next().unwrap_or(n).to_string();
             coll_obj.contains(&base).then_some((base, Vec::new()))
         }
-        Type::Applied(n, args) => {
-            coll_obj.contains(n).then(|| (n.clone(), args.clone()))
-        }
+        Type::Applied(n, args) => coll_obj.contains(n).then(|| (n.clone(), args.clone())),
         _ => None,
     }
 }
@@ -556,7 +554,11 @@ fn stmt_has_coll_op(s: &HirStmt) -> bool {
 
 fn range_len(e: &HirExpr) -> Option<i64> {
     match &e.kind {
-        HirExprKind::Range { start, end, inclusive } => {
+        HirExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } => {
             let s = match &start.kind {
                 HirExprKind::Literal(super::expr::HirLiteral::Int(v)) => *v,
                 _ => return None,

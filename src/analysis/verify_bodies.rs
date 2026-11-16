@@ -6,9 +6,170 @@
 
 pub use briev_verify::verify::*;
 
+use crate::ast::{TopLevel, Type};
+use crate::casting::graph::CastingGraph;
+use crate::type_universe::TypeUniverse;
+use briev_verify::domain::ScalarModel;
+use std::collections::HashSet;
+
+/// Resolve the exact scalar subset shared by the body prover and Lean export.
+/// Width comes from the compiler's layout resolver; operator overrides and
+/// structured storage cannot inherit the model merely by claiming Cast.Int.
+pub struct BodyTypeModel<'a> {
+    universe: &'a TypeUniverse,
+    graph: CastingGraph,
+    int_bits: u64,
+    overridden: HashSet<String>,
+}
+
+impl<'a> BodyTypeModel<'a> {
+    pub fn new(items: &[TopLevel], universe: &'a TypeUniverse, int_bits: u64) -> Self {
+        let mut overridden = HashSet::new();
+        collect_overrides(items, &mut overridden);
+        Self {
+            universe,
+            graph: CastingGraph::new(),
+            int_bits,
+            overridden,
+        }
+    }
+
+    pub fn resolve(&self, ty: &Type) -> ScalarModel {
+        if self.int_bits == 0 {
+            return ScalarModel::Unsupported;
+        }
+        // Applied, constrained and aggregate types need their own semantics.
+        let Type::Custom(key) = ty else {
+            return ScalarModel::Unsupported;
+        };
+        let category = crate::type_universe::operators::protocol_category(self.universe, ty);
+        if !self.standard_scalar_chain(key, category.as_deref()) {
+            return ScalarModel::Unsupported;
+        }
+        let storage = self
+            .graph
+            .resolve_llvm_type(self.universe, ty, self.int_bits);
+        match (category.as_deref(), storage.as_str()) {
+            (Some("Int"), "i64") => ScalarModel::SignedWord { bits: 64 },
+            // 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1): Bool is
+            // already fully supported end-to-end inside the prover —
+            // `SymbolicValue::bool_literal` evaluates to `Literal(0|1, "bool")`
+            // and the SMT encoder maps `Expr::Bool` to the native SMT-LIB Boolean
+            // (`(= #b1 #b1)` / `(= #b0 #b1)`) with `==`/`!=` on same-sort operands
+            // and `Not` already encoding correctly. The only thing rejecting
+            // Bool-typed defns was this one gate. Admit it: the symbolic and SMT
+            // layers need no change. This is a gate fix, not a capability fix.
+            (Some("Bool"), _) => ScalarModel::Bool,
+            _ => ScalarModel::Unsupported,
+        }
+    }
+
+    fn standard_scalar_chain(&self, key: &str, category: Option<&str>) -> bool {
+        let mut current = key.to_owned();
+        let mut seen = HashSet::new();
+        while seen.insert(current.clone()) {
+            if self.overridden.contains(&current) {
+                return false;
+            }
+            let Some(resolved) = self.universe.get(&current) else {
+                return false;
+            };
+            if !standard_scalar_metadata(resolved, category) {
+                return false;
+            }
+            let Some((base, variant)) = CastingGraph::parse_protocol_base(&resolved.base) else {
+                return resolved.base.is_empty();
+            };
+            if !variant.is_empty() {
+                return false;
+            }
+            if base == current {
+                return true;
+            }
+            current = base;
+        }
+        false
+    }
+}
+
+/// Fixed-width storage metadata is also consumed directly by LLVM ABI/state
+/// lowering. Require agreement with the model even when the casting graph would
+/// fall back to the target width. Oversized metadata fails closed without overflow.
+fn standard_scalar_metadata(
+    resolved: &crate::type_universe::ResolvedType,
+    category: Option<&str>,
+) -> bool {
+    if category == Some("Int")
+        && [
+            resolved.min_bits,
+            resolved.max_bits,
+            resolved.bytes.saturating_mul(8),
+        ]
+        .iter()
+        .any(|bits| *bits != 0 && *bits != 64)
+    {
+        return false;
+    }
+    resolved.fields.is_empty()
+        && resolved.type_params.is_empty()
+        && !resolved.properties.keys().any(|key| key.starts_with("op."))
+}
+
+/// Member operators and protocol behavior are as significant as binding-form
+/// overrides; range-constrained arithmetic also needs independent semantics.
+fn has_custom_behavior(ty: &crate::ast::TypeDef) -> bool {
+    !ty.body.operators.is_empty()
+        || !ty.body.op_bindings.is_empty()
+        || !ty.body.members.is_empty()
+        || !ty.body.constraints.is_empty()
+        || ty.bit_range.is_some()
+}
+
+fn collect_overrides(items: &[TopLevel], names: &mut HashSet<String>) {
+    for item in items {
+        match item {
+            TopLevel::TypeDef(t) if has_custom_behavior(t) => {
+                names.insert(t.name.clone());
+            }
+            TopLevel::Impl(i) if !i.op_bindings.is_empty() || !i.functions.is_empty() => {
+                names.insert(i.target.clone());
+            }
+            TopLevel::ProtocolDef(protocol) => {
+                names.insert(protocol.category.trim_start_matches('#').to_owned());
+            }
+            TopLevel::Export(e) => collect_overrides(std::slice::from_ref(&*e.inner), names),
+            TopLevel::SyncGroup { item, .. } => {
+                collect_overrides(std::slice::from_ref(&**item), names)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Standalone compiler API with a native 64-bit primordial environment. Source
+/// compilation uses `verify_bodies_in_universe` with its actual resolved types.
+pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
+    let mut universe = TypeUniverse::new();
+    if let Err(reason) = crate::backend::register_types::register_typedefs(items, &mut universe, 64)
+    {
+        return BodyReport {
+            skipped: vec![format!("type environment: {reason}")],
+            ..BodyReport::default()
+        };
+    }
+    verify_bodies_in_universe(items, &universe, 64)
+}
+
+pub fn verify_bodies_in_universe(
+    items: &[TopLevel],
+    universe: &TypeUniverse,
+    int_bits: u64,
+) -> BodyReport {
+    let model = BodyTypeModel::new(items, universe, int_bits);
+    verify_bodies_with_types(items, &|ty| model.resolve(ty))
+}
+
 /// The prover's tests construct AST nodes directly.
-#[cfg(test)]
-use crate::ast::TopLevel;
 
 #[cfg(test)]
 mod tests {
@@ -478,6 +639,87 @@ mod inferred_invariant_tests {
 }
 
 #[cfg(test)]
+mod mask_offset_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// The `mantissa_val` shape: a masked value plus the hidden bit.
+    ///
+    /// `term = (bits & 0x7FFFFF) + 0x800000` cannot exceed
+    /// `0x7FFFFF + 0x800000 == 0xFFFFFF`, so `term < 1 << 24` holds on every
+    /// path without a solver. Before the masked-offset rule this body was
+    /// reported unproven: the AND had a bound, but nothing propagated it
+    /// through the addition.
+    #[test]
+    fn masked_offset_upper_bound_proves() {
+        let defn = parse_one(
+            "defn f(bits: Int) [bits >= 0][term >= 1 && term < 1 << 24] -> Int {\n\
+                 let mant: Int = bits & 0x7FFFFF;\n\
+                 term mant + 0x800000;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a masked+offset value must prove its upper bound: unproven={:?}",
+            report.unproven
+        );
+    }
+
+    /// The rule must not invent proofs: an offset that can overshoot the
+    /// postcondition stays refuted rather than proven.
+    #[test]
+    fn masked_offset_that_can_overshoot_is_refuted() {
+        let defn = parse_one(
+            "defn f(bits: Int) [bits >= 0][term < 1 << 24] -> Int {\n\
+                 let mant: Int = bits & 0x7FFFFF;\n\
+                 term mant + 0x1000000;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert_eq!(
+            report.violated.len(),
+            1,
+            "an offset past the bound must be refuted: proven={:?} unproven={:?}",
+            report.proven,
+            report.unproven
+        );
+    }
+
+    /// A comparison that straddles the reachable interval stays undecided —
+    /// neither proven nor refuted, never guessed at.
+    #[test]
+    fn masked_offset_straddling_the_bound_stays_undecided() {
+        let defn = parse_one(
+            "defn f(bits: Int) [bits >= 0][term < 0x800000] -> Int {\n\
+                 let mant: Int = bits & 0x7FFFFF;\n\
+                 term mant + 0x400000;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            report.violated.is_empty(),
+            "a straddling goal must not be refuted: {:?}",
+            report.violated
+        );
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert_eq!(report.unproven.len(), 1, "unproven: {:?}", report.unproven);
+    }
+}
+
+#[cfg(test)]
 mod variant_tests {
     use super::*;
 
@@ -521,5 +763,131 @@ mod variant_tests {
             "a growing measure must not prove progress: {:?}",
             report.proven
         );
+    }
+}
+
+#[cfg(test)]
+mod typed_model_tests {
+    use super::*;
+
+    fn check(source: &str, bits: u64) -> BodyReport {
+        let (items, universe) = crate::library::parse_and_check("<typed-model>", source).unwrap();
+        verify_bodies_in_universe(&items, &universe, bits)
+    }
+
+    #[test]
+    fn floating_parameters_and_locals_are_skipped() {
+        for source in [
+            "defn f(x: Float) [true][term != x] -> Float { term x + 1; };",
+            "defn f() [true][term == 16777216] -> Float { let x: Float = 16777216; term (x + 1) - 1; };",
+        ] {
+            let report = check(source, 64);
+            assert!(report.proven.is_empty(), "{report:?}");
+            assert_eq!(report.skipped.len(), 1, "{report:?}");
+        }
+    }
+
+    #[test]
+    fn aliases_use_metadata_and_target_width() {
+        let source =
+            "type Ticket: Int64; defn f(x: Ticket) [true][term == x] -> Ticket { term x; };";
+        assert_eq!(check(source, 64).proven, vec!["f"]);
+        let source = "defn f(x: Int) [true][term == x] -> Int { term x; };";
+        assert_eq!(check(source, 64).proven, vec!["f"]);
+        assert_eq!(check(source, 32).skipped.len(), 1);
+        for ty in ["Float32", "UInt64", "Int32"] {
+            let source = format!("defn f(x: {ty}) [true][term == x] -> {ty} {{ term x; }};");
+            assert_eq!(check(&source, 64).skipped.len(), 1, "{ty}");
+        }
+    }
+
+    #[test]
+    fn member_behavior_cannot_inherit_a_word_model() {
+        let (mut items, universe) =
+            crate::library::parse_and_check("<member-model>", "type Counter: Int64;").unwrap();
+        let TopLevel::TypeDef(ty) = &mut items[0] else {
+            panic!("expected type");
+        };
+        ty.body.members.push(TopLevel::TypeDefOperator(
+            crate::ast::Definition::prover_defn(
+                "Add",
+                crate::ast::Contract::new(
+                    crate::ast::Expr::Bool(true),
+                    crate::ast::Expr::Bool(true),
+                ),
+                vec![],
+            ),
+        ));
+        let model = BodyTypeModel::new(&items, &universe, 64);
+        assert_eq!(
+            model.resolve(&Type::Custom("Counter".into())),
+            ScalarModel::Unsupported
+        );
+    }
+
+    #[test]
+    fn custom_protocol_variants_need_an_independent_model() {
+        let mut universe = TypeUniverse::new();
+        let mut resolved = universe.get("Int64").unwrap().clone();
+        resolved.name = "AlternateWord".into();
+        resolved.base = "Int<Alternate>".into();
+        universe.register(resolved);
+        let model = BodyTypeModel::new(&[], &universe, 64);
+        assert_eq!(
+            model.resolve(&Type::Custom("AlternateWord".into())),
+            ScalarModel::Unsupported
+        );
+    }
+
+    #[test]
+    fn oversized_storage_metadata_fails_closed() {
+        let mut universe = TypeUniverse::new();
+        let mut resolved = universe.get("Int").unwrap().clone();
+        resolved.name = "Oversized".into();
+        resolved.bytes = u64::MAX;
+        universe.register(resolved);
+        let model = BodyTypeModel::new(&[], &universe, 64);
+        assert_eq!(
+            model.resolve(&Type::Custom("Oversized".into())),
+            ScalarModel::Unsupported
+        );
+    }
+
+    #[test]
+    fn resolved_operator_overrides_cannot_inherit_word_proofs() {
+        let mut universe = TypeUniverse::new();
+        let mut resolved = universe.get("Int").unwrap().clone();
+        resolved.name = "CustomArithmetic".into();
+        resolved.properties.insert(
+            "op.Add".into(),
+            crate::ast::PropertyValue::Identifier("different_add".into()),
+        );
+        universe.register(resolved);
+        let model = BodyTypeModel::new(&[], &universe, 64);
+        assert_eq!(
+            model.resolve(&Type::Custom("CustomArithmetic".into())),
+            ScalarModel::Unsupported
+        );
+    }
+}
+
+#[cfg(test)]
+mod boolean_model_boundary_tests {
+    use super::*;
+
+    /// 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1a): Bool is
+    /// admitted into the body model. The symbolic evaluator handles it
+    /// (`Literal(0|1, "bool")`) and the SMT encoder encodes `Expr::Bool` as
+    /// a Boolean. The SMT *encoding* side (declaring `term` as `Bool` rather
+    /// than `BitVec`) is a separate concern (phase 1b) — until then, Bool
+    /// postconditions that compare `term` against BitVec values are rejected
+    /// at the SMT gate as "unsupported or ill-sorted", which is an honest
+    /// skip, never a false proof.
+    #[test]
+    fn boolean_storage_is_admitted_into_the_body_model() {
+        let universe = TypeUniverse::new();
+        let model = BodyTypeModel::new(&[], &universe, 64);
+        assert_eq!(model.resolve(&Type::bool_()), ScalarModel::Bool);
+        assert!(model.resolve(&Type::bool_()).admitted());
     }
 }

@@ -10,8 +10,7 @@ use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral};
 use crate::hir::ids::NodeId;
 use crate::hir::pattern::{HirPattern, HirPatternKind};
 use crate::hir::program::{
-    HirCallable, HirCallableKind, HirEnumVariant, HirOutput, HirProgram, HirTypeDef,
-    HirTypeDefKind,
+    HirCallable, HirCallableKind, HirEnumVariant, HirOutput, HirProgram, HirTypeDef, HirTypeDefKind,
 };
 use crate::hir::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -70,9 +69,10 @@ fn variant_fields(variant: &HirEnumVariant) -> (String, Vec<Type>) {
     match variant {
         HirEnumVariant::Unit(name) => (name.clone(), Vec::new()),
         HirEnumVariant::Tuple(name, fields) => (name.clone(), fields.clone()),
-        HirEnumVariant::Struct(name, fields) => {
-            (name.clone(), fields.iter().map(|field| field.ty.clone()).collect())
-        }
+        HirEnumVariant::Struct(name, fields) => (
+            name.clone(),
+            fields.iter().map(|field| field.ty.clone()).collect(),
+        ),
     }
 }
 
@@ -137,17 +137,16 @@ fn explicit_receiver(
 }
 
 fn register_free(graph: &mut Graph, callable: &HirCallable) {
-    if callable.owner.is_some()
-        || callable.is_isr
-        || callable.trait_default
-        || callable.is_impl_fn
+    if callable.owner.is_some() || callable.is_isr || callable.trait_default || callable.is_impl_fn
     {
         return;
     }
     match callable.kind {
         HirCallableKind::Defn => {
             if !callable.type_params.is_empty() {
-                graph.generics.insert(callable.name.clone(), callable.clone());
+                graph
+                    .generics
+                    .insert(callable.name.clone(), callable.clone());
                 return;
             }
             register_definition(graph, callable);
@@ -164,9 +163,10 @@ fn register_definition(graph: &mut Graph, callable: &HirCallable) {
         .iter()
         .map(|param| (param.name.clone(), param.ty.clone()))
         .collect();
-    graph
-        .bodies
-        .insert(callable.name.clone(), (params, callable.body.statements.clone()));
+    graph.bodies.insert(
+        callable.name.clone(),
+        (params, callable.body.statements.clone()),
+    );
     register_result(graph, &callable.name, callable.outputs.as_ref(), false);
 }
 
@@ -183,7 +183,12 @@ fn register_transaction(graph: &mut Graph, callable: &HirCallable) {
         .map(|param| (param.name.clone(), param.ty.clone()))
         .collect();
     graph.bodies.insert(callable.name.clone(), (params, body));
-    register_result(graph, &callable.name, callable.outputs.as_ref(), callable.is_reactive);
+    register_result(
+        graph,
+        &callable.name,
+        callable.outputs.as_ref(),
+        callable.is_reactive,
+    );
     if callable.is_reactive {
         graph.entry_nodes.insert(callable.name.clone());
     }
@@ -200,12 +205,7 @@ fn contract_statement(expression: HirExpr) -> HirStmt {
     }
 }
 
-fn register_result(
-    graph: &mut Graph,
-    name: &str,
-    output: Option<&HirOutput>,
-    void_default: bool,
-) {
+fn register_result(graph: &mut Graph, name: &str, output: Option<&HirOutput>, void_default: bool) {
     let ty = output.and_then(output_value_type);
     let scalar = match output {
         Some(HirOutput::Single(ty)) => scalar_result(graph, ty),
@@ -244,8 +244,12 @@ fn scalar_result(graph: &Graph, ty: &Type) -> bool {
     if fields {
         return false;
     }
-    crate::type_universe::protocol_category(&graph.universe, ty)
-        .is_some_and(|category| matches!(category.as_str(), "Int" | "UInt" | "Bool" | "Float" | "Char" | "Bit"))
+    crate::type_universe::protocol_category(&graph.universe, ty).is_some_and(|category| {
+        matches!(
+            category.as_str(),
+            "Int" | "UInt" | "Bool" | "Float" | "Char" | "Bit"
+        )
+    })
 }
 
 fn register_defaults(graph: &mut Graph, program: &HirProgram) {
@@ -253,7 +257,9 @@ fn register_defaults(graph: &mut Graph, program: &HirProgram) {
         if !callable.trait_default || callable.body.statements.is_empty() {
             continue;
         }
-        if graph.callables.contains_key(&callable.name) || graph.generics.contains_key(&callable.name) {
+        if graph.callables.contains_key(&callable.name)
+            || graph.generics.contains_key(&callable.name)
+        {
             continue;
         }
         let mut generic = callable.clone();
@@ -285,7 +291,9 @@ pub(super) fn build_owner(graph: &mut Graph, owner: &str) {
 }
 
 fn body(graph: &mut Graph, owner: &str, params: &[(String, Type)], statements: &[HirStmt]) {
-    let Some(callable) = graph.callables.get(owner).cloned() else { return };
+    let Some(callable) = graph.callables.get(owner).cloned() else {
+        return;
+    };
     let bindings = params
         .iter()
         .zip(callable.params)
@@ -340,16 +348,22 @@ impl Builder<'_> {
 
     fn statement(&mut self, statement: &HirStmt) {
         match &statement.kind {
-            HirStmtKind::Let { name, names, expr, ty, .. } => {
-                self.statement_let(name, names, ty.as_ref(), expr.as_ref())
-            }
+            HirStmtKind::Let {
+                name,
+                names,
+                expr,
+                ty,
+                ..
+            } => self.statement_let(name, names, ty.as_ref(), expr.as_ref()),
             HirStmtKind::Assign(target, value) => self.statement_assign(target, value),
             HirStmtKind::Term(Some(value)) | HirStmtKind::Tail(value) => {
                 let value = self.expression(value);
                 self.graph.copy(value, self.result);
             }
             HirStmtKind::Term(None) => {}
-            HirStmtKind::Expression(value) | HirStmtKind::Check(value) | HirStmtKind::Gate(value) => {
+            HirStmtKind::Expression(value)
+            | HirStmtKind::Check(value)
+            | HirStmtKind::Gate(value) => {
                 self.expression(value);
             }
             HirStmtKind::Guarded(condition, body) => {
@@ -360,7 +374,9 @@ impl Builder<'_> {
             | HirStmtKind::SyncBlock(body)
             | HirStmtKind::Mutex(body)
             | HirStmtKind::Defer(body) => self.statements(body),
-            HirStmtKind::Foreach { item, list, body, .. } => {
+            HirStmtKind::Foreach {
+                item, list, body, ..
+            } => {
                 if matches!(list.kind, HirExprKind::Range { .. }) {
                     self.types.insert(item.clone(), Type::int());
                 }
@@ -380,8 +396,12 @@ impl Builder<'_> {
                     // element value. Element reads exclude it; container escape
                     // still reaches it through `root_contents`.
                     self.graph.container_storage.insert(backing);
-                    self.graph.constraints.push(Constraint::Store(target, backing));
-                    self.graph.constraints.push(Constraint::Store(target, value));
+                    self.graph
+                        .constraints
+                        .push(Constraint::Store(target, backing));
+                    self.graph
+                        .constraints
+                        .push(Constraint::Store(target, value));
                 }
             }
             HirStmtKind::EndProgram(value) | HirStmtKind::Rollback(value) => {
@@ -493,7 +513,9 @@ impl Builder<'_> {
             | HirExprKind::Deref(receiver) => self.expression(receiver),
             _ => {
                 self.unsupported();
-                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                    eprintln!("reclamation HIR unsupported {}", self.owner);
+                }
                 return;
             }
         };
@@ -507,12 +529,16 @@ impl Builder<'_> {
         if let Some((root, path)) = projection_root_and_path(target) {
             self.record_incoming_store(allocating, root);
             let base = self.expression(root);
-            self.graph.constraints.push(Constraint::FieldStore(base, path, value));
+            self.graph
+                .constraints
+                .push(Constraint::FieldStore(base, path, value));
             return true;
         }
         if let HirExprKind::Field { receiver, name } = &target.kind {
             let base = self.expression(receiver);
-            self.graph.constraints.push(Constraint::FieldStore(base, name.clone(), value));
+            self.graph
+                .constraints
+                .push(Constraint::FieldStore(base, name.clone(), value));
         }
         true
     }
@@ -552,7 +578,10 @@ impl Builder<'_> {
             }
             HirPatternKind::EnumVariant(variant, fields) => {
                 let payload = self.graph.node();
-                let variant = self.graph.constructor_key(variant).unwrap_or_else(|| variant.clone());
+                let variant = self
+                    .graph
+                    .constructor_key(variant)
+                    .unwrap_or_else(|| variant.clone());
                 self.graph.constraints.push(Constraint::FieldLoad(
                     value,
                     format!("@variant:{variant}"),
@@ -619,8 +648,13 @@ impl Builder<'_> {
     }
 
     fn variant_pattern_types(&mut self, name: &str, patterns: &[HirPattern], ty: Option<&Type>) {
-        let name = self.graph.constructor_key(name).unwrap_or_else(|| name.into());
-        let Some((params, fields)) = self.graph.variant_types.get(&name).cloned() else { return };
+        let name = self
+            .graph
+            .constructor_key(name)
+            .unwrap_or_else(|| name.into());
+        let Some((params, fields)) = self.graph.variant_types.get(&name).cloned() else {
+            return;
+        };
         let args = match ty {
             Some(Type::Applied(_, args) | Type::Generic(_, args)) => args.as_slice(),
             _ => &[],
@@ -685,12 +719,18 @@ impl Builder<'_> {
                 }
                 if !matches!(name.as_str(), "Ptr" | "Data" | "Address") {
                     self.unsupported();
-                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                        eprintln!("reclamation HIR unsupported {}", self.owner);
+                    }
                     self.capture(&[value]);
                 }
                 value
             }
-            HirExprKind::If { condition, then_branch, else_branch } => {
+            HirExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 self.expression(condition);
                 let result = self.graph.unknown_value();
                 let yes = self.expression(then_branch);
@@ -728,10 +768,15 @@ impl Builder<'_> {
             | HirExprKind::Other("exists") => self.graph.node(),
             _ => {
                 if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
-                    eprintln!("reclamation HIR unsupported expression in {}: {expression:?}", self.owner);
+                    eprintln!(
+                        "reclamation HIR unsupported expression in {}: {expression:?}",
+                        self.owner
+                    );
                 }
                 self.unsupported();
-                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                    eprintln!("reclamation HIR unsupported {}", self.owner);
+                }
                 self.graph.root()
             }
         }
@@ -757,14 +802,21 @@ impl Builder<'_> {
                 root
             }
             HirExprKind::Tuple(values) => self.tuple(values),
-            HirExprKind::Slice { array, start, end, stride } => {
+            HirExprKind::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 let base = self.indexed_base(array);
                 for bound in [start, end, stride].into_iter().flatten() {
                     self.expression(bound);
                 }
                 let result = self.graph.allocation(self.owner);
                 self.graph.copy(base, result);
-                self.graph.constraints.push(Constraint::CopyMemory(base, result));
+                self.graph
+                    .constraints
+                    .push(Constraint::CopyMemory(base, result));
                 result
             }
             HirExprKind::Index(base, index) => {
@@ -781,7 +833,9 @@ impl Builder<'_> {
                 } else {
                     self.graph.node()
                 };
-                self.graph.constraints.push(Constraint::FieldLoad(base, name.clone(), result));
+                self.graph
+                    .constraints
+                    .push(Constraint::FieldLoad(base, name.clone(), result));
                 result
             }
             HirExprKind::Deref(base) => {
@@ -791,10 +845,17 @@ impl Builder<'_> {
                 result
             }
             HirExprKind::Cast { inner, to, .. } => self.cast(inner, to),
-            HirExprKind::MethodCall { receiver, name, args, analysis_id } => {
+            HirExprKind::MethodCall {
+                receiver,
+                name,
+                args,
+                analysis_id,
+            } => {
                 if analysis_id.is_some() {
                     self.unsupported();
-                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                        eprintln!("reclamation HIR unsupported {}", self.owner);
+                    }
                     return self.graph.root();
                 }
                 if crate::intrinsic_signatures::get_intrinsic_signature(name)
@@ -811,7 +872,9 @@ impl Builder<'_> {
             HirExprKind::AddrOf(value) => {
                 let value = self.expression(value);
                 let result = self.graph.allocation(self.owner);
-                self.graph.constraints.push(Constraint::Store(result, value));
+                self.graph
+                    .constraints
+                    .push(Constraint::Store(result, value));
                 result
             }
             HirExprKind::IsType { inner, .. } => {
@@ -820,7 +883,9 @@ impl Builder<'_> {
             }
             _ => {
                 self.unsupported();
-                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                    eprintln!("reclamation HIR unsupported {}", self.owner);
+                }
                 self.graph.root()
             }
         }
@@ -833,7 +898,9 @@ impl Builder<'_> {
             .is_none_or(|ty| self.has_user_operators(&ty))
         {
             self.unsupported();
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation HIR unsupported {}", self.owner);
+            }
             self.capture(&[value]);
         }
         value
@@ -841,15 +908,12 @@ impl Builder<'_> {
 
     fn store_expression(&mut self, target: Node, value: &HirExpr) {
         let value = self.expression(value);
-        self.graph.constraints.push(Constraint::Store(target, value));
+        self.graph
+            .constraints
+            .push(Constraint::Store(target, value));
     }
 
-    fn expression_arm(
-        &mut self,
-        value: Node,
-        result: Node,
-        arm: &crate::hir::expr::HirMatchArm,
-    ) {
+    fn expression_arm(&mut self, value: Node, result: Node, arm: &crate::hir::expr::HirMatchArm) {
         self.pattern(&arm.pattern, value);
         if let Some(guard) = &arm.guard {
             self.expression(guard);
@@ -860,7 +924,9 @@ impl Builder<'_> {
 
     fn block(&mut self, statements: &[HirStmt]) -> Node {
         let result = self.graph.node();
-        let Some((last, prefix)) = statements.split_last() else { return result };
+        let Some((last, prefix)) = statements.split_last() else {
+            return result;
+        };
         self.statements(prefix);
         match &last.kind {
             HirStmtKind::Expression(value) | HirStmtKind::Tail(value) => {
@@ -878,7 +944,9 @@ impl Builder<'_> {
         let result = self.binary_value(operator, left, right);
         if self.expression_type(lhs).is_none() || self.expression_type(rhs).is_none() {
             self.unsupported();
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation HIR unsupported {}", self.owner);
+            }
             self.capture(&[left, right]);
         }
         if self
@@ -886,7 +954,9 @@ impl Builder<'_> {
             .is_some_and(|ty| self.has_user_operators(&ty))
         {
             self.unsupported();
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation HIR unsupported {}", self.owner);
+            }
             self.capture(&[left, right]);
         }
         if matches!(
@@ -949,7 +1019,9 @@ impl Builder<'_> {
             .is_none_or(|ty| self.has_user_operators(&ty))
         {
             self.unsupported();
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation HIR unsupported {}", self.owner);
+            }
             self.capture(&[value]);
         }
         if operator == UnaryOpKind::Not {
@@ -975,64 +1047,67 @@ impl Builder<'_> {
         analysis_id: Option<usize>,
     ) -> Option<Type> {
         {
-                if analysis_id.is_some() {
-                    return None;
-                }
-                let intrinsic = crate::intrinsic_signatures::get_intrinsic_signature(name)
-                    .and_then(|signature| match signature.return_kind {
+            if analysis_id.is_some() {
+                return None;
+            }
+            let intrinsic =
+                crate::intrinsic_signatures::get_intrinsic_signature(name).and_then(|signature| {
+                    match signature.return_kind {
                         crate::intrinsic_signatures::ReturnKind::Native(category) => {
                             Some(Some(Type::Custom(category.into())))
                         }
                         crate::intrinsic_signatures::ReturnKind::Exact(ty) => Some(Some(ty)),
                         _ => None,
-                    });
-                match intrinsic {
-                    Some(ty) => ty,
-                    None => {
-                        let target = self.method_target(receiver, name, args.len())?;
-                        let mut arguments = vec![receiver.clone()];
-                        arguments.extend_from_slice(args);
-                        self.graph
-                            .return_types
-                            .get(&target)
-                            .cloned()
-                            .or_else(|| self.generic_result(&target, &arguments))
                     }
+                });
+            match intrinsic {
+                Some(ty) => ty,
+                None => {
+                    let target = self.method_target(receiver, name, args.len())?;
+                    let mut arguments = vec![receiver.clone()];
+                    arguments.extend_from_slice(args);
+                    self.graph
+                        .return_types
+                        .get(&target)
+                        .cloned()
+                        .or_else(|| self.generic_result(&target, &arguments))
                 }
             }
+        }
     }
 
     fn call_expression_type(&self, callee: &str, args: &[HirExpr]) -> Option<Type> {
-        self
-                .graph
-                .return_types
-                .get(callee)
-                .cloned()
-                .or_else(|| self.generic_result(callee, args))
-                .or_else(|| {
-                    let target = self.free_member_target(callee, args)?;
-                    self.graph.return_types.get(&target).cloned()
-                })
-                .or_else(|| {
-                    use crate::intrinsic_signatures::ReturnKind;
-                    match crate::intrinsic_signatures::get_intrinsic_signature(callee)?
-                        .return_kind
-                    {
-                        ReturnKind::Exact(ty) => Some(ty),
-                        ReturnKind::Native(category) => Some(Type::Custom(category.into())),
-                        _ => None,
-                    }
-                })
+        self.graph
+            .return_types
+            .get(callee)
+            .cloned()
+            .or_else(|| self.generic_result(callee, args))
+            .or_else(|| {
+                let target = self.free_member_target(callee, args)?;
+                self.graph.return_types.get(&target).cloned()
+            })
+            .or_else(|| {
+                use crate::intrinsic_signatures::ReturnKind;
+                match crate::intrinsic_signatures::get_intrinsic_signature(callee)?.return_kind {
+                    ReturnKind::Exact(ty) => Some(ty),
+                    ReturnKind::Native(category) => Some(Type::Custom(category.into())),
+                    _ => None,
+                }
+            })
     }
 
     fn has_user_operators(&self, ty: &Type) -> bool {
-        let Some(mut key) = ty.universe_key() else { return false };
+        let Some(mut key) = ty.universe_key() else {
+            return false;
+        };
         let mut visited = BTreeSet::new();
         while visited.insert(key.to_string()) {
             if self.graph.user_operators.contains(key) {
                 return true;
             }
-            let Some(resolved) = self.graph.universe.get(key) else { break };
+            let Some(resolved) = self.graph.universe.get(key) else {
+                break;
+            };
             key = &resolved.base;
         }
         false
@@ -1058,17 +1133,18 @@ impl Builder<'_> {
                 .collect::<Option<Vec<_>>>()
                 .map(Type::Tuple),
             HirExprKind::Cast { to, .. } => Some(to.clone()),
-            HirExprKind::MethodCall { receiver, name, args, analysis_id } => {
-                self.method_expression_type(receiver, name, args, *analysis_id)
-            }
+            HirExprKind::MethodCall {
+                receiver,
+                name,
+                args,
+                analysis_id,
+            } => self.method_expression_type(receiver, name, args, *analysis_id),
             HirExprKind::Call { callee, args, .. } => self.call_expression_type(callee, args),
             HirExprKind::Unary { inner, .. } | HirExprKind::Consume(inner) => {
                 self.expression_type(inner)
             }
             HirExprKind::Reflect { .. } => Some(Type::int()),
-            HirExprKind::StructLiteral { type_name, .. } => {
-                Some(Type::Custom(type_name.clone()))
-            }
+            HirExprKind::StructLiteral { type_name, .. } => Some(Type::Custom(type_name.clone())),
             HirExprKind::Index(base, index) => {
                 if let (HirExprKind::Tuple(values), HirExprKind::Literal(HirLiteral::Int(index))) =
                     (&base.kind, &index.kind)
@@ -1103,11 +1179,7 @@ impl Builder<'_> {
                         .cloned();
                 }
                 let resolved = self.graph.universe.get(ty.universe_key()?)?;
-                let field_type = &resolved
-                    .fields
-                    .iter()
-                    .find(|(field, _)| field == name)?
-                    .1;
+                let field_type = &resolved.fields.iter().find(|(field, _)| field == name)?.1;
                 let args = match &ty {
                     Type::Applied(_, args) | Type::Generic(_, args) => args.as_slice(),
                     _ => &[],
@@ -1118,7 +1190,10 @@ impl Builder<'_> {
                     .cloned()
                     .zip(args.iter().cloned())
                     .collect();
-                Some(crate::typechecker::substitute_type(field_type, &substitution))
+                Some(crate::typechecker::substitute_type(
+                    field_type,
+                    &substitution,
+                ))
             }
             _ => None,
         }
@@ -1143,7 +1218,9 @@ impl Builder<'_> {
     }
 
     fn allocating_operator(&self, value: &HirExpr, operator: BinaryOpKind) -> bool {
-        let Some(ty) = self.expression_type(value) else { return false };
+        let Some(ty) = self.expression_type(value) else {
+            return false;
+        };
         let rune = match operator {
             BinaryOpKind::Add => "+",
             BinaryOpKind::BitAnd => "&",
@@ -1167,15 +1244,22 @@ impl Builder<'_> {
         self.graph.copy(original, value);
         let Some(source) = self.expression_type(expression) else {
             if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
-                eprintln!("reclamation HIR unknown cast source in {}: {expression:?}", self.owner);
+                eprintln!(
+                    "reclamation HIR unknown cast source in {}: {expression:?}",
+                    self.owner
+                );
             }
             self.unsupported();
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation HIR unsupported {}", self.owner);
+            }
             return value;
         };
         if self.has_user_operators(&source) || self.has_user_operators(target) {
             self.unsupported();
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation HIR unsupported {}", self.owner);
+            }
             return value;
         }
         let encoding_target = target.universe_key().map(str::to_owned);
@@ -1188,14 +1272,16 @@ impl Builder<'_> {
             .graph
             .casts
             .type_to_protocol(&self.graph.universe, target);
-        let Some(steps) = self
-            .graph
-            .casts
-            .find_path(&source, &source_variant, &target, &target_variant)
+        let Some(steps) =
+            self.graph
+                .casts
+                .find_path(&source, &source_variant, &target, &target_variant)
         else {
             if !address_cast {
                 self.unsupported();
-                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                    eprintln!("reclamation HIR unsupported {}", self.owner);
+                }
             }
             return value;
         };
@@ -1222,12 +1308,16 @@ impl Builder<'_> {
             LaneKind::CastFromBitCallback => {
                 let Some(target) = encoding_target else {
                     self.unsupported();
-                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                        eprintln!("reclamation HIR unsupported {}", self.owner);
+                    }
                     return value;
                 };
                 self.graph.default_encoding_targets.insert(target.into());
                 let fresh = self.graph.allocation(self.owner);
-                self.graph.constraints.push(Constraint::CopyMemory(value, fresh));
+                self.graph
+                    .constraints
+                    .push(Constraint::CopyMemory(value, fresh));
                 fresh
             }
             _ => value,
@@ -1253,10 +1343,15 @@ impl Builder<'_> {
         if let Some(target) = target {
             return self.call(&target, &arguments);
         }
-        let values = arguments.iter().map(|arg| self.expression(arg)).collect::<Vec<_>>();
+        let values = arguments
+            .iter()
+            .map(|arg| self.expression(arg))
+            .collect::<Vec<_>>();
         self.capture(&values);
         self.unsupported();
-        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+            eprintln!("reclamation HIR unsupported {}", self.owner);
+        }
         self.graph.unknown_value()
     }
 
@@ -1281,10 +1376,16 @@ impl Builder<'_> {
 
     fn intrinsic_helper_effects(&mut self, intrinsic: &str, args: &[Node], result: Node) {
         let helpers = crate::analysis::defn_liveness::intrinsic_helpers(intrinsic);
-        if helpers.is_empty() { return; }
+        if helpers.is_empty() {
+            return;
+        }
         let arguments = self.graph.unknown_value();
-        for arg in args { self.graph.copy(*arg, arguments); }
-        for helper in helpers { self.record_helper_effect(helper, arguments, result); }
+        for arg in args {
+            self.graph.copy(*arg, arguments);
+        }
+        for helper in helpers {
+            self.record_helper_effect(helper, arguments, result);
+        }
     }
 
     fn record_helper_effect(&mut self, helper: &str, arguments: Node, result: Node) {
@@ -1292,23 +1393,36 @@ impl Builder<'_> {
             self.graph.unmodeled_helpers.insert(self.owner.into());
             return;
         };
-        self.graph.callables.get_mut(self.owner).unwrap().calls.insert(helper.into());
-        for param in callable.params { self.graph.copy(arguments, param); }
+        self.graph
+            .callables
+            .get_mut(self.owner)
+            .unwrap()
+            .calls
+            .insert(helper.into());
+        for param in callable.params {
+            self.graph.copy(arguments, param);
+        }
         self.graph.copy(callable.result, result);
         build_owner(self.graph, helper);
     }
 
     fn record_publish_call(&mut self, target: &str, arguments: &[HirExpr]) {
-        let Some(receiver) = self.graph.publish_receiver_param.get(target).cloned() else { return };
-        let Some(index) = self.graph.bodies.get(target).and_then(|(params, _)| {
-            params.iter().position(|(name, _)| name == &receiver)
-        }) else {
+        let Some(receiver) = self.graph.publish_receiver_param.get(target).cloned() else {
+            return;
+        };
+        let Some(index) = self
+            .graph
+            .bodies
+            .get(target)
+            .and_then(|(params, _)| params.iter().position(|(name, _)| name == &receiver))
+        else {
             return;
         };
         let local = match arguments.get(index) {
-            Some(HirExpr { kind: HirExprKind::Identifier(name), .. })
-                if self.bindings.contains_key(name) && !self.param_names.contains(name) =>
-            {
+            Some(HirExpr {
+                kind: HirExprKind::Identifier(name),
+                ..
+            }) if self.bindings.contains_key(name) && !self.param_names.contains(name) => {
                 Some(self.binding(name))
             }
             _ => None,
@@ -1353,12 +1467,7 @@ impl Builder<'_> {
         self.method_target(arguments.first()?, name, arguments.len() - 1)
     }
 
-    fn specialize(
-        &mut self,
-        generic: &HirCallable,
-        arguments: &[HirExpr],
-        args: &[Node],
-    ) -> Node {
+    fn specialize(&mut self, generic: &HirCallable, arguments: &[HirExpr], args: &[Node]) -> Node {
         let params: Vec<_> = generic.type_params.clone();
         let mut substitution = HashMap::new();
         for (declared, argument) in generic.params.iter().zip(arguments) {
@@ -1377,11 +1486,15 @@ impl Builder<'_> {
             .collect::<Option<Vec<_>>>()
         else {
             self.unsupported();
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation HIR unsupported {}", self.owner);
+            }
             return self.graph.node();
         };
-        let name =
-            crate::analysis::generic_specialization::mangle_specialization(&generic.name, &concrete);
+        let name = crate::analysis::generic_specialization::mangle_specialization(
+            &generic.name,
+            &concrete,
+        );
         if !self.graph.callables.contains_key(&name) {
             let mut definition = generic.clone();
             definition.name = name.clone();
@@ -1442,7 +1555,9 @@ impl Builder<'_> {
             "Alloc#" | "Malloc#" => {
                 if args.len() != 1 {
                     self.unsupported();
-                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                        eprintln!("reclamation HIR unsupported {}", self.owner);
+                    }
                 }
                 return self.graph.allocation(self.owner);
             }
@@ -1454,12 +1569,16 @@ impl Builder<'_> {
             }
             "Store#" | "Fill#" => {
                 if args.len() >= 2 {
-                    self.graph.constraints.push(Constraint::Store(args[0], args[1]));
+                    self.graph
+                        .constraints
+                        .push(Constraint::Store(args[0], args[1]));
                 }
             }
             "Copy#" => {
                 if args.len() >= 2 {
-                    self.graph.constraints.push(Constraint::CopyMemory(args[1], args[0]));
+                    self.graph
+                        .constraints
+                        .push(Constraint::CopyMemory(args[1], args[0]));
                 }
             }
             "SysCall#" => {
@@ -1471,7 +1590,9 @@ impl Builder<'_> {
             }
             "Print#" => {
                 for arg in args {
-                    self.graph.constraints.push(Constraint::EscapeContents(*arg));
+                    self.graph
+                        .constraints
+                        .push(Constraint::EscapeContents(*arg));
                 }
             }
             "Environ#" => {
@@ -1500,11 +1621,16 @@ impl Builder<'_> {
                     return result;
                 }
                 if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
-                    eprintln!("reclamation HIR unclassified call in {}: {name}", self.owner);
+                    eprintln!(
+                        "reclamation HIR unclassified call in {}: {name}",
+                        self.owner
+                    );
                 }
                 self.capture(args);
                 self.unsupported();
-                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                    eprintln!("reclamation HIR unsupported {}", self.owner);
+                }
             }
         }
         result
@@ -1651,7 +1777,12 @@ fn substitute_expression_children(expression: &mut HirExpr, substitution: &HashM
             substitute_expression(left, substitution);
             substitute_expression(right, substitution);
         }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             substitute_expression(array, substitution);
             for part in [start, end, stride].into_iter().flatten() {
                 substitute_expression(part, substitution);
@@ -1662,7 +1793,11 @@ fn substitute_expression_children(expression: &mut HirExpr, substitution: &HashM
             substitute_expression(end, substitution);
         }
         HirExprKind::Block(body) => substitute_body(body, substitution),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             substitute_expression(condition, substitution);
             substitute_expression(then_branch, substitution);
             if let Some(else_branch) = else_branch {

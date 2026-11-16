@@ -21,7 +21,9 @@
 //!
 //! 2026-08-09 (Phase 13): new module.
 
-use crate::dbriev::v2::{DataField, DataGroup, DataValue, DbrievDocument, FieldDef, FieldType, SchemaDef};
+use crate::dbriev::v2::{
+    DataField, DataGroup, DataValue, DbrievDocument, FieldDef, FieldType, SchemaDef,
+};
 
 /// Canonically serialize a parsed Data Briev document (`.dbv` form).
 pub fn canonicalize_document(doc: &DbrievDocument) -> String {
@@ -193,9 +195,7 @@ mod tests {
 
     #[test]
     fn canonicalize_schema_fields() {
-        let doc = parse(
-            "schema Item { [ >= 0 ] hp: Int; [ != \"\" ] name: String; }",
-        );
+        let doc = parse("schema Item { [ >= 0 ] hp: Int; [ != \"\" ] name: String; }");
         let out = canonicalize_document(&doc);
         assert!(out.contains("[ >= 0 ] hp: Int;"), "{}", out);
         assert!(out.contains("[ != \"\" ] name: String;"), "{}", out);
@@ -232,7 +232,11 @@ mod tests {
             key_offsets: HashMap::new(),
         };
         let out = canonicalize_document(&doc);
-        assert!(out.contains("\"a\": 2") && out.contains("\"z\": 1"), "{}", out);
+        assert!(
+            out.contains("\"a\": 2") && out.contains("\"z\": 1"),
+            "{}",
+            out
+        );
         let a = out.find("\"a\": 2").unwrap();
         let z = out.find("\"z\": 1").unwrap();
         assert!(a < z, "map keys must sort: {}", out);

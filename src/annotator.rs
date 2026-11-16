@@ -108,7 +108,7 @@ impl Annotator {
                 | Statement::TrgBinding { .. }
                 | Statement::InlineDefn(_)
                 | Statement::Match { .. } => {}
-// 2026-09-22 (D16 p3b): `open` — collect any calls inside
+                // 2026-09-22 (D16 p3b): `open` — collect any calls inside
                 // its expressions.
                 Statement::Open(lhs, rhs) => {
                     self.collect_calls_from_expr(lhs, calls);
@@ -125,17 +125,32 @@ impl Annotator {
 
     fn collect_calls_from_expr(&self, expr: &Expr, calls: &mut Vec<String>) {
         match expr {
-            Expr::Exists(_) => {},
-            Expr::BeginProgram => {},
+            Expr::Exists(_) => {}
+            Expr::BeginProgram => {}
             // 2026-09-28 (E3): the `[*]` selector is a leaf — no calls inside.
-            Expr::Wildcard => {},
-            Expr::Slice { array, start, end, stride } => {
+            Expr::Wildcard => {}
+            Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 self.collect_calls_from_expr(array, calls);
-                if let Some(e) = start.as_deref() { self.collect_calls_from_expr(e, calls); }
-                if let Some(e) = end.as_deref() { self.collect_calls_from_expr(e, calls); }
-                if let Some(e) = stride.as_deref() { self.collect_calls_from_expr(e, calls); }
+                if let Some(e) = start.as_deref() {
+                    self.collect_calls_from_expr(e, calls);
+                }
+                if let Some(e) = end.as_deref() {
+                    self.collect_calls_from_expr(e, calls);
+                }
+                if let Some(e) = stride.as_deref() {
+                    self.collect_calls_from_expr(e, calls);
+                }
             }
-            Expr::Range { start, end, inclusive: _ } => {
+            Expr::Range {
+                start,
+                end,
+                inclusive: _,
+            } => {
                 self.collect_calls_from_expr(start, calls);
                 self.collect_calls_from_expr(end, calls);
             }
@@ -164,7 +179,10 @@ impl Annotator {
                 self.collect_calls_from_expr(list, calls);
                 self.collect_calls_from_expr(index, calls);
             }
-            Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) | Expr::Await(inner) => self.collect_calls_from_expr(inner, calls),
+            Expr::Deref(inner)
+            | Expr::AddrOf(inner)
+            | Expr::Consume(inner)
+            | Expr::Await(inner) => self.collect_calls_from_expr(inner, calls),
             Expr::Field(obj, _) => self.collect_calls_from_expr(obj, calls),
             Expr::Tuple(elems) => {
                 for e in elems {
@@ -208,8 +226,11 @@ impl Annotator {
                 }
             }
             Expr::FormattingAnnotation(..)
-            | Expr::Quoted(..) | Expr::TaggedQuotedLiteral(..)
-            | Expr::Decimal(..) | Expr::TaggedLiteral(..) | Expr::Char(..)
+            | Expr::Quoted(..)
+            | Expr::TaggedQuotedLiteral(..)
+            | Expr::Decimal(..)
+            | Expr::TaggedLiteral(..)
+            | Expr::Char(..)
             | Expr::Bool(..)
             | Expr::Float(..)
             | Expr::Identifier(..) => {}
@@ -275,11 +296,14 @@ impl Annotator {
                 .map(|t| self.type_to_string(t))
                 .collect::<Vec<_>>()
                 .join(" | "),
-            Type::Tuple(types) => format!("({})", types
-                .iter()
-                .map(|t| self.type_to_string(t))
-                .collect::<Vec<_>>()
-                .join(", ")),
+            Type::Tuple(types) => format!(
+                "({})",
+                types
+                    .iter()
+                    .map(|t| self.type_to_string(t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Type::Generic(name, type_args) => {
                 format!(
                     "{}<{}>",
@@ -303,19 +327,31 @@ impl Annotator {
                 )
             }
             Type::Vector(inner, dims) => {
-                let dims_str: Vec<String> = dims.iter().map(|d| match d {
-                    Dimension::Anonymous(s) => format!("{}", s),
-                    Dimension::Named(n, s) => format!("{}:{}", n, s),
-                }).collect();
-                format!("Vector<{}, {}>", self.type_to_string(inner), dims_str.join(", "))
+                let dims_str: Vec<String> = dims
+                    .iter()
+                    .map(|d| match d {
+                        Dimension::Anonymous(s) => format!("{}", s),
+                        Dimension::Named(n, s) => format!("{}:{}", n, s),
+                    })
+                    .collect();
+                format!(
+                    "Vector<{}, {}>",
+                    self.type_to_string(inner),
+                    dims_str.join(", ")
+                )
             }
             Type::Constrained(inner, _) => self.type_to_string(inner),
             Type::LayoutPtr(lc) => format!("Ptr<Bits @/0..{}>", lc.bytes * 8 - 1),
             Type::Ptr(inner) => format!("Ptr<{}>", self.type_to_string(inner)),
             Type::PtrConst(inner) => format!("Ptr<const {}>", self.type_to_string(inner)),
             Type::Function(params, ret) => {
-                let params_str: Vec<String> = params.iter().map(|t| self.type_to_string(t)).collect();
-                format!("({}) -> {}", params_str.join(", "), self.type_to_string(ret))
+                let params_str: Vec<String> =
+                    params.iter().map(|t| self.type_to_string(t)).collect();
+                format!(
+                    "({}) -> {}",
+                    params_str.join(", "),
+                    self.type_to_string(ret)
+                )
             }
         }
     }
@@ -375,11 +411,7 @@ impl Annotator {
             .iter()
             .map(|(_, t)| self.type_to_string(t))
             .collect();
-        let results: Vec<String> = sig
-            .outputs
-            .iter()
-            .map(|t| self.type_to_string(t))
-            .collect();
+        let results: Vec<String> = sig.outputs.iter().map(|t| self.type_to_string(t)).collect();
 
         format!(
             "sig {}: ({}) -> ({});\n",
@@ -390,11 +422,7 @@ impl Annotator {
     }
 
     fn format_state_decl(&self, decl: &StateDecl) -> String {
-        format!(
-            "let {}: {};\n",
-            decl.name,
-            self.type_to_string(&decl.ty),
-        )
+        format!("let {}: {};\n", decl.name, self.type_to_string(&decl.ty),)
     }
 
     fn format_body(&self, body: &[Statement]) -> String {
@@ -420,12 +448,26 @@ impl Annotator {
                     self.format_expr(expr),
                 )
             }
-            Statement::ArrowAssign { target, value, consume } => {
-                match target {
-                    Some(t) => format!("{}{} {} {}{};\n", spaces, self.format_expr(t), if *consume { "~<-" } else { "<-" }, self.format_expr(value), ""),
-                    None => format!("{}{} {};\n", spaces, if *consume { "~<-" } else { "<-" }, self.format_expr(value)),
-                }
-            }
+            Statement::ArrowAssign {
+                target,
+                value,
+                consume,
+            } => match target {
+                Some(t) => format!(
+                    "{}{} {} {}{};\n",
+                    spaces,
+                    self.format_expr(t),
+                    if *consume { "~<-" } else { "<-" },
+                    self.format_expr(value),
+                    ""
+                ),
+                None => format!(
+                    "{}{} {};\n",
+                    spaces,
+                    if *consume { "~<-" } else { "<-" },
+                    self.format_expr(value)
+                ),
+            },
             Statement::FreeHint(name) => format!("{}free {};\n", spaces, name),
             Statement::KeepHint(name) => format!("{}keep {};\n", spaces, name),
             Statement::Guarded(condition, statements) => {
@@ -440,12 +482,18 @@ impl Annotator {
                 format!("{}[{}];\n", spaces, self.format_expr(cond))
             }
             Statement::Term(val) => {
-                let val_str = val.as_ref().map(|v| self.format_expr(v)).unwrap_or_default();
+                let val_str = val
+                    .as_ref()
+                    .map(|v| self.format_expr(v))
+                    .unwrap_or_default();
                 format!("{}term {};\n", spaces, val_str)
             }
             Statement::Tail(v) => format!("{}{}\n", spaces, self.format_expr(v)),
             Statement::EndProgram(val) => {
-                let val_str = val.as_ref().map(|v| self.format_expr(v)).unwrap_or_default();
+                let val_str = val
+                    .as_ref()
+                    .map(|v| self.format_expr(v))
+                    .unwrap_or_default();
                 format!("{}term! {};\n", spaces, val_str)
             }
             Statement::Trap => format!("{}trap;\n", spaces),
@@ -461,7 +509,13 @@ impl Annotator {
             Statement::Let { name, ty, expr, .. } => {
                 if let Some(t) = ty {
                     if let Some(e) = expr {
-                        format!("{}let {}: {} = {};\n", spaces, name, self.type_to_string(t), self.format_expr(e))
+                        format!(
+                            "{}let {}: {} = {};\n",
+                            spaces,
+                            name,
+                            self.type_to_string(t),
+                            self.format_expr(e)
+                        )
                     } else {
                         format!("{}let {}: {};\n", spaces, name, self.type_to_string(t))
                     }
@@ -479,9 +533,21 @@ impl Annotator {
                 output.push_str(&format!("{}}}\n", spaces));
                 output
             }
-            Statement::Foreach { item, list, body, modifiers, .. } => {
+            Statement::Foreach {
+                item,
+                list,
+                body,
+                modifiers,
+                ..
+            } => {
                 let prefix: String = modifiers.iter().map(|m| format!("{} ", m.name)).collect();
-                let mut output = format!("{}{}foreach({} in {}) {{\n", spaces, prefix, item, self.format_expr(list));
+                let mut output = format!(
+                    "{}{}foreach({} in {}) {{\n",
+                    spaces,
+                    prefix,
+                    item,
+                    self.format_expr(list)
+                );
                 for s in body {
                     output.push_str(&self.format_statement(s, indent + 2));
                 }
@@ -548,7 +614,9 @@ impl Annotator {
             Expr::Wildcard => "*".to_string(),
             Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => n.to_string(),
             Expr::Float(f) => f.to_string(),
-            Expr::Quoted(s) | Expr::TaggedQuotedLiteral(s, _) => format!("\"{}\"", String::from_utf8_lossy(s)),
+            Expr::Quoted(s) | Expr::TaggedQuotedLiteral(s, _) => {
+                format!("\"{}\"", String::from_utf8_lossy(s))
+            }
             Expr::Bool(true) => "true".to_string(),
             Expr::Bool(false) => "false".to_string(),
             Expr::Identifier(n) => n.clone(),
@@ -560,7 +628,11 @@ impl Annotator {
                     .join(", ");
                 format!("{}({})", name, args_str)
             }
-            Expr::Spawn { type_name, args, storage } => {
+            Expr::Spawn {
+                type_name,
+                args,
+                storage,
+            } => {
                 let args_str = args
                     .iter()
                     .map(|a| self.format_expr(a))
@@ -619,18 +691,35 @@ impl Annotator {
                 format!("{}[{}]", self.format_expr(list), self.format_expr(index))
             }
             Expr::Tuple(exprs) => {
-                let exprs_str = exprs.iter().map(|e| self.format_expr(e)).collect::<Vec<_>>().join(", ");
+                let exprs_str = exprs
+                    .iter()
+                    .map(|e| self.format_expr(e))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("({})", exprs_str)
             }
             Expr::If(cond, then, else_) => {
-                let else_str = else_.as_ref().map(|e| format!(" else {}", self.format_expr(e))).unwrap_or_default();
-                format!("(if {} then {}{})", self.format_expr(cond), self.format_expr(then), else_str)
+                let else_str = else_
+                    .as_ref()
+                    .map(|e| format!(" else {}", self.format_expr(e)))
+                    .unwrap_or_default();
+                format!(
+                    "(if {} then {}{})",
+                    self.format_expr(cond),
+                    self.format_expr(then),
+                    else_str
+                )
             }
             Expr::Match(expr, arms) => {
-                let arms_str: Vec<String> = arms.iter().map(|arm| {
-                    format!("{} => {}", arm.pattern, self.format_expr(&arm.body))
-                }).collect();
-                format!("(match {} {{ {} }})", self.format_expr(expr), arms_str.join(", "))
+                let arms_str: Vec<String> = arms
+                    .iter()
+                    .map(|arm| format!("{} => {}", arm.pattern, self.format_expr(&arm.body)))
+                    .collect();
+                format!(
+                    "(match {} {{ {} }})",
+                    self.format_expr(expr),
+                    arms_str.join(", ")
+                )
             }
             Expr::Block(stmts) => {
                 let body_str: String = stmts.iter().map(|s| self.format_statement(s, 0)).collect();
@@ -640,14 +729,35 @@ impl Annotator {
                 let params_str = params.join(", ");
                 format!("({}) => {}", params_str, self.format_expr(body))
             }
-            Expr::Cast(expr, ty) => format!("({} as {})", self.format_expr(expr), self.type_to_string(ty)),
-            Expr::IsType(expr, ty) => format!("({} is {})", self.format_expr(expr), self.type_to_string(ty)),
-            Expr::Within(expr, scope) => format!("({} within {})", self.format_expr(expr), self.format_expr(scope)),
+            Expr::Cast(expr, ty) => format!(
+                "({} as {})",
+                self.format_expr(expr),
+                self.type_to_string(ty)
+            ),
+            Expr::IsType(expr, ty) => format!(
+                "({} is {})",
+                self.format_expr(expr),
+                self.type_to_string(ty)
+            ),
+            Expr::Within(expr, scope) => format!(
+                "({} within {})",
+                self.format_expr(expr),
+                self.format_expr(scope)
+            ),
             Expr::DerivationBlock(block) => {
-                let examples_str: Vec<String> = block.examples.iter().map(|ex| {
-                    let inputs_str: Vec<String> = ex.inputs.iter().map(|i| self.format_expr(i)).collect();
-                    format!("{} -> {}", inputs_str.join(", "), self.format_expr(&ex.output))
-                }).collect();
+                let examples_str: Vec<String> = block
+                    .examples
+                    .iter()
+                    .map(|ex| {
+                        let inputs_str: Vec<String> =
+                            ex.inputs.iter().map(|i| self.format_expr(i)).collect();
+                        format!(
+                            "{} -> {}",
+                            inputs_str.join(", "),
+                            self.format_expr(&ex.output)
+                        )
+                    })
+                    .collect();
                 format!(":= {{ {} }}", examples_str.join("; "))
             }
             Expr::Deref(inner) => format!("*{}", self.format_expr(inner)),
@@ -659,7 +769,12 @@ impl Annotator {
             },
             Expr::MethodCall(recv, name, args, _) => {
                 let args_str: Vec<String> = args.iter().map(|a| self.format_expr(a)).collect();
-                format!("{}.{}({})", self.format_expr(recv), name, args_str.join(", "))
+                format!(
+                    "{}.{}({})",
+                    self.format_expr(recv),
+                    name,
+                    args_str.join(", ")
+                )
             }
             Expr::FormattingAnnotation(f) => format!("formatting <~ {}", f.name()),
             Expr::PluginIntercept { name, args, .. } => {
@@ -667,17 +782,34 @@ impl Annotator {
                 format!("{}!({})", name, args_str.join(", "))
             }
             Expr::StructLiteral { type_name, .. } => format!("{} {{ ... }}", type_name),
-            Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-            Expr::Slice { array, start, end, stride } => {
+            Expr::Exists(_) => {
+                unreachable!("fn? only in stage eval")
+            }
+            Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 let mut s = format!("{}[", self.format_expr(array));
-                if let Some(v) = start { s.push_str(&self.format_expr(v)); }
+                if let Some(v) = start {
+                    s.push_str(&self.format_expr(v));
+                }
                 s.push_str(":");
-                if let Some(v) = end { s.push_str(&self.format_expr(v)); }
-                if let Some(v) = stride { s.push_str(&format!(":{}", self.format_expr(v))); }
+                if let Some(v) = end {
+                    s.push_str(&self.format_expr(v));
+                }
+                if let Some(v) = stride {
+                    s.push_str(&format!(":{}", self.format_expr(v)));
+                }
                 s.push_str("]");
                 s
             }
-            Expr::Range { start, end, inclusive } => format!(
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+            } => format!(
                 "{}..{}{}",
                 self.format_expr(start),
                 if *inclusive { "=" } else { "" },
@@ -692,8 +824,8 @@ impl Annotator {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::*;
     use super::*;
+    use crate::ast::*;
 
     fn make_defn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Definition(Definition {

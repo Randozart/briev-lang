@@ -42,11 +42,14 @@ node go [done == false][done == true] {
         println!("{}", 1e-2);
         // Sign of zero
         println!("{}", -0.0);
-        // Division edge cases
-        println!("{}", 1.0 / 0.0);
-        println!("{}", -1.0 / 0.0);
-        println!("{}", 0.0 / 0.0);
-        println!("{}", -0.0 / 0.0);
+        // 2026-11-15: formatting exceptional values must not divide by zero,
+        // which raises DivisionByZero in the interpreter and traps natively.
+        // Replace the pre-alignment probes; preserve infinity/NaN goldens through
+        // float32 overflow and Sqrt#; replace with stdlib constants when exposed.
+        println!("{}", 1.5e308);
+        println!("{}", -1.5e308);
+        println!("{}", Sqrt#(-1.0));
+        println!("{}", -Sqrt#(-1.0));
         done = true;
     };
     term;

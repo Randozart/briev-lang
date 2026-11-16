@@ -305,7 +305,9 @@ pub enum TypeError {
     },
     /// 2026-11-10 (SPEC §8.11): a reactive/terminating construct inside a
     /// `test` block. Tests are straight-line statements; call a defn instead.
-    MisplacedInTest { construct: String },
+    MisplacedInTest {
+        construct: String,
+    },
     /// 2026-11-09: `hold` in a reactive body. A `hold` body declares facts
     /// under a condition by obligation; the software pipeline only enforces
     /// laws at top level or in obj/type bodies.
@@ -347,22 +349,42 @@ impl fmt::Display for TypeError {
                 write!(f, "FFI error: {}", message)
             }
             TypeError::RemovedIntrinsic { name, module, .. } => {
-                write!(f, "intrinsic '{}' was moved to {} (auto-imported via prelude). If using --no-std, add: import \"{}\";", name, module, module)
+                write!(
+                    f,
+                    "intrinsic '{}' was moved to {} (auto-imported via prelude). If using --no-std, add: import \"{}\";",
+                    name, module, module
+                )
             }
             TypeError::TautologicalContract => {
-                write!(f, "the contract [true][true] asserts nothing (true ⇒ true is trivial), so it is indistinguishable from an omitted contract and the compiler records no obligation; omit the brackets, or state the conditions you want proven")
+                write!(
+                    f,
+                    "the contract [true][true] asserts nothing (true ⇒ true is trivial), so it is indistinguishable from an omitted contract and the compiler records no obligation; omit the brackets, or state the conditions you want proven"
+                )
             }
             TypeError::MissingContract { declaration } => {
-                write!(f, "'{}' must declare a contract with pre and post conditions so the compiler can prove and classify the transition", declaration)
+                write!(
+                    f,
+                    "'{}' must declare a contract with pre and post conditions so the compiler can prove and classify the transition",
+                    declaration
+                )
             }
             TypeError::MisplacedInTest { construct } => {
-                write!(f, "`{construct}` is not allowed inside a `test` block; a test runs as straight-line statements — call a defn for reusable behaviour")
+                write!(
+                    f,
+                    "`{construct}` is not allowed inside a `test` block; a test runs as straight-line statements — call a defn for reusable behaviour"
+                )
             }
             TypeError::HoldOutsideLawContext => {
-                write!(f, "`hold` declares a static law; inside a reactive defn/node/txn body use `when` for a runtime guard (laws live at top level or in an obj/type body)")
+                write!(
+                    f,
+                    "`hold` declares a static law; inside a reactive defn/node/txn body use `when` for a runtime guard (laws live at top level or in an obj/type body)"
+                )
             }
             TypeError::BreakOutsideLoop { .. } => {
-                write!(f, "'break' may only appear inside a 'foreach' body (it exits the innermost enclosing 'foreach'); at top level there is no loop to break out of")
+                write!(
+                    f,
+                    "'break' may only appear inside a 'foreach' body (it exits the innermost enclosing 'foreach'); at top level there is no loop to break out of"
+                )
             }
         }
     }
@@ -703,9 +725,7 @@ pub(crate) fn reserved_word_meaning(kw: &str) -> Option<&'static str> {
         "coll" => "it is a collection layout flag",
         "accel" => "it marks a GPU-offloaded node/txn",
         "atomic" => "it is a memory-ordering modifier",
-        "relaxed" | "acquire" | "release" | "bartered" => {
-            "it is a memory-ordering modifier"
-        }
+        "relaxed" | "acquire" | "release" | "bartered" => "it is a memory-ordering modifier",
         "union" => "it declares a union type",
         "spawn" => "it is the task-spawn form",
         "beginprogram" => "it marks the authored reset node",
@@ -1157,13 +1177,21 @@ impl fmt::Display for WebstackError {
 /// Runtime error during compile-time evaluation (interpreter).
 #[derive(Debug, Clone)]
 pub enum RuntimeError {
-    UndefinedVariable { name: String },
+    UndefinedVariable {
+        name: String,
+    },
     UndefinedFunction(String),
     DivisionByZero,
     HeapError(String),
     UnsupportedIntrinsic(String),
-    TypeError { expected: String, found: String },
-    UndefinedForeignFunction { name: String, source: String },
+    TypeError {
+        expected: String,
+        found: String,
+    },
+    UndefinedForeignFunction {
+        name: String,
+        source: String,
+    },
     ContractViolation(String),
     /// 2026-07-28: Term statement evaluated — early return with value.
     /// Used by the interpreter's call_function to detect termination.
@@ -1232,7 +1260,11 @@ impl fmt::Display for RuntimeError {
                 write!(f, "non-exhaustive match: no arm matched {}", desc)
             }
             RuntimeError::ImmutableInit(name) => {
-                write!(f, "cannot modify '{}': an init is seeded once before beginprogram and is immutable for the run", name)
+                write!(
+                    f,
+                    "cannot modify '{}': an init is seeded once before beginprogram and is immutable for the run",
+                    name
+                )
             }
             RuntimeError::ExpectationFailed(expr) => {
                 write!(f, "expectation failed: `expect {expr}` evaluated to false")
@@ -1241,10 +1273,16 @@ impl fmt::Display for RuntimeError {
                 write!(f, "trap: the program executed a hardware abort (SPEC §8.8)")
             }
             RuntimeError::Halt => {
-                write!(f, "halt: the program entered the wait-for-interrupt state (Halt#) — no further code runs")
+                write!(
+                    f,
+                    "halt: the program entered the wait-for-interrupt state (Halt#) — no further code runs"
+                )
             }
             RuntimeError::TaskBlocked => {
-                write!(f, "internal: task blocked on an unready event port but no scheduler caught the suspension")
+                write!(
+                    f,
+                    "internal: task blocked on an unready event port but no scheduler caught the suspension"
+                )
             }
         }
     }

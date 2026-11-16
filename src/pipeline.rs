@@ -19,9 +19,9 @@
 use crate::ast::{Expr, StageKind, TopLevel};
 pub use crate::backend::llvm::TrgUnresolvedAction;
 use crate::lexer::Token;
-use crate::plugin::loader::{discover_system_plugins, extract_inline_stage_blocks};
 use crate::plugin::PluginManager;
-use crate::target::{get_extension, BackendKind};
+use crate::plugin::loader::{discover_system_plugins, extract_inline_stage_blocks};
+use crate::target::{BackendKind, get_extension};
 use crate::type_universe::TypeUniverse;
 use crate::{analysis, dbriev, macros};
 use std::collections::HashMap;
@@ -159,7 +159,7 @@ impl std::str::FromStr for BeastFilter {
                     return Err(format!(
                         "unknown beast position '{}'. Use before, after, or omit",
                         pos_str
-                    ))
+                    ));
                 }
             };
             Ok(BeastFilter {
@@ -334,6 +334,12 @@ pub struct BuildOptions {
     /// JSON to this path (--verify-report). Tooling must not parse the human
     /// diagnostics: their wording is not a contract.
     pub verify_report: Option<String>,
+    /// 2026-11-15 (issue #9): conservative compile profile. `--safe` selects
+    /// `-O0 -march=x86-64` (the generic x86-64 baseline; no LTO, no
+    /// -ffast-math) for the clang link and the frgn object compilation.
+    /// For triaging large-IR instability and reproducing backend bugs
+    /// without optimizer interference.
+    pub safe_mode: bool,
 }
 
 /// 2026-09-25 (interop Wave 1 C3): the de-facto default option set, lifted
@@ -399,6 +405,7 @@ impl Default for BuildOptions {
             web_page_key: None,
             verify_bodies: false,
             verify_report: None,
+            safe_mode: false,
         }
     }
 }
@@ -955,7 +962,7 @@ pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
 /// commit that ends the stdlib contract migration (plan
 /// 2026-10-19-contract-tiers-and-regularity.md).
 fn install_contract_gate_from_config() {
-    use crate::config_tuning::{install_contract_gate_policy, ContractGatePolicy};
+    use crate::config_tuning::{ContractGatePolicy, install_contract_gate_policy};
     let path = crate::resource_root().join("config/contracts.dbvl");
     let Ok(content) = std::fs::read_to_string(&path) else {
         return;

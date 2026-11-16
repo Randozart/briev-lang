@@ -37,10 +37,7 @@ fn assert_parity(src: &str, label: &str) {
 #[test]
 fn curated_needs_state_parity() {
     // Pure defn — stateless.
-    assert_parity(
-        "defn pure(x: Int) -> Int { term x + 1; };",
-        "pure",
-    );
+    assert_parity("defn pure(x: Int) -> Int { term x + 1; };", "pure");
     // Reads a top-level state global → stateful.
     assert_parity(
         "let g: Int = 0;\ndefn readg() -> Int { term g; };",
@@ -129,7 +126,10 @@ fn corpus_needs_state_parity() {
                 .collect();
             diff.sort();
             extra.sort();
-            mismatches.push(format!("{rel}\n  {}\n  extra-hir: {extra:?}", diff.join("\n  ")));
+            mismatches.push(format!(
+                "{rel}\n  {}\n  extra-hir: {extra:?}",
+                diff.join("\n  ")
+            ));
         }
     }
 

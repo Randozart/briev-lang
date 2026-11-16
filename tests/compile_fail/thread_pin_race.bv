@@ -1,0 +1,17 @@
+// 2026-11-15 (thread-assignment plan): two nodes pinned to DIFFERENT workers
+// that write the same state field. Workers run concurrently, so this is a data
+// race — the thread gate refuses it and names the shared field and the fix.
+// The race check runs before the emission hold, so this diagnostic is the one
+// reported.
+// EXPECT-ERROR: both touch 'shared' — both write it
+let shared: Int = 0;
+
+async on thread 0 node bump_a [shared < 3][shared == 3] {
+    shared = shared + 1;
+    term;
+};
+
+async on thread 1 node bump_b [shared < 5][shared == 5] {
+    shared = shared + 2;
+    term;
+};

@@ -257,8 +257,8 @@ pub(crate) fn canonical_plans(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::top::StateDecl;
     use crate::ast::PropertyValue;
+    use crate::ast::top::StateDecl;
 
     fn r32_decl(count: i64) -> TopLevel {
         TopLevel::StateDecl(StateDecl {

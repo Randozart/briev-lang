@@ -106,7 +106,6 @@ mod canonical_roundtrip {
     }
 }
 
-
 mod visit_mut_roundtrip {
     use briev_compiler::ast::{BinaryOpKind, Expr};
     use briev_compiler::lexer::tokenize;
@@ -114,17 +113,25 @@ mod visit_mut_roundtrip {
 
     #[test]
     fn mutation_is_postorder_and_exactly_once() {
-        let mut expression = Expr::BinaryOp(BinaryOpKind::Add,
-            Box::new(Expr::Decimal(1)), Box::new(Expr::Decimal(2)));
+        let mut expression = Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(Expr::Decimal(1)),
+            Box::new(Expr::Decimal(2)),
+        );
         let mut order = Vec::new();
-        briev_compiler::ast::visit_mut::walk_expr(&mut expression, &mut |expression| match expression {
-            Expr::Decimal(value) => { order.push(*value); *value += 10; },
-            Expr::BinaryOp(_, left, right) => {
-                assert_eq!(**left, Expr::Decimal(11));
-                assert_eq!(**right, Expr::Decimal(12));
-                order.push(3);
-            },
-            _ => {}
+        briev_compiler::ast::visit_mut::walk_expr(&mut expression, &mut |expression| {
+            match expression {
+                Expr::Decimal(value) => {
+                    order.push(*value);
+                    *value += 10;
+                }
+                Expr::BinaryOp(_, left, right) => {
+                    assert_eq!(**left, Expr::Decimal(11));
+                    assert_eq!(**right, Expr::Decimal(12));
+                    order.push(3);
+                }
+                _ => {}
+            }
         });
         assert_eq!(order, [1, 2, 3]);
     }
@@ -140,13 +147,17 @@ mod visit_mut_roundtrip {
             };
         "#;
         let tokens = tokenize(source).expect("visitor tokens");
-        let mut program = Parser::new(tokens, source).parse_program().expect("visitor syntax");
+        let mut program = Parser::new(tokens, source)
+            .parse_program()
+            .expect("visitor syntax");
         let original = program.clone();
         let mut before = std::collections::HashMap::new();
         let mut after = std::collections::HashMap::new();
         for item in &program {
             briev_compiler::ast::visit::walk_toplevel(item, &mut |expression| {
-                *before.entry(std::mem::discriminant(expression)).or_insert(0) += 1;
+                *before
+                    .entry(std::mem::discriminant(expression))
+                    .or_insert(0) += 1;
             });
         }
         for item in &mut program {

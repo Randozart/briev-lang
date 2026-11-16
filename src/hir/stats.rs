@@ -8,6 +8,9 @@ use super::program::{HirCallable, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
 use std::collections::BTreeMap;
 
+// The counsel contract layer: inert identity attributes, checked by `counsel-check`.
+use counsel::{post, pre};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnsupportedCounts {
     pub expressions: usize,
@@ -17,6 +20,9 @@ pub struct UnsupportedCounts {
 }
 
 impl UnsupportedCounts {
+    // the unsupported-record total is the sum of two non-negative counts
+    #[pre(self.expressions >= 0 && self.statements >= 0)]
+    #[post(term >= 0)]
     pub fn total(&self) -> usize {
         self.expressions + self.statements
     }
@@ -84,7 +90,10 @@ fn count_stmt(stmt: &HirStmt, counts: &mut UnsupportedCounts) {
         | HirStmtKind::FreeHint(_)
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
-        | HirStmtKind::InlineAsm { .. } => {}
+        | HirStmtKind::InlineAsm { .. }
+        // 2026-11-15: inline-defn is a fully-represented HIR node (carries
+        // the defn name); not an unsupported gap, so it is not counted.
+        | HirStmtKind::InlineDefn(_) => {}
         HirStmtKind::ReleaseOwned { .. } => {}
         HirStmtKind::TempTransfer { expr, .. } => count_expr(expr, counts),
         HirStmtKind::Other(tag) => {
@@ -126,10 +135,7 @@ fn count_opt_expr(expr: Option<&HirExpr>, counts: &mut UnsupportedCounts) {
     }
 }
 
-fn count_exprs<'a>(
-    exprs: impl IntoIterator<Item = &'a HirExpr>,
-    counts: &mut UnsupportedCounts,
-) {
+fn count_exprs<'a>(exprs: impl IntoIterator<Item = &'a HirExpr>, counts: &mut UnsupportedCounts) {
     for expr in exprs {
         count_expr(expr, counts);
     }
@@ -182,6 +188,7 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
                 count_expr(r, counts);
             }
         }
+        HirExprKind::Within(l, r) => count_exprs([l.as_ref(), r.as_ref()], counts),
         HirExprKind::Block(body) => count_body(body, counts),
         HirExprKind::Other(tag) => {
             counts.expressions += 1;
@@ -192,7 +199,10 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
         // 2026-11-12 (electronics full-surface port): a lowered selector,
         // never unsupported syntax.
         | HirExprKind::Wildcard
-        | HirExprKind::UnitLiteral { .. } => {}
+        | HirExprKind::UnitLiteral { .. }
+        // 2026-11-15: fully-represented HIR nodes, not unsupported gaps.
+        | HirExprKind::Exists(_)
+        | HirExprKind::FormattingAnnotation(_) => {}
     }
 }
 
@@ -204,11 +214,15 @@ fn count_pattern(pattern: &HirPattern, counts: &mut UnsupportedCounts) {
         HirPatternKind::Range(_, second) | HirPatternKind::RangeInclusive(_, second) => {
             count_expr(second, counts);
         }
-        HirPatternKind::EnumVariant(_, pats) | HirPatternKind::Tuple(pats) | HirPatternKind::Multi(pats) => {
+        HirPatternKind::EnumVariant(_, pats)
+        | HirPatternKind::Tuple(pats)
+        | HirPatternKind::Multi(pats) => {
             for pat in pats {
                 count_pattern(pat, counts);
             }
         }
-        HirPatternKind::Wildcard | HirPatternKind::Binding(_) | HirPatternKind::TypedBinding(_, _) => {}
+        HirPatternKind::Wildcard
+        | HirPatternKind::Binding(_)
+        | HirPatternKind::TypedBinding(_, _) => {}
     }
 }

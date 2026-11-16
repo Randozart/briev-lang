@@ -57,8 +57,12 @@ pub struct TargetEntry {
     pub linker_script: Option<String>,
 }
 
-fn default_assembler() -> String { "none".to_string() }
-fn default_cross_verify_samples() -> u32 { 50 }
+fn default_assembler() -> String {
+    "none".to_string()
+}
+fn default_cross_verify_samples() -> u32 {
+    50
+}
 
 /// Split a whitespace-separated list field into words (parser has no array
 /// grammar — space-separated values round-trip as one String field).
@@ -247,10 +251,7 @@ impl IsrMechanismConfig {
             let entry_stride = db.field_int(&key, 0).unwrap_or(4) as u64;
             let sp_slot = db.field_string(&key, 1) == Some("sp");
             let thumb_bit = db.field_int(&key, 2).map(|v| v != 0).unwrap_or(false);
-            let return_insn = db
-                .field_string(&key, 3)
-                .unwrap_or("bx lr")
-                .to_string();
+            let return_insn = db.field_string(&key, 3).unwrap_or("bx lr").to_string();
             let fpu_context = match db.field_string(&key, 4) {
                 Some("lazy") => IsrFpuContext::Lazy,
                 Some("eager") => IsrFpuContext::Eager,
@@ -261,10 +262,7 @@ impl IsrMechanismConfig {
                 .field_string(&key, 6)
                 .unwrap_or("Default_Handler")
                 .to_string();
-            let table_section = db
-                .field_string(&key, 7)
-                .unwrap_or("")
-                .to_string();
+            let table_section = db.field_string(&key, 7).unwrap_or("").to_string();
             let convention = match db.field_string(&key, 8) {
                 Some("riscv_machine") => IsrConv::RiscvInterrupt,
                 Some("x86_intr") => IsrConv::X86Intr,
@@ -327,10 +325,18 @@ impl TargetConfig {
             }
             let entry = TargetEntry {
                 backend: db.field_string(&key, 0).map(|s| s.to_string()),
-                defaults: db.field_string(&key, 1).map(split_words).unwrap_or_default(),
+                defaults: db
+                    .field_string(&key, 1)
+                    .map(split_words)
+                    .unwrap_or_default(),
                 plugins: db.field_string(&key, 2).map(split_words),
-                assembler: db.field_string(&key, 3).map(|s| s.to_string()).unwrap_or_else(default_assembler),
-                cross_verify_samples: db.field_int(&key, 4).map(|v| v as u32)
+                assembler: db
+                    .field_string(&key, 3)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(default_assembler),
+                cross_verify_samples: db
+                    .field_int(&key, 4)
+                    .map(|v| v as u32)
                     .unwrap_or_else(default_cross_verify_samples),
                 target_triple: db.field_string(&key, 5).map(|s| s.to_string()),
                 data_layout: db.field_string(&key, 6).map(|s| s.to_string()),
@@ -356,10 +362,18 @@ impl TargetConfig {
                 }
                 let entry = TargetEntry {
                     backend: db.field_string(&key, 0).map(|s| s.to_string()),
-                    defaults: db.field_string(&key, 1).map(split_words).unwrap_or_default(),
+                    defaults: db
+                        .field_string(&key, 1)
+                        .map(split_words)
+                        .unwrap_or_default(),
                     plugins: db.field_string(&key, 2).map(split_words),
-                    assembler: db.field_string(&key, 3).map(|s| s.to_string()).unwrap_or_else(default_assembler),
-                    cross_verify_samples: db.field_int(&key, 4).map(|v| v as u32)
+                    assembler: db
+                        .field_string(&key, 3)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(default_assembler),
+                    cross_verify_samples: db
+                        .field_int(&key, 4)
+                        .map(|v| v as u32)
                         .unwrap_or_else(default_cross_verify_samples),
                     target_triple: db.field_string(&key, 5).map(|s| s.to_string()),
                     data_layout: db.field_string(&key, 6).map(|s| s.to_string()),
@@ -372,8 +386,7 @@ impl TargetConfig {
         // Legacy TOML path (pre-migration profiles).
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
-        toml::from_str(&content)
-            .map_err(|e| format!("parse error in '{}': {}", path.display(), e))
+        toml::from_str(&content).map_err(|e| format!("parse error in '{}': {}", path.display(), e))
     }
 
     /// Deterministic extension→target rows for `brievc targets` and release
@@ -381,12 +394,18 @@ impl TargetConfig {
     pub fn extension_entries(&self) -> Vec<(&str, &TargetEntry)> {
         let mut keys: Vec<&str> = self.entries.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        keys.into_iter().filter_map(|key| self.entries.get(key).map(|entry| (key, entry))).collect()
+        keys.into_iter()
+            .filter_map(|key| self.entries.get(key).map(|entry| (key, entry)))
+            .collect()
     }
 
     /// Look up a target entry by file extension (e.g. ".bv").
     pub fn lookup(&self, extension: &str) -> Option<&TargetEntry> {
-        let key = if extension.starts_with('.') { extension.to_string() } else { format!(".{}", extension) };
+        let key = if extension.starts_with('.') {
+            extension.to_string()
+        } else {
+            format!(".{}", extension)
+        };
         self.entries.get(&key)
     }
 
@@ -402,7 +421,10 @@ impl TargetConfig {
             "vm" => Ok(BackendKind::Vm),
             "ptx" => Ok(BackendKind::Ptx),
             "bad" => Ok(BackendKind::Bad),
-            _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, electronics, webstack, vm, spirv, ptx, bad", name)),
+            _ => Err(format!(
+                "unknown backend '{}'. Supported: llvm, circt, electronics, webstack, vm, spirv, ptx, bad",
+                name
+            )),
         }
     }
 }
@@ -424,14 +446,23 @@ mod tests {
     fn extension_entries_are_sorted_and_complete() {
         let config = TargetConfig::load();
         let entries = config.extension_entries();
-        assert!(entries.len() >= 6, "extension support table lost rows: {entries:?}");
+        assert!(
+            entries.len() >= 6,
+            "extension support table lost rows: {entries:?}"
+        );
         let keys: Vec<&str> = entries.iter().map(|(key, _)| *key).collect();
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!(keys, sorted, "brievc targets must be deterministic");
-        let (_, bv) = entries.iter().find(|(key, _)| *key == ".bv").expect(".bv row");
+        let (_, bv) = entries
+            .iter()
+            .find(|(key, _)| *key == ".bv")
+            .expect(".bv row");
         assert_eq!(bv.backend.as_deref(), Some("llvm"));
-        let (_, rbv) = entries.iter().find(|(key, _)| *key == ".rbv").expect(".rbv row");
+        let (_, rbv) = entries
+            .iter()
+            .find(|(key, _)| *key == ".rbv")
+            .expect(".rbv row");
         assert_eq!(rbv.backend.as_deref(), Some("webstack"));
     }
 
@@ -526,9 +557,9 @@ vector_min_width = 4
 [wasm32-wasi]
 "#System" = "wasi_snapshot_preview1"
 "##;
-// 2026-10-06 (#Web genericization): the former `"#Web" = "wasm_runtime"` entry
-// is gone — `#Web` is a GLUE target resolved by name, not a per-target system
-// library. The golden tracks the dbvl's protocol→library map.
+    // 2026-10-06 (#Web genericization): the former `"#Web" = "wasm_runtime"` entry
+    // is gone — `#Web` is a GLUE target resolved by name, not a per-target system
+    // library. The golden tracks the dbvl's protocol→library map.
 
     #[test]
     fn test_target_config_loads() {
@@ -548,8 +579,14 @@ vector_min_width = 4
     fn test_resolve_backend() {
         assert_eq!(TargetConfig::resolve("llvm").unwrap(), BackendKind::Llvm);
         assert_eq!(TargetConfig::resolve("circt").unwrap(), BackendKind::Circt);
-        assert_eq!(TargetConfig::resolve("electronics").unwrap(), BackendKind::Electronics);
-        assert_eq!(TargetConfig::resolve("webstack").unwrap(), BackendKind::Webstack);
+        assert_eq!(
+            TargetConfig::resolve("electronics").unwrap(),
+            BackendKind::Electronics
+        );
+        assert_eq!(
+            TargetConfig::resolve("webstack").unwrap(),
+            BackendKind::Webstack
+        );
         assert_eq!(TargetConfig::resolve("spirv").unwrap(), BackendKind::Spirv);
         assert!(TargetConfig::resolve("unknown").is_err());
     }
@@ -564,10 +601,14 @@ vector_min_width = 4
     #[test]
     fn test_protocol_config_loads() {
         let config = ProtocolConfig::load();
-        assert!(config.is_available("x86_64-linux", "#System"),
-            "x86_64-linux should support #System");
-        assert!(!config.is_available("x86_64-linux", "#NonExistent"),
-            "non-existent protocol should be unavailable");
+        assert!(
+            config.is_available("x86_64-linux", "#System"),
+            "x86_64-linux should support #System"
+        );
+        assert!(
+            !config.is_available("x86_64-linux", "#NonExistent"),
+            "non-existent protocol should be unavailable"
+        );
     }
 
     #[test]
@@ -581,8 +622,11 @@ vector_min_width = 4
     fn test_protocol_config_resolve_system_wasi() {
         let config = ProtocolConfig::load();
         let lib = config.resolve("wasm32-wasi", "#System").unwrap();
-        assert_eq!(lib, Some("wasi_snapshot_preview1"),
-            "#System on wasm32-wasi should resolve to wasi_snapshot_preview1");
+        assert_eq!(
+            lib,
+            Some("wasi_snapshot_preview1"),
+            "#System on wasm32-wasi should resolve to wasi_snapshot_preview1"
+        );
     }
 
     #[test]
@@ -591,10 +635,14 @@ vector_min_width = 4
         // per-target system library; an absent protocol is a config miss
         // (other `#<Name>` protocols are GLUE targets, not system libraries).
         let config = ProtocolConfig::load();
-        let err = config.resolve("x86_64-linux", "#SomethingElse")
+        let err = config
+            .resolve("x86_64-linux", "#SomethingElse")
             .unwrap_err();
-        assert!(err.contains("has no '#SomethingElse' entry"),
-            "error should name the missing protocol entry (got: '{}')", err);
+        assert!(
+            err.contains("has no '#SomethingElse' entry"),
+            "error should name the missing protocol entry (got: '{}')",
+            err
+        );
     }
 
     #[test]
@@ -623,24 +671,47 @@ vector_min_width = 4
             .filter(|k| !k.starts_with("target.") && *k != "target")
             .cloned()
             .collect();
-        assert!(!toml_exts.is_empty(), "targets.toml should have extension entries");
+        assert!(
+            !toml_exts.is_empty(),
+            "targets.toml should have extension entries"
+        );
 
-        assert_eq!(db.entries.len(), toml_exts.len(),
-            "extension-entry count diverges between .dbvl and .toml");
+        assert_eq!(
+            db.entries.len(),
+            toml_exts.len(),
+            "extension-entry count diverges between .dbvl and .toml"
+        );
         for ext in &toml_exts {
-            let db_entry = db.entries.get(ext)
+            let db_entry = db
+                .entries
+                .get(ext)
                 .unwrap_or_else(|| panic!("extension '{}' missing from targets.dbvl", ext));
             let toml_entry = &toml_entries[ext];
-            assert_eq!(db_entry.backend, toml_entry.backend,
-                "backend for '{}' diverges", ext);
-            assert_eq!(db_entry.defaults, toml_entry.defaults,
-                "defaults for '{}' diverge", ext);
-            assert_eq!(db_entry.plugins, toml_entry.plugins,
-                "plugins for '{}' diverge", ext);
-            assert_eq!(db_entry.assembler, toml_entry.assembler,
-                "assembler for '{}' diverges", ext);
-            assert_eq!(db_entry.cross_verify_samples, toml_entry.cross_verify_samples,
-                "cross_verify_samples for '{}' diverges", ext);
+            assert_eq!(
+                db_entry.backend, toml_entry.backend,
+                "backend for '{}' diverges",
+                ext
+            );
+            assert_eq!(
+                db_entry.defaults, toml_entry.defaults,
+                "defaults for '{}' diverge",
+                ext
+            );
+            assert_eq!(
+                db_entry.plugins, toml_entry.plugins,
+                "plugins for '{}' diverge",
+                ext
+            );
+            assert_eq!(
+                db_entry.assembler, toml_entry.assembler,
+                "assembler for '{}' diverges",
+                ext
+            );
+            assert_eq!(
+                db_entry.cross_verify_samples, toml_entry.cross_verify_samples,
+                "cross_verify_samples for '{}' diverges",
+                ext
+            );
         }
     }
 
@@ -666,13 +737,16 @@ vector_min_width = 4
             })
             .collect();
         for (triple, protocol, lib) in flat {
-            let db_map = db.per_target.get(&triple)
+            let db_map = db
+                .per_target
+                .get(&triple)
                 .unwrap_or_else(|| panic!("target '{}' missing from protocols.dbvl", triple));
             assert_eq!(
                 db_map.get(&protocol),
                 Some(&lib),
                 "protocol '{}' on '{}' diverges between .dbvl and .toml",
-                protocol, triple
+                protocol,
+                triple
             );
         }
     }

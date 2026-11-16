@@ -3,8 +3,8 @@
 //! Mirror of `analysis::tail_carrier` for inline nested enum state.
 
 use super::enum_repr::HirEnumRepresentationPlan;
-use super::expr_walk::walk_stmts;
 use super::expr::{HirExpr, HirExprKind};
+use super::expr_walk::walk_stmts;
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{HirCallable, HirCallableKind, HirParam, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
@@ -70,18 +70,19 @@ fn carrier_parameters(
                 .iter()
                 .map(|args| classify_carrier_arg(args, param_index, param, &sret_locals))
                 .collect();
-            let (result_local, sret_callee) = classes
-                .iter()
-                .zip(self_calls.iter())
-                .find_map(|(class, args)| match class {
-                    RecursiveCarrierArgClass::InlineNested => {
-                        let HirExprKind::Identifier(local) = &args[param_index].kind else {
-                            return None;
-                        };
-                        sret_locals.get(local).cloned()
-                    }
-                    _ => None,
-                })?;
+            let (result_local, sret_callee) =
+                classes
+                    .iter()
+                    .zip(self_calls.iter())
+                    .find_map(|(class, args)| match class {
+                        RecursiveCarrierArgClass::InlineNested => {
+                            let HirExprKind::Identifier(local) = &args[param_index].kind else {
+                                return None;
+                            };
+                            sret_locals.get(local).cloned()
+                        }
+                        _ => None,
+                    })?;
             if !carrier_is_approved(&classes) {
                 return None;
             }
@@ -96,8 +97,7 @@ fn carrier_parameters(
                 param_name: param.name.clone(),
                 result_local,
                 sret_callee,
-                requires_backedge_copy: classes
-                    .contains(&RecursiveCarrierArgClass::InlineNested),
+                requires_backedge_copy: classes.contains(&RecursiveCarrierArgClass::InlineNested),
                 arg_classes: classes,
                 carrier: DestinationId {
                     owner: callable.name.clone(),
@@ -122,7 +122,11 @@ fn classify_carrier_arg(
     param: &HirParam,
     sret_locals: &HashMap<String, (String, String)>,
 ) -> RecursiveCarrierArgClass {
-    let Some(HirExpr { kind: HirExprKind::Identifier(local), .. }) = args.get(param_index) else {
+    let Some(HirExpr {
+        kind: HirExprKind::Identifier(local),
+        ..
+    }) = args.get(param_index)
+    else {
         return RecursiveCarrierArgClass::Unsupported;
     };
     if local == &param.name {
@@ -149,10 +153,11 @@ fn sret_local_bindings(
     for stmt in &c.body.statements {
         if let HirStmtKind::Let {
             name,
-            expr: Some(HirExpr {
-                kind: HirExprKind::Call { callee, .. },
-                ..
-            }),
+            expr:
+                Some(HirExpr {
+                    kind: HirExprKind::Call { callee, .. },
+                    ..
+                }),
             ..
         } = &stmt.kind
         {

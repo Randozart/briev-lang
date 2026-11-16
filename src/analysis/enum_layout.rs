@@ -700,7 +700,9 @@ mod tests {
 
     #[test]
     fn depth_cap_preserves_standalone_nested_images() {
-        let items = parse("enum Leaf { Value(Int) }; enum Middle { Child(Leaf) }; enum Outer { ChildMiddle(Middle) };");
+        let items = parse(
+            "enum Leaf { Value(Int) }; enum Middle { Child(Leaf) }; enum Outer { ChildMiddle(Middle) };",
+        );
         let planner = EnumLayoutPlanner::new(&items, 2);
         let middle = planner.layout_for(&Type::Custom("Middle".into())).unwrap();
         let outer = planner.layout_for(&Type::Custom("Outer".into())).unwrap();

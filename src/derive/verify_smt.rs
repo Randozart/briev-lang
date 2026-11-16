@@ -3,11 +3,11 @@
 // verification queries, invokes Z3, and extracts counterexamples.
 // This is the core of the CEGIS verification loop.
 
-use crate::ast::{BinaryOpKind, Expr, Statement, Type, UnaryOpKind};
 use crate::ast::Pattern;
+use crate::ast::{BinaryOpKind, Expr, Statement, Type, UnaryOpKind};
 use crate::derive::SynthesizeError;
-use std::process::Command;
 use std::io::Write;
+use std::process::Command;
 
 /// Convert a Briev expression to an SMT-LIB2 term string.
 /// `param_names` are the names of bound variables (function parameters).
@@ -29,7 +29,9 @@ fn block_to_smt_term(block: &[Statement], param_names: &[String]) -> String {
                 // Final expression — this is what we need to convert
                 current_expr = Some(expr);
             }
-            Statement::Let { name, names, expr, .. } => {
+            Statement::Let {
+                name, names, expr, ..
+            } => {
                 // 2026-07-29: Inline the let binding by substituting the
                 // bound name(s) into the accumulated body expression.
                 // Both the primary `name` and additional `names` (for tuple
@@ -67,71 +69,83 @@ fn block_to_smt_term(block: &[Statement], param_names: &[String]) -> String {
 fn substitute_var_local(expr: &Expr, var_name: &str, replacement: &Expr) -> Expr {
     match expr {
         Expr::Identifier(name) => {
-            if name == var_name { replacement.clone() } else { expr.clone() }
+            if name == var_name {
+                replacement.clone()
+            } else {
+                expr.clone()
+            }
         }
-        Expr::UnaryOp(kind, inner) => {
-            Expr::UnaryOp(*kind, Box::new(substitute_var_local(inner, var_name, replacement)))
-        }
-        Expr::BinaryOp(kind, lhs, rhs) => {
-            Expr::BinaryOp(
-                *kind,
-                Box::new(substitute_var_local(lhs, var_name, replacement)),
-                Box::new(substitute_var_local(rhs, var_name, replacement)),
-            )
-        }
-        Expr::If(cond, then_, else_) => {
-            Expr::If(
-                Box::new(substitute_var_local(cond, var_name, replacement)),
-                Box::new(substitute_var_local(then_, var_name, replacement)),
-                else_.as_ref().map(|e| Box::new(substitute_var_local(e, var_name, replacement))),
-            )
-        }
-        Expr::Call(name, args, aid) => {
-            Expr::Call(
-                name.clone(),
-                args.iter().map(|a| substitute_var_local(a, var_name, replacement)).collect(),
-                *aid,
-            )
-        }
-        Expr::Field(inner, fname) => {
-            Expr::Field(Box::new(substitute_var_local(inner, var_name, replacement)), fname.clone())
-        }
-        Expr::Match(scrut, arms) => {
-            Expr::Match(
-                Box::new(substitute_var_local(scrut, var_name, replacement)),
-                arms.iter().map(|a| crate::ast::MatchArm {
+        Expr::UnaryOp(kind, inner) => Expr::UnaryOp(
+            *kind,
+            Box::new(substitute_var_local(inner, var_name, replacement)),
+        ),
+        Expr::BinaryOp(kind, lhs, rhs) => Expr::BinaryOp(
+            *kind,
+            Box::new(substitute_var_local(lhs, var_name, replacement)),
+            Box::new(substitute_var_local(rhs, var_name, replacement)),
+        ),
+        Expr::If(cond, then_, else_) => Expr::If(
+            Box::new(substitute_var_local(cond, var_name, replacement)),
+            Box::new(substitute_var_local(then_, var_name, replacement)),
+            else_
+                .as_ref()
+                .map(|e| Box::new(substitute_var_local(e, var_name, replacement))),
+        ),
+        Expr::Call(name, args, aid) => Expr::Call(
+            name.clone(),
+            args.iter()
+                .map(|a| substitute_var_local(a, var_name, replacement))
+                .collect(),
+            *aid,
+        ),
+        Expr::Field(inner, fname) => Expr::Field(
+            Box::new(substitute_var_local(inner, var_name, replacement)),
+            fname.clone(),
+        ),
+        Expr::Match(scrut, arms) => Expr::Match(
+            Box::new(substitute_var_local(scrut, var_name, replacement)),
+            arms.iter()
+                .map(|a| crate::ast::MatchArm {
                     pattern: a.pattern.clone(),
                     guard: a.guard.clone(),
                     body: Box::new(substitute_var_local(&a.body, var_name, replacement)),
-                }).collect(),
-            )
-        }
-        Expr::Block(stmts) => {
-            Expr::Block(stmts.iter().map(|s| match s {
-                Statement::Let { name, names, ty, expr, modifiers } => {
+                })
+                .collect(),
+        ),
+        Expr::Block(stmts) => Expr::Block(
+            stmts
+                .iter()
+                .map(|s| match s {
                     Statement::Let {
+                        name,
+                        names,
+                        ty,
+                        expr,
+                        modifiers,
+                    } => Statement::Let {
                         name: name.clone(),
                         names: names.clone(),
                         ty: ty.clone(),
-                        expr: expr.as_ref().map(|e| substitute_var_local(e, var_name, replacement)),
+                        expr: expr
+                            .as_ref()
+                            .map(|e| substitute_var_local(e, var_name, replacement)),
                         modifiers: modifiers.clone(),
+                    },
+                    Statement::Term(val) => Statement::Term(
+                        val.as_ref()
+                            .map(|e| substitute_var_local(e, var_name, replacement)),
+                    ),
+                    Statement::Tail(e) => {
+                        Statement::Tail(substitute_var_local(e, var_name, replacement))
                     }
-                }
-                Statement::Term(val) => {
-                    Statement::Term(val.as_ref().map(|e| substitute_var_local(e, var_name, replacement)))
-                }
-                Statement::Tail(e) => {
-                    Statement::Tail(substitute_var_local(e, var_name, replacement))
-                }
-                Statement::Assign(lhs, rhs) => {
-                    Statement::Assign(
+                    Statement::Assign(lhs, rhs) => Statement::Assign(
                         substitute_var_local(lhs, var_name, replacement),
                         substitute_var_local(rhs, var_name, replacement),
-                    )
-                }
-                other => other.clone(),
-            }).collect())
-        }
+                    ),
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
         _ => expr.clone(),
     }
 }
@@ -144,7 +158,11 @@ pub fn expr_to_smt_term(expr: &Expr, param_names: &[String]) -> String {
             format!("#x{:08X}", bits)
         }
         Expr::Bool(b) => {
-            if *b { "true".into() } else { "false".into() }
+            if *b {
+                "true".into()
+            } else {
+                "false".into()
+            }
         }
         Expr::Identifier(name) => {
             // Check if this is a parameter or a special variable
@@ -174,14 +192,16 @@ pub fn expr_to_smt_term(expr: &Expr, param_names: &[String]) -> String {
         Expr::If(cond, then, else_) => {
             let c = expr_to_smt_term(cond, param_names);
             let t = expr_to_smt_term(then, param_names);
-            let e_str = else_.as_ref()
+            let e_str = else_
+                .as_ref()
                 .map(|e| expr_to_smt_term(e, param_names))
                 .unwrap_or_else(|| "#x0000000000000000".into());
             format!("(ite {} {} {})", c, t, e_str)
         }
         // 2026-07-28: Phase 2 — Constructor (via Call), Field, Match
         Expr::Call(name, args, _) => {
-            let arg_strs: Vec<String> = args.iter()
+            let arg_strs: Vec<String> = args
+                .iter()
                 .map(|a| expr_to_smt_term(a, param_names))
                 .collect();
             format!("({} {})", name, arg_strs.join(" "))
@@ -229,7 +249,10 @@ pub fn expr_to_smt_term(expr: &Expr, param_names: &[String]) -> String {
                 }
             }
             // Close all ite expressions (one for each arm except wildcard)
-            let arm_count = arms.iter().filter(|a| matches!(a.pattern, Pattern::EnumVariant(_, _))).count();
+            let arm_count = arms
+                .iter()
+                .filter(|a| matches!(a.pattern, Pattern::EnumVariant(_, _)))
+                .count();
             for _ in 0..arm_count {
                 result.push(')');
             }
@@ -285,7 +308,11 @@ pub fn type_to_smt_sort(ty: &Type) -> String {
         }
         Type::Vector(inner, n) => {
             let inner_sort = type_to_smt_sort(inner);
-            let size: String = n.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("x");
+            let size: String = n
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("x");
             format!("(Vector {} {})", inner_sort, size)
         }
         _ => "(_ BitVec 64)".into(),
@@ -321,7 +348,8 @@ pub fn get_datatype_declaration(type_name: &str) -> Option<String> {
              (Add (Add-left Expr) (Add-right Expr))\n\
              (Sub (Sub-left Expr) (Sub-right Expr))\n\
              (Mul (Mul-left Expr) (Mul-right Expr))\n\
-             )))".into()
+             )))"
+            .into(),
         ),
         "Bool" | "Int" | "Int64" | "Int32" | "Int16" | "Int8" => None,
         _ => None,
@@ -374,9 +402,7 @@ pub fn build_verification_query(
     // define-fun for the candidate function — fixes f as the candidate body
     // so Z3 doesn't assign arbitrary values.
     q.push_str(&format!("; Candidate: {}\n", name));
-    let mut param_names: Vec<String> = (0..params.len())
-        .map(|i| format!("x{}", i))
-        .collect();
+    let mut param_names: Vec<String> = (0..params.len()).map(|i| format!("x{}", i)).collect();
     let candidate_body = expr_to_smt_term(candidate, &param_names);
     q.push_str("(define-fun f (");
     for (i, (_, ty)) in params.iter().enumerate() {
@@ -408,9 +434,7 @@ pub fn build_verification_query(
     // When both postcondition and reference are present, assert BOTH:
     //   (=> pre post) AND (= (f x) (ref x))
     // When only one is present, assert just that one.
-    let param_refs: Vec<String> = (0..params.len())
-        .map(|i| format!("x{}", i))
-        .collect();
+    let param_refs: Vec<String> = (0..params.len()).map(|i| format!("x{}", i)).collect();
     let mut conditions: Vec<String> = Vec::new();
 
     if let Some(post) = postcondition {
@@ -458,7 +482,11 @@ pub fn build_verification_query(
         // assignments (same as forall), SAT provides a specific witness.
         q.push_str("; Skolemized parameters for reliable model extraction\n");
         for (i, (_, ty)) in params.iter().enumerate() {
-            q.push_str(&format!("(declare-const x{} {})\n", i, type_to_smt_sort(ty)));
+            q.push_str(&format!(
+                "(declare-const x{} {})\n",
+                i,
+                type_to_smt_sort(ty)
+            ));
         }
         q.push_str(&format!("\n; Verify: candidate satisfies specification\n"));
         q.push_str(&format!("(assert (not {}))\n", conditions_body));
@@ -488,35 +516,30 @@ pub fn run_z3_verify(query: &str) -> Result<VerificationResult, SynthesizeError>
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| SynthesizeError::SolverUnavailable(
-            format!("failed to start z3: {}", e)
-        ))?;
+        .map_err(|e| SynthesizeError::SolverUnavailable(format!("failed to start z3: {}", e)))?;
 
     // Write query to stdin, flush, then close stdin so Z3 sees EOF
     if let Some(mut stdin) = child.stdin.take() {
         writeln!(&stdin, "{}", query)
-            .map_err(|e| SynthesizeError::SolverError(
-                format!("failed to write to z3: {}", e)
-            ))?;
-        stdin.flush()
-            .map_err(|e| SynthesizeError::SolverError(
-                format!("failed to flush z3: {}", e)
-            ))?;
+            .map_err(|e| SynthesizeError::SolverError(format!("failed to write to z3: {}", e)))?;
+        stdin
+            .flush()
+            .map_err(|e| SynthesizeError::SolverError(format!("failed to flush z3: {}", e)))?;
         // stdin is dropped here, closing the pipe
     }
 
-    let output = child.wait_with_output()
-        .map_err(|e| SynthesizeError::SolverError(
-            format!("failed to wait for z3: {}", e)
-        ))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| SynthesizeError::SolverError(format!("failed to wait for z3: {}", e)))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !stderr.is_empty() && !stderr.contains("warning") {
-        return Err(SynthesizeError::SolverError(
-            format!("z3 stderr: {}", stderr.trim())
-        ));
+        return Err(SynthesizeError::SolverError(format!(
+            "z3 stderr: {}",
+            stderr.trim()
+        )));
     }
 
     // Parse result
@@ -531,16 +554,17 @@ pub fn run_z3_verify(query: &str) -> Result<VerificationResult, SynthesizeError>
         let examples = extract_counterexamples(&stdout);
         if examples.is_empty() {
             return Err(SynthesizeError::SolverError(
-                "Z3 returned sat with no counterexample model".into()
+                "Z3 returned sat with no counterexample model".into(),
             ));
         }
         Ok(VerificationResult::Counterexample(examples))
     } else if stdout.contains("unknown") {
         Ok(VerificationResult::Error("Z3 returned unknown".into()))
     } else {
-        Err(SynthesizeError::SolverError(
-            format!("unexpected z3 output: {}", stdout.trim())
-        ))
+        Err(SynthesizeError::SolverError(format!(
+            "unexpected z3 output: {}",
+            stdout.trim()
+        )))
     }
 }
 
@@ -580,7 +604,9 @@ fn extract_counterexamples(output: &str) -> Vec<Vec<Expr>> {
             // Collect all (xN ... #xHEX) bindings on consecutive lines
             let mut idx = 0;
             loop {
-                let var_line = if idx == 0 { trimmed } else {
+                let var_line = if idx == 0 {
+                    trimmed
+                } else {
                     line_iter.peek().map(|l| l.trim()).unwrap_or("")
                 };
                 if let Some(val) = extract_hex_from_line(var_line) {
@@ -621,9 +647,10 @@ fn extract_counterexamples(output: &str) -> Vec<Vec<Expr>> {
 fn extract_hex_from_line(line: &str) -> Option<i64> {
     if let Some(hpos) = line.find("#x") {
         let hex_str = &line[hpos..];
-        let end = hex_str.find(|c: char| !c.is_alphanumeric() && c != 'x')
+        let end = hex_str
+            .find(|c: char| !c.is_alphanumeric() && c != 'x')
             .unwrap_or(18);
-        if let Ok(val) = i64::from_str_radix(&hex_str[2..2+end.min(16)], 16) {
+        if let Ok(val) = i64::from_str_radix(&hex_str[2..2 + end.min(16)], 16) {
             return Some(val);
         }
     }
@@ -640,54 +667,57 @@ fn rename_variables(expr: &Expr, from_names: &[String], to_names: &[String]) -> 
     match expr {
         Expr::Identifier(name) => {
             if let Some(idx) = from_names.iter().position(|p| p == name) {
-                to_names.get(idx).cloned().map_or_else(
-                    || expr.clone(),
-                    |new_name| Expr::Identifier(new_name),
-                )
+                to_names
+                    .get(idx)
+                    .cloned()
+                    .map_or_else(|| expr.clone(), |new_name| Expr::Identifier(new_name))
             } else {
                 expr.clone()
             }
         }
-        Expr::UnaryOp(kind, inner) => {
-            Expr::UnaryOp(*kind, Box::new(rename_variables(inner, from_names, to_names)))
-        }
-        Expr::BinaryOp(kind, lhs, rhs) => {
-            Expr::BinaryOp(
-                *kind,
-                Box::new(rename_variables(lhs, from_names, to_names)),
-                Box::new(rename_variables(rhs, from_names, to_names)),
-            )
-        }
-        Expr::If(cond, then, else_) => {
-            Expr::If(
-                Box::new(rename_variables(cond, from_names, to_names)),
-                Box::new(rename_variables(then, from_names, to_names)),
-                else_.as_ref().map(|e| Box::new(rename_variables(e, from_names, to_names))),
-            )
-        }
-        Expr::Call(name, args, aid) => {
-            Expr::Call(
-                name.clone(),
-                args.iter().map(|a| rename_variables(a, from_names, to_names)).collect(),
-                *aid,
-            )
-        }
-        Expr::Field(inner, fname) => {
-            Expr::Field(Box::new(rename_variables(inner, from_names, to_names)), fname.clone())
-        }
-        Expr::Match(scrut, arms) => {
-            Expr::Match(
-                Box::new(rename_variables(scrut, from_names, to_names)),
-                arms.iter().map(|a| crate::ast::MatchArm {
+        Expr::UnaryOp(kind, inner) => Expr::UnaryOp(
+            *kind,
+            Box::new(rename_variables(inner, from_names, to_names)),
+        ),
+        Expr::BinaryOp(kind, lhs, rhs) => Expr::BinaryOp(
+            *kind,
+            Box::new(rename_variables(lhs, from_names, to_names)),
+            Box::new(rename_variables(rhs, from_names, to_names)),
+        ),
+        Expr::If(cond, then, else_) => Expr::If(
+            Box::new(rename_variables(cond, from_names, to_names)),
+            Box::new(rename_variables(then, from_names, to_names)),
+            else_
+                .as_ref()
+                .map(|e| Box::new(rename_variables(e, from_names, to_names))),
+        ),
+        Expr::Call(name, args, aid) => Expr::Call(
+            name.clone(),
+            args.iter()
+                .map(|a| rename_variables(a, from_names, to_names))
+                .collect(),
+            *aid,
+        ),
+        Expr::Field(inner, fname) => Expr::Field(
+            Box::new(rename_variables(inner, from_names, to_names)),
+            fname.clone(),
+        ),
+        Expr::Match(scrut, arms) => Expr::Match(
+            Box::new(rename_variables(scrut, from_names, to_names)),
+            arms.iter()
+                .map(|a| crate::ast::MatchArm {
                     pattern: a.pattern.clone(),
                     guard: a.guard.clone(),
                     body: Box::new(rename_variables(&a.body, from_names, to_names)),
-                }).collect(),
-            )
-        }
-        Expr::Block(stmts) => {
-            Expr::Block(stmts.iter().map(|s| rename_stmt(s, from_names, to_names)).collect())
-        }
+                })
+                .collect(),
+        ),
+        Expr::Block(stmts) => Expr::Block(
+            stmts
+                .iter()
+                .map(|s| rename_stmt(s, from_names, to_names))
+                .collect(),
+        ),
         _ => expr.clone(),
     }
 }
@@ -695,48 +725,54 @@ fn rename_variables(expr: &Expr, from_names: &[String], to_names: &[String]) -> 
 /// 2026-07-29: Rename variables in a statement (used by rename_variables for blocks).
 fn rename_stmt(stmt: &Statement, from_names: &[String], to_names: &[String]) -> Statement {
     match stmt {
-        Statement::Let { name, names, ty, expr, modifiers } => {
-            Statement::Let {
-                name: name.clone(),
-                names: names.clone(),
-                ty: ty.clone(),
-                expr: expr.as_ref().map(|e| rename_variables(e, from_names, to_names)),
-                modifiers: modifiers.clone(),
-            }
-        }
-        Statement::Assign(lhs, rhs) => {
-            Statement::Assign(
-                rename_variables(lhs, from_names, to_names),
-                rename_variables(rhs, from_names, to_names),
-            )
-        }
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => Statement::Let {
+            name: name.clone(),
+            names: names.clone(),
+            ty: ty.clone(),
+            expr: expr
+                .as_ref()
+                .map(|e| rename_variables(e, from_names, to_names)),
+            modifiers: modifiers.clone(),
+        },
+        Statement::Assign(lhs, rhs) => Statement::Assign(
+            rename_variables(lhs, from_names, to_names),
+            rename_variables(rhs, from_names, to_names),
+        ),
         Statement::Expression(expr) => {
             Statement::Expression(rename_variables(expr, from_names, to_names))
         }
-        Statement::Term(val) => {
-            Statement::Term(val.as_ref().map(|e| rename_variables(e, from_names, to_names)))
-        }
-        Statement::Tail(e) => {
-            Statement::Tail(rename_variables(e, from_names, to_names))
-        }
-        Statement::EndProgram(val) => {
-            Statement::EndProgram(val.as_ref().map(|e| rename_variables(e, from_names, to_names)))
-        }
-        Statement::Guarded(cond, body) => {
-            Statement::Guarded(
-                rename_variables(cond, from_names, to_names),
-                body.iter().map(|s| rename_stmt(s, from_names, to_names)).collect(),
-            )
-        }
-        Statement::Gate(cond) => {
-            Statement::Gate(rename_variables(cond, from_names, to_names))
-        }
-        Statement::Block(body) => {
-            Statement::Block(body.iter().map(|s| rename_stmt(s, from_names, to_names)).collect())
-        }
-        Statement::SyncBlock(body) => {
-            Statement::SyncBlock(body.iter().map(|s| rename_stmt(s, from_names, to_names)).collect())
-        }
+        Statement::Term(val) => Statement::Term(
+            val.as_ref()
+                .map(|e| rename_variables(e, from_names, to_names)),
+        ),
+        Statement::Tail(e) => Statement::Tail(rename_variables(e, from_names, to_names)),
+        Statement::EndProgram(val) => Statement::EndProgram(
+            val.as_ref()
+                .map(|e| rename_variables(e, from_names, to_names)),
+        ),
+        Statement::Guarded(cond, body) => Statement::Guarded(
+            rename_variables(cond, from_names, to_names),
+            body.iter()
+                .map(|s| rename_stmt(s, from_names, to_names))
+                .collect(),
+        ),
+        Statement::Gate(cond) => Statement::Gate(rename_variables(cond, from_names, to_names)),
+        Statement::Block(body) => Statement::Block(
+            body.iter()
+                .map(|s| rename_stmt(s, from_names, to_names))
+                .collect(),
+        ),
+        Statement::SyncBlock(body) => Statement::SyncBlock(
+            body.iter()
+                .map(|s| rename_stmt(s, from_names, to_names))
+                .collect(),
+        ),
         _ => stmt.clone(),
     }
 }
@@ -819,7 +855,11 @@ mod tests {
         );
         let query = build_verification_query("test", &candidate, &params, Some(&post), None, None);
         // 2026-07-29: Skolemized — uses declare-const instead of forall
-        assert!(query.contains("declare-const"), "query should use declare-const, got: {}", &query[..query.len().min(200)]);
+        assert!(
+            query.contains("declare-const"),
+            "query should use declare-const, got: {}",
+            &query[..query.len().min(200)]
+        );
         assert!(query.contains("(f x0"));
     }
 

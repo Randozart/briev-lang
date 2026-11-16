@@ -1471,7 +1471,7 @@ impl Builder<'_> {
                 self.graph.points[result].insert(result);
             }
             "StringConcat#" | "StringBitAnd#" | "StringBitOr#" | "StringBitXor#" => {
-                return self.graph.allocation(self.owner)
+                return self.graph.allocation(self.owner);
             }
             _ => {
                 if crate::intrinsic_signatures::get_intrinsic_signature(name)

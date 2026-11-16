@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //! H3.4b parity: HIR loop-carried classification must equal the AST version.
 
-use briev_compiler::analysis::loop_carried::{classify_fields as ast_classify, FieldClass};
+use briev_compiler::analysis::loop_carried::{FieldClass, classify_fields as ast_classify};
 use briev_compiler::analysis::transition_graph::ReactorTransitionGraph;
 use briev_compiler::ast::TopLevel;
-use briev_compiler::hir::lower_program;
-use briev_compiler::hir::loop_carried::classify_fields as hir_classify;
-use briev_compiler::hir::transition_graph::HirReactorTransitionGraph;
 use briev_compiler::hir::HirCallableKind;
+use briev_compiler::hir::loop_carried::classify_fields as hir_classify;
+use briev_compiler::hir::lower_program;
+use briev_compiler::hir::transition_graph::HirReactorTransitionGraph;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -86,7 +86,11 @@ fn curated_loop_carried_parity() {
                let total: Int = 0;\n\
                txn tick [count < bound] { count = count + 1; tmp = 5; total = count; term; };";
     let bad = compare(src);
-    assert!(bad.is_empty(), "HIR loop-carried parity:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "HIR loop-carried parity:\n{}",
+        bad.join("\n")
+    );
 }
 
 #[test]
@@ -114,7 +118,11 @@ fn corpus_loop_carried_parity() {
             continue;
         }
         compared += 1;
-        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for b in compare(&source) {
             mismatches.push(format!("{rel}: {b}"));
         }

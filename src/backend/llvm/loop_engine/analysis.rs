@@ -13,7 +13,10 @@ use std::collections::HashSet;
 /// an expression — meaning the block always exits.
 pub fn terminating_guard(statements: &[Statement]) -> bool {
     statements.iter().any(|s| {
-        matches!(s, Statement::Term(Some(_)) | Statement::EndProgram(Some(_)) | Statement::Tail(_))
+        matches!(
+            s,
+            Statement::Term(Some(_)) | Statement::EndProgram(Some(_)) | Statement::Tail(_)
+        )
     })
 }
 
@@ -250,7 +253,12 @@ pub fn build_let_field_refs(
 ) -> HashMap<String, HashSet<String>> {
     let mut result = HashMap::new();
     for stmt in body {
-        if let Statement::Let { name, expr: Some(e), .. } = stmt {
+        if let Statement::Let {
+            name,
+            expr: Some(e),
+            ..
+        } = stmt
+        {
             let mut fields = HashSet::new();
             collect_expr_field_refs(e, &mut fields, field_index_map);
             result.insert(name.clone(), fields);
@@ -298,7 +306,9 @@ pub fn observable_field_refs(
 fn contains_output_call(expr: &Expr) -> bool {
     match expr {
         Expr::Call(name, _, _) => name == "Print#" || name == "Println#",
-        Expr::Block(stmts) => stmts.iter().any(|s| matches!(s, Statement::Expression(e) if contains_output_call(e))),
+        Expr::Block(stmts) => stmts
+            .iter()
+            .any(|s| matches!(s, Statement::Expression(e) if contains_output_call(e))),
         _ => false,
     }
 }
@@ -418,8 +428,9 @@ pub fn filter_dead_assignments(
     let mut result = Vec::new();
     for stmt in body {
         match stmt {
-            Statement::Assign(lhs, _) if target_field_name(lhs)
-                .map_or(false, |n| !live_fields.contains(&n)) => {
+            Statement::Assign(lhs, _)
+                if target_field_name(lhs).map_or(false, |n| !live_fields.contains(&n)) =>
+            {
                 // Skip dead assignment
             }
             Statement::Guarded(cond, stmts) => {
@@ -437,10 +448,7 @@ pub fn filter_dead_assignments(
 }
 
 /// Find permutation cycles in a field index permutation.
-pub fn find_permutation_cycles(
-    perm: &HashMap<usize, usize>,
-    n: usize,
-) -> Vec<Vec<usize>> {
+pub fn find_permutation_cycles(perm: &HashMap<usize, usize>, n: usize) -> Vec<Vec<usize>> {
     let mut visited = vec![false; n];
     let mut cycles = Vec::new();
     for start in 0..n {
@@ -539,8 +547,10 @@ pub fn build_vector_phi_groups(
     field_types: &[String],
 ) -> HashMap<String, Vec<String>> {
     let mut groups: HashMap<String, Vec<String>> = HashMap::new();
-    let mut sorted: Vec<(String, usize)> = field_index_map.iter()
-        .map(|(k, v)| (k.clone(), *v)).collect();
+    let mut sorted: Vec<(String, usize)> = field_index_map
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     sorted.sort_by_key(|(_, v)| *v);
     for (name, idx) in &sorted {
         if idx >= &field_types.len() {

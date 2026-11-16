@@ -31,20 +31,33 @@ pub fn write_archive(items: &[TopLevel]) -> String {
 /// Write a definition entry to the archive.
 fn write_definition(defn: &Definition, out: &mut String) {
     use std::fmt::Write;
-    let param_strs: Vec<String> = defn.parameters.iter()
+    let param_strs: Vec<String> = defn
+        .parameters
+        .iter()
         .map(|(name, ty)| format!("{}:{}", name, format!("{:?}", ty)))
         .collect();
-    let ret_str = defn.output_type.as_ref()
+    let ret_str = defn
+        .output_type
+        .as_ref()
         .map(|ot| format!(" -> {:?}", ot))
         .unwrap_or_default();
-    writeln!(out, "def {} ({}){}", defn.name, param_strs.join(", "), ret_str).unwrap();
+    writeln!(
+        out,
+        "def {} ({}){}",
+        defn.name,
+        param_strs.join(", "),
+        ret_str
+    )
+    .unwrap();
     write_metadata(&defn.metadata, out);
 }
 
 /// Write an export signature entry.
 fn write_export_sig(defn: &Definition, out: &mut String) {
     use std::fmt::Write;
-    let param_strs: Vec<String> = defn.parameters.iter()
+    let param_strs: Vec<String> = defn
+        .parameters
+        .iter()
         .map(|(name, ty)| format!("{}:{}", name, format!("{:?}", ty)))
         .collect();
     writeln!(out, "export {} ({})", defn.name, param_strs.join(", ")).unwrap();
@@ -53,11 +66,17 @@ fn write_export_sig(defn: &Definition, out: &mut String) {
 /// Write a transaction entry.
 fn write_transaction(txn: &crate::ast::Transaction, out: &mut String) {
     use std::fmt::Write;
-    writeln!(out, "txn {} ({})", txn.name,
-        txn.parameters.iter()
+    writeln!(
+        out,
+        "txn {} ({})",
+        txn.name,
+        txn.parameters
+            .iter()
             .map(|(n, _)| n.clone())
-            .collect::<Vec<_>>().join(", "))
-        .unwrap();
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+    .unwrap();
     write_metadata(&txn.metadata, out);
 }
 
@@ -71,9 +90,7 @@ fn write_metadata(metadata: &HashMap<String, PropertyValue>, out: &mut String) {
             PropertyValue::Bool(b) => format!("{}", b),
             PropertyValue::Float(f) => format!("{}", f),
             PropertyValue::List(items) => {
-                let inner: Vec<String> = items.iter()
-                    .map(|v| format!("{:?}", v))
-                    .collect();
+                let inner: Vec<String> = items.iter().map(|v| format!("{:?}", v)).collect();
                 format!("[{}]", inner.join(", "))
             }
             // 2026-09-23 (quantities plan): a quantity is written bare.

@@ -22,8 +22,8 @@
 // 2026-07-15: Removed old PluginHook/PluginAction types. The new trait
 // exposes stage-specific methods that return Result<(), String>.
 
-pub mod entry_plugin;
 pub mod composite;
+pub mod entry_plugin;
 pub mod env_plugin;
 pub mod inline_frgn_plugin;
 pub mod intrinsics;
@@ -229,7 +229,9 @@ impl PluginManager {
     /// 2026-07-15: Phase 2 — Centralised filter logic so the caller
     /// can inspect which plugins will run without duplicating filtering.
     fn enabled_names(&self, ext_filter: Option<&[String]>) -> Vec<String> {
-        let enabled: Vec<String> = self.all.iter()
+        let enabled: Vec<String> = self
+            .all
+            .iter()
             .filter(|entry| {
                 let name = entry.plugin.name().to_string();
                 // Extension filter: only if the name is in the extension's list
@@ -244,11 +246,13 @@ impl PluginManager {
             .collect();
 
         if self.enabled_only.is_empty() {
-            enabled.into_iter()
+            enabled
+                .into_iter()
                 .filter(|n| !self.disabled.contains(n))
                 .collect()
         } else {
-            self.enabled_only.iter()
+            self.enabled_only
+                .iter()
                 .filter(|n| enabled.contains(n))
                 .cloned()
                 .collect()
@@ -262,12 +266,15 @@ impl PluginManager {
     /// 2026-07-15: Phase 2 — Per-extension plugin selection from
     /// config/targets.dbvl [ext].plugins.
     pub fn filter_for_extension(&mut self, ext: &str, config: &TargetConfig) {
-        let allowed = config.lookup(ext)
+        let allowed = config
+            .lookup(ext)
             .and_then(|entry| entry.plugins.as_ref())
             .cloned()
             .unwrap_or_else(|| vec!["prelude".to_string()]);
 
-        let allowed: Vec<String> = self.all.iter()
+        let allowed: Vec<String> = self
+            .all
+            .iter()
             .map(|entry| entry.plugin.name().to_string())
             .filter(|name| allowed.contains(name))
             .collect();
@@ -304,7 +311,9 @@ impl PluginManager {
     ) -> Result<(), String> {
         let self_ptr = self as *const PluginManager as usize;
         for entry in self.active_plugins(None) {
-            if let Some(sbp) = entry.plugin.as_any()
+            if let Some(sbp) = entry
+                .plugin
+                .as_any()
                 .and_then(|a| a.downcast_ref::<crate::plugin::loader::StageBlockPlugin>())
             {
                 sbp.set_pm_ptr(self_ptr);
@@ -346,7 +355,9 @@ impl PluginManager {
     ///
     /// 2026-07-15: Phase 2 — Flat control flow via guard clauses.
     fn active_plugins(&self, ext_filter: Option<&[String]>) -> Vec<&PluginEntry> {
-        let mut active: Vec<&PluginEntry> = self.all.iter()
+        let mut active: Vec<&PluginEntry> = self
+            .all
+            .iter()
             .filter(|entry| {
                 let name = entry.plugin.name();
 
@@ -394,7 +405,10 @@ impl PluginManager {
 
     /// Return the names of all registered plugins (regardless of filtering).
     pub fn list_names(&self) -> Vec<String> {
-        self.all.iter().map(|e| e.plugin.name().to_string()).collect()
+        self.all
+            .iter()
+            .map(|e| e.plugin.name().to_string())
+            .collect()
     }
 
     /// Add a plugin name to the disabled list at runtime.
@@ -446,13 +460,20 @@ mod tests {
 
     impl TestPlugin {
         fn new(name: &str, stages: Vec<StageKind>) -> Self {
-            TestPlugin { name: name.to_string(), stages }
+            TestPlugin {
+                name: name.to_string(),
+                stages,
+            }
         }
     }
 
     impl Plugin for TestPlugin {
-        fn name(&self) -> &str { &self.name }
-        fn stages(&self) -> Vec<StageKind> { self.stages.clone() }
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn stages(&self) -> Vec<StageKind> {
+            self.stages.clone()
+        }
     }
 
     fn empty_state() -> (Vec<TopLevel>, TypeUniverse) {
@@ -477,23 +498,38 @@ mod tests {
     #[test]
     fn test_parsed_ast_continues() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("test:parsed", vec![StageKind::Parsed])));
+        mgr.register(Box::new(TestPlugin::new(
+            "test:parsed",
+            vec![StageKind::Parsed],
+        )));
         let (mut program, mut universe) = empty_state();
-        assert!(mgr.run_ast(StageKind::Parsed, &mut program, &mut universe).is_ok());
+        assert!(
+            mgr.run_ast(StageKind::Parsed, &mut program, &mut universe)
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_typed_ast_continues() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("test:typed", vec![StageKind::Typed])));
+        mgr.register(Box::new(TestPlugin::new(
+            "test:typed",
+            vec![StageKind::Typed],
+        )));
         let (mut program, mut universe) = empty_state();
-        assert!(mgr.run_ast(StageKind::Typed, &mut program, &mut universe).is_ok());
+        assert!(
+            mgr.run_ast(StageKind::Typed, &mut program, &mut universe)
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_generated_ir_continues() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("test:generated", vec![StageKind::Generated])));
+        mgr.register(Box::new(TestPlugin::new(
+            "test:generated",
+            vec![StageKind::Generated],
+        )));
         let mut ir = String::new();
         assert!(mgr.run_ir(StageKind::Generated, &mut ir).is_ok());
     }
@@ -501,7 +537,10 @@ mod tests {
     #[test]
     fn test_optimized_ir_continues() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("test:optimized", vec![StageKind::Optimized])));
+        mgr.register(Box::new(TestPlugin::new(
+            "test:optimized",
+            vec![StageKind::Optimized],
+        )));
         let mut ir = String::new();
         assert!(mgr.run_ir(StageKind::Optimized, &mut ir).is_ok());
     }
@@ -509,12 +548,21 @@ mod tests {
     #[test]
     fn test_enabled_only_filter() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("plugin:a", vec![StageKind::Parsed])));
-        mgr.register(Box::new(TestPlugin::new("plugin:b", vec![StageKind::Parsed])));
+        mgr.register(Box::new(TestPlugin::new(
+            "plugin:a",
+            vec![StageKind::Parsed],
+        )));
+        mgr.register(Box::new(TestPlugin::new(
+            "plugin:b",
+            vec![StageKind::Parsed],
+        )));
         mgr = mgr.with_enabled_only(vec!["plugin:a".to_string()]);
 
         let (mut program, mut universe) = empty_state();
-        assert!(mgr.run_ast(StageKind::Parsed, &mut program, &mut universe).is_ok());
+        assert!(
+            mgr.run_ast(StageKind::Parsed, &mut program, &mut universe)
+                .is_ok()
+        );
 
         let names = mgr.enabled_names(None);
         assert_eq!(names.len(), 1);
@@ -524,8 +572,14 @@ mod tests {
     #[test]
     fn test_disabled_skips_plugin() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("plugin:a", vec![StageKind::Parsed])));
-        mgr.register(Box::new(TestPlugin::new("plugin:b", vec![StageKind::Parsed])));
+        mgr.register(Box::new(TestPlugin::new(
+            "plugin:a",
+            vec![StageKind::Parsed],
+        )));
+        mgr.register(Box::new(TestPlugin::new(
+            "plugin:b",
+            vec![StageKind::Parsed],
+        )));
         mgr = mgr.with_disabled(vec!["plugin:b".to_string()]);
 
         let names = mgr.enabled_names(None);
@@ -536,11 +590,20 @@ mod tests {
     #[test]
     fn test_plugin_not_called_for_wrong_stage() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("test:typedonly", vec![StageKind::Typed])));
+        mgr.register(Box::new(TestPlugin::new(
+            "test:typedonly",
+            vec![StageKind::Typed],
+        )));
         let (mut program, mut universe) = empty_state();
-        assert!(mgr.run_ast(StageKind::Parsed, &mut program, &mut universe).is_ok());
+        assert!(
+            mgr.run_ast(StageKind::Parsed, &mut program, &mut universe)
+                .is_ok()
+        );
         let (mut program2, mut universe2) = empty_state();
-        assert!(mgr.run_ast(StageKind::Typed, &mut program2, &mut universe2).is_ok());
+        assert!(
+            mgr.run_ast(StageKind::Typed, &mut program2, &mut universe2)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -551,7 +614,10 @@ mod tests {
             vec![StageKind::Parsed, StageKind::Generated],
         )));
         let (mut program, mut universe) = empty_state();
-        assert!(mgr.run_ast(StageKind::Parsed, &mut program, &mut universe).is_ok());
+        assert!(
+            mgr.run_ast(StageKind::Parsed, &mut program, &mut universe)
+                .is_ok()
+        );
         let mut ir = String::new();
         assert!(mgr.run_ir(StageKind::Generated, &mut ir).is_ok());
     }
@@ -559,8 +625,14 @@ mod tests {
     #[test]
     fn test_filter_for_extension() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("prelude-native", vec![StageKind::Parsed])));
-        mgr.register(Box::new(TestPlugin::new("some-other", vec![StageKind::Parsed])));
+        mgr.register(Box::new(TestPlugin::new(
+            "prelude-native",
+            vec![StageKind::Parsed],
+        )));
+        mgr.register(Box::new(TestPlugin::new(
+            "some-other",
+            vec![StageKind::Parsed],
+        )));
         let config = TargetConfig::load();
         mgr.filter_for_extension(".bv", &config);
         let names = mgr.enabled_names(None);

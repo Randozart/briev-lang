@@ -22,7 +22,7 @@
 //   * Source `{`, `}`, and `;` tokens are rejected with a helpful error.
 
 use crate::errors::{Span, SyntaxError};
-use crate::lexer::{tokenize, Token};
+use crate::lexer::{Token, tokenize};
 use std::ops::Range;
 
 /// A run of tokens on one physical line.
@@ -113,9 +113,7 @@ fn group_lines(
             }
         }
         let indent = col;
-        if indent > 0
-            && source[line_start..span.start].contains('\t')
-        {
+        if indent > 0 && source[line_start..span.start].contains('\t') {
             return Err(SyntaxError::InvalidExpression {
                 reason: "tabs are not allowed in formatted (.f) indentation; use spaces".into(),
                 span: span_at(&span, line_starts),
@@ -230,7 +228,8 @@ fn next_non_inert(lines: &[LogicalLine], from: usize) -> Option<usize> {
 /// clauses are bracket-shaped; a guarded statement `[c] foo()` is not (it ends
 /// with the statement's last token).
 fn is_bracket_shaped(line: &LogicalLine) -> bool {
-    matches!(first_token(line), Some(Token::LBracket)) && matches!(last_token(line), Some(Token::RBracket))
+    matches!(first_token(line), Some(Token::LBracket))
+        && matches!(last_token(line), Some(Token::RBracket))
 }
 
 /// Whether the next line after `next` starts a method chain (`.foo`).
@@ -299,7 +298,11 @@ struct LayoutCtx {
 
 impl LayoutCtx {
     fn new() -> Self {
-        LayoutCtx { out: Vec::new(), stack: Vec::new(), bracket_depth: 0 }
+        LayoutCtx {
+            out: Vec::new(),
+            stack: Vec::new(),
+            bracket_depth: 0,
+        }
     }
 
     /// Append a synthetic zero-width token at `at`.
@@ -313,7 +316,9 @@ impl LayoutCtx {
         for (tok, span) in &line.tokens {
             match tok {
                 Token::LParen | Token::LBracket => self.bracket_depth += 1,
-                Token::RParen | Token::RBracket => self.bracket_depth = self.bracket_depth.saturating_sub(1),
+                Token::RParen | Token::RBracket => {
+                    self.bracket_depth = self.bracket_depth.saturating_sub(1)
+                }
                 _ => {}
             }
             self.out.push((tok.clone(), span.clone()));
@@ -336,7 +341,7 @@ impl LayoutCtx {
         k
     }
 
-/// Close the top block, emitting `}` and (at bracket depth zero) the
+    /// Close the top block, emitting `}` and (at bracket depth zero) the
     /// owning statement's trailing `;`.
     fn close_block(&mut self, at: usize) {
         self.stack.pop();
@@ -375,7 +380,10 @@ impl LayoutCtx {
         } else {
             Sep::Semi
         };
-        self.stack.push(Block { body_indent: lines[ni].indent, sep });
+        self.stack.push(Block {
+            body_indent: lines[ni].indent,
+            sep,
+        });
         self.emit_synth(Token::LBrace, at);
     }
 
@@ -521,7 +529,10 @@ mod tests {
         let src = "defn f(x: Int) -> Int\n    [x > 0][true]\n    term x\n";
         let out = toks(src).unwrap();
         let idx_brace = out.iter().position(|(t, _)| *t == Token::LBrace).unwrap();
-        let idx_int = out.iter().position(|(t, _)| *t == Token::Integer(0)).unwrap();
+        let idx_int = out
+            .iter()
+            .position(|(t, _)| *t == Token::Integer(0))
+            .unwrap();
         assert!(idx_brace > idx_int, "block must open after contracts");
     }
 
@@ -541,7 +552,10 @@ mod tests {
     fn continuation_in_brackets() {
         let src = "let x = foo(\n    a,\n    b\n)\n";
         let out = toks(src).unwrap();
-        assert_eq!(out.iter().filter(|(t, _)| *t == Token::Semicolon).count(), 1);
+        assert_eq!(
+            out.iter().filter(|(t, _)| *t == Token::Semicolon).count(),
+            1
+        );
         assert!(!out.iter().any(|(t, _)| *t == Token::LBrace));
     }
 
@@ -549,7 +563,10 @@ mod tests {
     fn method_chain_continuation() {
         let src = "let x = foo\n    .bar()\n    .baz()\n";
         let out = toks(src).unwrap();
-        assert_eq!(out.iter().filter(|(t, _)| *t == Token::Semicolon).count(), 1);
+        assert_eq!(
+            out.iter().filter(|(t, _)| *t == Token::Semicolon).count(),
+            1
+        );
         assert!(!out.iter().any(|(t, _)| *t == Token::LBrace));
     }
 
@@ -577,22 +594,35 @@ mod tests {
     fn raw_string_with_braces_untouched() {
         let src = "let s = #r\"{a}; b\"\nfoo()\n";
         let out = layout(src);
-        assert!(out.contains("RawString"), "raw string must lex as one token: {out}");
+        assert!(
+            out.contains("RawString"),
+            "raw string must lex as one token: {out}"
+        );
     }
 
     #[test]
     fn match_arms_terminate() {
         let src = "term match n\n    _ when n < 0 => -1\n    0 => 0\n    _ => 1\n";
         let out = layout(src);
-        assert!(out.contains("Semicolon"), "match arms need terminators: {out}");
-        assert!(out.contains("LBrace"), "match needs an opening brace: {out}");
+        assert!(
+            out.contains("Semicolon"),
+            "match arms need terminators: {out}"
+        );
+        assert!(
+            out.contains("LBrace"),
+            "match needs an opening brace: {out}"
+        );
     }
 
     #[test]
     fn arm_body_block_after_fat_arrow() {
         let src = "match x\n    \"a\" =>\n        foo()\n    \"b\" =>\n        bar()\n";
         let out = layout(src);
-        assert_eq!(out.matches("LBrace").count(), 3, "match + 2 arm bodies: {out}");
+        assert_eq!(
+            out.matches("LBrace").count(),
+            3,
+            "match + 2 arm bodies: {out}"
+        );
         assert_eq!(out.matches("RBrace").count(), 3, "close all: {out}");
     }
 
@@ -600,7 +630,10 @@ mod tests {
     fn top_level_statements_terminate() {
         let src = "let a = 1\nlet b = 2\n";
         let out = toks(src).unwrap();
-        assert_eq!(out.iter().filter(|(t, _)| *t == Token::Semicolon).count(), 2);
+        assert_eq!(
+            out.iter().filter(|(t, _)| *t == Token::Semicolon).count(),
+            2
+        );
     }
 
     #[test]
@@ -646,7 +679,10 @@ mod tests {
         // format identically (the formatter is round-trip stable, Phase 2).
         let f_fmt = crate::ast::format_program(&f_ast);
         let c_fmt = crate::ast::format_program(&c_ast);
-        assert_eq!(f_fmt, c_fmt, "AST mismatch!\nformatted:\n{formatted}\ncanonical:\n{canonical}");
+        assert_eq!(
+            f_fmt, c_fmt,
+            "AST mismatch!\nformatted:\n{formatted}\ncanonical:\n{canonical}"
+        );
     }
 
     #[test]

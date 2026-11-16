@@ -28,8 +28,8 @@
 
 use std::ffi::CStr;
 use std::ffi::c_char;
-use std::time::Instant;
 use std::ptr::{addr_of, addr_of_mut};
+use std::time::Instant;
 
 // ── repr(C) ABI mirrors — briev_accel_rt.h is the definition of record ──
 
@@ -97,7 +97,11 @@ mod desc_abi {
 
     #[test]
     fn test_briev_kernel_desc_abi_pinned() {
-        assert_eq!(size_of::<BrievKernelDesc>(), 112, "C sizeof(BrievKernelDesc)");
+        assert_eq!(
+            size_of::<BrievKernelDesc>(),
+            112,
+            "C sizeof(BrievKernelDesc)"
+        );
         assert_eq!(align_of::<BrievKernelDesc>(), 8);
         assert_eq!(offset_of!(BrievKernelDesc, txn_name), 0);
         assert_eq!(offset_of!(BrievKernelDesc, spirv), 8);
@@ -141,8 +145,7 @@ pub struct BrievPushDesc {
 
 type AvailableFn = unsafe extern "C" fn() -> i32;
 type InitFn = unsafe extern "C" fn() -> i32;
-type CreateKernelFn =
-    unsafe extern "C" fn(*const u8, usize, *mut *mut core::ffi::c_void) -> i32;
+type CreateKernelFn = unsafe extern "C" fn(*const u8, usize, *mut *mut core::ffi::c_void) -> i32;
 type LaunchFn = unsafe extern "C" fn(
     *mut core::ffi::c_void,
     *const core::ffi::c_void,
@@ -154,27 +157,13 @@ type DestroyFn = unsafe extern "C" fn(*mut core::ffi::c_void);
 type ShutdownFn = unsafe extern "C" fn();
 type MappedFn = unsafe extern "C" fn(*mut core::ffi::c_void) -> *mut core::ffi::c_void;
 type LaunchDevFn = unsafe extern "C" fn(*mut core::ffi::c_void, usize) -> i32;
-type LaunchDev2dFn = unsafe extern "C" fn(
-    *mut core::ffi::c_void,
-    usize,
-    usize,
-    i32,
-    *const usize,
-    u32,
-) -> i32;
+type LaunchDev2dFn =
+    unsafe extern "C" fn(*mut core::ffi::c_void, usize, usize, i32, *const usize, u32) -> i32;
 type DownloadDevFn = unsafe extern "C" fn(*mut core::ffi::c_void) -> i32;
-type LaunchDev2dBatchFn = unsafe extern "C" fn(
-    *mut core::ffi::c_void,
-    usize,
-    usize,
-    u32,
-    i32,
-    *const usize,
-    u32,
-) -> i32;
+type LaunchDev2dBatchFn =
+    unsafe extern "C" fn(*mut core::ffi::c_void, usize, usize, u32, i32, *const usize, u32) -> i32;
 type DeviceNameFn = unsafe extern "C" fn() -> *const c_char;
-type SetImagesFn =
-    unsafe extern "C" fn(*mut core::ffi::c_void, *const BrievImageDesc, u32) -> i32;
+type SetImagesFn = unsafe extern "C" fn(*mut core::ffi::c_void, *const BrievImageDesc, u32) -> i32;
 type DownloadImagesFn = unsafe extern "C" fn(
     *mut core::ffi::c_void,
     *const BrievImageDesc,
@@ -182,8 +171,7 @@ type DownloadImagesFn = unsafe extern "C" fn(
     *mut core::ffi::c_void,
 ) -> i32;
 type SetU32Fn = unsafe extern "C" fn(*mut core::ffi::c_void, u32) -> i32;
-type UploadRangesFn =
-    unsafe extern "C" fn(*mut core::ffi::c_void, *const usize, u32) -> i32;
+type UploadRangesFn = unsafe extern "C" fn(*mut core::ffi::c_void, *const usize, u32) -> i32;
 type PushStridedFn =
     unsafe extern "C" fn(*mut core::ffi::c_void, *const BrievStridedCopy, u32) -> i32;
 
@@ -509,9 +497,10 @@ fn compile_blob(
     verbose: bool,
 ) -> Option<*mut core::ffi::c_void> {
     let mut handle: *mut core::ffi::c_void = std::ptr::null_mut();
-    let created = d
-        .create_kernel
-        .map_or(false, |f| unsafe { (f)(blob, blob_size as usize, &mut handle) } != 0);
+    let created = d.create_kernel.map_or(
+        false,
+        |f| unsafe { (f)(blob, blob_size as usize, &mut handle) } != 0,
+    );
     if !created {
         if verbose {
             eprintln!(
@@ -534,7 +523,11 @@ fn compile_blob(
 
 /// 2026-09-09/2026-09-18: per-kernel block size, shared bytes, and the
 /// block-per-workitem dispatch flag (all optional driver hooks).
-fn apply_kernel_overrides(d: &BrievDeviceDriver, kdesc: &BrievKernelDesc, handle: *mut core::ffi::c_void) {
+fn apply_kernel_overrides(
+    d: &BrievDeviceDriver,
+    kdesc: &BrievKernelDesc,
+    handle: *mut core::ffi::c_void,
+) {
     if kdesc.block_threads > 0 {
         if let Some(f) = d.set_block_threads {
             unsafe { (f)(handle, kdesc.block_threads) };
@@ -580,11 +573,7 @@ fn setup_images(
 
 /// One-time device selection + init. NULL → CPU fallback (reason printed
 /// when verbose).
-fn init_driver(
-    verbose: bool,
-    descs: *const BrievKernelDesc,
-    n: u32,
-) -> *const BrievDeviceDriver {
+fn init_driver(verbose: bool, descs: *const BrievKernelDesc, n: u32) -> *const BrievDeviceDriver {
     let selected = select_driver(descs, n);
     if selected.is_null() {
         if verbose {
@@ -796,11 +785,7 @@ fn run_bench<F: FnMut() -> bool>(iters: u32, verbose: bool, mut run: F) -> bool 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn briev_accel_launch(
-    idx: u32,
-    state: *mut core::ffi::c_void,
-    work_n: u64,
-) -> i32 {
+pub extern "C" fn briev_accel_launch(idx: u32, state: *mut core::ffi::c_void, work_n: u64) -> i32 {
     let r = rt();
     let Some(d) = driver() else {
         return 0;
@@ -1079,13 +1064,7 @@ pub extern "C" fn briev_accel_launch_resident_batch(
 }
 
 /// Driver can't batch: sequential fallback (identical semantics).
-fn batch_sequential(
-    idx: u32,
-    state: *mut core::ffi::c_void,
-    nx: u64,
-    ny: u64,
-    times: u32,
-) -> i32 {
+fn batch_sequential(idx: u32, state: *mut core::ffi::c_void, nx: u64, ny: u64, times: u32) -> i32 {
     for _ in 0..times {
         if briev_accel_launch_resident_2d(idx, state, nx, ny) == 0 {
             return 0;
@@ -1307,13 +1286,18 @@ pub extern "C" fn briev_accel_probe(
     probe_k: i64,
     tolerance: f64,
     margin: f64,
-    gpu_ok: Option<unsafe extern "C" fn(*const core::ffi::c_void, *const core::ffi::c_void, f64, *mut core::ffi::c_void) -> i32>,
+    gpu_ok: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            f64,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
 ) -> i32 {
     if briev_accel_available() == 0 || probe_k <= 0 {
         if unsafe { g_verbose } != 0 {
-            eprintln!(
-                "[briev_accel] probe: unavailable or probe_k={probe_k} ≤ 0 — CPU lane"
-            );
+            eprintln!("[briev_accel] probe: unavailable or probe_k={probe_k} ≤ 0 — CPU lane");
         }
         return 0;
     }
@@ -1343,9 +1327,7 @@ pub extern "C" fn briev_accel_probe(
 
     let verbose = unsafe { g_verbose } != 0;
     if verbose {
-        eprintln!(
-            "[briev_accel] probe: timed cpu_t={cpu_t:.6e} gpu_t={gpu_t:.6e}"
-        );
+        eprintln!("[briev_accel] probe: timed cpu_t={cpu_t:.6e} gpu_t={gpu_t:.6e}");
     }
 
     // Correctness gate: the GPU lane's result must match the CPU lane's
@@ -1431,11 +1413,7 @@ mod self_test {
     ) -> i32 {
         // Identity copy so write fields round-trip.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                proj as *const u8,
-                proj_out as *mut u8,
-                bytes,
-            );
+            std::ptr::copy_nonoverlapping(proj as *const u8, proj_out as *mut u8, bytes);
         }
         1
     }
@@ -1515,8 +1493,24 @@ mod self_test {
         let name_a = c"a".as_ptr();
         let name_s = c"s".as_ptr();
         let fields = [
-            BrievField { name: name_a, kind: BRIEV_FIELD_ARRAY, host_offset: 8, elem_bytes: 4, count: 4, is_write: 1, proj_offset: 0 },
-            BrievField { name: name_s, kind: BRIEV_FIELD_SCALAR, host_offset: 24, elem_bytes: 8, count: 1, is_write: 0, proj_offset: 16 },
+            BrievField {
+                name: name_a,
+                kind: BRIEV_FIELD_ARRAY,
+                host_offset: 8,
+                elem_bytes: 4,
+                count: 4,
+                is_write: 1,
+                proj_offset: 0,
+            },
+            BrievField {
+                name: name_s,
+                kind: BRIEV_FIELD_SCALAR,
+                host_offset: 24,
+                elem_bytes: 8,
+                count: 1,
+                is_write: 0,
+                proj_offset: 16,
+            },
         ];
         let txn = c"force".as_ptr();
         let desc = BrievKernelDesc {

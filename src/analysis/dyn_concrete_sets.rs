@@ -337,7 +337,10 @@ impl Cat {
 
     #[test]
     fn non_literal_initializer_yields_vtable() {
-        let src = format!("{}defn make() -> List<dyn Greeter> {{ term [Dog {{ base: 1 }}]; }}\nlet handlers: List<dyn Greeter> = make();", trait_and_types());
+        let src = format!(
+            "{}defn make() -> List<dyn Greeter> {{ term [Dog {{ base: 1 }}]; }}\nlet handlers: List<dyn Greeter> = make();",
+            trait_and_types()
+        );
         let items = prog(&src);
         let info = analyze(&items);
         let h = info.get("handlers").expect("handlers analyzed");

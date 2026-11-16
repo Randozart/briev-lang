@@ -44,21 +44,45 @@ fn ast_ir_and_hir_artifacts_have_their_own_shapes() {
     let (ok, log) = build(
         &src,
         &out,
-        &["--emit-beast", "parse", "--emit-beast", "codegen", "--emit-hir"],
+        &[
+            "--emit-beast",
+            "parse",
+            "--emit-beast",
+            "codegen",
+            "--emit-hir",
+        ],
     );
     assert!(ok, "build failed:\n{log}");
 
     let beast = std::fs::read_to_string(artifact(dir.path(), ".beast")).unwrap();
-    assert!(beast.trim_start().starts_with('('), "AST snapshot is S-expression text");
-    assert!(!beast.contains("target triple"), "AST snapshot must not carry IR");
+    assert!(
+        beast.trim_start().starts_with('('),
+        "AST snapshot is S-expression text"
+    );
+    assert!(
+        !beast.contains("target triple"),
+        "AST snapshot must not carry IR"
+    );
 
     let ir = std::fs::read_to_string(artifact(dir.path(), ".ir")).unwrap();
-    assert!(ir.contains("target triple"), "IR snapshot is the backend text:\n{ir}");
-    assert!(ir.contains("define"), "IR snapshot has function definitions");
-    assert!(!ir.contains("(universe"), "IR snapshot must not be AST S-expressions");
+    assert!(
+        ir.contains("target triple"),
+        "IR snapshot is the backend text:\n{ir}"
+    );
+    assert!(
+        ir.contains("define"),
+        "IR snapshot has function definitions"
+    );
+    assert!(
+        !ir.contains("(universe"),
+        "IR snapshot must not be AST S-expressions"
+    );
 
     let hir = std::fs::read_to_string(artifact(dir.path(), ".hir")).unwrap();
-    assert!(hir.starts_with("program"), "HIR snapshot starts with the program header");
+    assert!(
+        hir.starts_with("program"),
+        "HIR snapshot starts with the program header"
+    );
     assert!(hir.contains("callable "), "HIR snapshot lists callables");
     assert_eq!(
         std::fs::read_dir(dir.path())

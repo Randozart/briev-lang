@@ -72,8 +72,7 @@ fn is_top_defn(c: &HirCallable) -> bool {
     matches!(c.kind, HirCallableKind::Defn) && c.owner.is_none() && !c.trait_default && !c.exported
 }
 
-const TASK_ABI_HINT: &str =
-    "compiled tasks carry arguments/results as i64 slots; \
+const TASK_ABI_HINT: &str = "compiled tasks carry arguments/results as i64 slots; \
      use Int/Bool/Char/Ptr (v1 scope)";
 
 fn task_type_is_i64_abi(
@@ -161,10 +160,9 @@ fn stmt_exprs(s: &HirStmt) -> Vec<&HirExpr> {
         | HirStmtKind::Gate(e) => vec![e],
         HirStmtKind::Guarded(cond, _) => vec![cond],
         HirStmtKind::Foreach { list, .. } => vec![list],
-        HirStmtKind::ArrowAssign { target, value, .. } => target
-            .iter()
-            .chain(std::iter::once(value))
-            .collect(),
+        HirStmtKind::ArrowAssign { target, value, .. } => {
+            target.iter().chain(std::iter::once(value)).collect()
+        }
         HirStmtKind::Match { expr, .. } => vec![expr],
         _ => Vec::new(),
     }
@@ -187,8 +185,12 @@ fn expr_children(e: &HirExpr) -> Vec<&HirExpr> {
     match &e.kind {
         HirExprKind::Field { receiver, .. }
         | HirExprKind::Await(receiver)
-        | HirExprKind::Cast { inner: receiver, .. }
-        | HirExprKind::IsType { inner: receiver, .. }
+        | HirExprKind::Cast {
+            inner: receiver, ..
+        }
+        | HirExprKind::IsType {
+            inner: receiver, ..
+        }
         | HirExprKind::Consume(receiver)
         | HirExprKind::Deref(receiver)
         | HirExprKind::AddrOf(receiver) => vec![receiver],
@@ -247,9 +249,11 @@ pub fn mentions_param_field(stmt: &HirStmt, params: &[String]) -> bool {
             HirStmtKind::Foreach { list, body, .. } => {
                 expr_walk(list, params) || body.iter().any(|s| stmt_exprs(s, params))
             }
-            HirStmtKind::ArrowAssign { target: Some(t), value, .. } => {
-                expr_walk(t, params) || expr_walk(value, params)
-            }
+            HirStmtKind::ArrowAssign {
+                target: Some(t),
+                value,
+                ..
+            } => expr_walk(t, params) || expr_walk(value, params),
             HirStmtKind::ArrowAssign { value, .. } => expr_walk(value, params),
             HirStmtKind::Match { expr, arms } => {
                 expr_walk(expr, params)

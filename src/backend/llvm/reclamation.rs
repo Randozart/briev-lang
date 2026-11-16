@@ -9,27 +9,55 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 pub(super) fn lower(module: String, plan: &ReclamationPlan) -> String {
-    if (!plan.entry_region && plan.regions.is_empty()) || module.contains("musttail ") || !has_heap_calls(&module) { return module; }
+    if (!plan.entry_region && plan.regions.is_empty())
+        || module.contains("musttail ")
+        || !has_heap_calls(&module)
+    {
+        return module;
+    }
     let groups = EffectGroups::build(&module);
-    let mut lowering = ModuleLowering { plan, groups: &groups, output: String::with_capacity(module.len()), mode: None, entry: false };
+    let mut lowering = ModuleLowering {
+        plan,
+        groups: &groups,
+        output: String::with_capacity(module.len()),
+        mode: None,
+        entry: false,
+    };
     let mut lines = module.lines();
     while let Some(line) = lines.next() {
-        if !line.starts_with("define ") { lowering.line(line); continue; }
-        let Some(header) = definition_header(line, &mut lines) else { return module };
+        if !line.starts_with("define ") {
+            lowering.line(line);
+            continue;
+        }
+        let Some(header) = definition_header(line, &mut lines) else {
+            return module;
+        };
         lowering.definition(&header);
     }
     lowering.output.push_str(&groups.definitions);
-    for line in include_str!("reclamation.ll").lines().filter(|line| !line.starts_with(';')) { writeln!(lowering.output, "{line}").ok(); }
+    for line in include_str!("reclamation.ll")
+        .lines()
+        .filter(|line| !line.starts_with(';'))
+    {
+        writeln!(lowering.output, "{line}").ok();
+    }
     lowering.output
 }
 
 /// Signatures, including dynamic-dispatch thunks, may span multiple lines.
-fn definition_header<'a>(first: &'a str, lines: &mut std::str::Lines<'a>) -> Option<std::borrow::Cow<'a, str>> {
+fn definition_header<'a>(
+    first: &'a str,
+    lines: &mut std::str::Lines<'a>,
+) -> Option<std::borrow::Cow<'a, str>> {
     let mut header = std::borrow::Cow::Borrowed(first);
     loop {
-        if header.trim_end().ends_with('{') { return Some(header); }
+        if header.trim_end().ends_with('{') {
+            return Some(header);
+        }
         // An inline body needs instruction-level parsing. Leave such modules alone.
-        if header.trim_end().ends_with('}') { return None; }
+        if header.trim_end().ends_with('}') {
+            return None;
+        }
         let next = lines.next()?;
         header.to_mut().push('\n');
         header.to_mut().push_str(next);
@@ -37,7 +65,12 @@ fn definition_header<'a>(first: &'a str, lines: &mut std::str::Lines<'a>) -> Opt
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode { Region, ClosedRegion, Barrier, Inherit }
+enum Mode {
+    Region,
+    ClosedRegion,
+    Barrier,
+    Inherit,
+}
 
 struct ModuleLowering<'a> {
     plan: &'a ReclamationPlan,
@@ -49,26 +82,50 @@ struct ModuleLowering<'a> {
 
 impl ModuleLowering<'_> {
     fn line(&mut self, line: &str) {
-        if line == "}" { self.mode = None; }
+        if line == "}" {
+            self.mode = None;
+        }
         self.boundaries(line);
-        let line = if self.mode.is_some() { rewrite_allocator_call(line) } else { line.to_string() };
+        let line = if self.mode.is_some() {
+            rewrite_allocator_call(line)
+        } else {
+            line.to_string()
+        };
         writeln!(self.output, "{line}").ok();
     }
 
     fn definition(&mut self, line: &str) {
         if line.split_whitespace().any(|token| token == "naked") {
-            self.mode = None; self.entry = false; writeln!(self.output, "{line}").ok(); return;
+            self.mode = None;
+            self.entry = false;
+            writeln!(self.output, "{line}").ok();
+            return;
         }
         let name = function_name(line);
         self.mode = name.map(|name| mode_for(self.plan, name));
         self.entry = self.mode.is_some_and(|mode| mode != Mode::Inherit);
-        let changes_effects = self.entry || name.is_some_and(|name| self.plan.mutating.contains(name));
+        let changes_effects =
+            self.entry || name.is_some_and(|name| self.plan.mutating.contains(name));
         let scoped = matches!(self.mode, Some(Mode::Region | Mode::ClosedRegion));
-        let line = if scoped { strip_inline_attributes(line) } else { line.into() };
-        let mut line = if changes_effects { self.groups.rewrite_reference(&line, scoped) } else { line };
-        if scoped && !attribute_pattern().captures_iter(&line).any(|capture| capture.get(1).is_some()) {
+        let line = if scoped {
+            strip_inline_attributes(line)
+        } else {
+            line.into()
+        };
+        let mut line = if changes_effects {
+            self.groups.rewrite_reference(&line, scoped)
+        } else {
+            line
+        };
+        if scoped
+            && !attribute_pattern()
+                .captures_iter(&line)
+                .any(|capture| capture.get(1).is_some())
+        {
             // An aggregate return type can also contain braces.
-            if let Some(body) = line.rfind('{') { line.insert_str(body, "noinline "); }
+            if let Some(body) = line.rfind('{') {
+                line.insert_str(body, "noinline ");
+            }
         }
         writeln!(self.output, "{line}").ok();
     }
@@ -78,23 +135,41 @@ impl ModuleLowering<'_> {
             writeln!(self.output, "  call void @__briev_region_finish()").ok();
         }
         if self.entry && is_instruction(line) {
-            emit_entry(&mut self.output, self.mode.unwrap()); self.entry = false;
+            emit_entry(&mut self.output, self.mode.unwrap());
+            self.entry = false;
         }
-        if !line.trim_start().starts_with("ret ") { return; }
-        if let Some(mode) = self.mode { emit_exit(&mut self.output, mode); }
+        if !line.trim_start().starts_with("ret ") {
+            return;
+        }
+        if let Some(mode) = self.mode {
+            emit_exit(&mut self.output, mode);
+        }
     }
 }
 
 fn mode_for(plan: &ReclamationPlan, name: &str) -> Mode {
     // `main` is the compiler-owned process driver, not a source node name.
-    if plan.closed_regions.contains(name) { return Mode::ClosedRegion; }
-    if name == "main" && plan.entry_region { return Mode::Region; }
-    if plan.regions.contains(name) { return Mode::Region; }
-    if plan.barriers.contains(name) || !plan.known.contains(name) { return Mode::Barrier; }
+    if plan.closed_regions.contains(name) {
+        return Mode::ClosedRegion;
+    }
+    if name == "main" && plan.entry_region {
+        return Mode::Region;
+    }
+    if plan.regions.contains(name) {
+        return Mode::Region;
+    }
+    if plan.barriers.contains(name) || !plan.known.contains(name) {
+        return Mode::Barrier;
+    }
     Mode::Inherit
 }
 
-fn function_name(line: &str) -> Option<&str> { line.split_once('@')?.1.split_once('(').map(|(name, _)| name) }
+fn function_name(line: &str) -> Option<&str> {
+    line.split_once('@')?
+        .1
+        .split_once('(')
+        .map(|(name, _)| name)
+}
 
 fn is_instruction(line: &str) -> bool {
     let line = line.split(';').next().unwrap_or("").trim();
@@ -110,12 +185,20 @@ struct EffectGroups {
 
 impl EffectGroups {
     fn build(module: &str) -> Self {
-        let ids: BTreeSet<_> = attribute_pattern().captures_iter(module)
-            .filter_map(|captures| captures.get(1).and_then(|id| id.as_str().parse::<u64>().ok())).collect();
+        let ids: BTreeSet<_> = attribute_pattern()
+            .captures_iter(module)
+            .filter_map(|captures| {
+                captures
+                    .get(1)
+                    .and_then(|id| id.as_str().parse::<u64>().ok())
+            })
+            .collect();
         let mut next = ids.iter().max().copied().unwrap_or(0) + 1;
         let mut result = Self::default();
         for id in &ids {
-            result.references.insert(*id, next); result.scoped_references.insert(*id, next+1); next += 2;
+            result.references.insert(*id, next);
+            result.scoped_references.insert(*id, next + 1);
+            next += 2;
         }
         let mut defined = BTreeSet::new();
         let mut inside = false;
@@ -124,21 +207,35 @@ impl EffectGroups {
         for line in module.lines() {
             let mut header = None;
             if let Some(id) = attribute_id(line) {
-                defined.insert(id); header = Some((id, result.references[&id]));
-                scoped_id = result.scoped_references[&id]; inside = true;
+                defined.insert(id);
+                header = Some((id, result.references[&id]));
+                scoped_id = result.scoped_references[&id];
+                inside = true;
             }
-            if !inside { continue; }
+            if !inside {
+                continue;
+            }
             let mut line = strip_effect_attributes(line);
             let mut scoped_line = strip_inline_attributes(&line);
-            if let Some((old, new)) = header { line = line.replacen(&format!("#{old}"), &format!("#{new}"), 1); }
+            if let Some((old, new)) = header {
+                line = line.replacen(&format!("#{old}"), &format!("#{new}"), 1);
+            }
             if let Some((old, _)) = header {
-                scoped_line = scoped_line.replacen(&format!("#{old}"), &format!("#{scoped_id}"), 1).replacen('{', "{ noinline", 1);
+                scoped_line = scoped_line
+                    .replacen(&format!("#{old}"), &format!("#{scoped_id}"), 1)
+                    .replacen('{', "{ noinline", 1);
             }
             writeln!(result.definitions, "{line}").ok();
             writeln!(scoped, "{scoped_line}").ok();
-            if line.trim_end().ends_with('}') { inside = false; result.definitions.push_str(&scoped); scoped.clear(); }
+            if line.trim_end().ends_with('}') {
+                inside = false;
+                result.definitions.push_str(&scoped);
+                scoped.clear();
+            }
         }
-        for id in ids.difference(&defined) { result.neutral_groups(*id); }
+        for id in ids.difference(&defined) {
+            result.neutral_groups(*id);
+        }
         result
     }
 
@@ -146,17 +243,35 @@ impl EffectGroups {
         // Reserve referenced-but-undefined IDs too: assigning a new group to
         // one would silently change every old reference (including recursion).
         writeln!(self.definitions, "attributes #{id} = {{ }}").ok();
-        writeln!(self.definitions, "attributes #{} = {{ }}", self.references[&id]).ok();
-        writeln!(self.definitions, "attributes #{} = {{ noinline }}", self.scoped_references[&id]).ok();
+        writeln!(
+            self.definitions,
+            "attributes #{} = {{ }}",
+            self.references[&id]
+        )
+        .ok();
+        writeln!(
+            self.definitions,
+            "attributes #{} = {{ noinline }}",
+            self.scoped_references[&id]
+        )
+        .ok();
     }
 
     fn rewrite_reference(&self, line: &str, scoped: bool) -> String {
-        let references = if scoped { &self.scoped_references } else { &self.references };
-        attribute_pattern().replace_all(line, |captures: &regex::Captures<'_>| {
-            let Some(id) = captures.get(1) else { return captures[0].to_string() };
-            let id = id.as_str().parse::<u64>().unwrap();
-            format!("#{}", references.get(&id).unwrap_or(&id))
-        }).into_owned()
+        let references = if scoped {
+            &self.scoped_references
+        } else {
+            &self.references
+        };
+        attribute_pattern()
+            .replace_all(line, |captures: &regex::Captures<'_>| {
+                let Some(id) = captures.get(1) else {
+                    return captures[0].to_string();
+                };
+                let id = id.as_str().parse::<u64>().unwrap();
+                format!("#{}", references.get(&id).unwrap_or(&id))
+            })
+            .into_owned()
     }
 }
 
@@ -165,17 +280,33 @@ fn attribute_pattern() -> &'static regex::Regex {
     REFERENCE.get_or_init(|| regex::Regex::new(r#""(?:\\.|[^"\\])*"|;[^\n]*|#([0-9]+)"#).unwrap())
 }
 
-fn attribute_id(line: &str) -> Option<u64> { line.strip_prefix("attributes #")?.split_whitespace().next()?.parse().ok() }
+fn attribute_id(line: &str) -> Option<u64> {
+    line.strip_prefix("attributes #")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
 
 fn strip_inline_attributes(line: &str) -> String {
     // 2026-11-04: retaining a region's private frame in its own call prevents
     // an inlined TLS-visible alloca from disabling the caller's tail loop.
     // Retire noinline only with a lowering whose frame lifetime survives TCE.
     static INLINE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    INLINE.get_or_init(|| regex::Regex::new(r#""(?:\\.|[^"\\])*"|\b(?:alwaysinline|inlinehint|noinline)\b"#).unwrap()).replace_all(line, |captures: &regex::Captures<'_>| {
-        let value = captures.get(0).unwrap().as_str();
-        if value.starts_with('"') { value.to_string() } else { String::new() }
-    }).into_owned()
+    INLINE
+        .get_or_init(|| {
+            regex::Regex::new(r#""(?:\\.|[^"\\])*"|\b(?:alwaysinline|inlinehint|noinline)\b"#)
+                .unwrap()
+        })
+        .replace_all(line, |captures: &regex::Captures<'_>| {
+            let value = captures.get(0).unwrap().as_str();
+            if value.starts_with('"') {
+                value.to_string()
+            } else {
+                String::new()
+            }
+        })
+        .into_owned()
 }
 
 fn strip_effect_attributes(line: &str) -> String {
@@ -183,10 +314,17 @@ fn strip_effect_attributes(line: &str) -> String {
     // inlining policy or ABI. Quoted attribute values are preserved verbatim.
     static EFFECT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let expression = r#""(?:\\.|[^"\\])*"|\bmemory\([^)]*\)|\b(?:nofree|nosync|speculatable|readnone|readonly|argmemonly|inaccessiblememonly|inaccessiblemem_or_argmemonly|nocallback)\b"#;
-    EFFECT.get_or_init(|| regex::Regex::new(expression).unwrap()).replace_all(line, |captures: &regex::Captures<'_>| {
-        let value = captures.get(0).unwrap().as_str();
-        if value.starts_with('"') { value.to_string() } else { String::new() }
-    }).into_owned()
+    EFFECT
+        .get_or_init(|| regex::Regex::new(expression).unwrap())
+        .replace_all(line, |captures: &regex::Captures<'_>| {
+            let value = captures.get(0).unwrap().as_str();
+            if value.starts_with('"') {
+                value.to_string()
+            } else {
+                String::new()
+            }
+        })
+        .into_owned()
 }
 
 fn allocator_pattern() -> &'static regex::Regex {
@@ -195,48 +333,96 @@ fn allocator_pattern() -> &'static regex::Regex {
 }
 
 fn has_heap_calls(module: &str) -> bool {
-    module.lines().any(|line| owned_call(line).is_some() ||
-        allocator_pattern().captures(line).is_some_and(|captures| &captures[2] == "malloc"))
+    module.lines().any(|line| {
+        owned_call(line).is_some()
+            || allocator_pattern()
+                .captures(line)
+                .is_some_and(|captures| &captures[2] == "malloc")
+    })
 }
 
 fn owned_call(line: &str) -> Option<(&str, &str, &str)> {
     let call = line.strip_suffix(" ; briev.owned_return")?;
     let (register, instruction) = call.trim_start().split_once(" = ")?;
-    if !register.starts_with('%') || !instruction.starts_with("call ptr @") { return None; }
-    Some((&call[..call.len() - call.trim_start().len()], register, instruction))
+    if !register.starts_with('%') || !instruction.starts_with("call ptr @") {
+        return None;
+    }
+    Some((
+        &call[..call.len() - call.trim_start().len()],
+        register,
+        instruction,
+    ))
 }
 
 fn rewrite_allocator_call(line: &str) -> String {
     // The encoding provider allocates outside this module. Adopt its owned
     // result at the ABI boundary, after the call and before any possible use.
     if let Some((indent, register, instruction)) = owned_call(line) {
-        return format!("{indent}{register}.untracked = {instruction}\n{indent}{register} = call ptr @__briev_region_adopt(ptr {register}.untracked)");
+        return format!(
+            "{indent}{register}.untracked = {instruction}\n{indent}{register} = call ptr @__briev_region_adopt(ptr {register}.untracked)"
+        );
     }
-    allocator_pattern().replace(line, |captures: &regex::Captures<'_>| {
-        format!("{}@__briev_region_{}(", &captures[1], &captures[2])
-    }).into_owned()
+    allocator_pattern()
+        .replace(line, |captures: &regex::Captures<'_>| {
+            format!("{}@__briev_region_{}(", &captures[1], &captures[2])
+        })
+        .into_owned()
 }
 
 fn emit_entry(output: &mut String, mode: Mode) {
     match mode {
         Mode::Region => {
-            writeln!(output, "  %briev.region.frame = alloca {{ ptr, ptr, ptr }}, align 8").ok();
-            writeln!(output, "  call void @__briev_region_enter(ptr %briev.region.frame)").ok();
+            writeln!(
+                output,
+                "  %briev.region.frame = alloca {{ ptr, ptr, ptr }}, align 8"
+            )
+            .ok();
+            writeln!(
+                output,
+                "  call void @__briev_region_enter(ptr %briev.region.frame)"
+            )
+            .ok();
         }
         Mode::ClosedRegion => {
-            writeln!(output, "  %briev.region.frame = alloca {{ ptr, ptr, ptr }}, align 8").ok();
-            writeln!(output, "  %briev.region.closed = alloca {{ ptr, ptr }}, align 8").ok();
+            writeln!(
+                output,
+                "  %briev.region.frame = alloca {{ ptr, ptr, ptr }}, align 8"
+            )
+            .ok();
+            writeln!(
+                output,
+                "  %briev.region.closed = alloca {{ ptr, ptr }}, align 8"
+            )
+            .ok();
             writeln!(output, "  call void @__briev_region_enter_closed(ptr %briev.region.frame, ptr %briev.region.closed)").ok();
         }
-        Mode::Barrier => { writeln!(output, "  %briev.region.saved = call ptr @__briev_region_suspend()").ok(); }
+        Mode::Barrier => {
+            writeln!(
+                output,
+                "  %briev.region.saved = call ptr @__briev_region_suspend()"
+            )
+            .ok();
+        }
         Mode::Inherit => {}
     }
 }
 
 fn emit_exit(output: &mut String, mode: Mode) {
     match mode {
-        Mode::Region | Mode::ClosedRegion => { writeln!(output, "  call void @__briev_region_leave(ptr %briev.region.frame)").ok(); }
-        Mode::Barrier => { writeln!(output, "  call void @__briev_region_restore(ptr %briev.region.saved)").ok(); }
+        Mode::Region | Mode::ClosedRegion => {
+            writeln!(
+                output,
+                "  call void @__briev_region_leave(ptr %briev.region.frame)"
+            )
+            .ok();
+        }
+        Mode::Barrier => {
+            writeln!(
+                output,
+                "  call void @__briev_region_restore(ptr %briev.region.saved)"
+            )
+            .ok();
+        }
         Mode::Inherit => {}
     }
 }
@@ -246,11 +432,20 @@ pub(super) fn contains_heap_allocation(ir: &str, bytes: u64) -> bool {
     let mut implementation = false;
     let size = format!("i64 {bytes})");
     for line in ir.lines() {
-        if line.starts_with("define ") { implementation = function_name(line).is_some_and(|name| name.starts_with("__briev_region_")); }
-        if implementation { continue; }
+        if line.starts_with("define ") {
+            implementation =
+                function_name(line).is_some_and(|name| name.starts_with("__briev_region_"));
+        }
+        if implementation {
+            continue;
+        }
         let normalized = line.replace("@__briev_region_malloc(", "@malloc(");
-        let Some(call) = allocator_pattern().captures(&normalized) else { continue };
-        if &call[2] == "malloc" && normalized[call.get(0).unwrap().end()..].starts_with(&size) { return true; }
+        let Some(call) = allocator_pattern().captures(&normalized) else {
+            continue;
+        };
+        if &call[2] == "malloc" && normalized[call.get(0).unwrap().end()..].starts_with(&size) {
+            return true;
+        }
     }
     false
 }
@@ -258,17 +453,37 @@ pub(super) fn contains_heap_allocation(ir: &str, bytes: u64) -> bool {
 #[cfg(test)]
 pub(super) fn permits_raw_memory(ir: &str, name: &str) -> bool {
     let name = name.trim_start_matches('@');
-    let definition = ir.lines().find(|line| line.starts_with("define ") && function_name(line) == Some(name)).unwrap();
+    let definition = ir
+        .lines()
+        .find(|line| line.starts_with("define ") && function_name(line) == Some(name))
+        .unwrap();
     let mut effects = String::new();
-    for reference in attribute_pattern().captures_iter(definition).filter_map(|captures| captures.get(1)) {
+    for reference in attribute_pattern()
+        .captures_iter(definition)
+        .filter_map(|captures| captures.get(1))
+    {
         let prefix = format!("attributes #{} =", reference.as_str());
         let mut lines = ir.lines().skip_while(|line| !line.starts_with(&prefix));
-        let first = lines.next().expect("referenced attribute group must be defined");
+        let first = lines
+            .next()
+            .expect("referenced attribute group must be defined");
         effects.push_str(first);
-        if first.contains('}') { continue; }
-        effects.push_str(&lines.take_while(|line| !line.contains('}')).collect::<Vec<_>>().join(" "));
+        if first.contains('}') {
+            continue;
+        }
+        effects.push_str(
+            &lines
+                .take_while(|line| !line.contains('}'))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
     }
-    if effects.contains("readnone") || effects.contains("readonly") || effects.contains("argmemonly") { return false; }
+    if effects.contains("readnone")
+        || effects.contains("readonly")
+        || effects.contains("argmemonly")
+    {
+        return false;
+    }
     !effects.contains("memory(") || effects.contains("memory(readwrite)")
 }
 
@@ -310,7 +525,8 @@ entry:
 attributes #0 = { norecurse }
 "#;
         let mut plan = ReclamationPlan::default();
-        plan.known.insert("owned".into()); plan.regions.insert("owned".into());
+        plan.known.insert("owned".into());
+        plan.regions.insert("owned".into());
         let lowered = lower(module.into(), &plan);
         assert!(lowered.contains("define void @owned() #5"));
         assert!(lowered.contains("attributes #1 = { }"));
@@ -340,8 +556,10 @@ attributes #0 = { norecurse }
     }
     #[test]
     fn rewriting_allocator_calls_preserves_constants_and_inline_assembly() {
-        assert_eq!(rewrite_allocator_call("  %value = call ptr @malloc(i64 32)"),
-            "  %value = call ptr @__briev_region_malloc(i64 32)");
+        assert_eq!(
+            rewrite_allocator_call("  %value = call ptr @malloc(i64 32)"),
+            "  %value = call ptr @__briev_region_malloc(i64 32)"
+        );
         let assembly = "  call void asm sideeffect \"call ptr @malloc(\", \"\"()";
         assert_eq!(rewrite_allocator_call(assembly), assembly);
         let constant = "@message = constant [17 x i8] c\"call ptr @malloc(\"";

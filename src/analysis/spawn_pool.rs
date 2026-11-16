@@ -832,8 +832,11 @@ mod tests {
         let (caps, dependent, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
         assert!(dependent.is_empty(), "a const countdown is not dependent");
-        assert_eq!(caps.get("Counter"), Some(&4),
-            "free must not reduce the pool: capacity = total spawn count (4 firings), not max concurrent (1)");
+        assert_eq!(
+            caps.get("Counter"),
+            Some(&4),
+            "free must not reduce the pool: capacity = total spawn count (4 firings), not max concurrent (1)"
+        );
     }
 
     #[test]

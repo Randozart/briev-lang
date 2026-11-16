@@ -18,7 +18,9 @@ const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 fn mini_cli_uses_the_daily_driver_surface() {
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let slot = "mini_cli";
-    let out_dir = Path::new(PROJECT_ROOT).join("target/briev_mini_cli").join(slot);
+    let out_dir = Path::new(PROJECT_ROOT)
+        .join("target/briev_mini_cli")
+        .join(slot);
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
 
@@ -136,11 +138,7 @@ node main [n == 0][n == 1] {
         .output()
         .unwrap_or_else(|e| panic!("{slot}: failed to run: {e}"));
     let out = String::from_utf8_lossy(&run.stdout).to_string();
-    assert_eq!(
-        run.status.code(),
-        Some(0),
-        "{slot}: exit code drifted"
-    );
+    assert_eq!(run.status.code(), Some(0), "{slot}: exit code drifted");
     assert_eq!(
         out, "7\nhi mini\ntrue\ntrue\nfalse\n3\nclock-ok\n",
         "{slot}: golden drifted: {out:?}"

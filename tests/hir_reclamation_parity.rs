@@ -8,7 +8,7 @@
 //! reclamation facts, so pin it before porting the solver.
 
 use briev_compiler::ast::{Statement, TopLevel};
-use briev_compiler::hir::{lower_program, to_ast, HirProgram};
+use briev_compiler::hir::{HirProgram, lower_program, to_ast};
 
 fn parse(src: &str) -> Vec<TopLevel> {
     let tokens = briev_compiler::lexer::tokenize(src).expect("tokenize");
@@ -112,7 +112,10 @@ fn hir_preserves_reclamation_inputs_and_round_trips_bodies() {
         let items = parse(src);
         for item in &items {
             if let TopLevel::Statement(s) = item {
-                assert!(matches!(s.as_ref(), Statement::Let { .. }), "{name}: fixture shape");
+                assert!(
+                    matches!(s.as_ref(), Statement::Let { .. }),
+                    "{name}: fixture shape"
+                );
             }
         }
         let program = lower_program(&items);
@@ -130,7 +133,10 @@ fn hir_preserves_reclamation_inputs_and_round_trips_bodies() {
                 continue;
             }
             let Some(body) = to_ast::stmt_body(&callable.body.statements) else {
-                panic!("{name}: body for '{}' is not reconstructible", callable.name);
+                panic!(
+                    "{name}: body for '{}' is not reconstructible",
+                    callable.name
+                );
             };
             let original = ast_map
                 .get(&callable.name)

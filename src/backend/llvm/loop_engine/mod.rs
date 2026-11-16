@@ -29,12 +29,7 @@ impl LlvmBackend {
     /// zext'd from `i1`. Handles both new-style unified Expr variants
     /// (`BinaryOp`, `UnaryOp`) and resolves state field references to
     /// GEP+load sequences.
-    pub(crate) fn emit_exit_expr(
-        &mut self,
-        out: &mut String,
-        expr: &Expr,
-        indent: &str,
-    ) -> String {
+    pub(crate) fn emit_exit_expr(&mut self, out: &mut String, expr: &Expr, indent: &str) -> String {
         let v = self.fun.next_reg();
         match expr {
             Expr::Decimal(n) => {
@@ -66,11 +61,19 @@ impl LlvmBackend {
                 }
                 return v;
             }
-            Expr::BinaryOp(kind @ (crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or), left, right) => {
+            Expr::BinaryOp(
+                kind @ (crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or),
+                left,
+                right,
+            ) => {
                 // 2026-10-22: exit predicates share ordinary lazy evaluation;
                 // widen only the completed Bool, never eagerly emit its RHS.
-                let value = self.emit_exit_short_circuit(out, (left, right),
-                    matches!(kind, crate::ast::BinaryOpKind::Or), indent);
+                let value = self.emit_exit_short_circuit(
+                    out,
+                    (left, right),
+                    matches!(kind, crate::ast::BinaryOpKind::Or),
+                    indent,
+                );
                 return self.adapt_to_i64(out, indent, &value);
             }
             Expr::BinaryOp(kind, l, r) => {
@@ -91,13 +94,19 @@ impl LlvmBackend {
         v: &str,
     ) -> String {
         let Some(&idx) = self.ctx.field_index_map.get(name) else {
-            return self.emit_expr(out, &Expr::Identifier(name.to_string()), indent).name;
+            return self
+                .emit_expr(out, &Expr::Identifier(name.to_string()), indent)
+                .name;
         };
         // 2026-07-20: Intentionally hand-rolled — multi-type load with zext/ptrtoint normalization
         // to i64. The centralized emit_state_load_i64_by_idx assumes i64-only field type.
         let p = self.fun.next_reg_with_prefix("gep_exit");
-        writeln!(out, "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-            indent, p, idx).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+            indent, p, idx
+        )
+        .ok();
         let ft = &self.ctx.field_types[idx];
         match ft.as_str() {
             "i64" => {
@@ -151,7 +160,12 @@ impl LlvmBackend {
                 let left = self.emit_exit_expr(out, l, indent);
                 let right = self.emit_exit_expr(out, r, indent);
                 let cmp = self.fun.next_reg_with_prefix("ecmp");
-                writeln!(out, "{}{} = icmp {} i64 {}, {}", indent, cmp, op, left, right).ok();
+                writeln!(
+                    out,
+                    "{}{} = icmp {} i64 {}, {}",
+                    indent, cmp, op, left, right
+                )
+                .ok();
                 if negate {
                     let not_cmp = self.fun.next_reg_with_prefix("enot");
                     writeln!(out, "{}{} = xor i1 {}, -1", indent, not_cmp, cmp).ok();
@@ -234,73 +248,110 @@ impl LlvmBackend {
     /// Used for multi-txn reactive programs with wake triggers.
     /// The memcpy round-trip saves/restores all state fields so each
     /// reactor tick sees a consistent snapshot.
-pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
-    self.emit_main_header(out, "#0", true);
-    self.emit_state_base(out);
-    self.emit_inline_init_stores(out, "%state");
-    // 2026-09-07 (init-block phi predecessor fix): a state field's `op
-    // Init` may emit blocks (HashMap.init's match) — emit_main_header
-    // started a fresh function with cur_block = None, so after init the
-    // insertion block is the init's FINAL block, not entry. Reset it:
-    // this emitter's loop header (.loop) is reached by a single `br`
-    // from entry, and any block-emitting init has already stored its
-    // result to state — citing the stale block would make the header
-    // phis name a block that is not their predecessor.
-    self.fun.cur_block = None;
-    // 2026-09-10 (async convergence fix): the exit check is the LOOP
-    // HEADER. The old shape ran the check ONCE at entry, then .loop's
-    // latch branched back to .loop — the convergence predicate was never
-    // re-evaluated, so bounded async programs spun forever after
-    // converging (prints landed, exit never did). Now: entry ->
-    // .exit_check -> tick -> .exit_check -> ...
-    writeln!(out, "  br label %.exit_check").ok();
-    writeln!(out, ".exit_check:").ok();
-    self.emit_exit_check(out);
-    writeln!(out, "  %state_save = alloca %State, align 8").ok();
-    writeln!(out, "  br label %.loop").ok();
-    writeln!(out, ".loop:").ok();
-    let state_bytes = self.compute_state_size_bytes() as i64;
-    writeln!(out, "  call void @llvm.memcpy.p0.p0.i64(ptr %state_save, ptr %state, i64 {}, i1 false)",
-        state_bytes).ok();
-    // 2026-07-14: Use async phase for async programs
-    if self.has_async_txns && !self.is_lightweight_async {
-        self.emit_async_phase(out, "%state");
-    } else {
-        writeln!(out, "  call void @reactor_tick(ptr noalias nocapture %state)").ok();
-    }
-    // 2026-07-18: Convergence exit logic.
-    // - Wake triggers: check @llvm.wake.any(); exit if none pending.
-    // - Exit condition set (natural death): loop back to entry check.
-    // - No wake triggers & no restartable txns: one-shot program. Check
-    //   if any txn precondition is still true; exit if all converged.
-    // - Otherwise: call wait_for_trigger() and loop (reactive system).
-    let has_exit_cond = self.ctx.exit_condition.is_some();
-    let is_one_shot = !has_wake_triggers && !self.has_async_txns;
-    if has_wake_triggers {
-        writeln!(out, "  %any_active = call i1 @llvm.wake.any()").ok();
-        writeln!(out, "  br i1 %any_active, label %.exit_check, label %.end").ok();
-    } else if has_exit_cond {
+    pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
+        self.emit_main_header(out, "#0", true);
+        self.emit_state_base(out);
+        self.emit_inline_init_stores(out, "%state");
+        // 2026-09-07 (init-block phi predecessor fix): a state field's `op
+        // Init` may emit blocks (HashMap.init's match) — emit_main_header
+        // started a fresh function with cur_block = None, so after init the
+        // insertion block is the init's FINAL block, not entry. Reset it:
+        // this emitter's loop header (.loop) is reached by a single `br`
+        // from entry, and any block-emitting init has already stored its
+        // result to state — citing the stale block would make the header
+        // phis name a block that is not their predecessor.
+        self.fun.cur_block = None;
+        // 2026-11-16 (per-worker arena plan, Stage 2a): start the worker pool
+        // ONCE, before the loop. Starting it per tick would re-create the
+        // threads and re-initialise the barriers on every iteration.
+        if self.ctx.thread_plan.is_pinned() {
+            writeln!(
+                out,
+                "  call i64 @briev_workers_start(i64 {}, ptr @__briev_worker_fns, ptr %state)",
+                self.ctx.thread_plan.worker_count.max(1)
+            )
+            .ok();
+        }
+        // 2026-09-10 (async convergence fix): the exit check is the LOOP
+        // HEADER. The old shape ran the check ONCE at entry, then .loop's
+        // latch branched back to .loop — the convergence predicate was never
+        // re-evaluated, so bounded async programs spun forever after
+        // converging (prints landed, exit never did). Now: entry ->
+        // .exit_check -> tick -> .exit_check -> ...
         writeln!(out, "  br label %.exit_check").ok();
-    } else if is_one_shot {
-        // 2026-07-18: One-shot program — no exit condition analysis available,
-        // no wake triggers. After reactor_tick, any immediately-fireable txn
-        // has run. Since no restart is possible, exit unconditionally.
-        // Note: bounded-counter txns with exit_condition set are already
-        // handled by the previous branch and run a proper loop.
-        writeln!(out, "  br label %.end").ok();
-    } else {
-        writeln!(out, "  call i64 @wait_for_trigger(ptr %state)").ok();
-        writeln!(out, "  br label %.exit_check").ok();
+        writeln!(out, ".exit_check:").ok();
+        self.emit_exit_check(out);
+        writeln!(out, "  %state_save = alloca %State, align 8").ok();
+        writeln!(out, "  br label %.loop").ok();
+        writeln!(out, ".loop:").ok();
+        let state_bytes = self.compute_state_size_bytes();
+        self.emit_memcpy(out, "  ", "%state_save", "%state", &state_bytes.to_string());
+        // 2026-11-16 (per-worker arena plan, Stage 2a): a pinned program starts
+        // its pool before the loop and runs one barrier-balanced tick per
+        // iteration — main releases the workers, runs worker 0's tick itself,
+        // then waits for the others. The barriers provide every ordering the
+        // tick needs, so no fences are emitted.
+        let threaded = self.ctx.thread_plan.is_pinned();
+        // 2026-11-16 (thread-lane E1): the threaded arm is authoritative. The
+        // async-phase path runs its bodies on the main thread and never touches
+        // the worker barrier pair, so taking it in a pinned program would leave
+        // every worker parked on `release` while main executed other bodies —
+        // worker N's tick would never run and its nodes would never fire. Only
+        // an unpinned program may choose the async-phase shape.
+        if threaded {
+            writeln!(out, "  call void @briev_workers_release()").ok();
+            writeln!(
+                out,
+                "  call void @reactor_tick(ptr noalias nocapture %state)"
+            )
+            .ok();
+            writeln!(out, "  call void @briev_workers_wait()").ok();
+        } else if self.has_async_txns && !self.is_lightweight_async {
+            // 2026-07-14: Use async phase for async programs
+            self.emit_async_phase(out, "%state");
+        } else {
+            writeln!(
+                out,
+                "  call void @reactor_tick(ptr noalias nocapture %state)"
+            )
+            .ok();
+        }
+        // 2026-07-18: Convergence exit logic.
+        // - Wake triggers: check @llvm.wake.any(); exit if none pending.
+        // - Exit condition set (natural death): loop back to entry check.
+        // - No wake triggers & no restartable txns: one-shot program. Check
+        //   if any txn precondition is still true; exit if all converged.
+        // - Otherwise: call wait_for_trigger() and loop (reactive system).
+        let has_exit_cond = self.ctx.exit_condition.is_some();
+        let is_one_shot = !has_wake_triggers && !self.has_async_txns;
+        if has_wake_triggers {
+            writeln!(out, "  %any_active = call i1 @llvm.wake.any()").ok();
+            writeln!(out, "  br i1 %any_active, label %.exit_check, label %.end").ok();
+        } else if has_exit_cond {
+            writeln!(out, "  br label %.exit_check").ok();
+        } else if is_one_shot {
+            // 2026-07-18: One-shot program — no exit condition analysis available,
+            // no wake triggers. After reactor_tick, any immediately-fireable txn
+            // has run. Since no restart is possible, exit unconditionally.
+            // Note: bounded-counter txns with exit_condition set are already
+            // handled by the previous branch and run a proper loop.
+            writeln!(out, "  br label %.end").ok();
+        } else {
+            writeln!(out, "  call i64 @wait_for_trigger(ptr %state)").ok();
+            writeln!(out, "  br label %.exit_check").ok();
+        }
+        writeln!(out, ".end:").ok();
+        if self.ctx.thread_plan.is_pinned() {
+            writeln!(out, "  call void @briev_workers_stop()").ok();
+        }
+        // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
+        // (sub-CAP output was lost at ret; same tail the counter engines emit,
+        // has_stdout_flush gates presence + liveness).
+        self.emit_stdout_flush_tail(out);
+        writeln!(out, "  ret i32 0").ok();
+        writeln!(out, "}}").ok();
+        writeln!(out).ok();
     }
-    writeln!(out, ".end:").ok();
-    // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
-    // (sub-CAP output was lost at ret; same tail the counter engines emit,
-    // has_stdout_flush gates presence + liveness).
-    self.emit_stdout_flush_tail(out);
-    writeln!(out, "  ret i32 0").ok();
-    writeln!(out, "}}").ok();
-    writeln!(out).ok();
-}
 
     /// 2026-07-18: Emit IR to check if ANY reactive txn's precondition is
     /// still true. Returns the register name holding i1 (1 = active, 0 = all idle).

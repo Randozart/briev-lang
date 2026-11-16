@@ -57,8 +57,7 @@ fn has_explicit_entry(program: &[TopLevel]) -> bool {
             _ => None,
         };
         contract.map_or(false, |c| {
-            expr_has_intercept(&c.pre_condition)
-                || expr_has_intercept(&c.post_condition)
+            expr_has_intercept(&c.pre_condition) || expr_has_intercept(&c.post_condition)
         })
     })
 }
@@ -152,10 +151,7 @@ fn resolve_script(program: &mut Vec<TopLevel>) -> Result<(), String> {
             // The backend renames `defn main` → `briev_main`; calling `main()`
             // in the AST resolves to the same defn.
             Statement::Expression(Expr::Call("main".into(), vec![], None)),
-            Statement::Assign(
-                Expr::Identifier("script_done".into()),
-                Expr::Bool(true),
-            ),
+            Statement::Assign(Expr::Identifier("script_done".into()), Expr::Bool(true)),
         ];
         synthesize(program, body)?;
         return Ok(());
@@ -219,7 +215,6 @@ fn reserved_collision(program: &[TopLevel]) -> Option<&'static str> {
     }
     None
 }
-
 
 /// Prepend `let script_done: Bool = false;` and append the synthesized
 /// one-shot node. `[true]` is never emitted.

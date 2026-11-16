@@ -667,7 +667,14 @@ pub fn emit_intrinsic_call(
             let recv = &args[0];
             let rest: Vec<Expr> = args.iter().skip(1).cloned().collect();
             let out_tmp = backend.fun.gen_reg();
-            return backend.emit_method_call(out, &out_tmp, ExprView::Ast(recv), op_name, ArgsView::Ast(&rest), indent);
+            return backend.emit_method_call(
+                out,
+                &out_tmp,
+                ExprView::Ast(recv),
+                op_name,
+                ArgsView::Ast(&rest),
+                indent,
+            );
         }
     }
 
@@ -767,9 +774,10 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
             float_llvm, float_llvm, float_llvm
         )),
 
-        ("Add", false) => Some(format!("%v = add nsw {} %a, %b", int_llvm)),
-        ("Sub", false) => Some(format!("%v = sub nsw {} %a, %b", int_llvm)),
-        ("Mul", false) => Some(format!("%v = mul nsw {} %a, %b", int_llvm)),
+        // Integer operators wrap. No-wrap flags need a per-operation proof.
+        ("Add", false) => Some(format!("%v = add {} %a, %b", int_llvm)),
+        ("Sub", false) => Some(format!("%v = sub {} %a, %b", int_llvm)),
+        ("Mul", false) => Some(format!("%v = mul {} %a, %b", int_llvm)),
         ("Div", false) => Some(format!("%v = sdiv {} %a, %b", int_llvm)),
         ("Rem", false) => Some(format!("%v = srem {} %a, %b", int_llvm)),
         ("Eq", false) => Some(format!("%v = icmp eq {} %a, %b", int_llvm)),
@@ -778,7 +786,7 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
         ("Gt", false) => Some(format!("%v = icmp sgt {} %a, %b", int_llvm)),
         ("Le", false) => Some(format!("%v = icmp sle {} %a, %b", int_llvm)),
         ("Ge", false) => Some(format!("%v = icmp sge {} %a, %b", int_llvm)),
-        ("Neg", false) => Some(format!("%v = sub nsw {} 0, %a", int_llvm)),
+        ("Neg", false) => Some(format!("%v = sub {} 0, %a", int_llvm)),
         ("Abs", false) => Some(format!(
             "%v = call {} @llvm.abs.{}({} %a, i1 false)",
             int_llvm, int_llvm, int_llvm
@@ -1793,12 +1801,7 @@ fn emit_copy(
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dptr, ity, d_op).ok();
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, sptr, ity, s_op).ok();
     let len64 = widen_to_i64(backend, out, &len, indent);
-    writeln!(
-        out,
-        "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
-        indent, dptr, sptr, len64
-    )
-    .ok();
+    backend.emit_memcpy(out, indent, &dptr, &sptr, &len64);
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister {
         name: v.to_string(),

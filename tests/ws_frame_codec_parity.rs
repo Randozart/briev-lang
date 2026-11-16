@@ -286,10 +286,14 @@ fn run_to_exit(main_path: &PathBuf) -> Result<Value, String> {
         .map_err(|e| format!("imports: {e:?}"))?;
     let mut interp = Interpreter::new();
     interp.load_program(&resolved);
-    interp.seed_inits(&resolved).map_err(|e| format!("seed: {e:?}"))?;
+    interp
+        .seed_inits(&resolved)
+        .map_err(|e| format!("seed: {e:?}"))?;
     for item in &resolved {
         if let briev_compiler::ast::TopLevel::Statement(s) = item {
-            interp.exec_stmt(s).map_err(|err| format!("seed stmt: {err:?}"))?;
+            interp
+                .exec_stmt(s)
+                .map_err(|err| format!("seed stmt: {err:?}"))?;
         }
     }
     let mut reactor = Reactor::new();
@@ -297,9 +301,7 @@ fn run_to_exit(main_path: &PathBuf) -> Result<Value, String> {
     loop {
         match reactor.run(&mut interp) {
             Ok(true) => {}
-            Ok(false) => {
-                return Err("reactor reached equilibrium without endprogram".into())
-            }
+            Ok(false) => return Err("reactor reached equilibrium without endprogram".into()),
             Err(RuntimeError::ProgramExit(v)) => return Ok(v),
             Err(e) => return Err(format!("runtime: {e:?}")),
         }

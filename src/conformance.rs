@@ -75,7 +75,9 @@ pub fn is_formatted(path: &Path) -> bool {
         .map_or(false, |name| {
             let segments: Vec<&str> = name.split('.').collect();
             segments.len() >= 2
-                && segments[1..segments.len() - 1].iter().any(|s| s.contains('f'))
+                && segments[1..segments.len() - 1]
+                    .iter()
+                    .any(|s| s.contains('f'))
         })
 }
 
@@ -90,7 +92,9 @@ pub fn is_strict(path: &Path) -> bool {
         .map_or(false, |name| {
             let segments: Vec<&str> = name.split('.').collect();
             segments.len() >= 2
-                && segments[1..segments.len() - 1].iter().any(|s| s.contains('s'))
+                && segments[1..segments.len() - 1]
+                    .iter()
+                    .any(|s| s.contains('s'))
         })
 }
 
@@ -105,7 +109,9 @@ pub fn is_bare(path: &Path) -> bool {
         .map_or(false, |name| {
             let segments: Vec<&str> = name.split('.').collect();
             segments.len() >= 2
-                && segments[1..segments.len() - 1].iter().any(|s| s.contains('b'))
+                && segments[1..segments.len() - 1]
+                    .iter()
+                    .any(|s| s.contains('b'))
         })
 }
 
@@ -327,9 +333,7 @@ mod tests {
                         failures.push(format!("{}: {}", path_str, e));
                     }
                 }
-                SourceKind::Rendered
-                | SourceKind::DataStructured
-                | SourceKind::DataLine => {
+                SourceKind::Rendered | SourceKind::DataStructured | SourceKind::DataLine => {
                     // check_source/check_data_source dispatch by extension.
                     checked += 1;
                     if let Err(e) = frontend_check(&path_str, &src) {
@@ -352,7 +356,6 @@ mod tests {
         );
     }
 
-
     use super::*;
 
     #[test]
@@ -362,12 +365,24 @@ mod tests {
         assert_eq!(classify(Path::new("main.f.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("main.b.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("main.bfs.bv")), Some(SourceKind::Briev));
-        assert_eq!(classify(Path::new("kernel.abv")), Some(SourceKind::Accelerator));
+        assert_eq!(
+            classify(Path::new("kernel.abv")),
+            Some(SourceKind::Accelerator)
+        );
         assert_eq!(classify(Path::new("chip.sbv")), Some(SourceKind::Silicon));
-        assert_eq!(classify(Path::new("board.ebv")), Some(SourceKind::Electronics));
+        assert_eq!(
+            classify(Path::new("board.ebv")),
+            Some(SourceKind::Electronics)
+        );
         assert_eq!(classify(Path::new("ui.rbv")), Some(SourceKind::Rendered));
-        assert_eq!(classify(Path::new("data.dbv")), Some(SourceKind::DataStructured));
-        assert_eq!(classify(Path::new("lines.dbvl")), Some(SourceKind::DataLine));
+        assert_eq!(
+            classify(Path::new("data.dbv")),
+            Some(SourceKind::DataStructured)
+        );
+        assert_eq!(
+            classify(Path::new("lines.dbvl")),
+            Some(SourceKind::DataLine)
+        );
     }
 
     #[test]
@@ -383,7 +398,10 @@ mod tests {
     #[test]
     fn discover_inventories_active_sources() {
         let found = discover_active_sources();
-        assert!(!found.is_empty(), "active source inventory must not be empty");
+        assert!(
+            !found.is_empty(),
+            "active source inventory must not be empty"
+        );
         // Deterministic order is part of the contract.
         let mut sorted = found.clone();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));

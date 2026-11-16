@@ -7,7 +7,7 @@
 // replace the marker with explicit macros.
 
 use super::helpers::{ModifierPrefix, Parser};
-use super::quantity::{dimension_name, parse_unit_suffix, UnitSuffix};
+use super::quantity::{UnitSuffix, dimension_name, parse_unit_suffix};
 use crate::ast::*;
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
@@ -1285,9 +1285,9 @@ impl<'a> Parser<'a> {
     /// dissolved). 2026-09-14 (machine-entry plan).
     fn parse_node_item(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume 'node'
-                       // 2026-09-22 (order-free-modifiers plan): `async` is PREFIX-only
-                       // (`async node name`). The `node async` postfix is removed — the
-                       // modifier scanner sets is_async before dispatch.
+        // 2026-09-22 (order-free-modifiers plan): `async` is PREFIX-only
+        // (`async node name`). The `node async` postfix is removed — the
+        // modifier scanner sets is_async before dispatch.
         let is_async = false;
         let name = self.expect_identifier()?;
         let name_span = self
@@ -1531,6 +1531,18 @@ impl<'a> Parser<'a> {
                 true
             }
             Some(Token::Identifier(s))
+                if s == "on"
+                    && matches!(
+                        self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                        Some(Token::Identifier(w)) if w == "thread"
+                    ) =>
+            {
+                // 2026-11-15 (thread-assignment plan): `on thread <N>` opens a
+                // modifier run. Contextual: only `on` followed by `thread` —
+                // an identifier named `on` is unaffected.
+                true
+            }
+            Some(Token::Identifier(s))
                 if s == "stage"
                     || s == "tile"
                     || s == "split"
@@ -1597,6 +1609,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 self.reject_shape_modifiers(&prefix, "a let")?;
+                self.reject_thread_pins(&prefix, "a let")?;
                 let mut stmt = self.parse_let_statement()?;
                 if let Statement::Let { modifiers, .. } = &mut stmt {
                     modifiers.extend(prefix.annotations);
@@ -1619,12 +1632,26 @@ impl<'a> Parser<'a> {
                 }
                 self.reject_net_names(&prefix, "a defn")?;
                 self.reject_shape_modifiers(&prefix, "a defn")?;
+                self.reject_thread_pins(&prefix, "a defn")?;
                 self.reject_storage_assertions(&prefix, "a defn")?;
                 let mut defn = self.parse_definition()?;
                 defn.modifiers.extend(prefix.annotations);
                 Ok(TopLevel::Definition(defn))
             }
             _ => self.modifier_target_error(&prefix),
+        }
+    }
+
+    /// 2026-11-15 (thread-assignment plan): `on thread <N>` selects the
+    /// reactor worker that fires a node/txn — a `let`/`defn` has no firing
+    /// site, so the pin has nothing to bind to.
+    fn reject_thread_pins(&self, prefix: &ModifierPrefix, what: &str) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| a.name == "thread") {
+            self.error_at_current(&format!(
+                "`on thread <N>` pins a node/txn to a reactor worker — {what} has no firing site"
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -2778,7 +2805,7 @@ impl<'a> Parser<'a> {
                 return self.error_at_current(&format!(
                     "the rest {what} bound on `...{rest_name}` must be an integer \
                  literal"
-                ))
+                ));
             }
         };
         Ok(n)
@@ -3178,7 +3205,7 @@ impl<'a> Parser<'a> {
     fn parse_isr_handler(&mut self) -> Result<IsrHandler, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'isr'
-                        // Optional <mechanism> — explicit beats configured.
+        // Optional <mechanism> — explicit beats configured.
         let mechanism = if self.eat(&Token::Lt) {
             let mech = self.expect_identifier()?;
             self.expect(Token::Gt)?;
@@ -3223,7 +3250,7 @@ impl<'a> Parser<'a> {
     fn parse_asm_fn(&mut self) -> Result<AsmFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'asm'
-                        // expect '<'
+        // expect '<'
         self.expect(Token::Lt)?;
         // expect target identifier
         let target = self.expect_identifier()?;
@@ -3289,8 +3316,8 @@ impl<'a> Parser<'a> {
     fn parse_bad_fn(&mut self, bootstrap: bool) -> Result<BadFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'bad'
-                        // 2026-10-01 (bad-ptx-family plan M2): `bad<ptx> fn` — the
-                        // explicit target marker (D26 disclosure); absent = host triple.
+        // 2026-10-01 (bad-ptx-family plan M2): `bad<ptx> fn` — the
+        // explicit target marker (D26 disclosure); absent = host triple.
         let target = if self.eat(&Token::Lt) {
             let t = self.expect_identifier()?;
             self.expect(Token::Gt)?;
@@ -3545,7 +3572,7 @@ impl<'a> Parser<'a> {
     /// 2026-07-14: Parse: type Name : Parent { slot; slot; }
     fn parse_type_or_group(&mut self) -> Result<Box<TypeDef>, SyntaxError> {
         self.pos += 1; // consume `type` token
-                       // 2026-07-16: All type names are Token::Identifier after Type token removal.
+        // 2026-07-16: All type names are Token::Identifier after Type token removal.
         let name = self.expect_identifier()?;
         // 2026-07-20: Parse type parameters: type List<T: String, V>
         let type_params = self.parse_type_params()?;
@@ -3608,7 +3635,7 @@ impl<'a> Parser<'a> {
                     self.eat(&Token::Semicolon);
                 } else if self.check(&Token::Op) {
                     self.pos += 1; // consume 'op' — expect_identifier would
-                                   // otherwise accept the keyword itself as the name
+                    // otherwise accept the keyword itself as the name
                     self.parse_op_definition(&mut op_bindings, None)?;
                 } else {
                     return self.error_at_current("expected 'defn' or 'op' in impl block");
@@ -3836,8 +3863,9 @@ impl<'a> Parser<'a> {
         let s = match self.peek() {
             Some(Token::String(s)) => s.clone(),
             _ => {
-                return self
-                    .error_at_current("expected a quoted reference prefix (e.g. reference \"R\");")
+                return self.error_at_current(
+                    "expected a quoted reference prefix (e.g. reference \"R\");",
+                );
             }
         };
         self.pos += 1;
@@ -3943,7 +3971,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return self.error_at_current(
                             "expected a parent, trait, or protocol hashword after ':'",
-                        )
+                        );
                     }
                 }
                 if !self.eat(&Token::Comma) {
@@ -4464,7 +4492,7 @@ impl<'a> Parser<'a> {
                     key,
                     crate::ast::QuantityDim::Amp,
                     metadata,
-                )
+                );
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -5189,7 +5217,9 @@ impl<'a> Parser<'a> {
                         return Err(SyntaxError::InvalidStatement {
                             reason: format!(
                                 "union field '{}': width {} is sub-byte — a union overlay needs whole-byte fields (deferred; use `Bits<{}>` or split)",
-                                fname, n, n.div_ceil(8) * 8
+                                fname,
+                                n,
+                                n.div_ceil(8) * 8
                             ),
                             span: self
                                 .peek_with_span()
@@ -5433,7 +5463,7 @@ impl<'a> Parser<'a> {
                 return self.error_at_current(&format!(
                     "expected a fundamental category like 'String', got '{}'",
                     category_type
-                ))
+                ));
             }
         };
 
@@ -5493,7 +5523,7 @@ impl<'a> Parser<'a> {
                             return self.error_at_current(&format!(
                                 "expected a protocol variant like 'String<UTF8>', got '{}'",
                                 target_type
-                            ))
+                            ));
                         }
                     };
                     self.expect(Token::RParen)?;
@@ -6106,7 +6136,7 @@ mod tests {
         // 2026-09-23 (fab plan): bare `m` (metre), `mm`, `cm` resolve to
         // the Length dimension in SI (metres); `mA` must still resolve via
         // the prefix path (the `m` length addition must not break it).
-        use crate::parser::quantity::{parse_unit_suffix, UnitSuffix};
+        use crate::parser::quantity::{UnitSuffix, parse_unit_suffix};
         let expect =
             |suffix: &str, si: f64, dim: crate::ast::QuantityDim| match parse_unit_suffix(suffix) {
                 Some(UnitSuffix::Explicit { scale, dim: got }) => {
@@ -7245,7 +7275,7 @@ mod tests {
     #[test]
     fn test_protocol_def_cross_op() {
         let pd = parse_protocol(
-            "proto ASCII: String { CastTo(String<UTF8>); op Add(String<UTF8>) = add_UTF8_to_ASCII(#Lh, #Rh); };"
+            "proto ASCII: String { CastTo(String<UTF8>); op Add(String<UTF8>) = add_UTF8_to_ASCII(#Lh, #Rh); };",
         );
         assert_eq!(pd.name, "ASCII");
         assert_eq!(pd.cast_edges.len(), 1);
@@ -7918,6 +7948,138 @@ mod tests {
         let t = parse_txn("txn f() [x > 0][done] { term; };").unwrap();
         assert!(t.contract.watchdog.is_none());
         assert!(t.contract.explicit);
+    }
+
+    // ── 2026-11-15 (thread-assignment plan): `on thread <N>` ────────────
+
+    /// Parse `src` as one top-level item and return its `thread` annotation
+    /// value (the `on thread` payload), if present.
+    fn thread_annotation(src: &str) -> Option<Option<crate::ast::Expr>> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        let txn = match &item {
+            crate::ast::TopLevel::Transaction(t) => t,
+            crate::ast::TopLevel::SyncGroup { item, .. } => match item.as_ref() {
+                crate::ast::TopLevel::Transaction(t) => t,
+                _ => panic!("expected a Transaction inside SyncGroup"),
+            },
+            _ => panic!("expected a Transaction, got {item:?}"),
+        };
+        txn.modifiers
+            .iter()
+            .find(|m| m.name == "thread")
+            .map(|m| m.value.clone())
+    }
+
+    #[test]
+    fn thread_pin_index_parses_and_round_trips() {
+        // `on thread 0 node x` pins the node to reactor worker 0 and the
+        // canonical printer writes the pin back.
+        let src = "on thread 0 node inc [a < 1][a == 1] { a = a + 1; term; };";
+        assert_eq!(
+            thread_annotation(src),
+            Some(Some(crate::ast::Expr::Decimal(0)))
+        );
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        let printed = crate::ast::format_item(&item);
+        assert!(
+            printed.contains("on thread 0 "),
+            "canonical form must round-trip the pin, got: {printed}"
+        );
+    }
+
+    #[test]
+    fn thread_pin_any_parses_and_round_trips() {
+        // `on thread any` is the explicit spelling of the compiler default.
+        let src = "on thread any node inc [a < 1][a == 1] { a = a + 1; term; };";
+        assert_eq!(thread_annotation(src), Some(None));
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        let printed = crate::ast::format_item(&item);
+        assert!(
+            printed.contains("on thread any "),
+            "canonical form must round-trip `any`, got: {printed}"
+        );
+    }
+
+    #[test]
+    fn thread_pin_composes_with_async_and_sync_group() {
+        // The pin is orthogonal to concurrency classification: `on thread`
+        // decides WHERE a node fires, `async`/`sync<g>` decide WHETHER two
+        // nodes may fire together.
+        let src = "async on thread 1 node inc [a < 1][a == 1] { a = a + 1; term; };";
+        assert_eq!(
+            thread_annotation(src),
+            Some(Some(crate::ast::Expr::Decimal(1)))
+        );
+        let src = "sync<g> on thread 2 node inc [a < 1][a == 1] { a = a + 1; term; };";
+        assert_eq!(
+            thread_annotation(src),
+            Some(Some(crate::ast::Expr::Decimal(2)))
+        );
+    }
+
+    #[test]
+    fn thread_pin_is_rejected_on_let_and_defn() {
+        // A `let`/`defn` has no firing site, so a pin has nothing to bind to.
+        let src = "on thread 0 let x: Int = 1;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err();
+        assert!(
+            format!("{err}").contains("has no firing site"),
+            "let pin must be rejected, got: {err}"
+        );
+        let src = "on thread 0 defn f() -> Int { term 1; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err();
+        assert!(
+            format!("{err}").contains("has no firing site"),
+            "defn pin must be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn thread_pin_rejects_duplicate_and_bad_payload() {
+        // Two pins on one node contradict (which worker fires it?).
+        let src = "on thread 0 on thread 1 node inc [a < 1][a == 1] { a = a + 1; term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        assert!(
+            p.parse_top_level().is_err(),
+            "duplicate pin must be rejected"
+        );
+        // A non-integer, non-`any` payload is a syntax error.
+        let src = "on thread fast node inc [a < 1][a == 1] { a = a + 1; term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err();
+        assert!(
+            format!("{err}").contains("expects a thread index"),
+            "bad payload must be diagnosed, got: {err}"
+        );
+    }
+
+    #[test]
+    fn plain_identifier_named_on_or_thread_still_works() {
+        // `on`/`thread` are contextual, never reserved: a `let` named `on`
+        // and a parameter named `thread` must keep parsing.
+        let src = "let on: Int = 1;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        assert!(p.parse_top_level().is_ok(), "`on` must stay a usable name");
+        let src = "defn f(thread: Int) -> Int { term thread; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        assert!(
+            p.parse_top_level().is_ok(),
+            "`thread` must stay a usable name"
+        );
     }
 
     #[test]

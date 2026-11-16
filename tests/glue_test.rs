@@ -76,7 +76,11 @@ fn test_find_language_by_extension_node() {
     let adapter = found.unwrap();
     assert!(adapter.language == "node" || adapter.language == "web");
     assert_eq!(adapter.extension, "mjs");
-    assert!(config.values().any(|t| t.language == "node" && t.extension == "mjs"));
+    assert!(
+        config
+            .values()
+            .any(|t| t.language == "node" && t.extension == "mjs")
+    );
 }
 
 #[test]
@@ -90,9 +94,8 @@ fn test_find_language_by_extension_nonexistent() {
 
 fn parse_bv(source: &str) -> Vec<briev_compiler::ast::TopLevel> {
     use logos::Logos;
-    let tokens: Vec<(Token, std::ops::Range<usize>)> = Token::lexer(source)
-        .map(|r| (r.unwrap(), 0..0))
-        .collect();
+    let tokens: Vec<(Token, std::ops::Range<usize>)> =
+        Token::lexer(source).map(|r| (r.unwrap(), 0..0)).collect();
     let mut parser = Parser::new(tokens, source);
     parser.parse_program().expect("should parse")
 }
@@ -121,8 +124,8 @@ fn test_extract_exports_from_source() {
 
 #[test]
 fn test_extract_bridge_info_from_test_bridge() {
-    let source = std::fs::read_to_string("examples/test-bridge.bv")
-        .expect("test-bridge.bv should exist");
+    let source =
+        std::fs::read_to_string("examples/test-bridge.bv").expect("test-bridge.bv should exist");
     let items = parse_bv(&source);
     let info = extract_bridge_info(&items, "test-bridge", None);
     assert_eq!(info.name, "test-bridge");

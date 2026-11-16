@@ -14,7 +14,9 @@ pub fn run_memcheck(items: &[crate::ast::TopLevel]) -> MemcheckReport {
     let mut field_inits: HashMap<String, crate::ast::Expr> = HashMap::new();
     for item in items {
         if let crate::ast::TopLevel::StateDecl(s) = item {
-            field_inits.entry(s.name.clone()).or_insert(crate::ast::Expr::Decimal(0));
+            field_inits
+                .entry(s.name.clone())
+                .or_insert(crate::ast::Expr::Decimal(0));
         } else if let crate::ast::TopLevel::Statement(stmt) = item {
             if let crate::ast::Statement::Let { name, expr, .. } = stmt.as_ref() {
                 if let Some(e) = expr {
@@ -24,17 +26,21 @@ pub fn run_memcheck(items: &[crate::ast::TopLevel]) -> MemcheckReport {
         }
     }
     // The reactor firing order is the transition-graph node order.
-    let transition_graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
-        items, &None, &vec![],
-    );
-    let node_order: Vec<String> = transition_graph.nodes.iter().map(|n| n.name.clone()).collect();
+    let transition_graph =
+        crate::analysis::transition_graph::ReactorTransitionGraph::build(items, &None, &vec![]);
+    let node_order: Vec<String> = transition_graph
+        .nodes
+        .iter()
+        .map(|n| n.name.clone())
+        .collect();
     let foldable: std::collections::HashSet<String> = transition_graph
         .nodes
         .iter()
         .filter(|n| n.bounded_pre.is_some())
         .map(|n| n.name.clone())
         .collect();
-    let lifetime = crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable);
+    let lifetime =
+        crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable);
     // Only heap-backed fields are schedulable; scalars are never freed (a
     // "lives for the program" report on them would be misleading).
     let heap_fields: Vec<String> = field_inits
@@ -57,10 +63,7 @@ pub fn run_memcheck(items: &[crate::ast::TopLevel]) -> MemcheckReport {
         .collect();
     let sealed_fields: Vec<String> = field_inits
         .iter()
-        .filter(|(name, init)| {
-            heap_fields.contains(name)
-                && expr_references_any(init, &init_names)
-        })
+        .filter(|(name, init)| heap_fields.contains(name) && expr_references_any(init, &init_names))
         .map(|(name, _)| name.clone())
         .collect();
 
@@ -77,14 +80,24 @@ fn expr_references_any(expr: &crate::ast::Expr, names: &std::collections::HashSe
     use crate::ast::Expr;
     match expr {
         Expr::Identifier(n) => names.contains(n),
-        Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Char(_)
-        | Expr::Quoted(_) | Expr::TaggedLiteral(_, _) | Expr::TaggedQuotedLiteral(_, _) => false,
+        Expr::Decimal(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::Quoted(_)
+        | Expr::TaggedLiteral(_, _)
+        | Expr::TaggedQuotedLiteral(_, _) => false,
         Expr::Call(_, args, _) => args.iter().any(|a| expr_references_any(a, names)),
         Expr::BinaryOp(_, l, r) => expr_references_any(l, names) || expr_references_any(r, names),
-        Expr::UnaryOp(_, e) | Expr::Deref(e) | Expr::AddrOf(e) | Expr::Cast(e, _)
+        Expr::UnaryOp(_, e)
+        | Expr::Deref(e)
+        | Expr::AddrOf(e)
+        | Expr::Cast(e, _)
         | Expr::Field(e, _) => expr_references_any(e, names),
         Expr::Index(obj, idx) => expr_references_any(obj, names) || expr_references_any(idx, names),
-        Expr::List(items) | Expr::Tuple(items) => items.iter().any(|i| expr_references_any(i, names)),
+        Expr::List(items) | Expr::Tuple(items) => {
+            items.iter().any(|i| expr_references_any(i, names))
+        }
         Expr::Block(stmts) => stmts.iter().any(|s| stmt_references_any(s, names)),
         Expr::Consume(inner) => match inner.as_ref() {
             crate::ast::Expr::Identifier(n) => names.contains(n),
@@ -102,15 +115,21 @@ fn stmt_references_any(
 ) -> bool {
     use crate::ast::Statement;
     match stmt {
-        Statement::Let { expr, .. } => expr.as_ref().map_or(false, |e| expr_references_any(e, names)),
+        Statement::Let { expr, .. } => expr
+            .as_ref()
+            .map_or(false, |e| expr_references_any(e, names)),
         Statement::Assign(lhs, rhs) => {
             expr_references_any(lhs, names) || expr_references_any(rhs, names)
         }
         Statement::ArrowAssign { target, value, .. } => {
-            target.as_ref().map_or(false, |t| expr_references_any(t, names))
+            target
+                .as_ref()
+                .map_or(false, |t| expr_references_any(t, names))
                 || expr_references_any(value, names)
         }
-        Statement::Term(val) => val.as_ref().map_or(false, |e| expr_references_any(e, names)),
+        Statement::Term(val) => val
+            .as_ref()
+            .map_or(false, |e| expr_references_any(e, names)),
         Statement::Tail(e) => expr_references_any(e, names),
         Statement::Expression(e) => expr_references_any(e, names),
         Statement::Guarded(_, body) => body.iter().any(|s| stmt_references_any(s, names)),
@@ -171,9 +190,15 @@ pub fn field_decision_line(report: &MemcheckReport, f: &str) -> String {
     } else if report.sealed_fields.iter().any(|x| x == f) {
         // 2026-08-09 (init kind, Phase 2): an init-bound pool is sealed —
         // capacity is the bound-set max, provably inexhaustible. Not a leak.
-        format!("  {}: sealed (capacity bound by an init — provably inexhaustible)", f)
+        format!(
+            "  {}: sealed (capacity bound by an init — provably inexhaustible)",
+            f
+        )
     } else {
-        format!("  {}: lives for the program (unprovable — potential leak; add `free`/`keep` or a refcount)", f)
+        format!(
+            "  {}: lives for the program (unprovable — potential leak; add `free`/`keep` or a refcount)",
+            f
+        )
     }
 }
 

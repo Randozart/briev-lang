@@ -31,9 +31,8 @@ fn build_pass(briefc: &Path, bv: &str, out_root: &Path) -> Option<PathBuf> {
 }
 
 fn main() {
-    let manifest = std::path::PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default(),
-    );
+    let manifest =
+        std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let out_root = Path::new(&manifest).join("target").join("compiler-in-briv");
     std::fs::create_dir_all(&out_root).ok(); // fresh worktree bootstrap
 
@@ -46,14 +45,31 @@ fn main() {
     build_gpu_rt(&out_root);
 
     // A prebuilt briefc from a previous build (or BRIEFC_BIN override).
-    let briefc = std::env::var("BRIEFC_BIN").ok().map(PathBuf::from).or_else(|| {
-        let dbg = Path::new(&manifest).join("target").join("debug").join("briefc");
-        let rel = Path::new(&manifest).join("target").join("release").join("briefc");
-        if dbg.exists() { Some(dbg) } else if rel.exists() { Some(rel) } else { None }
-    });
+    let briefc = std::env::var("BRIEFC_BIN")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            let dbg = Path::new(&manifest)
+                .join("target")
+                .join("debug")
+                .join("briefc");
+            let rel = Path::new(&manifest)
+                .join("target")
+                .join("release")
+                .join("briefc");
+            if dbg.exists() {
+                Some(dbg)
+            } else if rel.exists() {
+                Some(rel)
+            } else {
+                None
+            }
+        });
 
     let Some(briefc) = briefc else {
-        println!("[build] compiler-in-Briv: no prebuilt briefc (expected on first build) — pass libraries skipped; runtime falls back to the Rust references (set BRIEFC_BIN to enable)");
+        println!(
+            "[build] compiler-in-Briv: no prebuilt briefc (expected on first build) — pass libraries skipped; runtime falls back to the Rust references (set BRIEFC_BIN to enable)"
+        );
         println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SO=");
         println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SOA_SO=");
         return;
@@ -63,20 +79,33 @@ fn main() {
     match build_pass(&briefc, "lib/compiler/needs_state.bv", &out_root) {
         Some(so) => {
             println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SO={}", so.display());
-            println!("[build] compiler-in-Briv: needs_state pass ready at {}", so.display());
+            println!(
+                "[build] compiler-in-Briv: needs_state pass ready at {}",
+                so.display()
+            );
         }
         None => {
-            println!("cargo:warning=compiler-in-Briv: needs_state pass build failed — runtime falls back to the Rust reference");
+            println!(
+                "cargo:warning=compiler-in-Briv: needs_state pass build failed — runtime falls back to the Rust reference"
+            );
             println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SO=");
         }
     }
     match build_pass(&briefc, "lib/compiler/soa_reorder.bv", &out_root) {
         Some(so) => {
-            println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SOA_SO={}", so.display());
-            println!("[build] compiler-in-Briv: soa_reorder pass ready at {}", so.display());
+            println!(
+                "cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SOA_SO={}",
+                so.display()
+            );
+            println!(
+                "[build] compiler-in-Briv: soa_reorder pass ready at {}",
+                so.display()
+            );
         }
         None => {
-            println!("cargo:warning=compiler-in-Briv: soa_reorder pass build failed — runtime falls back to the Rust reference");
+            println!(
+                "cargo:warning=compiler-in-Briv: soa_reorder pass build failed — runtime falls back to the Rust reference"
+            );
             println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SOA_SO=");
         }
     }
@@ -115,13 +144,14 @@ fn build_gpu_rt(out_root: &Path) {
     let mut all_ok = true;
     // 2026-11-06 (G1, intel-dispatch.md): Level Zero joins the SPIR-V
     // consumer set (dlopen libze_loader at runtime — no -lze_loader).
-    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c",
-                "briev_dev_levelzero.c"] {
+    for drv in [
+        "briev_dev_cuda.c",
+        "briev_dev_vulkan.c",
+        "briev_dev_opencl.c",
+        "briev_dev_levelzero.c",
+    ] {
         let src = rt_dir.join(drv);
-        let obj = out_root.join(format!(
-            "{}.o",
-            drv.trim_end_matches(".c")
-        ));
+        let obj = out_root.join(format!("{}.o", drv.trim_end_matches(".c")));
         let out = Command::new(&cc)
             .args(["-O2", "-fPIC", "-c"])
             .arg("-I")
@@ -133,7 +163,10 @@ fn build_gpu_rt(out_root: &Path) {
             .expect("cc spawns");
         let ok = out.status.success();
         if !ok {
-            println!("cargo:warning=gpu-rt: {} compile failed — brievc run unavailable", drv);
+            println!(
+                "cargo:warning=gpu-rt: {} compile failed — brievc run unavailable",
+                drv
+            );
             eprintln!("gpu-rt cc stderr: {}", String::from_utf8_lossy(&out.stderr));
             eprintln!("gpu-rt cc stdout: {}", String::from_utf8_lossy(&out.stdout));
             all_ok = false;
@@ -146,13 +179,14 @@ fn build_gpu_rt(out_root: &Path) {
     // `briev_accel_rt.o` and collide with the Rust exports at link time.
     // Always start from no archive (2026-09-22, merge with Family K).
     let _ = std::fs::remove_file(&arc);
-    let ar_ok = all_ok && Command::new("ar")
-        .args(["rcs"])
-        .arg(&arc)
-        .args(&objs)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let ar_ok = all_ok
+        && Command::new("ar")
+            .args(["rcs"])
+            .arg(&arc)
+            .args(&objs)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
     if !ar_ok {
         println!("cargo:warning=gpu-rt: ar failed — brievc run unavailable");
         return;
@@ -160,9 +194,8 @@ fn build_gpu_rt(out_root: &Path) {
     // The Rust orchestration staticlib (same briev_accel_* C ABI, built
     // from src/accel_rt.rs) — runners and LLVM binaries link this instead
     // of the former C translation unit.
-    let manifest = std::path::PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default(),
-    );
+    let manifest =
+        std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let accel_lib = out_root.join("libbriev_accel_rt.a");
     let accel_ok = Command::new(&rustc)
@@ -187,11 +220,18 @@ fn build_gpu_rt(out_root: &Path) {
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=m");
-    println!("cargo:rerun-if-changed={}", rt_dir.join("briev_accel_rt.h").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        rt_dir.join("briev_accel_rt.h").display()
+    );
     // 2026-11-06 (G1, intel-dispatch.md): Level Zero joins the SPIR-V
     // consumer set (dlopen libze_loader at runtime — no -lze_loader).
-    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c",
-                "briev_dev_levelzero.c"] {
+    for drv in [
+        "briev_dev_cuda.c",
+        "briev_dev_vulkan.c",
+        "briev_dev_opencl.c",
+        "briev_dev_levelzero.c",
+    ] {
         println!("cargo:rerun-if-changed={}", rt_dir.join(drv).display());
     }
     // 2026-09-24 (BUGS.md stale runtime archive): declaring ANY

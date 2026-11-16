@@ -28,7 +28,10 @@ fn has(cmd: &str) -> bool {
 /// brace). Used to scope IR assertions (e.g. no @free in the arena-owning
 /// function) without rejecting legitimate frees in the print helpers.
 fn function_text<'a>(ir: &'a str, sig: &str) -> &'a str {
-    let start = ir.find(sig).and_then(|p| ir[..p].rfind("define ")).unwrap_or(0);
+    let start = ir
+        .find(sig)
+        .and_then(|p| ir[..p].rfind("define "))
+        .unwrap_or(0);
     let rest = &ir[start..];
     let end = rest.find("\n}").map(|e| e + 2).unwrap_or(rest.len());
     &rest[..end]
@@ -152,7 +155,9 @@ fn build_link_run_profile(
     for (k, v) in env {
         run.env(k, v);
     }
-    let run = run.output().unwrap_or_else(|e| panic!("{name}: failed to run: {e}"));
+    let run = run
+        .output()
+        .unwrap_or_else(|e| panic!("{name}: failed to run: {e}"));
     assert!(
         run.status.success(),
         "{name}: run failed ({}): {}",
@@ -238,7 +243,10 @@ fn daily_use_smoke_golden_output() {
     // __print_str("world") (no newline) + println!("ready") — the flagship
     // exercises string ops, Stack inserts, env, arithmetic, when+println.
     let out = build_link_run("daily_use_smoke", "golden", &[("BOUND", "5")]);
-    assert_eq!(out, "worldready\n", "flagship golden stdout drifted: {out:?}");
+    assert_eq!(
+        out, "worldready\n",
+        "flagship golden stdout drifted: {out:?}"
+    );
 }
 
 /// 2026-10-13 (trait-system branch, SPEC §8.6): static trait-constrained
@@ -381,7 +389,10 @@ fn enum_tuple_escape_asan_no_inline() {
         &[("ASAN_OPTIONS", "detect_stack_use_after_return=1")],
         LinkProfile::AsanNoInline,
     );
-    assert_eq!(out, "tuple_enum=true\n", "tuple-enum escape drifted: {out:?}");
+    assert_eq!(
+        out, "tuple_enum=true\n",
+        "tuple-enum escape drifted: {out:?}"
+    );
 }
 
 /// Arena enablement (2026-11-03): a folded loop with `Alloc#` must select the
@@ -396,10 +407,10 @@ fn arena_folded_loop_uses_arena() {
     }
     let out = build_link_run("arena_folded_loop", "arena", &[]);
     assert_eq!(out, "499500\n", "arena sum drifted: {out:?}");
-    let out_dir = Path::new(PROJECT_ROOT)
-        .join("target/briev_daily_use_smoke/arena_folded_loop__arena");
-    let ir = std::fs::read_to_string(out_dir.join("arena_folded_loop.ll"))
-        .expect("read emitted IR");
+    let out_dir =
+        Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/arena_folded_loop__arena");
+    let ir =
+        std::fs::read_to_string(out_dir.join("arena_folded_loop.ll")).expect("read emitted IR");
     assert!(
         ir.contains("aacheck_"),
         "default Alloc# did not select the bump arena"
@@ -424,9 +435,15 @@ fn arena_scope_reset_gate() {
     }
     let b = [("BOUND", "5000001")];
     let safe_out = build_link_run("arena_scope_reset", "safe", &b);
-    assert_eq!(safe_out, "12499997500000\n", "safe arena sum drifted: {safe_out:?}");
+    assert_eq!(
+        safe_out, "12499997500000\n",
+        "safe arena sum drifted: {safe_out:?}"
+    );
     let rejected_out = build_link_run("arena_scope_reset_rejected", "rejected", &b);
-    assert_eq!(rejected_out, "12499997500000\n", "rejected-path sum drifted: {rejected_out:?}");
+    assert_eq!(
+        rejected_out, "12499997500000\n",
+        "rejected-path sum drifted: {rejected_out:?}"
+    );
     let dir = |name: &str, slot: &str| {
         Path::new(PROJECT_ROOT)
             .join("target/briev_daily_use_smoke")
@@ -434,8 +451,12 @@ fn arena_scope_reset_gate() {
             .join(format!("{name}.ll"))
     };
     let safe_ir = std::fs::read_to_string(dir("arena_scope_reset", "safe")).expect("safe ir");
-    assert!(safe_ir.contains("arbp"), "safe loop must emit an arena scope reset");
-    let rej_ir = std::fs::read_to_string(dir("arena_scope_reset_rejected", "rejected")).expect("rej ir");
+    assert!(
+        safe_ir.contains("arbp"),
+        "safe loop must emit an arena scope reset"
+    );
+    let rej_ir =
+        std::fs::read_to_string(dir("arena_scope_reset_rejected", "rejected")).expect("rej ir");
     assert!(
         !rej_ir.contains("arbp"),
         "escaping allocation must NOT get an arena scope reset"
@@ -453,10 +474,9 @@ fn arena_free_through_cast_is_noop() {
     }
     let out = build_link_run("arena_free_cast", "freecast", &[]);
     assert_eq!(out, "7", "arena_free_cast output drifted: {out:?}");
-    let out_dir = Path::new(PROJECT_ROOT)
-        .join("target/briev_daily_use_smoke/arena_free_cast__freecast");
-    let ir = std::fs::read_to_string(out_dir.join("arena_free_cast.ll"))
-        .expect("read emitted IR");
+    let out_dir =
+        Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/arena_free_cast__freecast");
+    let ir = std::fs::read_to_string(out_dir.join("arena_free_cast.ll")).expect("read emitted IR");
     let main = function_text(&ir, "@main(");
     assert!(
         !main.contains("call void @free"),
@@ -541,10 +561,7 @@ fn spsc_smoke_golden_output() {
         return;
     }
     let out = build_link_run("spsc_smoke", "golden", &[]);
-    assert_eq!(
-        out, "7|21|7|0|1",
-        "SPSC ring golden drifted: {out:?}"
-    );
+    assert_eq!(out, "7|21|7|0|1", "SPSC ring golden drifted: {out:?}");
 }
 
 #[test]
@@ -602,7 +619,10 @@ fn ptr_crossdefn_probe_golden_output() {
         return;
     }
     let out = build_link_run("ptr_crossdefn_probe", "golden", &[("BOUND", "8")]);
-    assert_eq!(out, "7\n", "cross-defn raw-pointer read/write drifted: {out:?}");
+    assert_eq!(
+        out, "7\n",
+        "cross-defn raw-pointer read/write drifted: {out:?}"
+    );
 }
 
 #[test]
@@ -630,31 +650,46 @@ fn trait_generics_golden_output() {
 #[test]
 fn rating_population_gate_golden_output() {
     let out = build_link_run("rating_population_gate", "golden", &[]);
-    assert_eq!(out, "rating_population=true\n", "rating population golden drifted: {out:?}");
+    assert_eq!(
+        out, "rating_population=true\n",
+        "rating population golden drifted: {out:?}"
+    );
 }
 
 #[test]
 fn pg_buffer_gate_golden_output() {
     let out = build_link_run("pg_buffer_gate", "golden", &[]);
-    assert_eq!(out, "pg_received_prefix=true\n", "PG receive-buffer golden drifted: {out:?}");
+    assert_eq!(
+        out, "pg_received_prefix=true\n",
+        "PG receive-buffer golden drifted: {out:?}"
+    );
 }
 
 #[test]
 fn enum_aggregate_lifetime_golden_output() {
     let out = build_link_run("enum_aggregate_lifetime", "golden", &[]);
-    assert_eq!(out, "aggregate_result_lifetime=true\n", "aggregate lifetime golden drifted: {out:?}");
+    assert_eq!(
+        out, "aggregate_result_lifetime=true\n",
+        "aggregate lifetime golden drifted: {out:?}"
+    );
 }
 
 #[test]
 fn enum_local_return_golden_output() {
     let out = build_link_run("enum_local_return", "golden", &[]);
-    assert_eq!(out, "local_result_lifetime=true\n", "local enum lifetime golden drifted: {out:?}");
+    assert_eq!(
+        out, "local_result_lifetime=true\n",
+        "local enum lifetime golden drifted: {out:?}"
+    );
 }
 
 #[test]
 fn result_object_gate_golden_output() {
     let out = build_link_run("result_object_gate", "golden", &[]);
-    assert_eq!(out, "object_unwraps=true\n", "Result object unwrap golden drifted: {out:?}");
+    assert_eq!(
+        out, "object_unwraps=true\n",
+        "Result object unwrap golden drifted: {out:?}"
+    );
 }
 
 /// 2026-11-02 (stability Phase 2): the deferred generic-callable-txn gate.
@@ -671,25 +706,37 @@ fn iter_chain_multi_struct_golden_output() {
 #[test]
 fn collection_rebind_gate_golden_output() {
     let out = build_link_run("collection_rebind_gate", "golden", &[]);
-    assert_eq!(out, "collection_rebind_and_explicit_push=true\n", "collection rebind golden drifted: {out:?}");
+    assert_eq!(
+        out, "collection_rebind_and_explicit_push=true\n",
+        "collection rebind golden drifted: {out:?}"
+    );
 }
 
 #[test]
 fn json_parse_gate_golden_output() {
     let out = build_link_run("json_parse_gate", "golden", &[]);
-    assert_eq!(out, "json_literals=true containers=true strings=true numbers=true progress=true\n", "strict JSON parse golden drifted: {out:?}");
+    assert_eq!(
+        out, "json_literals=true containers=true strings=true numbers=true progress=true\n",
+        "strict JSON parse golden drifted: {out:?}"
+    );
 }
 
 #[test]
 fn json_stringify_gate_golden_output() {
     let out = build_link_run("json_stringify_gate", "golden", &[]);
-    assert_eq!(out, "json_encode_all_variants=true unicode_control_roundtrip=true\n", "JSON stringify golden drifted: {out:?}");
+    assert_eq!(
+        out, "json_encode_all_variants=true unicode_control_roundtrip=true\n",
+        "JSON stringify golden drifted: {out:?}"
+    );
 }
 
 #[test]
 fn matrix_primitives_golden_output() {
     let out = build_link_run("matrix_primitives_smoke", "golden", &[]);
-    assert_eq!(out, "matrix_vector_intvec=true\n", "matrix primitive golden drifted: {out:?}");
+    assert_eq!(
+        out, "matrix_vector_intvec=true\n",
+        "matrix primitive golden drifted: {out:?}"
+    );
 }
 
 #[test]

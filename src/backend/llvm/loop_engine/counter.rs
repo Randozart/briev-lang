@@ -106,22 +106,38 @@ impl LlvmBackend {
         // captures the loop-entry clock here (mirrors emit_countable_main's
         // cm_start). The gate itself sits between the bound check and the
         // body below.
-        let wd_start = watchdog
-            .filter(|w| w.deadline_ns.is_some())
-            .map(|_| {
-                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-                let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
-                let s = self.fun.gen_reg();
-                writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
-                s
-            });
+        let wd_start = watchdog.filter(|w| w.deadline_ns.is_some()).map(|_| {
+            let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+                "rt_now_ns"
+            } else {
+                "__briev_now"
+            };
+            let nst = if self.ctx.defn_takes_state(nsym) {
+                "%state"
+            } else {
+                ""
+            };
+            let s = self.fun.gen_reg();
+            writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
+            s
+        });
         let bound_reg = self.fun.next_reg_with_prefix("flb");
-        self.emit_countable_load_bound(out, &bound_reg, total_idx, total_const_name, bound_literal, c0);
+        self.emit_countable_load_bound(
+            out,
+            &bound_reg,
+            total_idx,
+            total_const_name,
+            bound_literal,
+            c0,
+        );
         let (init_name, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
         // 2026-09-07 (init-block phi predecessor fix): cite the block the
         // init load + `br` emit into (self.fun.cur_block, or "entry" when no
         // block-emitting init ran) as the header's init predecessor.
-        let init_pred = self.fun.cur_block.clone()
+        let init_pred = self
+            .fun
+            .cur_block
+            .clone()
             .unwrap_or_else(|| "entry".to_string());
         // 2026-07-18: Preallocate push targets before the loop body.
         // Collects all Assign(Ident, _) targets from the body and allocates
@@ -149,19 +165,31 @@ impl LlvmBackend {
         // (i{int_bits} for flexible Int on wasm32). The bound is always i64;
         // a narrow counter is sext'd to i64 for the comparison (mirrors
         // emit_countable_main's counter_ty != "i64" arm).
-        let counter_ty = self.ctx.field_types.get(counter_idx)
-            .cloned().unwrap_or_else(|| "i64".to_string());
+        let counter_ty = self
+            .ctx
+            .field_types
+            .get(counter_idx)
+            .cloned()
+            .unwrap_or_else(|| "i64".to_string());
         if is_decreasing {
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{}.latch ]",
-                counter_name, counter_ty, init_name, init_pred, next, label_prefix).ok();
+            writeln!(
+                out,
+                "  {} = phi {} [ {}, %{} ], [ {}, %{}.latch ]",
+                counter_name, counter_ty, init_name, init_pred, next, label_prefix
+            )
+            .ok();
             // 2026-07-17: Fixed comparison direction. For decreasing counters we
             // want `counter > 0` (continue while still above the bound), not
             // `counter < bound` (which would exit immediately for decreasing).
             let cmp = self.narrow_counter_for_bound(out, "flc", &counter_ty, &counter_name);
             writeln!(out, "  {} = icmp sgt i64 {}, {}", done_reg, cmp, bound_reg).ok();
         } else {
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{}.latch ]",
-                counter_name, counter_ty, init_name, init_pred, next, label_prefix).ok();
+            writeln!(
+                out,
+                "  {} = phi {} [ {}, %{} ], [ {}, %{}.latch ]",
+                counter_name, counter_ty, init_name, init_pred, next, label_prefix
+            )
+            .ok();
             // 2026-07-17: Fixed comparison direction. For increasing counters we
             // want `counter < bound` (continue while below the bound), not
             // `counter > bound` (which would exit immediately).
@@ -173,7 +201,12 @@ impl LlvmBackend {
         // Continue while ?[cond] (+ cycles/deadline bounds) holds; on false
         // fire the handler and exit. The gate's hold label IS the body label.
         if let Some(wd) = watchdog {
-            writeln!(out, "  br i1 {}, label %{}.wd, label %{}", done_reg, label_prefix, exit_label).ok();
+            writeln!(
+                out,
+                "  br i1 {}, label %{}.wd, label %{}",
+                done_reg, label_prefix, exit_label
+            )
+            .ok();
             writeln!(out, "{}.wd:", label_prefix).ok();
             self.fun.cur_block = Some(format!("{}.wd", label_prefix));
             // 2026-10-17: the gate's condition reads the counter — resolve it
@@ -181,7 +214,9 @@ impl LlvmBackend {
             // after the loop). Without this the gate compares 0 forever and
             // never fires (the body's phi registration happens below).
             if let Some(cv) = counter_var {
-                self.fun.phi_field_regs.insert(cv.to_string(), counter_name.clone());
+                self.fun
+                    .phi_field_regs
+                    .insert(cv.to_string(), counter_name.clone());
             }
             let hold_body = format!("{}.body", label_prefix);
             let g = crate::backend::llvm::WatchdogGateLabels {
@@ -192,7 +227,12 @@ impl LlvmBackend {
             };
             self.emit_watchdog_gate(out, "  ", wd, &g);
         } else {
-            writeln!(out, "  br i1 {}, label %{}.body, label %{}", done_reg, label_prefix, exit_label).ok();
+            writeln!(
+                out,
+                "  br i1 {}, label %{}.body, label %{}",
+                done_reg, label_prefix, exit_label
+            )
+            .ok();
             writeln!(out, "{}.body:", label_prefix).ok();
         }
 
@@ -205,8 +245,12 @@ impl LlvmBackend {
         self.fun.phi_field_regs.clear();
         self.fun.backedge_field_regs.clear();
         if let Some(cv) = counter_var {
-            self.fun.phi_field_regs.insert(cv.to_string(), counter_name.clone());
-            self.fun.backedge_field_regs.insert(cv.to_string(), next.clone());
+            self.fun
+                .phi_field_regs
+                .insert(cv.to_string(), counter_name.clone());
+            self.fun
+                .backedge_field_regs
+                .insert(cv.to_string(), next.clone());
         }
 
         if use_phi {
@@ -222,16 +266,30 @@ impl LlvmBackend {
         writeln!(out, "  br label %{}.latch", label_prefix).ok();
         writeln!(out, "{}.latch:", label_prefix).ok();
         if is_decreasing {
-            writeln!(out, "  {} = sub nuw nsw {} {}, 1", next, counter_ty, counter_name).ok();
+            writeln!(
+                out,
+                "  {} = sub nuw nsw {} {}, 1",
+                next, counter_ty, counter_name
+            )
+            .ok();
         } else {
-            writeln!(out, "  {} = add nuw nsw {} {}, 1", next, counter_ty, counter_name).ok();
+            writeln!(
+                out,
+                "  {} = add nuw nsw {} {}, 1",
+                next, counter_ty, counter_name
+            )
+            .ok();
         }
         let disable_fold = body.map_or(false, |b| self.loop_has_observable(b));
-        if let Some(b) = body {
-
-        }
-        emit_loop_metadata(out, "  ", &format!("{}.header", label_prefix),
-            &mut self.ctx.metadata_counter, &mut self.ctx.pending_metadata, disable_fold);
+        if let Some(b) = body {}
+        emit_loop_metadata(
+            out,
+            "  ",
+            &format!("{}.header", label_prefix),
+            &mut self.ctx.metadata_counter,
+            &mut self.ctx.pending_metadata,
+            disable_fold,
+        );
         writeln!(out, "{}:", exit_label).ok();
         // 2026-08-09 (Phase 10): a folded loop exit runs registered defers.
         self.flush_defer_cleanup(out, "  ");
@@ -257,8 +315,21 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
-        self.emit_folded_loop(out, txn_name, counter_idx, total_idx, total_const_name,
-            ".fmain", use_phi, body, 1, false, bound_literal, counter_var, watchdog);
+        self.emit_folded_loop(
+            out,
+            txn_name,
+            counter_idx,
+            total_idx,
+            total_const_name,
+            ".fmain",
+            use_phi,
+            body,
+            1,
+            false,
+            bound_literal,
+            counter_var,
+            watchdog,
+        );
         // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
         // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
         // programs have no stdout_flush and get neither call nor declare.
@@ -276,11 +347,11 @@ impl LlvmBackend {
     // Strategy 3: Hybrid Countable Loop (EmitHybridCounterPhi)
     // ═══════════════════════════════════════════════════════════════
 
-/// Configuration for batch-loop mode.
-/// When set, the loop is split into an outer structural loop and an inner
-/// pure-compute loop. The inner loop runs for `batch_size` iterations without
-/// any branch guards, enabling LLVM's if-conversion. The outer loop handles
-/// the guard checks (prints, termination) between batches.
+    /// Configuration for batch-loop mode.
+    /// When set, the loop is split into an outer structural loop and an inner
+    /// pure-compute loop. The inner loop runs for `batch_size` iterations without
+    /// any branch guards, enabling LLVM's if-conversion. The outer loop handles
+    /// the guard checks (prints, termination) between batches.
     /// Emit a countable main() with per-field phi nodes (EmitPerFieldPhi/EmitHybridCounterPhi).
     ///
     /// 2026-07-17: Each state field in write_set gets its own phi node in
@@ -303,7 +374,7 @@ impl LlvmBackend {
     ///
     /// 2026-07-13: Extracted into a single function with max 2-level
     /// nesting. Loop setup, body, and latch are delegated to helpers.
-     pub(crate) fn emit_countable_main(
+    pub(crate) fn emit_countable_main(
         &mut self,
         out: &mut String,
         txn_name: &str,
@@ -317,8 +388,20 @@ impl LlvmBackend {
         counter_var: Option<&str>,
         watchdog: Option<&crate::ast::top::WatchdogSpec>,
     ) {
-        self.emit_countable_loop_wrapped(out, txn_name, counter_idx, total_idx, total_const_name,
-            bound_literal, body, write_set, is_decreasing, counter_var, watchdog, true);
+        self.emit_countable_loop_wrapped(
+            out,
+            txn_name,
+            counter_idx,
+            total_idx,
+            total_const_name,
+            bound_literal,
+            body,
+            write_set,
+            is_decreasing,
+            counter_var,
+            watchdog,
+            true,
+        );
     }
 
     /// The PerFieldPhi countdown loop, emitted as the whole `main()` (the
@@ -362,326 +445,441 @@ impl LlvmBackend {
         // struct-typed state slots fired exactly once.
         let mut loop_buf = String::new();
         {
-        let out = &mut loop_buf;
-        let c0 = self.fun.txn_counter;
-        let bound_reg = self.fun.next_reg_with_prefix("cmb");
-        self.emit_countable_load_bound(out, &bound_reg, total_idx, total_const_name, bound_literal, c0);
-        let (init_name, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
+            let out = &mut loop_buf;
+            let c0 = self.fun.txn_counter;
+            let bound_reg = self.fun.next_reg_with_prefix("cmb");
+            self.emit_countable_load_bound(
+                out,
+                &bound_reg,
+                total_idx,
+                total_const_name,
+                bound_literal,
+                c0,
+            );
+            let (init_name, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
 
-        // 2026-07-17: Pre-load all field initial values from state for per-field phis.
-        // Sort deterministically to avoid HashMap iteration non-determinism.
-        let mut sorted_fields: Vec<&String> = write_set.iter().collect();
-        sorted_fields.sort();
-        let mut phi_field_init: HashMap<String, String> = HashMap::new();
-        for fname in &sorted_fields {
-            let idx = match self.ctx.field_index_map.get(fname.as_str()) {
-                Some(&i) => i,
-                None => continue,
-            };
-            let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
-            phi_field_init.insert((*fname).clone(), init_f);
-        }
-        // 2026-09-07 (init-block phi predecessor fix): the init loads emit
-        // into self.fun.cur_block — the block the loop `br` targets. When a
-        // state field's `op Init` emits blocks (HashMap.init's match), that
-        // is the match's .match_end_N, not entry. Cite it in the header phis.
-        // Falls back to "entry" when no block-emitting init ran (byte-identical
-        // IR).
-        let init_pred = self.fun.cur_block.clone()
-            .unwrap_or_else(|| "entry".to_string());
+            // 2026-07-17: Pre-load all field initial values from state for per-field phis.
+            // Sort deterministically to avoid HashMap iteration non-determinism.
+            let mut sorted_fields: Vec<&String> = write_set.iter().collect();
+            sorted_fields.sort();
+            let mut phi_field_init: HashMap<String, String> = HashMap::new();
+            for fname in &sorted_fields {
+                let idx = match self.ctx.field_index_map.get(fname.as_str()) {
+                    Some(&i) => i,
+                    None => continue,
+                };
+                let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
+                phi_field_init.insert((*fname).clone(), init_f);
+            }
+            // 2026-09-07 (init-block phi predecessor fix): the init loads emit
+            // into self.fun.cur_block — the block the loop `br` targets. When a
+            // state field's `op Init` emits blocks (HashMap.init's match), that
+            // is the match's .match_end_N, not entry. Cite it in the header phis.
+            // Falls back to "entry" when no block-emitting init ran (byte-identical
+            // IR).
+            let init_pred = self
+                .fun
+                .cur_block
+                .clone()
+                .unwrap_or_else(|| "entry".to_string());
 
-        // 2026-07-29: Clear vector phi state — disabled inside emit_countable_main.
-        // The dispatch-level detection in mod.rs still checks for vector phi groups,
-        // but the actual emission is deferred until the vector phi infrastructure
-        // handles all edge cases (duplicate fields, let-binding groups, power-of-2
-        // widths, backedge register naming conflicts).
-        self.fun.active_vector_groups.clear();
-        self.fun.field_to_phi.clear();
-        self.fun.field_to_lane.clear();
-        self.fun.vector_phi_current.clear();
+            // 2026-07-29: Clear vector phi state — disabled inside emit_countable_main.
+            // The dispatch-level detection in mod.rs still checks for vector phi groups,
+            // but the actual emission is deferred until the vector phi infrastructure
+            // handles all edge cases (duplicate fields, let-binding groups, power-of-2
+            // widths, backedge register naming conflicts).
+            self.fun.active_vector_groups.clear();
+            self.fun.field_to_phi.clear();
+            self.fun.field_to_lane.clear();
+            self.fun.vector_phi_current.clear();
 
-        // 2026-07-17: Pre-generate backedge register names for per-field phis
-        // (forward reference from header phi to latch definition).
-        let next = self.fun.next_reg_with_prefix("cmn");
-        let mut be_field_regs: HashMap<String, String> = HashMap::new();
-        for fname in &sorted_fields {
-            let be_f = self.fun.next_reg_with_prefix("pbf");
-            be_field_regs.insert((*fname).clone(), be_f);
-        }
+            // 2026-07-17: Pre-generate backedge register names for per-field phis
+            // (forward reference from header phi to latch definition).
+            let next = self.fun.next_reg_with_prefix("cmn");
+            let mut be_field_regs: HashMap<String, String> = HashMap::new();
+            for fname in &sorted_fields {
+                let be_f = self.fun.next_reg_with_prefix("pbf");
+                be_field_regs.insert((*fname).clone(), be_f);
+            }
 
-        let exit_label = format!(".cm_end_{}", self.fun.txn_counter);
-        self.fun.txn_counter += 1;
-        // 2026-08-01 (D2): a `within N ms` deadline captures the monotonic
-        // clock at loop entry; the .cmwd_ check fires when the elapsed time
-        // exceeds the deadline even if the liveliness condition still holds.
-        let cm_start = if let Some(wd) = watchdog {
-            if wd.deadline_ns.is_some() {
-                let s = self.fun.gen_reg();
-                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-                let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
-                writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
-                Some(s)
+            let exit_label = format!(".cm_end_{}", self.fun.txn_counter);
+            self.fun.txn_counter += 1;
+            // 2026-08-01 (D2): a `within N ms` deadline captures the monotonic
+            // clock at loop entry; the .cmwd_ check fires when the elapsed time
+            // exceeds the deadline even if the liveliness condition still holds.
+            let cm_start = if let Some(wd) = watchdog {
+                if wd.deadline_ns.is_some() {
+                    let s = self.fun.gen_reg();
+                    let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+                        "rt_now_ns"
+                    } else {
+                        "__briev_now"
+                    };
+                    let nst = if self.ctx.defn_takes_state(nsym) {
+                        "%state"
+                    } else {
+                        ""
+                    };
+                    writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
+                    Some(s)
+                } else {
+                    None
+                }
             } else {
                 None
+            };
+            writeln!(out, "  br label %.cm_header").ok();
+            writeln!(out, ".cm_header:").ok();
+            let counter_name = self.fun.next_reg_with_prefix("cmc");
+            let done_reg = self.fun.next_reg_with_prefix("cmd");
+
+            // Counter phi — use the field's native LLVM type from field_types.
+            let counter_ty = self
+                .ctx
+                .field_types
+                .get(counter_idx)
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string());
+            if is_decreasing {
+                writeln!(
+                    out,
+                    "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
+                    counter_name, counter_ty, init_name, init_pred, next
+                )
+                .ok();
+            } else {
+                writeln!(
+                    out,
+                    "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
+                    counter_name, counter_ty, init_name, init_pred, next
+                )
+                .ok();
             }
-        } else {
-            None
-        };
-        writeln!(out, "  br label %.cm_header").ok();
-        writeln!(out, ".cm_header:").ok();
-        let counter_name = self.fun.next_reg_with_prefix("cmc");
-        let done_reg = self.fun.next_reg_with_prefix("cmd");
 
-        // Counter phi — use the field's native LLVM type from field_types.
-        let counter_ty = self.ctx.field_types.get(counter_idx)
-            .cloned().unwrap_or_else(|| "i64".to_string());
-        if is_decreasing {
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
-                counter_name, counter_ty, init_name, init_pred, next).ok();
-        } else {
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
-                counter_name, counter_ty, init_name, init_pred, next).ok();
-        }
+            // 2026-07-17: Per-field phi nodes — one per written field.
+            // 2026-07-26: Phi type is read from field_types to match the native
+            // LLVM type stored by push_field_type (float/double for Float types,
+            // iN for exact ints, i64 for flexible Int and everything else).
+            self.fun.phi_field_regs.clear();
+            self.fun.backedge_field_regs.clear();
 
-        // 2026-07-17: Per-field phi nodes — one per written field.
-        // 2026-07-26: Phi type is read from field_types to match the native
-        // LLVM type stored by push_field_type (float/double for Float types,
-        // iN for exact ints, i64 for flexible Int and everything else).
-        self.fun.phi_field_regs.clear();
-        self.fun.backedge_field_regs.clear();
-
-        for fname in &sorted_fields {
-            // Check if this field duplicates the counter variable
-            if let Some(cv) = counter_var {
-                if fname.as_str() == cv {
-                    self.fun.phi_field_regs.insert((*fname).clone(), counter_name.clone());
-                    self.fun.backedge_field_regs.insert((*fname).clone(), next.clone());
-                    continue;
+            for fname in &sorted_fields {
+                // Check if this field duplicates the counter variable
+                if let Some(cv) = counter_var {
+                    if fname.as_str() == cv {
+                        self.fun
+                            .phi_field_regs
+                            .insert((*fname).clone(), counter_name.clone());
+                        self.fun
+                            .backedge_field_regs
+                            .insert((*fname).clone(), next.clone());
+                        continue;
+                    }
                 }
+                let phi_f = self.fun.next_reg_with_prefix("ppf");
+                let be_f = be_field_regs
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| format!("%be_{}", fname));
+                let init_f = phi_field_init
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string());
+                let phi_ty = self
+                    .ctx
+                    .field_index_map
+                    .get(fname.as_str())
+                    .and_then(|idx| self.ctx.field_types.get(*idx))
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
+                writeln!(
+                    out,
+                    "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
+                    phi_f, phi_ty, init_f, init_pred, be_f
+                )
+                .ok();
+                self.fun.phi_field_regs.insert((*fname).clone(), phi_f);
+                self.fun.backedge_field_regs.insert((*fname).clone(), be_f);
             }
-            let phi_f = self.fun.next_reg_with_prefix("ppf");
-            let be_f = be_field_regs.get(fname.as_str())
-                .cloned().unwrap_or_else(|| format!("%be_{}", fname));
-            let init_f = phi_field_init.get(fname.as_str())
-                .cloned().unwrap_or_else(|| "0".to_string());
-            let phi_ty = self.ctx.field_index_map.get(fname.as_str())
-                .and_then(|idx| self.ctx.field_types.get(*idx))
-                .cloned().unwrap_or_else(|| "i64".to_string());
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
-                phi_f, phi_ty, init_f, init_pred, be_f).ok();
-            self.fun.phi_field_regs.insert((*fname).clone(), phi_f);
-            self.fun.backedge_field_regs.insert((*fname).clone(), be_f);
-        }
 
-        // 2026-07-17: Exit check. For increasing counters we want
-        // `counter < bound` (continue while below the bound); for decreasing
-        // counters we want `counter > 0` (continue while above the bound).
-        // The br branches to .cm_body if done_reg is true.
-        // 2026-07-26: Counter may be narrower than 64 (native int width from
-        // field_types). sext to i64 for comparison with bound (always i64).
-        let cmp_counter = if counter_ty != "i64" {
-            let w = self.fun.next_reg_with_prefix("cmw");
-            writeln!(out, "  {} = sext {} {} to i64", w, counter_ty, counter_name).ok();
-            w
-        } else {
-            counter_name.clone()
-        };
-        if is_decreasing {
-            writeln!(out, "  {} = icmp sgt i64 {}, {}", done_reg, cmp_counter, bound_reg).ok();
-        } else {
-            writeln!(out, "  {} = icmp slt i64 {}, {}", done_reg, cmp_counter, bound_reg).ok();
-        }
-        // 2026-08-01 (C2/C3): liveliness watchdog for the memory-counter loop —
-        // continue while `?[condition]` holds; on false, fire the handler with
-        // the last computed value and exit (mirrors the countdown path).
-        if let Some(wd) = watchdog {
-            writeln!(out, "  br i1 {}, label %.cmwd_{}, label %{}", done_reg, self.fun.txn_counter, exit_label).ok();
-            let wd_c0 = self.fun.txn_counter;
-            self.fun.txn_counter += 1;
-            writeln!(out, ".cmwd_{}:", wd_c0).ok();
-            self.fun.cur_block = Some(format!(".cmwd_{}", wd_c0));
-            let cond_reg = self.emit_expr(out, &wd.condition, "  ");
-            let bool_reg = self.as_bool_reg(out, "  ", &cond_reg);
-            // 2026-08-01 (D2): the `within N` deadline (mirrors the countdown
-            // path). Continue = cond AND counter < N AND Now#() - start < N.
-            let mut continue_cond = bool_reg;
-            if let Some(cyc) = wd.cycles_bound {
-                let exp = self.fun.gen_reg();
-                writeln!(out, "  {} = icmp slt i64 {}, {}", exp, counter_name, cyc as i64).ok();
-                let andr = self.fun.gen_reg();
-                writeln!(out, "  {} = and i1 {}, {}", andr, continue_cond, exp).ok();
-                continue_cond = andr;
+            // 2026-07-17: Exit check. For increasing counters we want
+            // `counter < bound` (continue while below the bound); for decreasing
+            // counters we want `counter > 0` (continue while above the bound).
+            // The br branches to .cm_body if done_reg is true.
+            // 2026-07-26: Counter may be narrower than 64 (native int width from
+            // field_types). sext to i64 for comparison with bound (always i64).
+            let cmp_counter = if counter_ty != "i64" {
+                let w = self.fun.next_reg_with_prefix("cmw");
+                writeln!(out, "  {} = sext {} {} to i64", w, counter_ty, counter_name).ok();
+                w
+            } else {
+                counter_name.clone()
+            };
+            if is_decreasing {
+                writeln!(
+                    out,
+                    "  {} = icmp sgt i64 {}, {}",
+                    done_reg, cmp_counter, bound_reg
+                )
+                .ok();
+            } else {
+                writeln!(
+                    out,
+                    "  {} = icmp slt i64 {}, {}",
+                    done_reg, cmp_counter, bound_reg
+                )
+                .ok();
             }
-            if let Some(secs) = wd.deadline_ns {
-                if let Some(start) = &cm_start {
-                    let now = self.fun.gen_reg();
-                    let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-                    let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
-                    writeln!(out, "  {} = call i64 @{}({})", now, nsym, nst).ok();
-                    let el = self.fun.gen_reg();
-                    writeln!(out, "  {} = sub i64 {}, {}", el, now, start).ok();
-                    let db = self.fun.gen_reg();
-                    writeln!(out, "  {} = add i64 0, {}", db, secs as i64).ok();
+            // 2026-08-01 (C2/C3): liveliness watchdog for the memory-counter loop —
+            // continue while `?[condition]` holds; on false, fire the handler with
+            // the last computed value and exit (mirrors the countdown path).
+            if let Some(wd) = watchdog {
+                writeln!(
+                    out,
+                    "  br i1 {}, label %.cmwd_{}, label %{}",
+                    done_reg, self.fun.txn_counter, exit_label
+                )
+                .ok();
+                let wd_c0 = self.fun.txn_counter;
+                self.fun.txn_counter += 1;
+                writeln!(out, ".cmwd_{}:", wd_c0).ok();
+                self.fun.cur_block = Some(format!(".cmwd_{}", wd_c0));
+                let cond_reg = self.emit_expr(out, &wd.condition, "  ");
+                let bool_reg = self.as_bool_reg(out, "  ", &cond_reg);
+                // 2026-08-01 (D2): the `within N` deadline (mirrors the countdown
+                // path). Continue = cond AND counter < N AND Now#() - start < N.
+                let mut continue_cond = bool_reg;
+                if let Some(cyc) = wd.cycles_bound {
                     let exp = self.fun.gen_reg();
-                    writeln!(out, "  {} = icmp slt i64 {}, {}", exp, el, db).ok();
+                    writeln!(
+                        out,
+                        "  {} = icmp slt i64 {}, {}",
+                        exp, counter_name, cyc as i64
+                    )
+                    .ok();
                     let andr = self.fun.gen_reg();
                     writeln!(out, "  {} = and i1 {}, {}", andr, continue_cond, exp).ok();
                     continue_cond = andr;
                 }
+                if let Some(secs) = wd.deadline_ns {
+                    if let Some(start) = &cm_start {
+                        let now = self.fun.gen_reg();
+                        let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+                            "rt_now_ns"
+                        } else {
+                            "__briev_now"
+                        };
+                        let nst = if self.ctx.defn_takes_state(nsym) {
+                            "%state"
+                        } else {
+                            ""
+                        };
+                        writeln!(out, "  {} = call i64 @{}({})", now, nsym, nst).ok();
+                        let el = self.fun.gen_reg();
+                        writeln!(out, "  {} = sub i64 {}, {}", el, now, start).ok();
+                        let db = self.fun.gen_reg();
+                        writeln!(out, "  {} = add i64 0, {}", db, secs as i64).ok();
+                        let exp = self.fun.gen_reg();
+                        writeln!(out, "  {} = icmp slt i64 {}, {}", exp, el, db).ok();
+                        let andr = self.fun.gen_reg();
+                        writeln!(out, "  {} = and i1 {}, {}", andr, continue_cond, exp).ok();
+                        continue_cond = andr;
+                    }
+                }
+                writeln!(
+                    out,
+                    "  br i1 {}, label %.cm_body, label %.cmwdf_{}",
+                    continue_cond, wd_c0
+                )
+                .ok();
+                writeln!(out, ".cmwdf_{}:", wd_c0).ok();
+                self.fun.cur_block = Some(format!(".cmwdf_{}", wd_c0));
+                if let Some(on_fire) = &wd.on_fire {
+                    let call_reg = self.fun.gen_reg();
+                    let args: Vec<crate::ast::Expr> = match &on_fire.arg {
+                        Some(name) => vec![crate::ast::Expr::Identifier(name.clone())],
+                        None => Vec::new(),
+                    };
+                    self.emit_user_call(out, &call_reg, &on_fire.handler, &args, "  ");
+                } else if wd.is_required {
+                    // 2026-09-10 (Family I): pure-Briev defn takes the hidden %state and
+                    // returns i64 (defns cannot be void).
+                    writeln!(out, "  call i64 @watchdog_fail(ptr %state)").ok();
+                }
+                writeln!(out, "  br label %{}", exit_label).ok();
+            } else {
+                writeln!(
+                    out,
+                    "  br i1 {}, label %.cm_body, label %{}",
+                    done_reg, exit_label
+                )
+                .ok();
             }
-            writeln!(out, "  br i1 {}, label %.cm_body, label %.cmwdf_{}", continue_cond, wd_c0).ok();
-            writeln!(out, ".cmwdf_{}:", wd_c0).ok();
-            self.fun.cur_block = Some(format!(".cmwdf_{}", wd_c0));
-            if let Some(on_fire) = &wd.on_fire {
-                let call_reg = self.fun.gen_reg();
-                let args: Vec<crate::ast::Expr> = match &on_fire.arg {
-                    Some(name) => vec![crate::ast::Expr::Identifier(name.clone())],
-                    None => Vec::new(),
-                };
-                self.emit_user_call(out, &call_reg, &on_fire.handler, &args, "  ");
-            } else if wd.is_required {
-                // 2026-09-10 (Family I): pure-Briev defn takes the hidden %state and
-                // returns i64 (defns cannot be void).
-                writeln!(out, "  call i64 @watchdog_fail(ptr %state)").ok();
-            }
-            writeln!(out, "  br label %{}", exit_label).ok();
-        } else {
-            writeln!(out, "  br i1 {}, label %.cm_body, label %{}", done_reg, exit_label).ok();
-        }
-        writeln!(out, ".cm_body:").ok();
-        // 2026-08-22 (two-guard fix): the header ALWAYS branches here — the
-        // body starts unterminated regardless of what a PREVIOUS emission
-        // region left behind (a stale `terminated` skipped my guard blocks'
-        // fall-through branch and produced empty predecessor blocks).
-        self.fun.terminated = false;
-        self.fun.cur_block = Some(".cm_body".to_string());
+            writeln!(out, ".cm_body:").ok();
+            // 2026-08-22 (two-guard fix): the header ALWAYS branches here — the
+            // body starts unterminated regardless of what a PREVIOUS emission
+            // region left behind (a stale `terminated` skipped my guard blocks'
+            // fall-through branch and produced empty predecessor blocks).
+            self.fun.terminated = false;
+            self.fun.cur_block = Some(".cm_body".to_string());
 
-        // 2026-07-17: Initialize pending_phi_backedge with identity values.
-        // Body writes will overwrite entries for modified fields.
-        self.fun.pending_phi_backedge.clear();
-        for fname in &sorted_fields {
-            if let Some(phi_f) = self.fun.phi_field_regs.get(fname.as_str()) {
-                self.fun.pending_phi_backedge.insert((*fname).clone(), phi_f.clone());
-            }
-        }
-
-        // 2026-07-17: Path B (stores in body) for post-loop hoisted prints.
-        // 2026-07-21: Also enabled by dispatch when phi-capped fields need stores
-        // (float_math_nonzero p22 fix). Use OR to preserve pre-existing value.
-        if !self.fun.pending_post_hoist.is_empty() {
-            self.fun.needs_state_stores_in_body = true;
-            self.collect_swan_song_locals();
-        }
-
-        // 2026-07-17: pending_post_hoist (provided by the frontend swan-song
-        // hoist, analysis/swan_song.rs) is emitted AFTER the loop closes, not
-        // inside the body. The hoisted swan song reads final accumulator values
-        // from %State (stored by Path B — needs_state_stores_in_body). Clone to
-        // satisfy borrow checker (self.emit_expr needs &mut self;
-        // pending_post_hoist is behind &self.fun).
-        let hoist = self.fun.pending_post_hoist.clone();
-        let mut empty = Vec::new();
-        // 2026-08-13 (reactor fix): defer struct-literal allocas in the loop
-        // body so they flush to the loop PREHEADER (emit_countable_main's
-        // trailing flush) — an in-loop alloca makes clang -O3 peel the loop.
-        self.fun.defer_struct_allocas = true;
-        self.emit_countable_body(out, body, write_set, &mut empty);
-        self.fun.defer_struct_allocas = false;
-        writeln!(out, "  br label %.cm_latch").ok();
-        writeln!(out, ".cm_latch:").ok();
-        // 2026-07-26: Counter increment uses the field's native type, not i64.
-        if is_decreasing {
-            writeln!(out, "  {} = sub nuw nsw {} {}, 1", next, counter_ty, counter_name).ok();
-        } else {
-            writeln!(out, "  {} = add nuw nsw {} {}, 1", next, counter_ty, counter_name).ok();
-        }
-
-        // 2026-07-17: Per-field scalar backedges. Modified fields use the written value;
-        // unwritten fields use identity (phi self-ref). LLVM peephole eliminates
-        // the `add i64 0, %val` copy in both cases.
-        // 2026-07-21: Skip the counter variable — its backedge is already the
-        // latch increment (next). Creating another identity would redefine next.
-        // For float fields, the backedge value is already the native float type
-        // (skip adapt_to_i64), so the identity would be a type mismatch.
-        for fname in sorted_fields.iter().filter(|f| {
-            counter_var.map_or(true, |cv| f.as_str() != cv)
-        }) {
-            if let Some(be_f) = self.fun.backedge_field_regs.get(fname.as_str()) {
-                let val = self.fun.pending_phi_backedge.get(fname.as_str())
-                    .cloned().unwrap_or_else(|| {
-                        self.fun.phi_field_regs.get(fname.as_str())
-                            .cloned().unwrap_or_else(|| "0".to_string())
-                    });
-                // Check if this field is a float type — skip i64 identity
-                let field_ty = self.ctx.field_index_map.get(fname.as_str())
-                    .and_then(|idx| self.ctx.field_types.get(*idx))
-                    .cloned().unwrap_or_else(|| "i64".to_string());
-                // 2026-07-26: The backedge identity must match the phi type.
-                // Float fields use fadd, integer fields use the field's native width.
-                if field_ty == "float" || field_ty == "double" {
-                    writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
-                } else {
-                    writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
+            // 2026-07-17: Initialize pending_phi_backedge with identity values.
+            // Body writes will overwrite entries for modified fields.
+            self.fun.pending_phi_backedge.clear();
+            for fname in &sorted_fields {
+                if let Some(phi_f) = self.fun.phi_field_regs.get(fname.as_str()) {
+                    self.fun
+                        .pending_phi_backedge
+                        .insert((*fname).clone(), phi_f.clone());
                 }
             }
-        }
 
-        let disable_fold = self.loop_has_observable(body);
-        emit_loop_metadata(out, "  ", ".cm_header",
-            &mut self.ctx.metadata_counter, &mut self.ctx.pending_metadata, disable_fold);
-        writeln!(out, "{}:", exit_label).ok();
-        // 2026-07-17: Emit hoisted post-loop prints (swan song) AFTER the loop
-        // closes, so they read the final accumulator values from %State. The
-        // guard condition was removed by the frontend swan-song hoist
-        // (analysis/swan_song.rs); at this point the loop postcondition
-        // guarantees it holds.
-        // Clear the float cache to prevent reusing fpext registers from the
-        // loop body (which may be defined in non-dominating conditional blocks
-        // like periodic prints). Without this, the swan song reuses a register
-        // defined inside a conditional that never fires for small BOUND values,
-        // producing 0.0 from LLVM's undefined value handling — nbody_newton bug.
-        self.fun.reg_float_cache.clear();
-        // 2026-07-19: Clear last-value temps before hoisted post-loop prints.
-        // Without this, identifier resolution uses SSA registers from the loop
-        // body which don't dominate the exit block — SSA dominance violation.
-        // The hoisted prints must resolve via phi registers or %State loads.
-        self.fun.last_val_temps.clear();
-        self.fun.last_val_types.clear();
-        // 2026-09-07 (swan-song dominance fix): clear the loop SSA maps too.
-        // pending_phi_backedge carries body-defined registers (assigns and
-        // guard merges register their written value there), phi_field_regs
-        // carries the header phis. A body register referenced from the exit
-        // block is invalid on the zero-trip path (dominance violation —
-        // async-events/nbody_newton), and a header phi holds the pre-loop
-        // value there while the watchdog path can exit early. Post-loop field
-        // reads must be %State loads: the body stored final values via Path B
-        // (needs_state_stores_in_body is set whenever a hoist is pending, see
-        // the body prologue). Same rationale as the two clears above — the
-        // exit block is outside the loop's SSA domain.
-        self.fun.pending_phi_backedge.clear();
-        self.fun.phi_field_regs.clear();
-        let hoist = self.fun.pending_post_hoist.clone();
-        self.emit_hoisted_post_loop_prints(out, &hoist);
-        self.emit_state_store_i64_by_idx(out, "  ", counter_idx, &counter_name);
-        // 2026-08-06 (Phase 9): garbage scheduling for the PerFieldPhi
-        // countable-loop path — free the fields the scheduler PROVED this txn
-        // is the last consumer of, AFTER the loop closes (the loop-exit block,
-        // so a free never fires inside a body that iterates again). Mirrors the
-        // countdown + non-loop paths.
-        if let Some(fields) = self.ctx.global_free_after.get(txn_name).cloned() {
-            self.emit_scheduled_frees(out, &fields);
-        }
-        if is_main {
-            // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
-        // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
-        // programs have no stdout_flush and get neither call nor declare.
-        self.emit_stdout_flush_tail(out);
-        writeln!(out, "  ret i32 0").ok();
-            writeln!(out, "}}").ok();
-        } else {
-            writeln!(out, "  ret void").ok();
-            writeln!(out, "}}").ok();
-        }        writeln!(out).ok();
+            // 2026-07-17: Path B (stores in body) for post-loop hoisted prints.
+            // 2026-07-21: Also enabled by dispatch when phi-capped fields need stores
+            // (float_math_nonzero p22 fix). Use OR to preserve pre-existing value.
+            if !self.fun.pending_post_hoist.is_empty() {
+                self.fun.needs_state_stores_in_body = true;
+                self.collect_swan_song_locals();
+            }
+
+            // 2026-07-17: pending_post_hoist (provided by the frontend swan-song
+            // hoist, analysis/swan_song.rs) is emitted AFTER the loop closes, not
+            // inside the body. The hoisted swan song reads final accumulator values
+            // from %State (stored by Path B — needs_state_stores_in_body). Clone to
+            // satisfy borrow checker (self.emit_expr needs &mut self;
+            // pending_post_hoist is behind &self.fun).
+            let hoist = self.fun.pending_post_hoist.clone();
+            let mut empty = Vec::new();
+            // 2026-08-13 (reactor fix): defer struct-literal allocas in the loop
+            // body so they flush to the loop PREHEADER (emit_countable_main's
+            // trailing flush) — an in-loop alloca makes clang -O3 peel the loop.
+            self.fun.defer_struct_allocas = true;
+            self.emit_countable_body(out, body, write_set, &mut empty);
+            self.fun.defer_struct_allocas = false;
+            writeln!(out, "  br label %.cm_latch").ok();
+            writeln!(out, ".cm_latch:").ok();
+            // 2026-07-26: Counter increment uses the field's native type, not i64.
+            if is_decreasing {
+                writeln!(
+                    out,
+                    "  {} = sub nuw nsw {} {}, 1",
+                    next, counter_ty, counter_name
+                )
+                .ok();
+            } else {
+                writeln!(
+                    out,
+                    "  {} = add nuw nsw {} {}, 1",
+                    next, counter_ty, counter_name
+                )
+                .ok();
+            }
+
+            // 2026-07-17: Per-field scalar backedges. Modified fields use the written value;
+            // unwritten fields use identity (phi self-ref). LLVM peephole eliminates
+            // the `add i64 0, %val` copy in both cases.
+            // 2026-07-21: Skip the counter variable — its backedge is already the
+            // latch increment (next). Creating another identity would redefine next.
+            // For float fields, the backedge value is already the native float type
+            // (skip adapt_to_i64), so the identity would be a type mismatch.
+            for fname in sorted_fields
+                .iter()
+                .filter(|f| counter_var.map_or(true, |cv| f.as_str() != cv))
+            {
+                if let Some(be_f) = self.fun.backedge_field_regs.get(fname.as_str()) {
+                    let val = self
+                        .fun
+                        .pending_phi_backedge
+                        .get(fname.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            self.fun
+                                .phi_field_regs
+                                .get(fname.as_str())
+                                .cloned()
+                                .unwrap_or_else(|| "0".to_string())
+                        });
+                    // Check if this field is a float type — skip i64 identity
+                    let field_ty = self
+                        .ctx
+                        .field_index_map
+                        .get(fname.as_str())
+                        .and_then(|idx| self.ctx.field_types.get(*idx))
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    // 2026-07-26: The backedge identity must match the phi type.
+                    // Float fields use fadd, integer fields use the field's native width.
+                    if field_ty == "float" || field_ty == "double" {
+                        writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
+                    } else {
+                        writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
+                    }
+                }
+            }
+
+            let disable_fold = self.loop_has_observable(body);
+            emit_loop_metadata(
+                out,
+                "  ",
+                ".cm_header",
+                &mut self.ctx.metadata_counter,
+                &mut self.ctx.pending_metadata,
+                disable_fold,
+            );
+            writeln!(out, "{}:", exit_label).ok();
+            // 2026-07-17: Emit hoisted post-loop prints (swan song) AFTER the loop
+            // closes, so they read the final accumulator values from %State. The
+            // guard condition was removed by the frontend swan-song hoist
+            // (analysis/swan_song.rs); at this point the loop postcondition
+            // guarantees it holds.
+            // Clear the float cache to prevent reusing fpext registers from the
+            // loop body (which may be defined in non-dominating conditional blocks
+            // like periodic prints). Without this, the swan song reuses a register
+            // defined inside a conditional that never fires for small BOUND values,
+            // producing 0.0 from LLVM's undefined value handling — nbody_newton bug.
+            self.fun.reg_float_cache.clear();
+            // 2026-07-19: Clear last-value temps before hoisted post-loop prints.
+            // Without this, identifier resolution uses SSA registers from the loop
+            // body which don't dominate the exit block — SSA dominance violation.
+            // The hoisted prints must resolve via phi registers or %State loads.
+            self.fun.last_val_temps.clear();
+            self.fun.last_val_types.clear();
+            // 2026-09-07 (swan-song dominance fix): clear the loop SSA maps too.
+            // pending_phi_backedge carries body-defined registers (assigns and
+            // guard merges register their written value there), phi_field_regs
+            // carries the header phis. A body register referenced from the exit
+            // block is invalid on the zero-trip path (dominance violation —
+            // async-events/nbody_newton), and a header phi holds the pre-loop
+            // value there while the watchdog path can exit early. Post-loop field
+            // reads must be %State loads: the body stored final values via Path B
+            // (needs_state_stores_in_body is set whenever a hoist is pending, see
+            // the body prologue). Same rationale as the two clears above — the
+            // exit block is outside the loop's SSA domain.
+            self.fun.pending_phi_backedge.clear();
+            self.fun.phi_field_regs.clear();
+            let hoist = self.fun.pending_post_hoist.clone();
+            self.emit_hoisted_post_loop_prints(out, &hoist);
+            self.emit_state_store_i64_by_idx(out, "  ", counter_idx, &counter_name);
+            // 2026-08-06 (Phase 9): garbage scheduling for the PerFieldPhi
+            // countable-loop path — free the fields the scheduler PROVED this txn
+            // is the last consumer of, AFTER the loop closes (the loop-exit block,
+            // so a free never fires inside a body that iterates again). Mirrors the
+            // countdown + non-loop paths.
+            if let Some(fields) = self.ctx.global_free_after.get(txn_name).cloned() {
+                self.emit_scheduled_frees(out, &fields);
+            }
+            if is_main {
+                // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
+                // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
+                // programs have no stdout_flush and get neither call nor declare.
+                self.emit_stdout_flush_tail(out);
+                writeln!(out, "  ret i32 0").ok();
+                writeln!(out, "}}").ok();
+            } else {
+                writeln!(out, "  ret void").ok();
+                writeln!(out, "}}").ok();
+            }
+            writeln!(out).ok();
         }
         self.flush_pending_struct_allocas(out);
         out.push_str(&loop_buf);
@@ -711,17 +909,24 @@ impl LlvmBackend {
     /// handle is the field's STORED value (the ptrtoint of the allocation),
     /// loaded from %State — re-evaluating the initializer would re-malloc.
     /// Shared by the countdown, PerFieldPhi, and version-DAG fold paths.
-    pub(crate) fn emit_scheduled_frees(&mut self, out: &mut String, fields: &[String]) {        for f in fields {
-            let Some(&fidx) = self.ctx.field_index_map.get(f) else { continue; };
+    pub(crate) fn emit_scheduled_frees(&mut self, out: &mut String, fields: &[String]) {
+        for f in fields {
+            let Some(&fidx) = self.ctx.field_index_map.get(f) else {
+                continue;
+            };
             let (handle, _) = self.emit_state_load_i64_by_idx(out, "  ", fidx);
             let ptr = self.fun.gen_reg();
             writeln!(out, "  {} = inttoptr i64 {} to ptr", ptr, handle).ok();
             // 2026-09-10 (Family I): pure-Briev defn — hidden %state + i64 return.
             // Symbol branches on the defn (prelude world: rt_free; bare unit:
-                // the C-fallback name, matching emit_toplevel's conditional
-                // declare); the call shape stays the proven stateful one.
-                let fsym = if self.ctx.defn_params.contains_key("rt_free") { "rt_free" } else { "__briev_free" };
-                writeln!(out, "  call i64 @{}(ptr %state, ptr {})", fsym, ptr).ok();
+            // the C-fallback name, matching emit_toplevel's conditional
+            // declare); the call shape stays the proven stateful one.
+            let fsym = if self.ctx.defn_params.contains_key("rt_free") {
+                "rt_free"
+            } else {
+                "__briev_free"
+            };
+            writeln!(out, "  call i64 @{}(ptr %state, ptr {})", fsym, ptr).ok();
         }
     }
 
@@ -755,7 +960,14 @@ impl LlvmBackend {
         let c0 = self.fun.txn_counter;
         self.fun.txn_counter += 1;
         let bound_reg = self.fun.next_reg_with_prefix("cdb");
-        self.emit_countable_load_bound(out, &bound_reg, total_idx, total_const_name, bound_literal, c0);
+        self.emit_countable_load_bound(
+            out,
+            &bound_reg,
+            total_idx,
+            total_const_name,
+            bound_literal,
+            c0,
+        );
 
         // Pre-load initial values for the header phis.
         // 2026-07-31 (A4): aggregate (array) fields are excluded from phis —
@@ -769,19 +981,22 @@ impl LlvmBackend {
         for fname in &sorted_fields {
             if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {
                 let literal_init = if self.loop_field_is_phi(fname.as_str()) {
-                    self.ctx.field_initializers.get(fname.as_str()).and_then(|e| {
-                        let field_ty = self.ctx.field_types.get(idx).cloned()?;
-                        match e {
-                            Some(crate::ast::Expr::Float(v)) => {
-                                Some(crate::backend::llvm::float_to_llvm_str(*v, &field_ty))
+                    self.ctx
+                        .field_initializers
+                        .get(fname.as_str())
+                        .and_then(|e| {
+                            let field_ty = self.ctx.field_types.get(idx).cloned()?;
+                            match e {
+                                Some(crate::ast::Expr::Float(v)) => {
+                                    Some(crate::backend::llvm::float_to_llvm_str(*v, &field_ty))
+                                }
+                                Some(crate::ast::Expr::Decimal(n)) => Some(n.to_string()),
+                                Some(crate::ast::Expr::Bool(b)) => {
+                                    Some((if *b { "true" } else { "false" }).to_string())
+                                }
+                                _ => None,
                             }
-                            Some(crate::ast::Expr::Decimal(n)) => Some(n.to_string()),
-                            Some(crate::ast::Expr::Bool(b)) => {
-                                Some((if *b { "true" } else { "false" }).to_string())
-                            }
-                            _ => None,
-                        }
-                    })
+                        })
                 } else {
                     None
                 };
@@ -793,10 +1008,16 @@ impl LlvmBackend {
                 }
             }
         }
-        let init_name = phi_field_init.get(counter_var)
-            .cloned().unwrap_or_else(|| "0".to_string());
-        let counter_ty = self.ctx.field_types.get(counter_idx)
-            .cloned().unwrap_or_else(|| "i64".to_string());
+        let init_name = phi_field_init
+            .get(counter_var)
+            .cloned()
+            .unwrap_or_else(|| "0".to_string());
+        let counter_ty = self
+            .ctx
+            .field_types
+            .get(counter_idx)
+            .cloned()
+            .unwrap_or_else(|| "i64".to_string());
         // 2026-09-07 (init-block phi predecessor fix): the init loads above
         // emit into self.fun.cur_block — the block the loop `br` targets.
         // When a state field's `op Init` body emits blocks (HashMap.init's
@@ -805,7 +1026,10 @@ impl LlvmBackend {
         // must cite it, not `%entry`. When no block-emitting init ran,
         // cur_block is None and init_pred falls back to "entry" (identical
         // IR to today).
-        let init_pred = self.fun.cur_block.clone()
+        let init_pred = self
+            .fun
+            .cur_block
+            .clone()
             .unwrap_or_else(|| "entry".to_string());
 
         // 2026-10-21 (effect-state-carry experiment): carry the plain effect
@@ -839,8 +1063,16 @@ impl LlvmBackend {
         let wd_start = if let Some(wd) = watchdog {
             if wd.deadline_ns.is_some() {
                 let s = self.fun.gen_reg();
-                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-                let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
+                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+                    "rt_now_ns"
+                } else {
+                    "__briev_now"
+                };
+                let nst = if self.ctx.defn_takes_state(nsym) {
+                    "%state"
+                } else {
+                    ""
+                };
                 writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
                 Some(s)
             } else {
@@ -858,378 +1090,509 @@ impl LlvmBackend {
         let mut cd_buf = String::new();
         let real_out = out;
         {
-        let out = &mut cd_buf;
-        self.fun.defer_struct_allocas = true;
-        writeln!(out, "  br label %.cd_{}", c0).ok();
+            let out = &mut cd_buf;
+            self.fun.defer_struct_allocas = true;
+            writeln!(out, "  br label %.cd_{}", c0).ok();
 
-        // ── Header ──────────────────────────────────────────────
-        writeln!(out, ".cd_{}:", c0).ok();
-        let c_counter = self.fun.next_reg_with_prefix("cdc");
-        let c_next = self.fun.next_reg_with_prefix("cdn");
-        let c_rem = self.fun.next_reg_with_prefix("cdr");
-        let c_rem_latch = self.fun.next_reg_with_prefix("cdl");
-        // 2026-09-07 (init-block phi predecessor fix): cite init_pred (the
-        // block the init loads + `br` emit into) instead of hardcoded %entry.
-        // init_pred == "entry" when no block-emitting init ran (byte-identical
-        // IR); it is the match's .match_end_N when HashMap.init's match ran.
-        writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
-            c_counter, counter_ty, init_name, init_pred, c_next, c0).ok();
-        writeln!(out, "  {} = phi i64 [ {}, %{} ], [ {}, %.cdl_{} ]",
-            c_rem, batch_size, init_pred, c_rem_latch, c0).ok();
+            // ── Header ──────────────────────────────────────────────
+            writeln!(out, ".cd_{}:", c0).ok();
+            let c_counter = self.fun.next_reg_with_prefix("cdc");
+            let c_next = self.fun.next_reg_with_prefix("cdn");
+            let c_rem = self.fun.next_reg_with_prefix("cdr");
+            let c_rem_latch = self.fun.next_reg_with_prefix("cdl");
+            // 2026-09-07 (init-block phi predecessor fix): cite init_pred (the
+            // block the init loads + `br` emit into) instead of hardcoded %entry.
+            // init_pred == "entry" when no block-emitting init ran (byte-identical
+            // IR); it is the match's .match_end_N when HashMap.init's match ran.
+            writeln!(
+                out,
+                "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
+                c_counter, counter_ty, init_name, init_pred, c_next, c0
+            )
+            .ok();
+            writeln!(
+                out,
+                "  {} = phi i64 [ {}, %{} ], [ {}, %.cdl_{} ]",
+                c_rem, batch_size, init_pred, c_rem_latch, c0
+            )
+            .ok();
 
-        self.fun.phi_field_regs.clear();
-        self.fun.backedge_field_regs.clear();
-        self.fun.phi_field_regs.insert(counter_var.to_string(), c_counter.clone());
-        self.fun.backedge_field_regs.insert(counter_var.to_string(), c_next.clone());
-        for fname in &sorted_fields {
-            if fname.as_str() == counter_var {
-                continue;
+            self.fun.phi_field_regs.clear();
+            self.fun.backedge_field_regs.clear();
+            self.fun
+                .phi_field_regs
+                .insert(counter_var.to_string(), c_counter.clone());
+            self.fun
+                .backedge_field_regs
+                .insert(counter_var.to_string(), c_next.clone());
+            for fname in &sorted_fields {
+                if fname.as_str() == counter_var {
+                    continue;
+                }
+                let f_reg = self.fun.next_reg_with_prefix("cdf");
+                let f_be = self.fun.next_reg_with_prefix("cbe");
+                let init_f = phi_field_init
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string());
+                let phi_ty = self
+                    .ctx
+                    .field_index_map
+                    .get(fname.as_str())
+                    .and_then(|idx| self.ctx.field_types.get(*idx))
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
+                writeln!(
+                    out,
+                    "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
+                    f_reg, phi_ty, init_f, init_pred, f_be, c0
+                )
+                .ok();
+                self.fun.phi_field_regs.insert((*fname).clone(), f_reg);
+                self.fun.backedge_field_regs.insert((*fname).clone(), f_be);
             }
-            let f_reg = self.fun.next_reg_with_prefix("cdf");
-            let f_be = self.fun.next_reg_with_prefix("cbe");
-            let init_f = phi_field_init.get(fname.as_str())
-                .cloned().unwrap_or_else(|| "0".to_string());
-            let phi_ty = self.ctx.field_index_map.get(fname.as_str())
-                .and_then(|idx| self.ctx.field_types.get(*idx))
-                .cloned().unwrap_or_else(|| "i64".to_string());
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
-                f_reg, phi_ty, init_f, init_pred, f_be, c0).ok();
-            self.fun.phi_field_regs.insert((*fname).clone(), f_reg);
-            self.fun.backedge_field_regs.insert((*fname).clone(), f_be);
-        }
 
-        // Effect-state-carry header phis (one per carried plain field). The
-        // backedge names are filled by the latch below.
-        let mut plain_header: HashMap<String, String> = HashMap::new();
-        let mut plain_backedge: HashMap<String, String> = HashMap::new();
-        for (name, ty, init) in &plain_carry {
-            let phi = self.fun.next_reg_with_prefix("pef");
-            let be = self.fun.next_reg_with_prefix("peb");
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
-                phi, ty, init, init_pred, be, c0).ok();
-            plain_header.insert(name.clone(), phi);
-            plain_backedge.insert(name.clone(), be);
-        }
-
-        // Exit check — continue while count < bound.
-        let cmp_counter = if counter_ty != "i64" {
-            let w = self.fun.next_reg_with_prefix("cdw");
-            writeln!(out, "  {} = sext {} {} to i64", w, counter_ty, c_counter).ok();
-            w
-        } else {
-            c_counter.clone()
-        };
-        let done_reg = self.fun.next_reg_with_prefix("cdd");
-        writeln!(out, "  {} = icmp slt i64 {}, {}", done_reg, cmp_counter, bound_reg).ok();
-        // 2026-08-01 (C2/C3): liveliness watchdog — the loop continues while
-        // `?[condition]` holds; when it stops, fire the on-fire handler with
-        // the last computed value and exit. The check sits between the header
-        // and the body (per-iteration), branching to a cold `.wdf_` fire block.
-        if let Some(wd) = watchdog {
-            writeln!(out, "  br i1 {}, label %.cdw_{}, label %.cde_{}", done_reg, c0, c0).ok();
-            writeln!(out, ".cdw_{}:", c0).ok();
-            self.fun.cur_block = Some(format!(".cdw_{}", c0));
-            let cond_reg = self.emit_expr(out, &wd.condition, "  ");
-            let bool_reg = self.as_bool_reg(out, "  ", &cond_reg);
-            // 2026-08-01 (D2): the `within N` deadline. The loop CONTINUES
-            // while the liveliness condition holds AND no deadline has expired;
-            // it FIRES when the condition stops holding OR a deadline expires:
-            //   continue = cond AND counter < N  (cycles_bound)
-            //             AND Now#() - start < N  (seconds_bound)
-            //   cycles_bound: the loop counter reaching N.
-            //   seconds_bound: Now#() - start >= N seconds (N * 1e9 ns).
-            let mut continue_cond = bool_reg;
-            if let Some(cyc) = wd.cycles_bound {
-                // !(counter >= N) = counter < N.
-                let exp = self.fun.gen_reg();
-                writeln!(out, "  {} = icmp slt i64 {}, {}", exp, c_counter, cyc as i64).ok();
-                let andr = self.fun.gen_reg();
-                writeln!(out, "  {} = and i1 {}, {}", andr, continue_cond, exp).ok();
-                continue_cond = andr;
+            // Effect-state-carry header phis (one per carried plain field). The
+            // backedge names are filled by the latch below.
+            let mut plain_header: HashMap<String, String> = HashMap::new();
+            let mut plain_backedge: HashMap<String, String> = HashMap::new();
+            for (name, ty, init) in &plain_carry {
+                let phi = self.fun.next_reg_with_prefix("pef");
+                let be = self.fun.next_reg_with_prefix("peb");
+                writeln!(
+                    out,
+                    "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
+                    phi, ty, init, init_pred, be, c0
+                )
+                .ok();
+                plain_header.insert(name.clone(), phi);
+                plain_backedge.insert(name.clone(), be);
             }
-            if let Some(secs) = wd.deadline_ns {
-                if let Some(start) = &wd_start {
-                    let now = self.fun.gen_reg();
-                    let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
-                    let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
-                    writeln!(out, "  {} = call i64 @{}({})", now, nsym, nst).ok();
-                    let el = self.fun.gen_reg();
-                    writeln!(out, "  {} = sub i64 {}, {}", el, now, start).ok();
-                    let db = self.fun.gen_reg();
-                    writeln!(out, "  {} = add i64 0, {}", db, secs as i64).ok();
+
+            // Exit check — continue while count < bound.
+            let cmp_counter = if counter_ty != "i64" {
+                let w = self.fun.next_reg_with_prefix("cdw");
+                writeln!(out, "  {} = sext {} {} to i64", w, counter_ty, c_counter).ok();
+                w
+            } else {
+                c_counter.clone()
+            };
+            let done_reg = self.fun.next_reg_with_prefix("cdd");
+            writeln!(
+                out,
+                "  {} = icmp slt i64 {}, {}",
+                done_reg, cmp_counter, bound_reg
+            )
+            .ok();
+            // 2026-08-01 (C2/C3): liveliness watchdog — the loop continues while
+            // `?[condition]` holds; when it stops, fire the on-fire handler with
+            // the last computed value and exit. The check sits between the header
+            // and the body (per-iteration), branching to a cold `.wdf_` fire block.
+            if let Some(wd) = watchdog {
+                writeln!(
+                    out,
+                    "  br i1 {}, label %.cdw_{}, label %.cde_{}",
+                    done_reg, c0, c0
+                )
+                .ok();
+                writeln!(out, ".cdw_{}:", c0).ok();
+                self.fun.cur_block = Some(format!(".cdw_{}", c0));
+                let cond_reg = self.emit_expr(out, &wd.condition, "  ");
+                let bool_reg = self.as_bool_reg(out, "  ", &cond_reg);
+                // 2026-08-01 (D2): the `within N` deadline. The loop CONTINUES
+                // while the liveliness condition holds AND no deadline has expired;
+                // it FIRES when the condition stops holding OR a deadline expires:
+                //   continue = cond AND counter < N  (cycles_bound)
+                //             AND Now#() - start < N  (seconds_bound)
+                //   cycles_bound: the loop counter reaching N.
+                //   seconds_bound: Now#() - start >= N seconds (N * 1e9 ns).
+                let mut continue_cond = bool_reg;
+                if let Some(cyc) = wd.cycles_bound {
+                    // !(counter >= N) = counter < N.
                     let exp = self.fun.gen_reg();
-                    writeln!(out, "  {} = icmp slt i64 {}, {}", exp, el, db).ok();
+                    writeln!(
+                        out,
+                        "  {} = icmp slt i64 {}, {}",
+                        exp, c_counter, cyc as i64
+                    )
+                    .ok();
                     let andr = self.fun.gen_reg();
                     writeln!(out, "  {} = and i1 {}, {}", andr, continue_cond, exp).ok();
                     continue_cond = andr;
                 }
-            }
-            writeln!(out, "  br i1 {}, label %.cdb_{}, label %.wdf_{}", continue_cond, c0, c0).ok();
-            // ── Watchdog fired (COLD) ──────────────────────────
-            writeln!(out, ".wdf_{}:", c0).ok();
-            self.fun.cur_block = Some(format!(".wdf_{}", c0));
-            if let Some(on_fire) = &wd.on_fire {
-                let call_reg = self.fun.gen_reg();
-                let args: Vec<crate::ast::Expr> = match &on_fire.arg {
-                    Some(name) => vec![crate::ast::Expr::Identifier(name.clone())],
-                    None => Vec::new(),
-                };
-                self.emit_user_call(out, &call_reg, &on_fire.handler, &args, "  ");
-            } else if wd.is_required {
-                // Required watchdog with no handler: error exit (the Briev
+                if let Some(secs) = wd.deadline_ns {
+                    if let Some(start) = &wd_start {
+                        let now = self.fun.gen_reg();
+                        let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") {
+                            "rt_now_ns"
+                        } else {
+                            "__briev_now"
+                        };
+                        let nst = if self.ctx.defn_takes_state(nsym) {
+                            "%state"
+                        } else {
+                            ""
+                        };
+                        writeln!(out, "  {} = call i64 @{}({})", now, nsym, nst).ok();
+                        let el = self.fun.gen_reg();
+                        writeln!(out, "  {} = sub i64 {}, {}", el, now, start).ok();
+                        let db = self.fun.gen_reg();
+                        writeln!(out, "  {} = add i64 0, {}", db, secs as i64).ok();
+                        let exp = self.fun.gen_reg();
+                        writeln!(out, "  {} = icmp slt i64 {}, {}", exp, el, db).ok();
+                        let andr = self.fun.gen_reg();
+                        writeln!(out, "  {} = and i1 {}, {}", andr, continue_cond, exp).ok();
+                        continue_cond = andr;
+                    }
+                }
+                writeln!(
+                    out,
+                    "  br i1 {}, label %.cdb_{}, label %.wdf_{}",
+                    continue_cond, c0, c0
+                )
+                .ok();
+                // ── Watchdog fired (COLD) ──────────────────────────
+                writeln!(out, ".wdf_{}:", c0).ok();
+                self.fun.cur_block = Some(format!(".wdf_{}", c0));
+                if let Some(on_fire) = &wd.on_fire {
+                    let call_reg = self.fun.gen_reg();
+                    let args: Vec<crate::ast::Expr> = match &on_fire.arg {
+                        Some(name) => vec![crate::ast::Expr::Identifier(name.clone())],
+                        None => Vec::new(),
+                    };
+                    self.emit_user_call(out, &call_reg, &on_fire.handler, &args, "  ");
+                } else if wd.is_required {
+                    // Required watchdog with no handler: error exit (the Briev
                     // watchdog_fail defn — i64, stateful; core-usable purge fixed
                     // the old void @__watchdog_fail shape here).
-                writeln!(out, "  call i64 @watchdog_fail(ptr %state)").ok();
-            }
-            writeln!(out, "  br label %.cde_{}", c0).ok();
-        } else {
-            writeln!(out, "  br i1 {}, label %.cdb_{}, label %.cde_{}", done_reg, c0, c0).ok();
-        }
-
-        // ── Body (ONE block) ────────────────────────────────────
-        writeln!(out, ".cdb_{}:", c0).ok();
-        self.fun.cur_block = Some(format!(".cdb_{}", c0));
-        self.fun.pending_phi_backedge.clear();
-        for fname in &sorted_fields {
-            let init_val = self.fun.phi_field_regs.get(fname.as_str())
-                .cloned().unwrap_or_else(|| "0".to_string());
-            self.fun.pending_phi_backedge.insert((*fname).clone(), init_val.clone());
-        }
-        // 2026-11-03 (arena scope reset): the previous iteration's arena
-        // allocations are proven dead at this boundary, so rewind the bump to
-        // base — sound reuse, bounded memory, no per-allocation growth.
-        if self.arena_ptr_idx.is_some()
-            && self.arena_scope_reset_safe(&batch.inner_body, &batch.guard_body)
-        {
-            self.emit_arena_reset(out, "  ");
-        }
-        let mut empty = Vec::new();
-        self.emit_countable_body(out, &batch.inner_body, write_set, &mut empty);
-        // Countdown: remaining-- (loop-carried, independent of the counter).
-        // 2026-08-01 (B): the rem/fire instructions land in the inner body's
-        // FINAL block (cur_block) — an if-ended body leaves the emitter in the
-        // if's merge block, so `.cdb_`'s terminator is the if's br. The latch
-        // phis below use that block as the `.cdb_` predecessor.
-        let body_final = self.fun.cur_block.clone()
-            .unwrap_or_else(|| format!(".cdb_{}", c0));
-        let c_rem_next = self.fun.next_reg_with_prefix("cdm");
-        writeln!(out, "  {} = sub i64 {}, 1", c_rem_next, c_rem).ok();
-        let fire = self.fun.next_reg_with_prefix("cdf");
-        writeln!(out, "  {} = icmp eq i64 {}, 0", fire, c_rem_next).ok();
-        writeln!(out, "  br i1 {}, label %.cdg_{}, label %.cdl_{}", fire, c0, c0).ok();
-
-        // Fields the guard WRITES (e.g. accumulator_flush's `sum = 0` reset)
-        // need a latch phi merging the body's value (.cdb) with the guard's
-        // (.cdg) — the guard's write register does not dominate the latch.
-        // Print-only guards have an empty set and take the plain backedge path.
-        let mut guard_writes: HashSet<String> = HashSet::new();
-        for stmt in &batch.guard_body {
-            if let Statement::Assign(lhs, _) = stmt {
-                if let Some(field_name) = lhs.as_var_name() {
-                    if self.ctx.field_index_map.contains_key(field_name) {
-                        guard_writes.insert(field_name.to_string());
-                    }
+                    writeln!(out, "  call i64 @watchdog_fail(ptr %state)").ok();
                 }
+                writeln!(out, "  br label %.cde_{}", c0).ok();
+            } else {
+                writeln!(
+                    out,
+                    "  br i1 {}, label %.cdb_{}, label %.cde_{}",
+                    done_reg, c0, c0
+                )
+                .ok();
             }
-        }
-        // Save the body's per-field values BEFORE the guard overwrites them, so
-        // the latch's .cdb phi entry sees the body's compute.
-        let body_backedges = self.fun.pending_phi_backedge.clone();
 
-        // ── Guard (COLD — 1 in N iterations) ────────────────────
-        // The io guard fires here (remaining == 0 is known true), so only the
-        // guard BODY is emitted — no conditional branch structure, keeping
-        // .cdl's predecessors exactly {.cdb, .cdg}. The body reads the header
-        // phis (post-compute state); let-bindings referenced by the guard are
-        // remapped to their stored state fields.
-        writeln!(out, ".cdg_{}:", c0).ok();
-        self.fun.cur_block = Some(format!(".cdg_{}", c0));
-        let mut let_to_field: HashMap<String, String> = HashMap::new();
-        for stmt in &batch.inner_body {
-            if let Statement::Assign(lhs, Expr::Identifier(let_name)) = stmt {
-                if let Some(field_name) = lhs.as_var_name() {
-                    // 2026-08-01 (A9b): a field-to-field assignment (`queue = count`,
-                    // the `<-` push's lowered AST) is NOT a let-alias — `count` is a
-                    // field, so the guard must keep reading the count field, not the
-                    // queue. Only a genuine non-field local (`field = local`, the
-                    // `sum = acc` hoist pattern) creates an alias.
-                    if self.ctx.field_index_map.contains_key(field_name)
-                        && !self.ctx.field_index_map.contains_key(let_name)
-                    {
-                        let_to_field.insert(let_name.clone(), field_name.to_string());
-                    }
-                }
+            // ── Body (ONE block) ────────────────────────────────────
+            writeln!(out, ".cdb_{}:", c0).ok();
+            self.fun.cur_block = Some(format!(".cdb_{}", c0));
+            self.fun.pending_phi_backedge.clear();
+            for fname in &sorted_fields {
+                let init_val = self
+                    .fun
+                    .phi_field_regs
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string());
+                self.fun
+                    .pending_phi_backedge
+                    .insert((*fname).clone(), init_val.clone());
             }
-        }
-        let mut guard_body = batch.guard_body.clone();
-        for s in &mut guard_body {
-            crate::analysis::swan_song::remap_stmt_identifiers(s, &let_to_field);
-        }
-
-        // 2026-07-31: Do NOT clear last_val_temps here. The guard fires mid-loop
-        // (before the latch), so the header phis still hold the PRE-body values;
-        // the current iteration's computed state lives in last_val_temps (the
-        // body's assigns, defined in .cdb which dominates .cdg). Clearing it
-        // would make the guard print the previous iteration's state — the
-        // 5M+1-compute bug (kalman printed 8.188e12 instead of 8.139e12).
-        // 2026-08-01 (B): the rem reset is emitted BEFORE the guard body so it
-        // is defined in .cdg_ and dominates the guard's control flow. A guard
-        // body that ends in a `when` leaves the emitter in the when's
-        // next_label; the latch br below lands there, and the latch phis use
-        // cur_block (the final block) as the guard predecessor — hardcoding
-        // .cdg_ broke the phi's predecessor set for when-ended guards.
-        let rem_reset = self.fun.next_reg_with_prefix("cdz");
-        writeln!(out, "  {} = add i64 0, {}", rem_reset, batch_size).ok();
-        let mut empty2 = Vec::new();
-        self.emit_countable_body(out, &guard_body, write_set, &mut empty2);
-        // Reload the plain effect fields after the guard/print so the latch can
-        // carry the updated stdout state into the next iteration.
-        let mut plain_guard_next: HashMap<String, String> = HashMap::new();
-        for (name, ty, _) in &plain_carry {
-            let next = self.fun.gen_reg();
-            writeln!(out, "  {} = load {}, ptr @{}, align 8", next, ty, name).ok();
-            plain_guard_next.insert(name.clone(), next);
-        }
-        writeln!(out, "  br label %.cdl_{}", c0).ok();
-
-        // ── Latch ──────────────────────────────────────────────
-        // %rem_latch = phi [remaining-1, body], [N, guard]. All phis (rem +
-        // guard-written fields) are grouped at the TOP of the block per LLVM
-        // rules; non-phi backedges follow. The guard predecessor is the
-        // guard's FINAL block (cur_block) — a when-ended guard branches to
-        // .cdl_ from its next_label, not from .cdg_ itself.
-        let guard_pred = self.fun.cur_block.clone()
-            .unwrap_or_else(|| format!(".cdg_{}", c0));
-        writeln!(out, ".cdl_{}:", c0).ok();
-        writeln!(out, "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]",
-            c_rem_latch, c_rem_next, body_final, rem_reset, guard_pred).ok();
-        for fname in sorted_fields.iter().filter(|f| {
-            f.as_str() != counter_var && guard_writes.contains(f.as_str())
-        }) {
-            if let Some(be_f) = self.fun.backedge_field_regs.get(fname.as_str()) {
-                let field_ty = self.ctx.field_index_map.get(fname.as_str())
-                    .and_then(|idx| self.ctx.field_types.get(*idx))
-                    .cloned().unwrap_or_else(|| "i64".to_string());
-                let body_val = body_backedges.get(fname.as_str())
-                    .cloned().unwrap_or_else(|| {
-                        self.fun.phi_field_regs.get(fname.as_str())
-                            .cloned().unwrap_or_else(|| "0".to_string())
-                    });
-                let guard_val = self.fun.pending_phi_backedge.get(fname.as_str())
-                    .cloned().unwrap_or_else(|| body_val.clone());
-                writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
-                    be_f, field_ty, body_val, body_final, guard_val, guard_pred).ok();
-            }
-        }
-        // Effect-state-carry latch phis: non-firing body keeps the header
-        // value; the guard path carries the post-print reload. The identity
-        // store keeps the value live into the next loop iteration.
-        for (name, ty, _) in &plain_carry {
-            let body_val = plain_header.get(name)
-                .cloned().unwrap_or_else(|| "0".to_string());
-            let guard_val = plain_guard_next.get(name)
-                .cloned().unwrap_or_else(|| body_val.clone());
-            let be = plain_backedge.get(name)
-                .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("peb"));
-            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
-                be, ty, body_val, body_final, guard_val, guard_pred).ok();
-        }
-        if carry_store_mode != "exit" {
-            for (name, ty, _) in &plain_carry {
-                if let Some(be) = plain_backedge.get(name) {
-                    writeln!(out, "  store {} {}, ptr @{}, align 8", ty, be, name).ok();
-                }
-            }
-        }
-        // Counter increment (native width) — the counter's backedge.
-        writeln!(out, "  {} = add nuw nsw {} {}, 1", c_next, counter_ty, c_counter).ok();
-        self.fun.pending_phi_backedge.insert(counter_var.to_string(), c_next.clone());
-        // Non-guard-written field backedges (skip the counter — its backedge is
-        // c_next above).
-        for fname in sorted_fields.iter().filter(|f| {
-            f.as_str() != counter_var && !guard_writes.contains(f.as_str())
-        }) {
-            if let Some(be_f) = self.fun.backedge_field_regs.get(fname.as_str()) {
-                let val = self.fun.pending_phi_backedge.get(fname.as_str())
-                    .cloned().unwrap_or_else(|| {
-                        self.fun.phi_field_regs.get(fname.as_str())
-                            .cloned().unwrap_or_else(|| "0".to_string())
-                    });
-                let field_ty = self.ctx.field_index_map.get(fname.as_str())
-                    .and_then(|idx| self.ctx.field_types.get(*idx))
-                    .cloned().unwrap_or_else(|| "i64".to_string());
-                // 2026-08-16 (sweep parity): `fast` on the backedge copy is
-                // REQUIRED — a bare `0.0 + x` cannot fold to `x` under strict
-                // IEEE (the `-0.0`/signaling-NaN edge), so LLVM kept it as a
-                // real floating add on the loop-carried critical path. In the
-                // vectorized countdown this surfaced as a live `vaddps <reg>,
-                // <zero>` per iteration (the sweep-family loss: sparse 1.37x,
-                // mid 1.08x, dense 1.48x). With `fast`, instcombine folds it to
-                // the value. The copy's semantic is a value rename (the field's
-                // new value), so folding is exact — see
-                // docs/plans/2026-08-16-sweep-family-investigation.md §5 P4.
-                // Undo: drop the `fast` at all 6 `fadd ... 0.0` copy sites.
-                if field_ty == "float" || field_ty == "double" {
-                    writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
-                } else {
-                    writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
-                }
-            }
-        }
-        writeln!(out, "  br label %.cd_{}", c0).ok();
-
-        // ── Done / Exit ─────────────────────────────────────────
-        writeln!(out, ".cde_{}:", c0).ok();
-        self.fun.reg_float_cache.clear();
-        self.fun.last_val_temps.clear();
-        self.fun.last_val_types.clear();
-        // Store final phi values so a post-loop hoist can read them from
-        // %State. 2026-10-20 (Local class): loop-local fields are unobservable
-        // after the loop — leaving them register/SSA lets LLVM collapse
-        // independent updates (the C shape) instead of treating every field
-        // as an individually live state value.
-        for fname in &sorted_fields {
-            if self.loop_field_is_phi(fname.as_str())
-                && self.fun.pending_post_hoist.is_empty()
+            // 2026-11-03 (arena scope reset): the previous iteration's arena
+            // allocations are proven dead at this boundary, so rewind the bump to
+            // base — sound reuse, bounded memory, no per-allocation growth.
+            if self.arena_ptr_idx.is_some()
+                && self.arena_scope_reset_safe(&batch.inner_body, &batch.guard_body)
             {
-                continue;
+                self.emit_arena_reset(out, "  ");
             }
-            let val = self.fun.phi_field_regs.get(fname.as_str())
-                .cloned().unwrap_or_else(|| "0".to_string());
-            if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {
-                self.emit_state_store_i64_by_idx(out, "  ", idx, &val);
-            }
-        }
-        let pending: Vec<Vec<Statement>> = self.fun.pending_post_hoist.clone();
-        if !pending.is_empty() {
-            for group in &pending {
-                let mut empty3 = Vec::new();
-                self.emit_countable_body(out, group, &HashSet::new(), &mut empty3);
-            }
-        }
-        // 2026-08-01 (D2): garbage scheduling — emit the `Free#` for each
-        // heap-backed state field whose reactor-ordered last consumer is this
-        // countdown transaction. The free fires exactly once, after the whole
-        // loop completes (a per-iteration free would be a use-after-free). The
-        // handle is the field's STORED value (the ptrtoint of the allocation),
-        // loaded from %State — re-evaluating the initializer would re-malloc.
-        // Routed through rt_free so the benchmark can assert frees ==
-        // allocs (no leak).
-        self.emit_scheduled_frees(out, free_after);
-        if carry_store_mode == "exit" {
-            for (name, ty, _) in &plain_carry {
-                if let Some(val) = plain_header.get(name) {
-                    writeln!(out, "  store {} {}, ptr @{}, align 8", ty, val, name).ok();
+            let mut empty = Vec::new();
+            self.emit_countable_body(out, &batch.inner_body, write_set, &mut empty);
+            // Countdown: remaining-- (loop-carried, independent of the counter).
+            // 2026-08-01 (B): the rem/fire instructions land in the inner body's
+            // FINAL block (cur_block) — an if-ended body leaves the emitter in the
+            // if's merge block, so `.cdb_`'s terminator is the if's br. The latch
+            // phis below use that block as the `.cdb_` predecessor.
+            let body_final = self
+                .fun
+                .cur_block
+                .clone()
+                .unwrap_or_else(|| format!(".cdb_{}", c0));
+            let c_rem_next = self.fun.next_reg_with_prefix("cdm");
+            writeln!(out, "  {} = sub i64 {}, 1", c_rem_next, c_rem).ok();
+            let fire = self.fun.next_reg_with_prefix("cdf");
+            writeln!(out, "  {} = icmp eq i64 {}, 0", fire, c_rem_next).ok();
+            writeln!(
+                out,
+                "  br i1 {}, label %.cdg_{}, label %.cdl_{}",
+                fire, c0, c0
+            )
+            .ok();
+
+            // Fields the guard WRITES (e.g. accumulator_flush's `sum = 0` reset)
+            // need a latch phi merging the body's value (.cdb) with the guard's
+            // (.cdg) — the guard's write register does not dominate the latch.
+            // Print-only guards have an empty set and take the plain backedge path.
+            let mut guard_writes: HashSet<String> = HashSet::new();
+            for stmt in &batch.guard_body {
+                if let Statement::Assign(lhs, _) = stmt {
+                    if let Some(field_name) = lhs.as_var_name() {
+                        if self.ctx.field_index_map.contains_key(field_name) {
+                            guard_writes.insert(field_name.to_string());
+                        }
+                    }
                 }
             }
-        }
-        // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
-        // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
-        // programs have no stdout_flush and get neither call nor declare.
-        self.emit_stdout_flush_tail(out);
-        writeln!(out, "  ret i32 0").ok();
-        writeln!(out, "}}").ok();
-        writeln!(out).ok();
+            // Save the body's per-field values BEFORE the guard overwrites them, so
+            // the latch's .cdb phi entry sees the body's compute.
+            let body_backedges = self.fun.pending_phi_backedge.clone();
+
+            // ── Guard (COLD — 1 in N iterations) ────────────────────
+            // The io guard fires here (remaining == 0 is known true), so only the
+            // guard BODY is emitted — no conditional branch structure, keeping
+            // .cdl's predecessors exactly {.cdb, .cdg}. The body reads the header
+            // phis (post-compute state); let-bindings referenced by the guard are
+            // remapped to their stored state fields.
+            writeln!(out, ".cdg_{}:", c0).ok();
+            self.fun.cur_block = Some(format!(".cdg_{}", c0));
+            let mut let_to_field: HashMap<String, String> = HashMap::new();
+            for stmt in &batch.inner_body {
+                if let Statement::Assign(lhs, Expr::Identifier(let_name)) = stmt {
+                    if let Some(field_name) = lhs.as_var_name() {
+                        // 2026-08-01 (A9b): a field-to-field assignment (`queue = count`,
+                        // the `<-` push's lowered AST) is NOT a let-alias — `count` is a
+                        // field, so the guard must keep reading the count field, not the
+                        // queue. Only a genuine non-field local (`field = local`, the
+                        // `sum = acc` hoist pattern) creates an alias.
+                        if self.ctx.field_index_map.contains_key(field_name)
+                            && !self.ctx.field_index_map.contains_key(let_name)
+                        {
+                            let_to_field.insert(let_name.clone(), field_name.to_string());
+                        }
+                    }
+                }
+            }
+            let mut guard_body = batch.guard_body.clone();
+            for s in &mut guard_body {
+                crate::analysis::swan_song::remap_stmt_identifiers(s, &let_to_field);
+            }
+
+            // 2026-07-31: Do NOT clear last_val_temps here. The guard fires mid-loop
+            // (before the latch), so the header phis still hold the PRE-body values;
+            // the current iteration's computed state lives in last_val_temps (the
+            // body's assigns, defined in .cdb which dominates .cdg). Clearing it
+            // would make the guard print the previous iteration's state — the
+            // 5M+1-compute bug (kalman printed 8.188e12 instead of 8.139e12).
+            // 2026-08-01 (B): the rem reset is emitted BEFORE the guard body so it
+            // is defined in .cdg_ and dominates the guard's control flow. A guard
+            // body that ends in a `when` leaves the emitter in the when's
+            // next_label; the latch br below lands there, and the latch phis use
+            // cur_block (the final block) as the guard predecessor — hardcoding
+            // .cdg_ broke the phi's predecessor set for when-ended guards.
+            let rem_reset = self.fun.next_reg_with_prefix("cdz");
+            writeln!(out, "  {} = add i64 0, {}", rem_reset, batch_size).ok();
+            let mut empty2 = Vec::new();
+            self.emit_countable_body(out, &guard_body, write_set, &mut empty2);
+            // Reload the plain effect fields after the guard/print so the latch can
+            // carry the updated stdout state into the next iteration.
+            let mut plain_guard_next: HashMap<String, String> = HashMap::new();
+            for (name, ty, _) in &plain_carry {
+                let next = self.fun.gen_reg();
+                writeln!(out, "  {} = load {}, ptr @{}, align 8", next, ty, name).ok();
+                plain_guard_next.insert(name.clone(), next);
+            }
+            writeln!(out, "  br label %.cdl_{}", c0).ok();
+
+            // ── Latch ──────────────────────────────────────────────
+            // %rem_latch = phi [remaining-1, body], [N, guard]. All phis (rem +
+            // guard-written fields) are grouped at the TOP of the block per LLVM
+            // rules; non-phi backedges follow. The guard predecessor is the
+            // guard's FINAL block (cur_block) — a when-ended guard branches to
+            // .cdl_ from its next_label, not from .cdg_ itself.
+            let guard_pred = self
+                .fun
+                .cur_block
+                .clone()
+                .unwrap_or_else(|| format!(".cdg_{}", c0));
+            writeln!(out, ".cdl_{}:", c0).ok();
+            writeln!(
+                out,
+                "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]",
+                c_rem_latch, c_rem_next, body_final, rem_reset, guard_pred
+            )
+            .ok();
+            for fname in sorted_fields
+                .iter()
+                .filter(|f| f.as_str() != counter_var && guard_writes.contains(f.as_str()))
+            {
+                if let Some(be_f) = self.fun.backedge_field_regs.get(fname.as_str()) {
+                    let field_ty = self
+                        .ctx
+                        .field_index_map
+                        .get(fname.as_str())
+                        .and_then(|idx| self.ctx.field_types.get(*idx))
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    let body_val =
+                        body_backedges
+                            .get(fname.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.fun
+                                    .phi_field_regs
+                                    .get(fname.as_str())
+                                    .cloned()
+                                    .unwrap_or_else(|| "0".to_string())
+                            });
+                    let guard_val = self
+                        .fun
+                        .pending_phi_backedge
+                        .get(fname.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| body_val.clone());
+                    writeln!(
+                        out,
+                        "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
+                        be_f, field_ty, body_val, body_final, guard_val, guard_pred
+                    )
+                    .ok();
+                }
+            }
+            // Effect-state-carry latch phis: non-firing body keeps the header
+            // value; the guard path carries the post-print reload. The identity
+            // store keeps the value live into the next loop iteration.
+            for (name, ty, _) in &plain_carry {
+                let body_val = plain_header
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string());
+                let guard_val = plain_guard_next
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| body_val.clone());
+                let be = plain_backedge
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| self.fun.next_reg_with_prefix("peb"));
+                writeln!(
+                    out,
+                    "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
+                    be, ty, body_val, body_final, guard_val, guard_pred
+                )
+                .ok();
+            }
+            if carry_store_mode != "exit" {
+                for (name, ty, _) in &plain_carry {
+                    if let Some(be) = plain_backedge.get(name) {
+                        writeln!(out, "  store {} {}, ptr @{}, align 8", ty, be, name).ok();
+                    }
+                }
+            }
+            // Counter increment (native width) — the counter's backedge.
+            writeln!(
+                out,
+                "  {} = add nuw nsw {} {}, 1",
+                c_next, counter_ty, c_counter
+            )
+            .ok();
+            self.fun
+                .pending_phi_backedge
+                .insert(counter_var.to_string(), c_next.clone());
+            // Non-guard-written field backedges (skip the counter — its backedge is
+            // c_next above).
+            for fname in sorted_fields
+                .iter()
+                .filter(|f| f.as_str() != counter_var && !guard_writes.contains(f.as_str()))
+            {
+                if let Some(be_f) = self.fun.backedge_field_regs.get(fname.as_str()) {
+                    let val = self
+                        .fun
+                        .pending_phi_backedge
+                        .get(fname.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            self.fun
+                                .phi_field_regs
+                                .get(fname.as_str())
+                                .cloned()
+                                .unwrap_or_else(|| "0".to_string())
+                        });
+                    let field_ty = self
+                        .ctx
+                        .field_index_map
+                        .get(fname.as_str())
+                        .and_then(|idx| self.ctx.field_types.get(*idx))
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    // 2026-08-16 (sweep parity): `fast` on the backedge copy is
+                    // REQUIRED — a bare `0.0 + x` cannot fold to `x` under strict
+                    // IEEE (the `-0.0`/signaling-NaN edge), so LLVM kept it as a
+                    // real floating add on the loop-carried critical path. In the
+                    // vectorized countdown this surfaced as a live `vaddps <reg>,
+                    // <zero>` per iteration (the sweep-family loss: sparse 1.37x,
+                    // mid 1.08x, dense 1.48x). With `fast`, instcombine folds it to
+                    // the value. The copy's semantic is a value rename (the field's
+                    // new value), so folding is exact — see
+                    // docs/plans/2026-08-16-sweep-family-investigation.md §5 P4.
+                    // Undo: drop the `fast` at all 6 `fadd ... 0.0` copy sites.
+                    if field_ty == "float" || field_ty == "double" {
+                        writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
+                    } else {
+                        writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
+                    }
+                }
+            }
+            writeln!(out, "  br label %.cd_{}", c0).ok();
+
+            // ── Done / Exit ─────────────────────────────────────────
+            writeln!(out, ".cde_{}:", c0).ok();
+            self.fun.reg_float_cache.clear();
+            self.fun.last_val_temps.clear();
+            self.fun.last_val_types.clear();
+            // Store final phi values so a post-loop hoist can read them from
+            // %State. 2026-10-20 (Local class): loop-local fields are unobservable
+            // after the loop — leaving them register/SSA lets LLVM collapse
+            // independent updates (the C shape) instead of treating every field
+            // as an individually live state value.
+            for fname in &sorted_fields {
+                if self.loop_field_is_phi(fname.as_str()) && self.fun.pending_post_hoist.is_empty()
+                {
+                    continue;
+                }
+                let val = self
+                    .fun
+                    .phi_field_regs
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string());
+                if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {
+                    self.emit_state_store_i64_by_idx(out, "  ", idx, &val);
+                }
+            }
+            let pending: Vec<Vec<Statement>> = self.fun.pending_post_hoist.clone();
+            if !pending.is_empty() {
+                for group in &pending {
+                    let mut empty3 = Vec::new();
+                    self.emit_countable_body(out, group, &HashSet::new(), &mut empty3);
+                }
+            }
+            // 2026-08-01 (D2): garbage scheduling — emit the `Free#` for each
+            // heap-backed state field whose reactor-ordered last consumer is this
+            // countdown transaction. The free fires exactly once, after the whole
+            // loop completes (a per-iteration free would be a use-after-free). The
+            // handle is the field's STORED value (the ptrtoint of the allocation),
+            // loaded from %State — re-evaluating the initializer would re-malloc.
+            // Routed through rt_free so the benchmark can assert frees ==
+            // allocs (no leak).
+            self.emit_scheduled_frees(out, free_after);
+            if carry_store_mode == "exit" {
+                for (name, ty, _) in &plain_carry {
+                    if let Some(val) = plain_header.get(name) {
+                        writeln!(out, "  store {} {}, ptr @{}, align 8", ty, val, name).ok();
+                    }
+                }
+            }
+            // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
+            // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
+            // programs have no stdout_flush and get neither call nor declare.
+            self.emit_stdout_flush_tail(out);
+            writeln!(out, "  ret i32 0").ok();
+            writeln!(out, "}}").ok();
+            writeln!(out).ok();
         }
         self.fun.defer_struct_allocas = false;
         self.flush_pending_struct_allocas(real_out);
@@ -1299,10 +1662,7 @@ impl LlvmBackend {
         // PerFieldPhi path handles early termination proven-correctly, so
         // DECLINE the fold when any segment body terminates.
         let body_terminates = body.iter().any(|st| {
-            matches!(
-                st,
-                Statement::EndProgram(_)
-            ) || {
+            matches!(st, Statement::EndProgram(_)) || {
                 let mut found = false;
                 if let Statement::Guarded(_, inner) = st {
                     found = inner.iter().any(|s2| {
@@ -1328,8 +1688,18 @@ impl LlvmBackend {
             self.fun.defer_struct_allocas = true;
         }
         let wrote = self.emit_version_dag_main_inner(
-            out, counter_idx, total_idx, total_const_name, bound_literal,
-            body, write_set, is_decreasing, counter_var, free_after, node_name, watchdog,
+            out,
+            counter_idx,
+            total_idx,
+            total_const_name,
+            bound_literal,
+            body,
+            write_set,
+            is_decreasing,
+            counter_var,
+            free_after,
+            node_name,
+            watchdog,
         );
         self.fun.defer_struct_allocas = false;
         wrote
@@ -1368,7 +1738,12 @@ impl LlvmBackend {
                         post.extend(stmts.clone());
                     }
                 }
-                Segment::Guard { condition, body, classification, .. } => {
+                Segment::Guard {
+                    condition,
+                    body,
+                    classification,
+                    ..
+                } => {
                     if seen_guard {
                         return false; // multiple guards — fall back to PerFieldPhi
                     }
@@ -1420,7 +1795,14 @@ impl LlvmBackend {
         // header's single predecessor is `entry`, so reset the stale block.
         self.fun.cur_block = None;
         let bound_reg = self.fun.next_reg_with_prefix("vdb");
-        self.emit_countable_load_bound(out, &bound_reg, total_idx, total_const_name, bound_literal, c0);
+        self.emit_countable_load_bound(
+            out,
+            &bound_reg,
+            total_idx,
+            total_const_name,
+            bound_literal,
+            c0,
+        );
         let (init_name, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
 
         let mut sorted_fields: Vec<&String> = write_set.iter().collect();
@@ -1437,7 +1819,10 @@ impl LlvmBackend {
         // 2026-09-07 (init-block phi predecessor fix): cite the block the
         // init loads + `br` emit into (self.fun.cur_block, or "entry" when no
         // block-emitting init ran) as the header's init predecessor.
-        let init_pred = self.fun.cur_block.clone()
+        let init_pred = self
+            .fun
+            .cur_block
+            .clone()
             .unwrap_or_else(|| "entry".to_string());
 
         // Pre-generate backedge register names: one set for the latch, one for
@@ -1450,8 +1835,12 @@ impl LlvmBackend {
             be_present_regs.insert((*fname).clone(), self.fun.next_reg_with_prefix("bp"));
         }
 
-        let counter_ty = self.ctx.field_types.get(counter_idx)
-            .cloned().unwrap_or_else(|| "i64".to_string());
+        let counter_ty = self
+            .ctx
+            .field_types
+            .get(counter_idx)
+            .cloned()
+            .unwrap_or_else(|| "i64".to_string());
         // 2026-09-07 (swan-song dominance fix): the loop text (header → ret)
         // buffers so the deferred swan-song-local allocas flush into the still
         // open ENTRY block before the loop text — identical to
@@ -1470,44 +1859,85 @@ impl LlvmBackend {
         self.fun.phi_field_regs.clear();
         self.fun.backedge_field_regs.clear();
         let counter_name = self.fun.next_reg_with_prefix("vdc");
-        let counter_key = counter_var.map(|s| s.to_string()).unwrap_or_else(|| "count".to_string());
-        let be_l_count = be_latch_regs.get(&counter_key)
-            .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("bl"));
-        let be_p_count = be_present_regs.get(&counter_key)
-            .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("bp"));
-        writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
-            counter_name, counter_ty, init_name, init_pred, be_l_count, latch_end_label,
-            be_p_count, present_end_label).ok();
+        let counter_key = counter_var
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "count".to_string());
+        let be_l_count = be_latch_regs
+            .get(&counter_key)
+            .cloned()
+            .unwrap_or_else(|| self.fun.next_reg_with_prefix("bl"));
+        let be_p_count = be_present_regs
+            .get(&counter_key)
+            .cloned()
+            .unwrap_or_else(|| self.fun.next_reg_with_prefix("bp"));
+        writeln!(
+            out,
+            "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
+            counter_name,
+            counter_ty,
+            init_name,
+            init_pred,
+            be_l_count,
+            latch_end_label,
+            be_p_count,
+            present_end_label
+        )
+        .ok();
         for fname in &sorted_fields {
             if let Some(cv) = counter_var {
                 if fname.as_str() == cv {
-                    self.fun.phi_field_regs.insert((*fname).clone(), counter_name.clone());
+                    self.fun
+                        .phi_field_regs
+                        .insert((*fname).clone(), counter_name.clone());
                     continue;
                 }
             }
             let phi_f = self.fun.next_reg_with_prefix("vdf");
-            let be_l = be_latch_regs.get(fname.as_str())
-                .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("bl"));
-            let be_p = be_present_regs.get(fname.as_str())
-                .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("bp"));
-            let init_f = phi_field_init.get(fname.as_str())
-                .cloned().unwrap_or_else(|| "0".to_string());
-            let phi_ty = self.ctx.field_index_map.get(fname.as_str())
+            let be_l = be_latch_regs
+                .get(fname.as_str())
+                .cloned()
+                .unwrap_or_else(|| self.fun.next_reg_with_prefix("bl"));
+            let be_p = be_present_regs
+                .get(fname.as_str())
+                .cloned()
+                .unwrap_or_else(|| self.fun.next_reg_with_prefix("bp"));
+            let init_f = phi_field_init
+                .get(fname.as_str())
+                .cloned()
+                .unwrap_or_else(|| "0".to_string());
+            let phi_ty = self
+                .ctx
+                .field_index_map
+                .get(fname.as_str())
                 .and_then(|idx| self.ctx.field_types.get(*idx))
-                .cloned().unwrap_or_else(|| "i64".to_string());
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string());
             // 2026-07-31: Minimal-state — loop-invariant fields are hoisted
             // (their entry load is the hoisted value, no phi); dead fields are
             // dropped; loop-carried fields get a phi.
             match self.current_loop_field(fname.as_str()) {
-                Some(crate::analysis::destination_model::LoopFieldRepresentation::LoopInvariant) => {
+                Some(
+                    crate::analysis::destination_model::LoopFieldRepresentation::LoopInvariant,
+                ) => {
                     self.fun.phi_field_regs.insert((*fname).clone(), init_f);
                 }
                 Some(crate::analysis::destination_model::LoopFieldRepresentation::Dead) => {
                     // Skipped — no phi, no backedge, body writes dropped.
                 }
                 _ => {
-                    writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
-                        phi_f, phi_ty, init_f, init_pred, be_l, latch_end_label, be_p, present_end_label).ok();
+                    writeln!(
+                        out,
+                        "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
+                        phi_f,
+                        phi_ty,
+                        init_f,
+                        init_pred,
+                        be_l,
+                        latch_end_label,
+                        be_p,
+                        present_end_label
+                    )
+                    .ok();
                     self.fun.phi_field_regs.insert((*fname).clone(), phi_f);
                 }
             }
@@ -1527,9 +1957,19 @@ impl LlvmBackend {
         };
         let done_h = self.fun.next_reg_with_prefix("vdd");
         if is_decreasing {
-            writeln!(out, "  {} = icmp sgt i64 {}, {}", done_h, cmp_counter_h, bound_reg).ok();
+            writeln!(
+                out,
+                "  {} = icmp sgt i64 {}, {}",
+                done_h, cmp_counter_h, bound_reg
+            )
+            .ok();
         } else {
-            writeln!(out, "  {} = icmp slt i64 {}, {}", done_h, cmp_counter_h, bound_reg).ok();
+            writeln!(
+                out,
+                "  {} = icmp slt i64 {}, {}",
+                done_h, cmp_counter_h, bound_reg
+            )
+            .ok();
         }
         // 2026-10-17 (readiness gate 1): the watchdog liveness gate — this
         // engine previously dropped the contract silently (BUGS.md). The
@@ -1553,15 +1993,26 @@ impl LlvmBackend {
             };
             self.emit_watchdog_gate(out, "  ", wd, &g);
         } else {
-            writeln!(out, "  br i1 {}, label %{}, label %{}", done_h, absent_label, end_label).ok();
+            writeln!(
+                out,
+                "  br i1 {}, label %{}, label %{}",
+                done_h, absent_label, end_label
+            )
+            .ok();
             // ── Guard-absent body: [pre], predicate check ───────────────
             writeln!(out, "{}:", absent_label).ok();
         }
         self.fun.pending_phi_backedge.clear();
         for fname in &sorted_fields {
-            let init_val = self.fun.phi_field_regs.get(fname.as_str())
-                .cloned().unwrap_or_else(|| "0".to_string());
-            self.fun.pending_phi_backedge.insert((*fname).clone(), init_val);
+            let init_val = self
+                .fun
+                .phi_field_regs
+                .get(fname.as_str())
+                .cloned()
+                .unwrap_or_else(|| "0".to_string());
+            self.fun
+                .pending_phi_backedge
+                .insert((*fname).clone(), init_val);
         }
         self.emit_countable_body(out, &pre, write_set, &mut vec![]);
         // Update phi_field_regs to post-[pre] values so the predicate reads them.
@@ -1574,8 +2025,12 @@ impl LlvmBackend {
         let pred_reg = self.emit_expr(out, guard_cond, "  ");
         let pred_bool = self.fun.next_reg_with_prefix("vdb");
         writeln!(out, "  {} = trunc i8 {} to i1", pred_bool, pred_reg.name).ok();
-        writeln!(out, "  br i1 {}, label %{}, label %{}",
-            pred_bool, present_label, latch_label).ok();
+        writeln!(
+            out,
+            "  br i1 {}, label %{}, label %{}",
+            pred_bool, present_label, latch_label
+        )
+        .ok();
 
         // ── Latch: [post] + backedge to header ──────────────────────
         writeln!(out, "{}:", latch_label).ok();
@@ -1588,14 +2043,25 @@ impl LlvmBackend {
         // Emit latch backedges for fields (including the counter).
         for fname in &sorted_fields {
             if let Some(be_f) = be_latch_regs.get(fname.as_str()) {
-                let val = self.fun.pending_phi_backedge.get(fname.as_str())
-                    .cloned().unwrap_or_else(|| {
-                        self.fun.phi_field_regs.get(fname.as_str())
-                            .cloned().unwrap_or_else(|| "0".to_string())
+                let val = self
+                    .fun
+                    .pending_phi_backedge
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        self.fun
+                            .phi_field_regs
+                            .get(fname.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| "0".to_string())
                     });
-                let field_ty = self.ctx.field_index_map.get(fname.as_str())
+                let field_ty = self
+                    .ctx
+                    .field_index_map
+                    .get(fname.as_str())
                     .and_then(|idx| self.ctx.field_types.get(*idx))
-                    .cloned().unwrap_or_else(|| "i64".to_string());
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
                 if field_ty == "float" || field_ty == "double" {
                     writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
                 } else {
@@ -1618,9 +2084,15 @@ impl LlvmBackend {
         self.fun.last_val_types.clear();
         self.fun.pending_phi_backedge.clear();
         for fname in &sorted_fields {
-            let init_val = self.fun.phi_field_regs.get(fname.as_str())
-                .cloned().unwrap_or_else(|| "0".to_string());
-            self.fun.pending_phi_backedge.insert((*fname).clone(), init_val);
+            let init_val = self
+                .fun
+                .phi_field_regs
+                .get(fname.as_str())
+                .cloned()
+                .unwrap_or_else(|| "0".to_string());
+            self.fun
+                .pending_phi_backedge
+                .insert((*fname).clone(), init_val);
         }
         self.emit_countable_body(out, &pre, write_set, &mut vec![]);
         self.emit_countable_body(out, guard_body, write_set, &mut vec![]);
@@ -1631,14 +2103,25 @@ impl LlvmBackend {
         // from the present predecessor.
         for fname in &sorted_fields {
             if let Some(be_f) = be_present_regs.get(fname.as_str()) {
-                let val = self.fun.pending_phi_backedge.get(fname.as_str())
-                    .cloned().unwrap_or_else(|| {
-                        self.fun.phi_field_regs.get(fname.as_str())
-                            .cloned().unwrap_or_else(|| "0".to_string())
+                let val = self
+                    .fun
+                    .pending_phi_backedge
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        self.fun
+                            .phi_field_regs
+                            .get(fname.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| "0".to_string())
                     });
-                let field_ty = self.ctx.field_index_map.get(fname.as_str())
+                let field_ty = self
+                    .ctx
+                    .field_index_map
+                    .get(fname.as_str())
                     .and_then(|idx| self.ctx.field_types.get(*idx))
-                    .cloned().unwrap_or_else(|| "i64".to_string());
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
                 if field_ty == "float" || field_ty == "double" {
                     writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
                 } else {
@@ -1661,8 +2144,12 @@ impl LlvmBackend {
         self.fun.phi_field_regs = header_phi_regs;
         for fname in &sorted_fields {
             if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {
-                let phi = self.fun.phi_field_regs.get(fname.as_str())
-                    .cloned().unwrap_or_else(|| "0".to_string());
+                let phi = self
+                    .fun
+                    .phi_field_regs
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string());
                 self.emit_state_store_i64_by_idx(out, "  ", idx, &phi);
             }
         }
@@ -1698,7 +2185,6 @@ impl LlvmBackend {
         true
     }
 
-
     // ═══════════════════════════════════════════════════════════════
     // Countable Loop Helpers
     // ═══════════════════════════════════════════════════════════════
@@ -1727,13 +2213,18 @@ impl LlvmBackend {
         if inner_allocs != inner_vars.len() {
             return false;
         }
-        if !inner_vars.iter().all(|v| Self::stmts_use_var_safely(inner, v)) {
+        if !inner_vars
+            .iter()
+            .all(|v| Self::stmts_use_var_safely(inner, v))
+        {
             return false;
         }
         // Guard allocations must obey the same rule (or be absent).
         let mut guard_vars = Vec::new();
         Self::collect_alloc_vars(guard, &mut guard_vars);
-        guard_vars.iter().all(|v| Self::stmts_use_var_safely(guard, v))
+        guard_vars
+            .iter()
+            .all(|v| Self::stmts_use_var_safely(guard, v))
     }
 
     fn expr_has_alloc(e: &crate::ast::Expr) -> bool {
@@ -1742,16 +2233,23 @@ impl LlvmBackend {
             Expr::Call(n, _, _) if n == "Alloc#" => true,
             Expr::Call(_, args, _) => args.iter().any(Self::expr_has_alloc),
             Expr::BinaryOp(_, l, r) => Self::expr_has_alloc(l) || Self::expr_has_alloc(r),
-            Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
-            | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => {
-                Self::expr_has_alloc(x)
-            }
+            Expr::UnaryOp(_, x)
+            | Expr::Cast(x, _)
+            | Expr::IsType(x, _)
+            | Expr::Deref(x)
+            | Expr::AddrOf(x)
+            | Expr::Consume(x)
+            | Expr::Await(x)
+            | Expr::Field(x, _) => Self::expr_has_alloc(x),
             Expr::Index(x, i) => Self::expr_has_alloc(x) || Self::expr_has_alloc(i),
             Expr::Tuple(xs) | Expr::List(xs) => xs.iter().any(Self::expr_has_alloc),
             Expr::If(c, t, el) => {
                 Self::expr_has_alloc(c)
                     || Self::expr_has_alloc(t)
-                    || el.as_ref().map(|x| Self::expr_has_alloc(x)).unwrap_or(false)
+                    || el
+                        .as_ref()
+                        .map(|x| Self::expr_has_alloc(x))
+                        .unwrap_or(false)
             }
             Expr::Block(stmts) => stmts.iter().any(Self::stmt_has_alloc),
             Expr::Match(x, arms) => {
@@ -1767,12 +2265,18 @@ impl LlvmBackend {
             Statement::Let { expr: Some(e), .. } => Self::expr_has_alloc(e),
             Statement::Assign(_, e) => Self::expr_has_alloc(e),
             Statement::ArrowAssign { value, .. } => Self::expr_has_alloc(value),
-            Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
-            | Statement::Tail(e) | Statement::Check(e) => Self::expr_has_alloc(e),
-            Statement::Guarded(c, b) => Self::expr_has_alloc(c) || b.iter().any(Self::stmt_has_alloc),
-            Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
-                b.iter().any(Self::stmt_has_alloc)
+            Statement::Expression(e)
+            | Statement::Term(Some(e))
+            | Statement::EndProgram(Some(e))
+            | Statement::Tail(e)
+            | Statement::Check(e) => Self::expr_has_alloc(e),
+            Statement::Guarded(c, b) => {
+                Self::expr_has_alloc(c) || b.iter().any(Self::stmt_has_alloc)
             }
+            Statement::Block(b)
+            | Statement::Defer(b)
+            | Statement::Mutex(b)
+            | Statement::SyncBlock(b) => b.iter().any(Self::stmt_has_alloc),
             Statement::Foreach { list, body, .. } => {
                 Self::expr_has_alloc(list) || body.iter().any(Self::stmt_has_alloc)
             }
@@ -1793,11 +2297,16 @@ impl LlvmBackend {
     fn collect_alloc_vars_stmt(st: &crate::ast::Statement, out: &mut Vec<String>) {
         use crate::ast::Statement;
         match st {
-            Statement::Let { name, expr: Some(e), .. } if Self::expr_has_alloc(e) => {
-                out.push(name.clone())
-            }
-            Statement::Guarded(_, b) | Statement::Block(b) | Statement::Defer(b)
-            | Statement::Mutex(b) | Statement::SyncBlock(b) => Self::collect_alloc_vars(b, out),
+            Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } if Self::expr_has_alloc(e) => out.push(name.clone()),
+            Statement::Guarded(_, b)
+            | Statement::Block(b)
+            | Statement::Defer(b)
+            | Statement::Mutex(b)
+            | Statement::SyncBlock(b) => Self::collect_alloc_vars(b, out),
             Statement::Foreach { body, .. } => Self::collect_alloc_vars(body, out),
             Statement::Match { arms, .. } => {
                 for a in arms {
@@ -1816,10 +2325,14 @@ impl LlvmBackend {
                     + args.iter().map(Self::count_allocs_expr).sum::<usize>()
             }
             Expr::BinaryOp(_, l, r) => Self::count_allocs_expr(l) + Self::count_allocs_expr(r),
-            Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
-            | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => {
-                Self::count_allocs_expr(x)
-            }
+            Expr::UnaryOp(_, x)
+            | Expr::Cast(x, _)
+            | Expr::IsType(x, _)
+            | Expr::Deref(x)
+            | Expr::AddrOf(x)
+            | Expr::Consume(x)
+            | Expr::Await(x)
+            | Expr::Field(x, _) => Self::count_allocs_expr(x),
             Expr::Index(x, i) => Self::count_allocs_expr(x) + Self::count_allocs_expr(i),
             Expr::Tuple(xs) | Expr::List(xs) => xs.iter().map(Self::count_allocs_expr).sum(),
             Expr::If(c, t, el) => {
@@ -1830,7 +2343,10 @@ impl LlvmBackend {
             Expr::Block(stmts) => stmts.iter().map(Self::count_allocs_stmt).sum(),
             Expr::Match(x, arms) => {
                 Self::count_allocs_expr(x)
-                    + arms.iter().map(|a| Self::count_allocs_expr(&a.body)).sum::<usize>()
+                    + arms
+                        .iter()
+                        .map(|a| Self::count_allocs_expr(&a.body))
+                        .sum::<usize>()
             }
             _ => 0,
         }
@@ -1842,14 +2358,18 @@ impl LlvmBackend {
             Statement::Let { expr: Some(e), .. } => Self::count_allocs_expr(e),
             Statement::Assign(_, e) => Self::count_allocs_expr(e),
             Statement::ArrowAssign { value, .. } => Self::count_allocs_expr(value),
-            Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
-            | Statement::Tail(e) | Statement::Check(e) => Self::count_allocs_expr(e),
+            Statement::Expression(e)
+            | Statement::Term(Some(e))
+            | Statement::EndProgram(Some(e))
+            | Statement::Tail(e)
+            | Statement::Check(e) => Self::count_allocs_expr(e),
             Statement::Guarded(c, b) => {
                 Self::count_allocs_expr(c) + b.iter().map(Self::count_allocs_stmt).sum::<usize>()
             }
-            Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
-                b.iter().map(Self::count_allocs_stmt).sum()
-            }
+            Statement::Block(b)
+            | Statement::Defer(b)
+            | Statement::Mutex(b)
+            | Statement::SyncBlock(b) => b.iter().map(Self::count_allocs_stmt).sum(),
             Statement::Foreach { list, body, .. } => {
                 Self::count_allocs_expr(list)
                     + body.iter().map(Self::count_allocs_stmt).sum::<usize>()
@@ -1870,7 +2390,13 @@ impl LlvmBackend {
     fn expr_uses_var_safely(e: &crate::ast::Expr, v: &str, allowed: bool) -> bool {
         use crate::ast::Expr;
         const NON_RETAINING: &[&str] = &[
-            "Store#", "VolatileStore#", "Load#", "VolatileLoad#", "Copy#", "Fill#", "Memset#",
+            "Store#",
+            "VolatileStore#",
+            "Load#",
+            "VolatileLoad#",
+            "Copy#",
+            "Fill#",
+            "Memset#",
         ];
         match e {
             Expr::Identifier(n) => n != v || allowed,
@@ -1882,10 +2408,14 @@ impl LlvmBackend {
                 Self::expr_uses_var_safely(l, v, allowed)
                     && Self::expr_uses_var_safely(r, v, allowed)
             }
-            Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
-            | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => {
-                Self::expr_uses_var_safely(x, v, allowed)
-            }
+            Expr::UnaryOp(_, x)
+            | Expr::Cast(x, _)
+            | Expr::IsType(x, _)
+            | Expr::Deref(x)
+            | Expr::AddrOf(x)
+            | Expr::Consume(x)
+            | Expr::Await(x)
+            | Expr::Field(x, _) => Self::expr_uses_var_safely(x, v, allowed),
             Expr::Index(x, i) => {
                 Self::expr_uses_var_safely(x, v, allowed)
                     && Self::expr_uses_var_safely(i, v, allowed)
@@ -1913,14 +2443,17 @@ impl LlvmBackend {
                 Statement::Let { expr: Some(e), .. } => Self::expr_uses_var_safely(e, v, false),
                 Statement::Assign(_, e) => Self::expr_uses_var_safely(e, v, false),
                 Statement::ArrowAssign { value, .. } => Self::expr_uses_var_safely(value, v, false),
-                Statement::Expression(e) | Statement::Term(Some(e))
-                | Statement::EndProgram(Some(e)) | Statement::Tail(e) | Statement::Check(e) => {
-                    Self::expr_uses_var_safely(e, v, false)
-                }
+                Statement::Expression(e)
+                | Statement::Term(Some(e))
+                | Statement::EndProgram(Some(e))
+                | Statement::Tail(e)
+                | Statement::Check(e) => Self::expr_uses_var_safely(e, v, false),
                 Statement::Guarded(c, b) => {
                     Self::expr_uses_var_safely(c, v, false) && Self::stmts_use_var_safely(b, v)
                 }
-                Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b)
+                Statement::Block(b)
+                | Statement::Defer(b)
+                | Statement::Mutex(b)
                 | Statement::SyncBlock(b) => Self::stmts_use_var_safely(b, v),
                 Statement::Foreach { list, body, .. } => {
                     Self::expr_uses_var_safely(list, v, false)
@@ -1938,7 +2471,6 @@ impl LlvmBackend {
         }
         true
     }
-
 
     fn emit_countable_load_bound(
         &mut self,
@@ -1961,8 +2493,12 @@ impl LlvmBackend {
             writeln!(out, "  {} = add i64 0, {}", bound_reg, lit).ok();
         } else if let Some(ti) = total_idx {
             let gep = self.fun.next_reg_with_prefix("clb");
-            writeln!(out, "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-                gep, ti).ok();
+            writeln!(
+                out,
+                "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+                gep, ti
+            )
+            .ok();
             writeln!(out, "  {} = load i64, ptr {}, align 8", bound_reg, gep).ok();
         } else if let Some(tcn) = total_const_name {
             // 2026-07-17: Resolve bound from compile-time constant value first.
@@ -1970,8 +2506,12 @@ impl LlvmBackend {
                 writeln!(out, "  {} = add i64 0, {}", bound_reg, val).ok();
             } else if let Some(&idx) = self.ctx.field_index_map.get(tcn) {
                 let gep = self.fun.next_reg_with_prefix("clb");
-                writeln!(out, "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-                    gep, idx).ok();
+                writeln!(
+                    out,
+                    "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+                    gep, idx
+                )
+                .ok();
                 writeln!(out, "  {} = load i64, ptr {}, align 8", bound_reg, gep).ok();
             } else if self.ctx.inits.contains_key(tcn) {
                 // 2026-08-09 (init kind, Phase 3): the bound is a runtime-seeded
@@ -2002,8 +2542,16 @@ impl LlvmBackend {
             let stmt = &body[i];
             match stmt {
                 // 2026-11-10 (SPEC §8.11): tests never reach the loop engine.
-                Statement::Expect(_) => { i += 1; continue; }
-                Statement::Let { name, expr: Some(e), ty, .. } => {
+                Statement::Expect(_) => {
+                    i += 1;
+                    continue;
+                }
+                Statement::Let {
+                    name,
+                    expr: Some(e),
+                    ty,
+                    ..
+                } => {
                     let reg = self.emit_expr(out, e, "  ");
                     // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>`
                     // let inside a countable loop body coerces its concrete RHS
@@ -2024,7 +2572,8 @@ impl LlvmBackend {
                                 reg
                             } else {
                                 let concrete = match &reg.ty {
-                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
+                                    crate::ast::Type::Custom(n)
+                                    | crate::ast::Type::Applied(n, _) => n.clone(),
                                     other => panic!(
                                         "dyn coercion (loop body): RHS type {:?} is not a concrete struct/obj or an already-dyn value of the same trait",
                                         other
@@ -2032,15 +2581,30 @@ impl LlvmBackend {
                                 };
                                 let trait_name = match inner.as_ref() {
                                     crate::ast::Type::Custom(n) => n.clone(),
-                                    other => panic!("dyn <...>: inner trait type {:?} is not a named trait", other),
+                                    other => panic!(
+                                        "dyn <...>: inner trait type {:?} is not a named trait",
+                                        other
+                                    ),
                                 };
-                                self.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
-                                let tag = self.ctx.dyn_concrete_tag_of
+                                self.ctx
+                                    .dyn_concrete_of
+                                    .insert(name.clone(), concrete.clone());
+                                let tag = self
+                                    .ctx
+                                    .dyn_concrete_tag_of
                                     .get(&format!("{trait_name}::{concrete}"))
                                     .copied()
                                     .unwrap_or(0);
                                 self.ctx.dyn_concrete_tag_of.insert(name.clone(), tag);
-                                self.coerce_to_dyn(out, "  ", &reg.name, &trait_name, &concrete, tag, "  ")
+                                self.coerce_to_dyn(
+                                    out,
+                                    "  ",
+                                    &reg.name,
+                                    &trait_name,
+                                    &concrete,
+                                    tag,
+                                    "  ",
+                                )
                             }
                         }
                         _ => reg,
@@ -2068,20 +2632,29 @@ impl LlvmBackend {
                     {
                         let slot_ty = self.llvm_type(&reg.ty);
                         let slot = self.fun.next_reg_with_prefix("sslv");
-                        self.fun.pending_struct_allocas.push(
-                            format!("  {} = alloca {}, align 8", slot, slot_ty),
-                        );
+                        self.fun
+                            .pending_struct_allocas
+                            .push(format!("  {} = alloca {}, align 8", slot, slot_ty));
                         let store_val = self.ensure_typed_value(
-                            out, "  ", &slot_ty, &reg.name,
-                            Some(reg.ty.clone()), None,
+                            out,
+                            "  ",
+                            &slot_ty,
+                            &reg.name,
+                            Some(reg.ty.clone()),
+                            None,
                         );
                         writeln!(out, "  store {} {}, ptr {}", slot_ty, store_val, slot).ok();
                         self.fun.let_binding_allocas.insert(slot.clone());
-                        crate::backend::llvm::TypedRegister { name: slot, ty: reg.ty.clone() }
+                        crate::backend::llvm::TypedRegister {
+                            name: slot,
+                            ty: reg.ty.clone(),
+                        }
                     } else {
                         reg
                     };
-                    self.fun.last_val_temps.insert(name.clone(), reg.name.clone());
+                    self.fun
+                        .last_val_temps
+                        .insert(name.clone(), reg.name.clone());
                     self.fun.last_val_types.insert(name.clone(), reg.ty.clone());
                     // 2026-08-26 (async Phase C): track defn-spawn / handle-
                     // move bindings so a later `free` cancels through the
@@ -2118,73 +2691,113 @@ impl LlvmBackend {
                             self.fun.let_binding_types.insert(name.clone(), dt.clone());
                             self.fun.let_original_types.insert(name.clone(), dt.clone());
                         } else {
-                            self.fun.let_binding_types.insert(name.clone(), reg.ty.clone());
-                            self.fun.let_original_types.insert(name.clone(), reg.ty.clone());
+                            self.fun
+                                .let_binding_types
+                                .insert(name.clone(), reg.ty.clone());
+                            self.fun
+                                .let_original_types
+                                .insert(name.clone(), reg.ty.clone());
                         }
                     } else {
-                        self.fun.let_binding_types.insert(name.clone(), reg.ty.clone());
-                        self.fun.let_original_types.insert(name.clone(), reg.ty.clone());
+                        self.fun
+                            .let_binding_types
+                            .insert(name.clone(), reg.ty.clone());
+                        self.fun
+                            .let_original_types
+                            .insert(name.clone(), reg.ty.clone());
                     }
                 }
                 Statement::Assign(lhs, expr) => {
                     let lhs_name = Self::assign_target_name(lhs);
-                     let val = self.emit_expr(out, expr, "  ");
-                      // 2026-08-01 (A9b): `<-` op dispatch — when the LHS is a
-                      // collection with an InsertAt op binding (`queue <- count`),
-                      // emit the self-bound member call (push) instead of a scalar
-                      // field backedge. The collection field is aggregate (excluded
-                      // from the phis); its data write is memory-resident in %State.
-                      let insert_strat = self.find_insert_strategy(lhs).cloned();
-                      if let Some(op_def) = &insert_strat {
-                          if super::emit_stmt::emit_strategy_member_call(self, out, "  ", lhs, op_def, Some(&val.name), Some(&val.ty)).is_none() {
-                              super::emit_stmt::emit_strategy_fn_call(self, out, "  ", lhs, op_def, Some(&val.name), Some(&val.ty));
-                          }
-                          i += 1;
-                          continue;
-                      }
-                       if let Some(ref n) = lhs_name {
-                         if write_set.contains(n) {
-                              // 2026-07-29: Vector phi routing — if field belongs to
-                              // a vector group, record_field_update instead of scalar backedge.
-                              // Clone lookup data to avoid borrow conflicts with &mut self.fun.
-                              let is_vector_grouped = self.fun.field_to_phi.contains_key(n.as_str());
-                              let (groups_clone, lane_map_clone) = if is_vector_grouped {
-                                  (Some(self.fun.active_vector_groups.clone()),
-                                   Some(self.fun.field_to_lane.clone()))
-                              } else {
-                                  (None, None)
-                              };
-                              if let (Some(ref g), Some(ref l)) = (groups_clone, lane_map_clone) {
-                                  crate::backend::llvm::vector_phi::record_field_update(
-                                      &mut self.fun, n, &val.name, g, l,
-                                  );
-                              } else {
-                                  // 2026-07-21: Float fields use native type in backend —
-                                  // skip adapt_to_i64 and store the float value directly.
-                                  let field_ty = self.ctx.field_index_map.get(n)
-                                      .and_then(|idx| self.ctx.field_types.get(*idx))
-                                      .cloned().unwrap_or_else(|| "i64".to_string());
-                                  if field_ty == "float" || field_ty == "double" {
-                                      self.fun.pending_phi_backedge.insert(n.clone(), val.name.clone());
-                                  } else if field_ty == "i64" {
-                                      // 2026-08-10: Bool/String/Data/Ptr slots are
-                                      // i64 — box the value (adapt_to_i64 widens
-                                      // i32→i64, ptrtoints, etc.) so the backedge
-                                      // phi (typed field_ty=i64) matches.
-                                      let boxed = self.adapt_to_i64(out, "  ", &val);
-                                      self.fun.pending_phi_backedge.insert(n.clone(), boxed);
-                                  } else {
-                                      // 2026-08-10: flexible Int/UInt slots are
-                                      // i{int_bits} (i32 wasm32) — the body value
-                                      // is already that width (binop_int_type),
-                                      // so the backedge phi gets it directly.
-                                      // adapt_to_i64 here would emit
-                                      // `sext i32 <i32 val> to i64`, mismatching
-                                      // the `phi i32` backedge.
-                                      self.fun.pending_phi_backedge.insert(n.clone(), val.name.clone());
-                                  }
-                              }
-                          }
+                    let val = self.emit_expr(out, expr, "  ");
+                    // 2026-08-01 (A9b): `<-` op dispatch — when the LHS is a
+                    // collection with an InsertAt op binding (`queue <- count`),
+                    // emit the self-bound member call (push) instead of a scalar
+                    // field backedge. The collection field is aggregate (excluded
+                    // from the phis); its data write is memory-resident in %State.
+                    let insert_strat = self.find_insert_strategy(lhs).cloned();
+                    if let Some(op_def) = &insert_strat {
+                        if super::emit_stmt::emit_strategy_member_call(
+                            self,
+                            out,
+                            "  ",
+                            lhs,
+                            op_def,
+                            Some(&val.name),
+                            Some(&val.ty),
+                        )
+                        .is_none()
+                        {
+                            super::emit_stmt::emit_strategy_fn_call(
+                                self,
+                                out,
+                                "  ",
+                                lhs,
+                                op_def,
+                                Some(&val.name),
+                                Some(&val.ty),
+                            );
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if let Some(ref n) = lhs_name {
+                        if write_set.contains(n) {
+                            // 2026-07-29: Vector phi routing — if field belongs to
+                            // a vector group, record_field_update instead of scalar backedge.
+                            // Clone lookup data to avoid borrow conflicts with &mut self.fun.
+                            let is_vector_grouped = self.fun.field_to_phi.contains_key(n.as_str());
+                            let (groups_clone, lane_map_clone) = if is_vector_grouped {
+                                (
+                                    Some(self.fun.active_vector_groups.clone()),
+                                    Some(self.fun.field_to_lane.clone()),
+                                )
+                            } else {
+                                (None, None)
+                            };
+                            if let (Some(ref g), Some(ref l)) = (groups_clone, lane_map_clone) {
+                                crate::backend::llvm::vector_phi::record_field_update(
+                                    &mut self.fun,
+                                    n,
+                                    &val.name,
+                                    g,
+                                    l,
+                                );
+                            } else {
+                                // 2026-07-21: Float fields use native type in backend —
+                                // skip adapt_to_i64 and store the float value directly.
+                                let field_ty = self
+                                    .ctx
+                                    .field_index_map
+                                    .get(n)
+                                    .and_then(|idx| self.ctx.field_types.get(*idx))
+                                    .cloned()
+                                    .unwrap_or_else(|| "i64".to_string());
+                                if field_ty == "float" || field_ty == "double" {
+                                    self.fun
+                                        .pending_phi_backedge
+                                        .insert(n.clone(), val.name.clone());
+                                } else if field_ty == "i64" {
+                                    // 2026-08-10: Bool/String/Data/Ptr slots are
+                                    // i64 — box the value (adapt_to_i64 widens
+                                    // i32→i64, ptrtoints, etc.) so the backedge
+                                    // phi (typed field_ty=i64) matches.
+                                    let boxed = self.adapt_to_i64(out, "  ", &val);
+                                    self.fun.pending_phi_backedge.insert(n.clone(), boxed);
+                                } else {
+                                    // 2026-08-10: flexible Int/UInt slots are
+                                    // i{int_bits} (i32 wasm32) — the body value
+                                    // is already that width (binop_int_type),
+                                    // so the backedge phi gets it directly.
+                                    // adapt_to_i64 here would emit
+                                    // `sext i32 <i32 val> to i64`, mismatching
+                                    // the `phi i32` backedge.
+                                    self.fun
+                                        .pending_phi_backedge
+                                        .insert(n.clone(), val.name.clone());
+                                }
+                            }
+                        }
                         // 2026-07-17: When post-loop hoisted prints need final values,
                         // emit state stores for ALL fields, not just phi-tracked ones.
                         // Without this, fields outside the capped write_set (max 6)
@@ -2203,10 +2816,16 @@ impl LlvmBackend {
                                 writeln!(out, "  {} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
                                     gep, idx).ok();
                                 if val_ty == *field_ty {
-                                    writeln!(out, "  store {} {}, ptr {}, align 8", field_ty, val.name, gep).ok();
+                                    writeln!(
+                                        out,
+                                        "  store {} {}, ptr {}, align 8",
+                                        field_ty, val.name, gep
+                                    )
+                                    .ok();
                                 } else {
                                     let boxed = self.adapt_to_i64(out, "  ", &val);
-                                    writeln!(out, "  store i64 {}, ptr {}, align 8", boxed, gep).ok();
+                                    writeln!(out, "  store i64 {}, ptr {}, align 8", boxed, gep)
+                                        .ok();
                                 }
                             }
                         }
@@ -2225,7 +2844,9 @@ impl LlvmBackend {
                             // countdown previously only handled Ptr-indexed
                             // stores, silently DROPPING array-state writes
                             // (the seed + the loop's f[j]=n[j] both vanished).
-                            if super::emit_stmt::emit_array_state_store(self, out, "  ", obj, idx, &val) {
+                            if super::emit_stmt::emit_array_state_store(
+                                self, out, "  ", obj, idx, &val,
+                            ) {
                                 i += 1;
                                 continue;
                             }
@@ -2233,16 +2854,24 @@ impl LlvmBackend {
                             if matches!(obj_reg.ty, Type::Ptr(_)) {
                                 let idx_reg = self.emit_expr(out, idx, "  ");
                                 let ptr = self.fun.gen_reg();
-                                writeln!(out, "  {} = inttoptr i64 {} to ptr", ptr, obj_reg.name).ok();
+                                writeln!(out, "  {} = inttoptr i64 {} to ptr", ptr, obj_reg.name)
+                                    .ok();
                                 let gep = self.fun.gen_reg();
                                 let offset = self.fun.gen_reg();
                                 // Only List/tuple literals have a length header at slot 0.
                                 if matches!(obj.as_ref(), Expr::List(_) | Expr::Tuple(_)) {
-                                    writeln!(out, "  {} = add i64 {}, 1", offset, idx_reg.name).ok();
+                                    writeln!(out, "  {} = add i64 {}, 1", offset, idx_reg.name)
+                                        .ok();
                                 } else {
-                                    writeln!(out, "  {} = add i64 {}, 0", offset, idx_reg.name).ok();
+                                    writeln!(out, "  {} = add i64 {}, 0", offset, idx_reg.name)
+                                        .ok();
                                 }
-                                writeln!(out, "  {} = getelementptr i64, ptr {}, i64 {}", gep, ptr, offset).ok();
+                                writeln!(
+                                    out,
+                                    "  {} = getelementptr i64, ptr {}, i64 {}",
+                                    gep, ptr, offset
+                                )
+                                .ok();
                                 writeln!(out, "  store i64 {}, ptr {}", val.name, gep).ok();
                             }
                         }
@@ -2252,7 +2881,8 @@ impl LlvmBackend {
                             // convert back to LLVM ptr before storing through.
                             let store_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
                                 let p = self.fun.gen_reg();
-                                writeln!(out, "  {} = inttoptr i64 {} to ptr", p, ptr_reg.name).ok();
+                                writeln!(out, "  {} = inttoptr i64 {} to ptr", p, ptr_reg.name)
+                                    .ok();
                                 p.to_string()
                             } else {
                                 ptr_reg.name.clone()
@@ -2322,7 +2952,12 @@ impl LlvmBackend {
                     let body_label = format!(".cmgb{}", self.fun.txn_counter);
                     let next_label = format!(".cmgn{}", self.fun.txn_counter);
                     self.fun.txn_counter += 1;
-                    writeln!(out, "  br i1 {}, label %{}, label %{}", bool_reg, body_label, next_label).ok();
+                    writeln!(
+                        out,
+                        "  br i1 {}, label %{}, label %{}",
+                        bool_reg, body_label, next_label
+                    )
+                    .ok();
                     writeln!(out, "{}:", body_label).ok();
                     // 2026-11-03: the merge phi below uses the body's ACTUAL
                     // final block. Seed cur_block with the body label so a
@@ -2336,7 +2971,10 @@ impl LlvmBackend {
                     // predecessor is the body's ACTUAL final block, not the
                     // precomputed `body_label`. Capture it before the `br`
                     // below (same pattern as body_final/guard_pred).
-                    let body_actual = self.fun.cur_block.clone()
+                    let body_actual = self
+                        .fun
+                        .cur_block
+                        .clone()
                         .unwrap_or_else(|| body_label.clone());
                     // Snapshot what the BODY wrote, keyed by field, BEFORE the
                     // merge phis (their inputs come from this block).
@@ -2350,14 +2988,26 @@ impl LlvmBackend {
                     writeln!(out, "  br label %{}", next_label).ok();
                     writeln!(out, "{}:", next_label).ok();
                     for (f, v) in &written {
-                        let Some(&idx) = self.ctx.field_index_map.get(f.as_str()) else { continue };
-                        let ty = self.ctx.field_types.get(idx)
-                            .cloned().unwrap_or_else(|| "i64".to_string());
-                        let old_v = pending_before.get(f).cloned()
+                        let Some(&idx) = self.ctx.field_index_map.get(f.as_str()) else {
+                            continue;
+                        };
+                        let ty = self
+                            .ctx
+                            .field_types
+                            .get(idx)
+                            .cloned()
+                            .unwrap_or_else(|| "i64".to_string());
+                        let old_v = pending_before
+                            .get(f)
+                            .cloned()
                             .unwrap_or_else(|| "0".to_string());
                         let mrg = self.fun.next_reg_with_prefix("cmgm");
-                        writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
-                            mrg, ty, v, body_actual, old_v, pre_guard_block).ok();
+                        writeln!(
+                            out,
+                            "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
+                            mrg, ty, v, body_actual, old_v, pre_guard_block
+                        )
+                        .ok();
                         self.fun.pending_phi_backedge.insert(f.clone(), mrg);
                         // 2026-11-10: last_val_temps wins over the backedge
                         // map on reads. A pre-guard cached value must not hide
@@ -2388,11 +3038,19 @@ impl LlvmBackend {
                     // address. Without it the pop never runs: a Stack's len never
                     // decrements and the next push overflows the buffer.
                     if let Expr::AddrOf(source) = e {
-                        let strat = self.find_extract_strategy(source)
-                            .or_else(|| self.find_extract_strategy(e)).cloned();
+                        let strat = self
+                            .find_extract_strategy(source)
+                            .or_else(|| self.find_extract_strategy(e))
+                            .cloned();
                         if let Some(op_def) = &strat {
-                            if super::emit_stmt::emit_strategy_member_call(self, out, "  ", source, op_def, None, None).is_none() {
-                                super::emit_stmt::emit_strategy_fn_call(self, out, "  ", source, op_def, None, None);
+                            if super::emit_stmt::emit_strategy_member_call(
+                                self, out, "  ", source, op_def, None, None,
+                            )
+                            .is_none()
+                            {
+                                super::emit_stmt::emit_strategy_fn_call(
+                                    self, out, "  ", source, op_def, None, None,
+                                );
                             }
                         }
                         let _ = self.fun.gen_reg();
@@ -2475,7 +3133,12 @@ impl LlvmBackend {
                 let body_label = format!(".ogb{}", self.fun.txn_counter);
                 let next_label = format!(".ogn{}", self.fun.txn_counter);
                 self.fun.txn_counter += 1;
-                writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, bool_reg, body_label, next_label).ok();
+                writeln!(
+                    out,
+                    "{}br i1 {}, label %{}, label %{}",
+                    indent, bool_reg, body_label, next_label
+                )
+                .ok();
                 writeln!(out, "{}:", body_label).ok();
                 for s in body {
                     self.emit_guard_body_stmt(out, s, indent);
@@ -2518,13 +3181,23 @@ impl LlvmBackend {
                 // emitter so guard-body stream writes / collection ops survive.
                 super::emit_stmt::emit_statement(self, out, stmt, indent);
             }
-            Statement::Let { name, expr: Some(e), .. } => {
+            Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } => {
                 let reg = self.emit_expr(out, e, indent);
-                self.fun.last_val_temps.insert(name.clone(), reg.name.clone());
+                self.fun
+                    .last_val_temps
+                    .insert(name.clone(), reg.name.clone());
                 self.fun.last_val_types.insert(name.clone(), reg.ty.clone());
                 self.fun.let_bindings.insert(name.clone(), reg.name.clone());
-                self.fun.let_binding_types.insert(name.clone(), reg.ty.clone());
-                self.fun.let_original_types.insert(name.clone(), reg.ty.clone());
+                self.fun
+                    .let_binding_types
+                    .insert(name.clone(), reg.ty.clone());
+                self.fun
+                    .let_original_types
+                    .insert(name.clone(), reg.ty.clone());
             }
             Statement::Expression(e) => {
                 // 2026-09-24 (BUGS.md statement-match routing): a statement-
@@ -2568,7 +3241,6 @@ impl LlvmBackend {
             _ => None,
         }
     }
-
 }
 
 // ── 2026-09-07 (swan-song dominance fix) ────────────────────────────
@@ -2597,7 +3269,10 @@ fn collect_hoist_identifiers_stmt(
     out: &mut std::collections::HashSet<String>,
 ) {
     match s {
-        Statement::Expression(e) | Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) | Statement::Tail(e) => {
+        Statement::Expression(e)
+        | Statement::EndProgram(Some(e))
+        | Statement::Term(Some(e))
+        | Statement::Tail(e) => {
             collect_hoist_identifiers(e, fields, constants, out);
         }
         Statement::Let { expr: Some(e), .. } => {
@@ -2668,7 +3343,12 @@ impl LlvmBackend {
             if self.plain_context_active() && self.ctx.defn_takes_plain("stdout_flush") {
                 args.push("ptr %plain");
             }
-            writeln!(out, "  %__flush = call i64 @stdout_flush({})", args.join(", ")).ok();
+            writeln!(
+                out,
+                "  %__flush = call i64 @stdout_flush({})",
+                args.join(", ")
+            )
+            .ok();
         }
     }
 }

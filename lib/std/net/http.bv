@@ -100,7 +100,10 @@ defn str_eq_ci_at(left: String, right: String, k: Int, len: Int)
 
 // ascii_lower - fold an ASCII byte to lower case (A-Z -> a-z); other bytes pass
 // through unchanged. Pure arithmetic, no table.
-defn ascii_lower(b: Int) [true][term >= 0] -> Int {
+//
+// 2026-11-15: `[true]` made `[term >= 0]` unprovable (the passthrough branch
+// returns `b`, so a negative input refutes it). Every call site passes a byte.
+defn ascii_lower(b: Int) [b >= 0][term >= 0] -> Int {
     when b >= 65 && b <= 90 {
         term b + 32;
     };

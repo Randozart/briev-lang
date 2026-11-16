@@ -30,7 +30,11 @@ use std::collections::HashSet;
 /// - Struct types derive LLVM type from field shapes at codegen time.
 /// - Protocol (Cast.) properties are retained for graph-based membership checks.
 /// - Explicit user `llvm <~` is validated against known LLVM type strings.
-pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bits: u64) -> Result<(), String> {
+pub fn normalize(
+    items: &mut Vec<TopLevel>,
+    universe: &mut TypeUniverse,
+    int_bits: u64,
+) -> Result<(), String> {
     // ── Register all TopLevel::TypeDef items into the TypeUniverse ─────────
     // After registration, the casting graph resolves LLVM types from
     // (protocol, metadata) at codegen time — no llvm_type derivation needed.
@@ -55,9 +59,10 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
     // of the Bit protocol — they must never be semantically overloaded.
     // Parsing/lexing operations (Parse, Lex) are compile-time structural phases —
     // types inherit their parent protocol's parsing rules.
-    let mut forbidden_names: HashSet<&str> = [
-        "BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr",
-    ].iter().cloned().collect();
+    let mut forbidden_names: HashSet<&str> = ["BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr"]
+        .iter()
+        .cloned()
+        .collect();
     for item in items.iter() {
         if let TopLevel::TypeDef(td) = item {
             for op in &td.body.op_bindings {
@@ -78,16 +83,18 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
     }
 
     // Strip metadata LLVM doesn't use
-        // 2026-07-30: Keep Cast. properties for protocol membership,
-        // plus width metadata (bits, maxbits, minbits) for resolve_llvm_type(),
-        // and alignment for align_of().
-        for rt in universe.types.values_mut() {
-            rt.properties.retain(|k, _| {
-                k.starts_with("Cast.")
-                    || k == "bits" || k == "maxbits" || k == "minbits"
-                    || k == "alignment"
-            });
-        }
+    // 2026-07-30: Keep Cast. properties for protocol membership,
+    // plus width metadata (bits, maxbits, minbits) for resolve_llvm_type(),
+    // and alignment for align_of().
+    for rt in universe.types.values_mut() {
+        rt.properties.retain(|k, _| {
+            k.starts_with("Cast.")
+                || k == "bits"
+                || k == "maxbits"
+                || k == "minbits"
+                || k == "alignment"
+        });
+    }
 
     Ok(())
 }
@@ -97,8 +104,9 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
 /// a descriptive message otherwise.
 fn validate_explicit_llvm(llvm_val: &str) -> Result<(), String> {
     match llvm_val {
-        "half" | "bfloat" | "float" | "double" | "fp128"
-        | "x86_fp80" | "ppc_fp128" => return Ok(()),
+        "half" | "bfloat" | "float" | "double" | "fp128" | "x86_fp80" | "ppc_fp128" => {
+            return Ok(());
+        }
         _ => {}
     }
     if llvm_val.starts_with('i') {
@@ -134,78 +142,121 @@ fn build_supported_ops() -> HashSet<String> {
     // undefined in the CPU runtime), so admitted programs reached
     // clang/link with undefined symbols (BUGS.md). Re-admit a name
     // together with a working arm + runtime symbol.
-    for name in &["GetEnv#", "GetEnvInt#",
-                   "ToInt#", "ToFloat#", "ToString#", "Length#",
-                   "AddressOf#", "SysCall#", "SysConf#",
-                    // 2026-09-23 (frgn-elimination round 2): Environ#() loads
-                    // the compiler-owned @__briev_environ global (env.bv
-                    // threads it to the pure-Briev environ walkers).
-                    "Environ#",
-                    // 2026-10-12 (daily-driver quick wins): Argc#/Args# load
-                    // the captured argc/argv globals (@__briev_argc /
-                    // @__briev_argv) — same shape as Environ#; cli.bv
-                    // composes them.
-                    "Argc#", "Args#",
-    // 2026-10-12 (daily-driver quick wins): Alloc# has a working
-    // lowering (emit_alloc, intrinsics.rs) and is used by the
-    // prelude-injected cast_lanes.bv buffered stdout lane
-    // (__stdout_byte) and the environ walkers — a bare `__print_str`
-    // (or any defn whose body reaches those helpers) walked into this
-    // gate and was rejected even though the arm exists. Malloc/Free
-    // join via STANDARD_OPS; Alloc# is the pure-Briev heap sibling.
-    "Alloc#",
-                   // 2026-08-03 (callbacks): CallPtr# calls a fn-value
-                   // operand — emit_call_ptr exists (intrinsics.rs); the
-                   // supported set must admit it (c_driver_callback).
-                   "CallPtr#",
-                   "Load#", "Store#", "Copy#", "Fill#",
-                   // 2026-08-27 (Slice C): typed volatile MMIO access.
-                   "VolatileLoad#", "VolatileStore#",
-                   "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#",
-                   "AtomicAdd#", "Fence#",
-                   // 2026-09-10 (Family F, Asm#): the two-mode asm escape
-                   // hatch — abstract ops lower through the lowering table,
-                   // raw mode is dialect-specific text. Both emit inline asm.
-                   "Asm#",
-                   // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md):
-                   // RMW family completion + width-parameterized access
-                   // + pointer arithmetic.
-                   "AtomicSub#", "AtomicOr#", "AtomicAnd#", "AtomicXor#",
-                   "AtomicLoadN#", "AtomicStoreN#",
-                   "PtrAdd#", "PtrSub#", "PtrDiff#", "PtrEq#", "PtrLt#",
-                   // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md):
-                   // portable SIMD — memory-to-memory element-wise family.
-                   "SimdAdd#", "SimdSub#", "SimdMul#", "SimdFma#",
-                   "DlOpen#", "DlSym#", "DlClose#",
-                    "WorkgroupSize#",
-                    // 2026-08-12 (Iterable protocol): `CharCount#` is the
-                    // computed UTF8 char count intrinsic (SPEC §17.1) — the
-                    // stdlib's string.text functions call it from imported
-                    // modules. Whitelisted with the other computed intrinsics.
-                    "CharCount#",
-                    // 2026-08-01: The print/println macros expand to these
-                    // direct runtime calls. They were previously invisible to
-                    // this validator because the old PrintLn! always wrapped
-                    // them in an Expr::Block, which the validator does not
-                    // descend into; the bare println!() form exposes them.
-                    "Print#",
-                    // 2026-08-14 (UOL §6b): the generative collection-op
-                    // intrinsic forms (`OpName#` → op-member dispatch). The
-                    // normalizer must accept them so the generative codegen
-                    // path is reachable; the typechecker validates the op is
-                    // actually declared on the receiver.
-                    "At#", "Slice#", "InsertAt#", "ExtractFrom#", "CopyFrom#",
-                    "Append#", "Prepend#", "Count#", "Iter#", "Step#",
-                    "IsEnd#", "Current#",
-                    // 2026-08-15 (coll plan §3.6): the capacity intrinsics —
-                    // compiler-owned coll capacity control (`Capacity#`,
-                    // `Resize#`, `EnsureCap#`, `TrimCap#`).
-                    "Capacity#", "Resize#", "EnsureCap#", "TrimCap#",
-                    // 2026-11-02: host-cancellation pair. Both have working
-                    // LLVM arms (intrinsics.rs emit_cancel_requested / the
-                    // ClearCancel# arm) and runtime globals; they were missing
-                    // only from this gate, rejecting c_driver_cancel.
-                    "CancelRequested#", "ClearCancel#"] {
+    for name in &[
+        "GetEnv#",
+        "GetEnvInt#",
+        "ToInt#",
+        "ToFloat#",
+        "ToString#",
+        "Length#",
+        "AddressOf#",
+        "SysCall#",
+        "SysConf#",
+        // 2026-09-23 (frgn-elimination round 2): Environ#() loads
+        // the compiler-owned @__briev_environ global (env.bv
+        // threads it to the pure-Briev environ walkers).
+        "Environ#",
+        // 2026-10-12 (daily-driver quick wins): Argc#/Args# load
+        // the captured argc/argv globals (@__briev_argc /
+        // @__briev_argv) — same shape as Environ#; cli.bv
+        // composes them.
+        "Argc#",
+        "Args#",
+        // 2026-10-12 (daily-driver quick wins): Alloc# has a working
+        // lowering (emit_alloc, intrinsics.rs) and is used by the
+        // prelude-injected cast_lanes.bv buffered stdout lane
+        // (__stdout_byte) and the environ walkers — a bare `__print_str`
+        // (or any defn whose body reaches those helpers) walked into this
+        // gate and was rejected even though the arm exists. Malloc/Free
+        // join via STANDARD_OPS; Alloc# is the pure-Briev heap sibling.
+        "Alloc#",
+        // 2026-08-03 (callbacks): CallPtr# calls a fn-value
+        // operand — emit_call_ptr exists (intrinsics.rs); the
+        // supported set must admit it (c_driver_callback).
+        "CallPtr#",
+        "Load#",
+        "Store#",
+        "Copy#",
+        "Fill#",
+        // 2026-08-27 (Slice C): typed volatile MMIO access.
+        "VolatileLoad#",
+        "VolatileStore#",
+        "AtomicLoad#",
+        "AtomicStore#",
+        "AtomicCas#",
+        "AtomicXchg#",
+        "AtomicAdd#",
+        "Fence#",
+        // 2026-09-10 (Family F, Asm#): the two-mode asm escape
+        // hatch — abstract ops lower through the lowering table,
+        // raw mode is dialect-specific text. Both emit inline asm.
+        "Asm#",
+        // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md):
+        // RMW family completion + width-parameterized access
+        // + pointer arithmetic.
+        "AtomicSub#",
+        "AtomicOr#",
+        "AtomicAnd#",
+        "AtomicXor#",
+        "AtomicLoadN#",
+        "AtomicStoreN#",
+        "PtrAdd#",
+        "PtrSub#",
+        "PtrDiff#",
+        "PtrEq#",
+        "PtrLt#",
+        // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md):
+        // portable SIMD — memory-to-memory element-wise family.
+        "SimdAdd#",
+        "SimdSub#",
+        "SimdMul#",
+        "SimdFma#",
+        "DlOpen#",
+        "DlSym#",
+        "DlClose#",
+        "WorkgroupSize#",
+        // 2026-08-12 (Iterable protocol): `CharCount#` is the
+        // computed UTF8 char count intrinsic (SPEC §17.1) — the
+        // stdlib's string.text functions call it from imported
+        // modules. Whitelisted with the other computed intrinsics.
+        "CharCount#",
+        // 2026-08-01: The print/println macros expand to these
+        // direct runtime calls. They were previously invisible to
+        // this validator because the old PrintLn! always wrapped
+        // them in an Expr::Block, which the validator does not
+        // descend into; the bare println!() form exposes them.
+        "Print#",
+        // 2026-08-14 (UOL §6b): the generative collection-op
+        // intrinsic forms (`OpName#` → op-member dispatch). The
+        // normalizer must accept them so the generative codegen
+        // path is reachable; the typechecker validates the op is
+        // actually declared on the receiver.
+        "At#",
+        "Slice#",
+        "InsertAt#",
+        "ExtractFrom#",
+        "CopyFrom#",
+        "Append#",
+        "Prepend#",
+        "Count#",
+        "Iter#",
+        "Step#",
+        "IsEnd#",
+        "Current#",
+        // 2026-08-15 (coll plan §3.6): the capacity intrinsics —
+        // compiler-owned coll capacity control (`Capacity#`,
+        // `Resize#`, `EnsureCap#`, `TrimCap#`).
+        "Capacity#",
+        "Resize#",
+        "EnsureCap#",
+        "TrimCap#",
+        // 2026-11-02: host-cancellation pair. Both have working
+        // LLVM arms (intrinsics.rs emit_cancel_requested / the
+        // ClearCancel# arm) and runtime globals; they were missing
+        // only from this gate, rejecting c_driver_cancel.
+        "CancelRequested#",
+        "ClearCancel#",
+    ] {
         set.insert(name.to_string());
     }
     set
@@ -213,13 +264,9 @@ fn build_supported_ops() -> HashSet<String> {
 
 /// Standard generic operation names (without the # suffix).
 const STANDARD_OPS: &[&str] = &[
-    "Add", "Sub", "Mul", "Div", "Rem",
-    "Eq", "Neq", "Lt", "Gt", "Le", "Ge",
-    "Neg", "Abs",
-    "BitAnd", "BitOr", "BitXor", "Shl", "Shr",
-    "Sqrt", "Sin", "Cos", "Fabs", "Ceil", "Floor", "Exp", "Max", "Min", "Fma", "Pow",
-    "Print",
-    "Malloc", "Free",
+    "Add", "Sub", "Mul", "Div", "Rem", "Eq", "Neq", "Lt", "Gt", "Le", "Ge", "Neg", "Abs", "BitAnd",
+    "BitOr", "BitXor", "Shl", "Shr", "Sqrt", "Sin", "Cos", "Fabs", "Ceil", "Floor", "Exp", "Max",
+    "Min", "Fma", "Pow", "Print", "Malloc", "Free",
 ];
 
 #[cfg(test)]
@@ -234,10 +281,14 @@ mod tests {
     #[test]
     fn delisted_names_are_gate_rejected() {
         let supported = build_supported_ops();
-        for name in ["Concat#", "GetGlobalSize#", "GetLocalId#", "Backtrace#", "GetGlobalId#"] {
-            let src = format!(
-                "node report [true][true] {{ let x: Int = {name}(); term; }};"
-            );
+        for name in [
+            "Concat#",
+            "GetGlobalSize#",
+            "GetLocalId#",
+            "Backtrace#",
+            "GetGlobalId#",
+        ] {
+            let src = format!("node report [true][true] {{ let x: Int = {name}(); term; }};");
             let tokens = crate::lexer::tokenize(&src).unwrap();
             let mut p = crate::parser::Parser::new(tokens, &src);
             let items = p.parse_program().unwrap();

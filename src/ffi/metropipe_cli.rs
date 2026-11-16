@@ -183,7 +183,8 @@ impl MetroCli {
         // Acquire CAS lock
         let lock_ptr = unsafe { self.header.add(CAS_LOCK_OFFSET as usize) as *mut AtomicU32 };
         loop {
-            let prev = unsafe { (*lock_ptr).compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed) };
+            let prev =
+                unsafe { (*lock_ptr).compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed) };
             if prev.is_ok() {
                 break;
             }
@@ -250,12 +251,14 @@ impl MetroCli {
                     std::sync::atomic::fence(Ordering::SeqCst);
 
                     // Read payload size
-                    let size_ptr = unsafe { self.header.add(PAYLOAD_SIZE_OFFSET as usize) as *const u32 };
+                    let size_ptr =
+                        unsafe { self.header.add(PAYLOAD_SIZE_OFFSET as usize) as *const u32 };
                     let resp_size = unsafe { std::ptr::read_volatile(size_ptr) } as usize;
                     let resp_size = std::cmp::min(resp_size, self.capacity);
 
                     // Read payload data
-                    let payload_ptr = unsafe { self.header.add(PAYLOAD_U32_OFFSET as usize) as *mut u8 };
+                    let payload_ptr =
+                        unsafe { self.header.add(PAYLOAD_U32_OFFSET as usize) as *mut u8 };
                     let mut buf = vec![0u8; resp_size];
                     unsafe {
                         std::ptr::copy_nonoverlapping(payload_ptr, buf.as_mut_ptr(), resp_size);
@@ -271,7 +274,8 @@ impl MetroCli {
                 }
                 STATUS_ERR => {
                     // Read error code at u32 offset 4 (= byte 16)
-                    let err_ptr = unsafe { self.header.add(ERROR_CODE_OFFSET as usize) as *const u32 };
+                    let err_ptr =
+                        unsafe { self.header.add(ERROR_CODE_OFFSET as usize) as *const u32 };
                     let err_code = unsafe { std::ptr::read_volatile(err_ptr) };
 
                     // Reset status to IDLE
@@ -348,18 +352,18 @@ impl MetroCli {
                         continue;
                     }
                     match self.request(line.as_bytes(), 5000) {
-                        Ok(response) => {
-                            match std::str::from_utf8(&response) {
-                                Ok(text) => println!("Response ({} bytes): {}", response.len(), text),
-                                Err(_) => println!("Response ({} bytes): {:02x?}", response.len(), response),
+                        Ok(response) => match std::str::from_utf8(&response) {
+                            Ok(text) => println!("Response ({} bytes): {}", response.len(), text),
+                            Err(_) => {
+                                println!("Response ({} bytes): {:02x?}", response.len(), response)
                             }
-                        }
+                        },
                         Err(e) => {
                             eprintln!("Error: {}", e);
                         }
                     }
                 }
-                Ok(_) => break, // EOF
+                Ok(_) => break,  // EOF
                 Err(_) => break, // Interrupted or error
             }
         }
@@ -375,7 +379,11 @@ impl MetroCli {
     pub fn generate_stubs(&self, output_dir: &str) {
         let hub = MetropolitanHub::new();
         let channel_id = &self.service_name;
-        let cap = if self.capacity > 0 { self.capacity } else { 4096 };
+        let cap = if self.capacity > 0 {
+            self.capacity
+        } else {
+            4096
+        };
 
         // Create the channel metadata so the hub can generate stubs
         if let Err(e) = hub.create_channel(channel_id, "c", cap, cap) {
@@ -385,7 +393,10 @@ impl MetroCli {
         let out_path = Path::new(output_dir);
         if !out_path.exists() {
             if let Err(e) = fs::create_dir_all(out_path) {
-                eprintln!("Error: Cannot create output directory {}: {}", output_dir, e);
+                eprintln!(
+                    "Error: Cannot create output directory {}: {}",
+                    output_dir, e
+                );
                 return;
             }
         }
@@ -501,7 +512,9 @@ impl Drop for MetroCli {
 pub fn run_metro_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         eprintln!("Error: Missing service name");
-        eprintln!("Usage: briev metropipe connect <service_name> [--send <payload>] [--gen-stub [<dir>]]");
+        eprintln!(
+            "Usage: briev metropipe connect <service_name> [--send <payload>] [--gen-stub [<dir>]]"
+        );
         return Ok(());
     }
 
@@ -513,7 +526,10 @@ pub fn run_metro_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     if let Some(idx) = gen_stub_idx {
         let output_dir = args.get(idx + 1).map(|s| s.as_str()).unwrap_or(".");
         metro.capacity = 4096; // Default capacity for stub generation
-        println!("Generating stubs for service '{}' in '{}'", service_name, output_dir);
+        println!(
+            "Generating stubs for service '{}' in '{}'",
+            service_name, output_dir
+        );
         metro.generate_stubs(output_dir);
         return Ok(());
     }
@@ -525,12 +541,10 @@ pub fn run_metro_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         metro.open()?;
         println!("Sending to {}...", metro.shm_path);
         match metro.request(payload.as_bytes(), 5000) {
-            Ok(response) => {
-                match std::str::from_utf8(&response) {
-                    Ok(text) => println!("Response ({} bytes): {}", response.len(), text),
-                    Err(_) => println!("Response ({} bytes): {:02x?}", response.len(), response),
-                }
-            }
+            Ok(response) => match std::str::from_utf8(&response) {
+                Ok(text) => println!("Response ({} bytes): {}", response.len(), text),
+                Err(_) => println!("Response ({} bytes): {:02x?}", response.len(), response),
+            },
             Err(e) => {
                 eprintln!("RPC failed: {}", e);
             }

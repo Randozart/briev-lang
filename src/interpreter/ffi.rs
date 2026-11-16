@@ -42,9 +42,9 @@ pub fn marshal_value(v: &Value) -> Marshalled {
             Some(p) => marshal_value(p),
             None => Marshalled::Bytes(vec![]),
         },
-        Value::Instance { fields, .. } => Marshalled::Seq(
-            fields.borrow().values().map(marshal_value).collect(),
-        ),
+        Value::Instance { fields, .. } => {
+            Marshalled::Seq(fields.borrow().values().map(marshal_value).collect())
+        }
         Value::Product { fields, .. } => {
             Marshalled::Seq(fields.iter().map(marshal_value).collect())
         }
@@ -66,9 +66,7 @@ pub fn unmarshal_value(m: Marshalled) -> Value {
         Marshalled::Float(f) => Value::float(f),
         Marshalled::Bool(b) => Value::bool(b),
         Marshalled::Bytes(bytes) => Value::bits(bytes),
-        Marshalled::Seq(items) => {
-            Value::product(items.into_iter().map(unmarshal_value).collect())
-        }
+        Marshalled::Seq(items) => Value::product(items.into_iter().map(unmarshal_value).collect()),
         Marshalled::Sum(name, payload) => {
             Value::sum(name, payload.into_iter().map(unmarshal_value).collect())
         }
@@ -100,16 +98,28 @@ mod tests {
 
     #[test]
     fn test_marshal_unmarshal_atoms() {
-        assert_eq!(unmarshal_value(marshal_value(&Value::int(7))), Value::int(7));
-        assert_eq!(unmarshal_value(marshal_value(&Value::float(1.5))), Value::float(1.5));
-        assert_eq!(unmarshal_value(marshal_value(&Value::bool(true))), Value::bool(true));
+        assert_eq!(
+            unmarshal_value(marshal_value(&Value::int(7))),
+            Value::int(7)
+        );
+        assert_eq!(
+            unmarshal_value(marshal_value(&Value::float(1.5))),
+            Value::float(1.5)
+        );
+        assert_eq!(
+            unmarshal_value(marshal_value(&Value::bool(true))),
+            Value::bool(true)
+        );
     }
 
     #[test]
     fn test_marshal_char_maps_to_int_payload() {
         // Char crosses the C-ABI boundary as its code point (Int).
         assert_eq!(marshal_value(&Value::char('A')), Marshalled::Int(65));
-        assert_eq!(unmarshal_value(marshal_value(&Value::char('A'))), Value::int(65));
+        assert_eq!(
+            unmarshal_value(marshal_value(&Value::char('A'))),
+            Value::int(65)
+        );
     }
 
     #[test]
@@ -120,7 +130,11 @@ mod tests {
 
     #[test]
     fn test_marshal_unmarshal_product() {
-        let v = Value::product(vec![Value::int(1), Value::bool(true), Value::bits(b"x".to_vec())]);
+        let v = Value::product(vec![
+            Value::int(1),
+            Value::bool(true),
+            Value::bits(b"x".to_vec()),
+        ]);
         assert_eq!(unmarshal_value(marshal_value(&v)), v);
     }
 

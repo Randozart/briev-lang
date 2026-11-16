@@ -53,12 +53,10 @@ impl RbvFile {
         // wrapper shape). A line comment or string containing the literal text
         // `<script>` is not markup — `examples/todo.rbv` documents the removal
         // in a `//` comment and must still compile.
-        let has_script_tag = source
-            .lines()
-            .any(|line| {
-                let l = line.trim_start();
-                l.starts_with("<script") || l.starts_with("</script")
-            });
+        let has_script_tag = source.lines().any(|line| {
+            let l = line.trim_start();
+            l.starts_with("<script") || l.starts_with("</script")
+        });
         if has_script_tag {
             return Err(RbvError::Parse(
                 "<script> wrappers are invalid (SPEC 21.1) — write Briev source \
@@ -87,10 +85,7 @@ fn extract_tag(source: &str, start_tag: &str, end_tag: &str) -> Option<String> {
 }
 
 fn strip_known_blocks(source: &str) -> String {
-    let known_blocks: [(&str, &str); 2] = [
-        ("<view>", "</view>"),
-        ("<style>", "</style>"),
-    ];
+    let known_blocks: [(&str, &str); 2] = [("<view>", "</view>"), ("<style>", "</style>")];
     let mut result = source.to_string();
     for &(start_tag, end_tag) in &known_blocks {
         while let (Some(start), Some(end)) = (result.find(start_tag), result.find(end_tag)) {

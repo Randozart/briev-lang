@@ -51,7 +51,11 @@ pub fn analyze(
 fn scan_txns(
     program: &HirProgram,
     state_fields: &HashSet<String>,
-) -> (HashSet<String>, HashSet<String>, HashMap<String, HashSet<String>>) {
+) -> (
+    HashSet<String>,
+    HashSet<String>,
+    HashMap<String, HashSet<String>>,
+) {
     let mut manually_freed = HashSet::new();
     let mut kept = HashSet::new();
     let mut txn_touches = HashMap::new();
@@ -121,7 +125,10 @@ fn schedule_frees(
             ));
             continue;
         }
-        free_after.entry((*last).clone()).or_default().push(field.clone());
+        free_after
+            .entry((*last).clone())
+            .or_default()
+            .push(field.clone());
     }
     for v in free_after.values_mut() {
         v.sort();
@@ -157,12 +164,12 @@ fn manual_free_target(stmt: &HirStmt, state_fields: &HashSet<String>) -> Option<
     }
     match &stmt.kind {
         HirStmtKind::Expression(e) => walk_expr(e, state_fields),
-        HirStmtKind::Guarded(_, body) => {
-            body.iter().find_map(|s| manual_free_target(s, state_fields))
-        }
-        HirStmtKind::Block(stmts) => {
-            stmts.iter().find_map(|s| manual_free_target(s, state_fields))
-        }
+        HirStmtKind::Guarded(_, body) => body
+            .iter()
+            .find_map(|s| manual_free_target(s, state_fields)),
+        HirStmtKind::Block(stmts) => stmts
+            .iter()
+            .find_map(|s| manual_free_target(s, state_fields)),
         HirStmtKind::FreeHint(name) | HirStmtKind::KeepHint(name) => {
             state_fields.contains(name).then(|| name.clone())
         }
@@ -191,7 +198,9 @@ fn collect_state_identifiers(
             collect_state_identifiers(obj, state_fields, out);
             collect_state_identifiers(idx, state_fields, out);
         }
-        HirExprKind::Field { receiver, .. } => collect_state_identifiers(receiver, state_fields, out),
+        HirExprKind::Field { receiver, .. } => {
+            collect_state_identifiers(receiver, state_fields, out)
+        }
         HirExprKind::AddrOf(inner)
         | HirExprKind::Deref(inner)
         | HirExprKind::Consume(inner)
@@ -207,7 +216,9 @@ fn collect_state_identifiers(
                 collect_state_identifiers(arg, state_fields, out);
             }
         }
-        HirExprKind::Reflect { receiver, .. } => collect_state_identifiers(receiver, state_fields, out),
+        HirExprKind::Reflect { receiver, .. } => {
+            collect_state_identifiers(receiver, state_fields, out)
+        }
         HirExprKind::Block(stmts) => {
             scan_for_state_identifiers(stmts, state_fields, out);
         }
@@ -217,7 +228,11 @@ fn collect_state_identifiers(
             }
         }
         HirExprKind::Match { .. } => collect_match_state_ids(expr, state_fields, out),
-        HirExprKind::If { condition, then_branch, else_branch } => {
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_state_identifiers(condition, state_fields, out);
             collect_state_identifiers(then_branch, state_fields, out);
             if let Some(else_) = else_branch {
@@ -229,7 +244,12 @@ fn collect_state_identifiers(
             collect_state_identifiers(start, state_fields, out);
             collect_state_identifiers(end, state_fields, out);
         }
-        HirExprKind::Slice { array, start, end, stride } => {
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_state_identifiers(array, state_fields, out);
             if let Some(s) = start {
                 collect_state_identifiers(s, state_fields, out);

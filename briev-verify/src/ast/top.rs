@@ -349,15 +349,10 @@ impl Contract {
 impl Definition {
     /// A `defn` with only the fields the prover reads filled in.
     ///
-    /// The prover looks at the name, the contract and the body; the other
-    /// eleven fields exist for the compiler's frontend and backends. This is the
-    /// constructor for a caller that has no frontend — it builds nodes and asks
-    /// for a verdict.
-    pub fn prover_defn(
-        name: impl Into<String>,
-        contract: Contract,
-        body: Vec<Statement>,
-    ) -> Self {
+    /// Creates an untyped mathematical word-model declaration. Source callers
+    /// must retain parameter/result/local types and supply a resolved scalar
+    /// model to `verify_bodies_with_types`; type erasure is not source assurance.
+    pub fn prover_defn(name: impl Into<String>, contract: Contract, body: Vec<Statement>) -> Self {
         Definition {
             name: name.into(),
             type_params: Vec::new(),
@@ -527,10 +522,7 @@ pub enum Statement {
         modifiers: Vec<Annotation>,
     },
     /// trg name @ instance; — whole-target form (the .port is removed).
-    TrgBinding {
-        name: String,
-        instance: Expr,
-    },
+    TrgBinding { name: String, instance: Expr },
     /// asm "instruction" { clobbers }
     InlineAsm {
         asm_string: String,
@@ -585,13 +577,37 @@ impl PartialEq for Statement {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Statement::InlineDefn(_), _) | (_, Statement::InlineDefn(_)) => false,
-            (Statement::Let { name: n1, names: ns1, ty: t1, expr: e1, modifiers: m1, .. },
-             Statement::Let { name: n2, names: ns2, ty: t2, expr: e2, modifiers: m2, .. }) =>
-                n1 == n2 && ns1 == ns2 && t1 == t2 && e1 == e2 && m1 == m2,
+            (
+                Statement::Let {
+                    name: n1,
+                    names: ns1,
+                    ty: t1,
+                    expr: e1,
+                    modifiers: m1,
+                    ..
+                },
+                Statement::Let {
+                    name: n2,
+                    names: ns2,
+                    ty: t2,
+                    expr: e2,
+                    modifiers: m2,
+                    ..
+                },
+            ) => n1 == n2 && ns1 == ns2 && t1 == t2 && e1 == e2 && m1 == m2,
             (Statement::Assign(l1, r1), Statement::Assign(l2, r2)) => l1 == l2 && r1 == r2,
-            (Statement::ArrowAssign { target: t1, value: v1, consume: c1 },
-             Statement::ArrowAssign { target: t2, value: v2, consume: c2 }) =>
-                t1 == t2 && v1 == v2 && c1 == c2,
+            (
+                Statement::ArrowAssign {
+                    target: t1,
+                    value: v1,
+                    consume: c1,
+                },
+                Statement::ArrowAssign {
+                    target: t2,
+                    value: v2,
+                    consume: c2,
+                },
+            ) => t1 == t2 && v1 == v2 && c1 == c2,
             (Statement::Tail(e1), Statement::Tail(e2)) => e1 == e2,
             (Statement::FreeHint(n1), Statement::FreeHint(n2)) => n1 == n2,
             (Statement::KeepHint(n1), Statement::KeepHint(n2)) => n1 == n2,
@@ -599,25 +615,59 @@ impl PartialEq for Statement {
             (Statement::Mutex(b1), Statement::Mutex(b2)) => b1 == b2,
             (Statement::Trap, Statement::Trap) => true,
             (Statement::Halt, Statement::Halt) => true,
-             (Statement::Term(e1), Statement::Term(e2)) => e1 == e2,
+            (Statement::Term(e1), Statement::Term(e2)) => e1 == e2,
             (Statement::Break, Statement::Break) => true,
             (Statement::Yield, Statement::Yield) => true,
             (Statement::Check(e1), Statement::Check(e2)) => e1 == e2,
-             (Statement::EndProgram(e1), Statement::EndProgram(e2)) => e1 == e2,
-             (Statement::Guarded(c1, b1), Statement::Guarded(c2, b2)) => c1 == c2 && b1 == b2,
+            (Statement::EndProgram(e1), Statement::EndProgram(e2)) => e1 == e2,
+            (Statement::Guarded(c1, b1), Statement::Guarded(c2, b2)) => c1 == c2 && b1 == b2,
             (Statement::Gate(c1), Statement::Gate(c2)) => c1 == c2,
             (Statement::Expression(e1), Statement::Expression(e2)) => e1 == e2,
             (Statement::Block(b1), Statement::Block(b2)) => b1 == b2,
-            (Statement::MetadataAssignment(k1, v1), Statement::MetadataAssignment(k2, v2)) => k1 == k2 && v1 == v2,
+            (Statement::MetadataAssignment(k1, v1), Statement::MetadataAssignment(k2, v2)) => {
+                k1 == k2 && v1 == v2
+            }
             (Statement::Rollback(e1), Statement::Rollback(e2)) => e1 == e2,
-            (Statement::Foreach { item: i1, list: l1, body: b1 , ..},
-             Statement::Foreach { item: i2, list: l2, body: b2 , ..}) => i1 == i2 && l1 == l2 && b1 == b2,
-            (Statement::TrgBinding { name: n1, instance: i1 },
-             Statement::TrgBinding { name: n2, instance: i2 }) => n1 == n2 && i1 == i2,
-            (Statement::InlineAsm { asm_string: a1, clobbers: c1, span: s1 },
-             Statement::InlineAsm { asm_string: a2, clobbers: c2, span: s2 }) => a1 == a2 && c1 == c2 && s1 == s2,
+            (
+                Statement::Foreach {
+                    item: i1,
+                    list: l1,
+                    body: b1,
+                    ..
+                },
+                Statement::Foreach {
+                    item: i2,
+                    list: l2,
+                    body: b2,
+                    ..
+                },
+            ) => i1 == i2 && l1 == l2 && b1 == b2,
+            (
+                Statement::TrgBinding {
+                    name: n1,
+                    instance: i1,
+                },
+                Statement::TrgBinding {
+                    name: n2,
+                    instance: i2,
+                },
+            ) => n1 == n2 && i1 == i2,
+            (
+                Statement::InlineAsm {
+                    asm_string: a1,
+                    clobbers: c1,
+                    span: s1,
+                },
+                Statement::InlineAsm {
+                    asm_string: a2,
+                    clobbers: c2,
+                    span: s2,
+                },
+            ) => a1 == a2 && c1 == c2 && s1 == s2,
             (Statement::SyncBlock(b1), Statement::SyncBlock(b2)) => b1 == b2,
-            (Statement::Match { expr: e1, arms: a1 }, Statement::Match { expr: e2, arms: a2 }) => e1 == e2 && a1 == a2,
+            (Statement::Match { expr: e1, arms: a1 }, Statement::Match { expr: e2, arms: a2 }) => {
+                e1 == e2 && a1 == a2
+            }
             (Statement::Match { .. }, _) | (_, Statement::Match { .. }) => false,
             // 2026-09-22 (D16 p3b): author-expressed disconnection.
             (Statement::Open(l1, r1), Statement::Open(l2, r2)) => l1 == l2 && r1 == r2,
@@ -708,7 +758,7 @@ pub enum ImportKind {
 }
 
 #[derive(Debug, Clone)]
- pub struct Import {
+pub struct Import {
     pub kind: ImportKind,
     /// 2026-08-06 (Phase 11): (local_name, exported_name) pairs. A selective
     /// rename `import { Local: Exported }` binds the module's `Exported` name
@@ -810,9 +860,16 @@ pub enum StageKind {
 impl StageKind {
     /// True if this stage operates on AST data (tree operations).
     pub fn is_ast_stage(&self) -> bool {
-        matches!(self, StageKind::Parsed | StageKind::Resolved | StageKind::Typed
-            | StageKind::Normalized | StageKind::Verified | StageKind::Allocated
-            | StageKind::Provenanced)
+        matches!(
+            self,
+            StageKind::Parsed
+                | StageKind::Resolved
+                | StageKind::Typed
+                | StageKind::Normalized
+                | StageKind::Verified
+                | StageKind::Allocated
+                | StageKind::Provenanced
+        )
     }
 
     /// True if this stage operates on IR text.
@@ -962,7 +1019,10 @@ impl FromSpec {
     /// Extract the file extension for convention derivation.
     pub fn extension(&self) -> Option<String> {
         match self {
-            Self::Literal(p) => p.extension().and_then(|s| s.to_str()).map(|s| s.to_string()),
+            Self::Literal(p) => p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string()),
             Self::CompilerRegistry(name) => name.rsplit('.').next().map(|s| s.to_string()),
             Self::Protocol(_) => None,
             Self::Linked(_) => None,
@@ -1109,7 +1169,6 @@ pub struct TriggerDeclaration {
     pub modifiers: Vec<Annotation>,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct EnumDefinition {
     pub name: String,
@@ -1148,7 +1207,15 @@ pub struct LinkDependency {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LinkLanguage {
-    C, Cpp, Rust, Zig, Python, Java, AssemblyScript, Bitcode, Object,
+    C,
+    Cpp,
+    Rust,
+    Zig,
+    Python,
+    Java,
+    AssemblyScript,
+    Bitcode,
+    Object,
 }
 
 #[derive(Debug, Clone)]
@@ -1680,7 +1747,12 @@ pub struct IsrHandler {
 }
 
 impl CfgCondition {
-    pub fn evaluate(&self, target_os: &str, target_arch: &str, board: &str) -> Result<bool, String> {
+    pub fn evaluate(
+        &self,
+        target_os: &str,
+        target_arch: &str,
+        board: &str,
+    ) -> Result<bool, String> {
         match self {
             CfgCondition::Eq(key, val) => {
                 let actual = match key.as_str() {
@@ -1701,16 +1773,18 @@ impl CfgCondition {
                 Ok(actual != val)
             }
             CfgCondition::And(a, b) => {
-                if !a.evaluate(target_os, target_arch, board)? { return Ok(false); }
+                if !a.evaluate(target_os, target_arch, board)? {
+                    return Ok(false);
+                }
                 b.evaluate(target_os, target_arch, board)
             }
             CfgCondition::Or(a, b) => {
-                if a.evaluate(target_os, target_arch, board)? { return Ok(true); }
+                if a.evaluate(target_os, target_arch, board)? {
+                    return Ok(true);
+                }
                 b.evaluate(target_os, target_arch, board)
             }
-            CfgCondition::Not(c) => {
-                Ok(!c.evaluate(target_os, target_arch, board)?)
-            }
+            CfgCondition::Not(c) => Ok(!c.evaluate(target_os, target_arch, board)?),
             CfgCondition::Bool(b) => Ok(*b),
         }
     }

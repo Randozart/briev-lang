@@ -21,10 +21,7 @@ fn run_suite(dir: &str, out: &str) {
         .expect("spawn brievc test");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "{dir} failed:\n{stdout}\n{stderr}"
-    );
+    assert!(output.status.success(), "{dir} failed:\n{stdout}\n{stderr}");
     assert!(
         !stdout.contains("FAIL "),
         "{dir} reported a failing case:\n{stdout}"

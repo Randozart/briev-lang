@@ -17,8 +17,14 @@ fn test_contract_before_arrow() {
         _ => panic!("expected Definition"),
     };
     assert_eq!(defn.name, "foo");
-    assert!(matches!(defn.contract.pre_condition, Expr::BinaryOp(..)), "pre should be BinaryOp");
-    assert!(matches!(defn.contract.post_condition, Expr::BinaryOp(..)), "post should be BinaryOp");
+    assert!(
+        matches!(defn.contract.pre_condition, Expr::BinaryOp(..)),
+        "pre should be BinaryOp"
+    );
+    assert!(
+        matches!(defn.contract.post_condition, Expr::BinaryOp(..)),
+        "post should be BinaryOp"
+    );
     assert!(defn.output_type.is_some(), "output_type should be Some");
     let types = defn.output_type.as_ref().unwrap().all_types();
     assert_eq!(types.len(), 1, "should be 1 output type");

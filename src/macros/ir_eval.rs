@@ -40,7 +40,11 @@ fn eval_stmt(ir: &mut String, stmt: &Statement, env: &mut Env) -> Result<(), Str
             eval(ir, expr, env)?;
             Ok(())
         }
-        Statement::Let { name, expr: Some(expr), .. } => {
+        Statement::Let {
+            name,
+            expr: Some(expr),
+            ..
+        } => {
             let value = eval(ir, expr, env)?;
             env.insert(name.clone(), value);
             Ok(())
@@ -100,7 +104,7 @@ fn eval_method(
         other => {
             return Err(format!(
                 "IR plugin: '{name}' needs a Find$ selection, got {other:?}"
-            ))
+            ));
         }
     };
     match name {
@@ -137,7 +141,12 @@ fn eval_method(
     }
 }
 
-fn text_selection(ir: &str, args: &[Expr], env: &mut Env, op: &str) -> Result<TextSelection, String> {
+fn text_selection(
+    ir: &str,
+    args: &[Expr],
+    env: &mut Env,
+    op: &str,
+) -> Result<TextSelection, String> {
     let needle = string_arg(args, env, op)?;
     Ok(TextSelection::find(ir, &needle))
 }
@@ -152,7 +161,9 @@ fn string_arg(args: &[Expr], env: &mut Env, op: &str) -> Result<String, String> 
             Some(Value::Text(text)) => Ok(text.clone()),
             _ => Err(format!("IR plugin: '{op}' argument '{name}' is not text")),
         },
-        other => Err(format!("IR plugin: '{op}' requires a string argument, got '{other}'")),
+        other => Err(format!(
+            "IR plugin: '{op}' requires a string argument, got '{other}'"
+        )),
     }
 }
 

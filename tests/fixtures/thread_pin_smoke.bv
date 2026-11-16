@@ -1,0 +1,43 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-16 (per-worker arena plan, Stage 2a): explicit worker threads.
+//
+// Two nodes pinned to different workers with disjoint state, plus an unpinned
+// reporter. This is the positive case the threaded lane exists for:
+//
+//   - `bump_a` writes only `counter_a`, `bump_b` only `counter_b` — provably
+//     independent, so the frontend allows the pin.
+//   - Both are `async`: the pair can fire in the same tick by construction, and
+//     Rule 22 requires that simultaneity to be declared.
+//   - Neither prints and neither allocates, so no shared sink and no shared
+//     arena cursor is involved.
+//
+// The emitted program must produce the same output as an unpinned build (6):
+// which is what the integration test asserts.
+
+import "std/io.bv";
+
+let counter_a: Int = 0;
+let counter_b: Int = 0;
+let done: Bool = false;
+
+// Worker 0 owns counter_a.
+async on thread 0 node bump_a [counter_a < 3][counter_a == 3] {
+    counter_a = counter_a + 1;
+    term;
+};
+
+// Worker 1 owns counter_b.
+async on thread 1 node bump_b [counter_b < 3][counter_b == 3] {
+    counter_b = counter_b + 1;
+    term;
+};
+
+// Unpinned: keeps the reactor's own scheduling (worker 0), and it is the only
+// side that prints — one observable sink, so the ordering stays deterministic.
+node report [counter_a == 3 && counter_b == 3 && !done][done] {
+    Print#(counter_a + counter_b);
+    done = true;
+    endprogram;
+};

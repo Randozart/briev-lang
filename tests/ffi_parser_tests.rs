@@ -3,9 +3,9 @@
 //! Tests the `frgn` declaration parser against the current GLUE
 //! config-driven architecture (2026-09-07 rewrite).
 
+use briev_compiler::ast::{ForeignBinding, FromSpec, TopLevel};
 use briev_compiler::lexer::tokenize;
 use briev_compiler::parser::Parser;
-use briev_compiler::ast::{TopLevel, ForeignBinding, FromSpec};
 
 fn parse_frgn(src: &str) -> ForeignBinding {
     let tokens = tokenize(src).unwrap();
@@ -80,11 +80,16 @@ fn test_frgn_link_directive() {
 
 #[test]
 fn test_frgn_colon_binds_external_symbol() {
-    let fb = parse_frgn(
-        r#"frgn local_add(a: Int, b: Int) -> Int: external_add from #System;"#,
+    let fb = parse_frgn(r#"frgn local_add(a: Int, b: Int) -> Int: external_add from #System;"#);
+    assert_eq!(
+        fb.foreign_name, "external_add",
+        "the `:` symbol is the link name"
     );
-    assert_eq!(fb.foreign_name, "external_add", "the `:` symbol is the link name");
-    assert_eq!(fb.briev_name.as_deref(), Some("local_add"), "the declaration name is the local Briev name");
+    assert_eq!(
+        fb.briev_name.as_deref(),
+        Some("local_add"),
+        "the declaration name is the local Briev name"
+    );
     assert_eq!(fb.effective_briev_name(), "local_add");
 }
 
@@ -92,9 +97,8 @@ fn test_frgn_colon_binds_external_symbol() {
 
 #[test]
 fn test_frgn_variadic_named_param() {
-    let fb = parse_frgn(
-        r#"frgn log(format: String, variadic args: ForeignArgs) -> Void from #System;"#,
-    );
+    let fb =
+        parse_frgn(r#"frgn log(format: String, variadic args: ForeignArgs) -> Void from #System;"#);
     assert!(fb.is_variadic, "the `variadic` marker must be recorded");
     assert_eq!(fb.inputs.len(), 2);
     assert_eq!(fb.inputs[1].0, "args");

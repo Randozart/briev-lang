@@ -21,9 +21,258 @@
 // surface are skipped silently (declared coverage, per the plan's soundness
 // boundary).
 
-use crate::ast::{Annotation, BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
-use crate::symbolic::{eval_symbolic, SymbolicState, SymbolicValue};
+use crate::ast::{
+    Annotation, BinaryOpKind, Contract, Expr, OutputType, Statement, TopLevel, Type, UnaryOpKind,
+};
+use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic, simplify_binary};
 use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// Z3 escalation profiler — active only with `--features z3-profile`.
+///
+/// Instruments `verify_one` to record WHY each path escalated to `smt_discharge`.
+/// Output via `z3_profile_report()`.  Run the corpus through `verify_bodies` with
+/// the feature enabled, then grep the output for "Z3 profile".
+///
+/// The histogram tells us where structural derivation stops and Z3 begins:
+/// - `binary_vs_nonliteral` = Tier 1a gap (a+b compared, neither operand is a bound literal)
+/// - `field_projection`      = Tier 2a gap (x.n in postcondition, may still need Z3 if field not in map)
+/// - `mul_sign`             = sign-lattice candidate (a * b > 0)
+/// - `uninterpreted_fn`    = needs lemma or Z3 (f(x) in postcondition)
+/// - `pure_nonlinear`       = Z3 only (sqrt, pow, division)
+/// - `other`                = needs per-case diagnosis
+#[cfg(feature = "z3-profile")]
+mod z3_profile {
+    use crate::ast::{BinaryOpKind, Expr, UnaryOpKind};
+    use crate::symbolic::SymbolicState;
+    use crate::verify::ProofVerdict;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    /// Records Z3 escalation patterns for corpus analysis.
+    #[derive(Default)]
+    pub struct Z3EscalationProfile {
+        /// Total paths that escalated to smt_discharge.
+        pub escalated: usize,
+        /// Z3 found a concrete violation.
+        pub smt_violated: usize,
+        /// Z3 proved the postcondition holds.
+        pub smt_holds: usize,
+        /// Z3 unavailable / model-dependent / bound / not encodable.
+        pub smt_none: usize,
+        /// Postcondition structural category.
+        post_category: HashMap<&'static str, usize>,
+    }
+
+    // RwLock + interior mutability: `force()` gives `&Z3EscalationProfile`; lock()
+    // for write access to `record`.  Initialised once on first use, safe because
+    // Rust closures in statics are implicitly Send + Sync and this is only called
+    // from single-threaded test / verify_bodies_with_types contexts.
+    fn make_profile() -> RwLock<Z3EscalationProfile> {
+        RwLock::new(Z3EscalationProfile::default())
+    }
+    static PROFILE: std::sync::LazyLock<RwLock<Z3EscalationProfile>> =
+        std::sync::LazyLock::new(make_profile);
+
+    /// Classify the structural shape of a postcondition expression.
+    ///
+    /// Returns one of:
+    /// - `"binary_vs_literal"`       — comparison of a binary expression against a literal
+    /// - `"binary_vs_nonliteral"`     — comparison of a binary expression against a non-literal
+    /// - `"field_projection"`         — post contains `x.n` (a struct field read)
+    /// - `"mul_sign"`                 — post has a multiplication/subdivision on both sides
+    /// - `"uninterpreted_fn"`         — post contains a function call
+    /// - `"pure_nonlinear"`           — sqrt, pow, division in post (requires reals)
+    /// - `"identifier_vs_literal"`    — plain identifier vs literal (already handled by bounds)
+    /// - `"structural_eq"`            — equality comparison of compound terms
+    /// - `"other"`                   — anything not in the above categories
+    fn either<L, R>(l: L, r: R, pred: impl Fn(&Expr) -> bool) -> bool {
+        pred(l) || pred(r)
+    }
+
+    fn both_sides(l: &Expr, r: &Expr, pred: impl Fn(&Expr) -> bool) -> bool {
+        pred(l) && pred(r)
+    }
+
+    /// True if either operand is a Mul or Div binary op (sign-lattice candidate).
+    fn has_mul_or_div(l: &Expr, r: &Expr) -> bool {
+        either(l, r, |e| {
+            matches!(
+                e,
+                Expr::BinaryOp(BinaryOpKind::Mul | BinaryOpKind::Div, _, _)
+            )
+        })
+    }
+
+    /// True if either operand is a Div or Mod binary op (real arithmetic needed).
+    fn has_div_or_mod(l: &Expr, r: &Expr) -> bool {
+        either(l, r, |e| {
+            matches!(
+                e,
+                Expr::BinaryOp(BinaryOpKind::Div | BinaryOpKind::Mod, _, _)
+            )
+        })
+    }
+
+    /// True if either operand is a Call or BitNot (nonlinear / uninterpreted).
+    fn has_nonlinear(l: &Expr, r: &Expr) -> bool {
+        either(l, r, |e| {
+            matches!(e, Expr::Call(..) | Expr::UnaryOp(UnaryOpKind::BitNot, _))
+        })
+    }
+
+    /// True if one operand is a BinaryOp/Field and the other is a Decimal literal.
+    fn binary_vs_literal(l: &Expr, r: &Expr) -> bool {
+        both_sides(l, r, |_| false)
+            || (is_binary_or_field(l) && is_decimal(r))
+            || (is_binary_or_field(r) && is_decimal(l))
+    }
+
+    /// True if one operand is a BinaryOp/Field and the other is an Identifier.
+    fn binary_vs_nonliteral(l: &Expr, r: &Expr) -> bool {
+        (is_binary_or_field(l) && is_identifier(r)) || (is_binary_or_field(r) && is_identifier(l))
+    }
+
+    /// True if the op is Eq/Neq and at least one side is a BinaryOp or Field.
+    fn is_structural_eq(op: &BinaryOpKind, l: &Expr, r: &Expr) -> bool {
+        (op.is_eq() || op.is_neq()) && (is_binary_or_field(l) || is_binary_or_field(r))
+    }
+
+    fn is_decimal(e: &Expr) -> bool {
+        matches!(e, Expr::Decimal(_))
+    }
+
+    fn is_identifier(e: &Expr) -> bool {
+        matches!(e, Expr::Identifier(_))
+    }
+
+    fn is_binary_or_field(e: &Expr) -> bool {
+        matches!(e, Expr::BinaryOp(..) | Expr::Field(..))
+    }
+
+    fn categorize_non_comparison(post: &Expr) -> &'static str {
+        match post {
+            Expr::Field(..) => "field_projection",
+            Expr::Call(..) => "uninterpreted_fn",
+            Expr::Identifier(_) => "identifier_vs_literal",
+            _ => "other",
+        }
+    }
+
+    /// Classify a postcondition into a structural category for profiling.
+    /// Early-return per category; all two-operand checks are in named helpers.
+    pub fn categorize_post(post: &Expr) -> &'static str {
+        let Expr::BinaryOp(op, lhs, rhs) = post else {
+            return categorize_non_comparison(post);
+        };
+        if !op.is_comparison() {
+            return "other";
+        }
+        let (l, r) = (&**lhs, &**rhs);
+        if has_mul_or_div(l, r) {
+            return "mul_sign";
+        }
+        if has_div_or_mod(l, r) {
+            return "pure_nonlinear";
+        }
+        if has_nonlinear(l, r) {
+            return "pure_nonlinear";
+        }
+        if binary_vs_literal(l, r) {
+            return "binary_vs_literal";
+        }
+        if binary_vs_nonliteral(l, r) {
+            return "binary_vs_nonliteral";
+        }
+        if is_structural_eq(op, l, r) {
+            return "structural_eq";
+        }
+        "other"
+    }
+
+    impl Z3EscalationProfile {
+        fn record(&mut self, post: &Expr, result: Option<ProofVerdict>) {
+            self.escalated += 1;
+            match result {
+                Some(ProofVerdict::Violated) => self.smt_violated += 1,
+                Some(ProofVerdict::Holds) => self.smt_holds += 1,
+                None => self.smt_none += 1,
+                _ => {}
+            }
+            let cat = categorize_post(post);
+            *self.post_category.entry(cat).or_insert(0) += 1;
+        }
+    }
+
+    /// Called from `verify_one` each time `smt_discharge` is invoked.
+    pub fn record_smt_result(post: &Expr, result: Option<ProofVerdict>) {
+        if let Ok(mut p) = std::sync::LazyLock::force(&PROFILE).write() {
+            p.record(post, result);
+        }
+    }
+
+    /// Print the profile histogram to stdout.
+    ///
+    /// Output is stable key-value format — parseable by scripts:
+    /// ```
+    /// Z3 profile:
+    ///   escalated:       203
+    ///   smt_violated:     12
+    ///   smt_holds:        89
+    ///   smt_none:        102  (solver unavailable / model-dependent / not encodable)
+    ///   binary_vs_literal:    45
+    ///   binary_vs_nonliteral: 12
+    ///   field_projection:      31
+    ///   mul_sign:              8
+    ///   uninterpreted_fn:     14
+    ///   pure_nonlinear:         7
+    ///   structural_eq:         5
+    ///   identifier_vs_literal: 31
+    ///   other:                 50
+    /// ```
+    pub fn report() {
+        let p = std::sync::LazyLock::force(&PROFILE).read().unwrap();
+        println!("Z3 profile:");
+        println!("  escalated:       {}", p.escalated);
+        println!("  smt_violated:    {}", p.smt_violated);
+        println!("  smt_holds:       {}", p.smt_holds);
+        println!(
+            "  smt_none:        {}  (solver unavailable / model-dependent / not encodable)",
+            p.smt_none
+        );
+        let mut cats: Vec<_> = p.post_category.iter().collect();
+        cats.sort_by_key(|(k, _)| *k);
+        for (cat, count) in cats.iter() {
+            println!("  {cat:30}  {count}");
+        }
+        let smt_total = p.smt_violated + p.smt_holds;
+        if smt_total > 0 {
+            println!("  --- SMT resolution ---");
+            println!(
+                "  smt_violated/smt_total: {}/{} ({:.0}%)",
+                p.smt_violated,
+                smt_total,
+                100.0 * p.smt_violated as f64 / smt_total as f64
+            );
+        }
+    }
+}
+
+/// Wire Z3 profiling into `smt_discharge`.  When the feature is off this is a
+/// no-op (LLVM dead-code elimination removes the call).
+#[cfg(feature = "z3-profile")]
+macro_rules! z3_profile_record {
+    ($post:expr, $result:expr) => {
+        z3_profile::record_smt_result($post, $result);
+    };
+}
+#[cfg(not(feature = "z3-profile"))]
+macro_rules! z3_profile_record {
+    ($post:expr, $result:expr) => {};
+}
+
+mod interval;
+use interval::{Interval as Bound, Relation};
 
 /// Tri-state outcome of evaluating a postcondition on one symbolic path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,15 +351,11 @@ pub fn findings_json(entries: &[String]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// Inclusive numeric bounds of one identifier, derived from path facts.
-#[derive(Debug, Clone, Copy, Default)]
-struct Bound {
-    lower: Option<i64>,
-    upper: Option<i64>,
-}
-
 /// Verify every txn/defn body (incl. SyncGroup/Export wrappers) against its
 /// own explicit contract.
+///
+/// Explicit source types require `verify_bodies_with_types`; this standalone
+/// entry point admits only untyped mathematical AST declarations.
 ///
 /// Returns the three-way report; the caller decides failure (violated) and
 /// warning (unproven) handling. Bodies whose surface is outside the
@@ -121,10 +366,21 @@ struct Bound {
 /// Callers enable this only under `BuildOptions.verify_bodies`; with the flag
 /// off (the default) the historical consistency-only behaviour is unchanged.
 pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
+    verify_bodies_with_types(items, &|_| crate::domain::ScalarModel::Unsupported)
+}
+
+/// Verify source declarations with compiler-resolved scalar semantics. The
+/// resolver must account for the selected target and user operator overrides.
+/// Untyped AST variables retain the standalone API's mathematical word model.
+pub fn verify_bodies_with_types(
+    items: &[TopLevel],
+    resolve: &crate::domain::TypeResolver<'_>,
+) -> BodyReport {
     let mut report = BodyReport::default();
+    let globals = crate::domain::global_names(items);
     // C3: value summaries let a body be proved through the helpers it calls.
     // Computed once, up front, so the result never depends on item order.
-    let sums = build_summaries(items);
+    let sums = build_summaries(items, resolve, &globals);
     for item in items {
         let (name, contract, body) = match contract_target(item) {
             Some(t) => t,
@@ -135,60 +391,115 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
         if !contract.explicit || trivially_true(&contract.post_condition) {
             continue;
         }
+        if let Some(reason) = crate::domain::unsupported_declaration(item, resolve, &globals) {
+            report.skipped.push(format!("{name}: {reason}"));
+            continue;
+        }
         // A loop carrying an `invariant` annotation is proved by its three
         // Hoare obligations, not as one straight-line body. Each obligation is
         // loop-free, so the ordinary path walk discharges it.
+        // 2026-11-15 (phase 1b): Bool-typed defns declare `term` as `Bool` in
+        // the SMT query. `term_is_bool` reads the declared return type once.
+        let term_sort = if term_is_bool(item) {
+            Some(crate::smt::encoding::Sort::Boolean)
+        } else {
+            None
+        };
         let obligations = loop_obligations(name, contract, body)
             .or_else(|| inferred_loop_obligations(name, contract, body))
             .or_else(|| convergent_obligations(item, name, contract, body));
         if let Some(obligations) = obligations {
             for (obligation, pre, post, obligation_body) in obligations {
-                if let Some(reason) = unsupported_reason(&obligation_body, &sums) {
-                    report.skipped.push(format!("{obligation}: {reason}"));
-                    continue;
-                }
-                let Ok(flat) = inline_body(&obligation_body, &sums) else {
-                    report
-                        .skipped
-                        .push(format!("{obligation}: a call could not be inlined"));
-                    continue;
-                };
-                match verify_one(&pre, &post, &flat) {
-                    BodyOutcome::Proven => report.proven.push(obligation),
-                    BodyOutcome::Unproven(why) => {
-                        report.unproven.push(format!("{obligation}: {why}"))
-                    }
-                    BodyOutcome::Violated(why) => {
-                        report.violated.push(format!("{obligation}: {why}"))
-                    }
-                }
+                verify_supported(
+                    &mut report,
+                    &obligation,
+                    (&pre, &post),
+                    &obligation_body,
+                    &sums,
+                    term_sort,
+                );
             }
             continue;
         }
-        // Soundness boundary: only prove bodies whose entire surface is
-        // within the pure-integer prover's reach (calls included, when the
-        // callee has a value summary).
-        if let Some(reason) = unsupported_reason(body, &sums) {
-            report.skipped.push(format!("{name}: {reason}"));
-            continue;
-        }
-        // Substitute each summarised call with the callee's value expression,
-        // so the existing path walk reasons about one flat body.
-        let Ok(flattened) = inline_body(body, &sums) else {
-            report.skipped.push(format!("{name}: a call could not be inlined"));
-            continue;
-        };
-        match verify_one(
-            &contract.pre_condition,
-            &contract.post_condition,
-            &flattened,
-        ) {
-            BodyOutcome::Proven => report.proven.push(name.to_string()),
-            BodyOutcome::Unproven(why) => report.unproven.push(format!("{name}: {why}")),
-            BodyOutcome::Violated(why) => report.violated.push(format!("{name}: {why}")),
-        }
+        verify_supported(
+            &mut report,
+            name,
+            (&contract.pre_condition, &contract.post_condition),
+            body,
+            &sums,
+            term_sort,
+        );
     }
+    // Emit Z3 escalation histogram when profiling is active.
+    // This fires once per top-level verify_bodies_with_types call — callers can
+    // grep for "Z3 profile" to collect data without the feature enabled.
+    #[cfg(feature = "z3-profile")]
+    z3_profile::report();
     report
+}
+
+/// Apply the same admission and inlining boundary to ordinary bodies and
+/// generated loop obligations. Calls must have independently admitted summaries.
+fn verify_supported(
+    report: &mut BodyReport,
+    name: &str,
+    contract: (&Expr, &Expr),
+    body: &[Statement],
+    sums: &HashMap<String, Summary>,
+    term_sort: Option<crate::smt::encoding::Sort>,
+) {
+    let reason = unsupported_reason(body, sums)
+        .or_else(|| crate::domain::unsupported_expression(contract.0))
+        .or_else(|| crate::domain::unsupported_expression(contract.1));
+    if let Some(reason) = reason {
+        report.skipped.push(format!("{name}: {reason}"));
+        return;
+    }
+    // 2026-11-15 (phase 1b): Bool-typed defns are gated with `supported_boolean`
+    // on the postcondition (the SMT query declares `term` as `Bool`, so
+    // `term == (n >= 10)` encodes as Bool == Bool). Int-typed defns keep the
+    // word-model gate. Both gates encode to the same SMT-LIB Boolean sort;
+    // the difference is only which operand sorts the encoder admits.
+    // 2026-11-15 (phase 1b): Bool-typed defns skip the gate entirely — the
+    // SMT encoding with `term_sort=Some(Boolean)` is the authoritative sort
+    // check (it encodes `term` as `Bool` and `==`/`!=`/`and`/`or`/`not` on
+    // Bool operands produce Boolean terms). The gate is only meaningful for
+    // word-model contracts, where it distinguishes BitVec encodings from
+    // unsupported syntax. Skipping it for Bool defns avoids a false reject
+    // when the standalone API (no type universe) cannot resolve Bool's
+    // protocol category, leaving the SMT encoder to decide.
+    // 2026-11-15 (phase 1b): the PRECONDITION is gated with the term-sort
+    // aware encoder (a Bool defn's `[pre]` may mention `term` as Bool);
+    // the POSTCONDITION keeps `supported_word_postcondition` for the word
+    // model — it special-cases `Field` expressions that the strict
+    // `expect` encoder rejects. For Bool defns the postcondition is gated
+    // with the term-sort aware encoder instead, since `term` is declared
+    // `Bool` and comparisons like `term == (x == 0)` encode as Bool == Bool.
+    let pre_ok = crate::smt::supported_boolean_with_term_sort(contract.0, term_sort);
+    let post_ok = match term_sort {
+        Some(crate::smt::encoding::Sort::Boolean) => {
+            crate::smt::supported_boolean_with_term_sort(contract.1, term_sort)
+        }
+        _ => crate::smt::supported_word_postcondition(contract.1),
+    };
+    if !pre_ok || !post_ok {
+        report.unproven.push(format!(
+            "{name}: unsupported or ill-sorted word-model contract"
+        ));
+        return;
+    }
+    // Substitute only summarized callees so the path walk sees a flat body.
+    let Ok(flattened) = inline_body(body, sums) else {
+        report
+            .skipped
+            .push(format!("{name}: a call could not be inlined"));
+        return;
+    };
+    match verify_one_with_term_sort(contract.0, contract.1, &flattened, term_sort) {
+        BodyOutcome::Proven => report.proven.push(name.to_string()),
+        BodyOutcome::Unproven(why) => report.unproven.push(format!("{name}: {why}")),
+        BodyOutcome::Violated(why) => report.violated.push(format!("{name}: {why}")),
+    }
 }
 
 /// Extract (name, contract, body) from a top-level item, looking one level
@@ -201,6 +512,30 @@ fn contract_target(item: &TopLevel) -> Option<(&str, &crate::ast::Contract, &[St
         TopLevel::SyncGroup { item: inner, .. } => contract_target(inner.as_ref()),
         _ => None,
     }
+}
+
+/// Whether the item's declared return type is Bool, so the SMT query can
+/// declare `term` as `Bool` (2026-11-15 phase 1b).
+///
+/// Only `-> Bool` admits the Bool sort. Structured results (tuples,
+/// unions, arrays) have no single `term` projection, and Int is the word
+/// model. Returning false for everything else keeps Int defns on the
+/// `(_ BitVec 64)` path they have always used.
+fn term_is_bool(item: &TopLevel) -> bool {
+    let item = match item {
+        TopLevel::Export(e) => e.inner.as_ref(),
+        TopLevel::SyncGroup { item, .. } => item.as_ref(),
+        other => other,
+    };
+    let output = match item {
+        TopLevel::Definition(d) => d.output_type.as_ref(),
+        TopLevel::Transaction(t) => t.output_type.as_ref(),
+        _ => None,
+    };
+    matches!(
+        output,
+        Some(OutputType::Single(Type::Custom(name))) if name == "Bool"
+    )
 }
 
 /// Whether an expression is the literal `true` (nothing to prove).
@@ -240,6 +575,19 @@ fn pin_points(state: &mut SymbolicState, fact: &Expr) {
 }
 
 fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
+    verify_one_with_term_sort(pre, post, body, None)
+}
+
+/// 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1b): verify with an
+/// explicit sort for `term`. Bool-typed defns pass `Some(Sort::Boolean)` so
+/// the SMT query declares `term` as `Bool` and postconditions like
+/// `term == (x > 5)` are well-sorted. Int-typed defns pass `None`.
+fn verify_one_with_term_sort(
+    pre: &Expr,
+    post: &Expr,
+    body: &[Statement],
+    term_sort: Option<crate::smt::encoding::Sort>,
+) -> BodyOutcome {
     let mut initial = SymbolicState::new(pre);
     pin_points(&mut initial, pre);
     let mut terminated = Vec::new();
@@ -253,7 +601,7 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
     let mut undecided = 0usize;
     let mut first_undecided: Option<usize> = None;
     for (index, state) in terminated.iter().enumerate() {
-        match verdict_for_path(post, state) {
+        match reachable_verdict(post, state) {
             ProofVerdict::Holds => {}
             ProofVerdict::Violated => {
                 if violated.is_none() {
@@ -264,7 +612,9 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
                 // C4: escalate an inconclusive symbolic verdict to the solver
                 // before reporting "could not prove". Only a real `Sat` becomes
                 // a violation; every other answer stays honest and undecided.
-                match smt_discharge(post, state) {
+                let smt_result = smt_discharge(post, state, term_sort);
+                z3_profile_record!(post, smt_result);
+                match smt_result {
                     Some(ProofVerdict::Violated) => {
                         if violated.is_none() {
                             violated = Some(render_counterexample(state));
@@ -297,13 +647,74 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
     BodyOutcome::Proven
 }
 
+/// A refutation needs a feasible execution path. Failure to find a witness or
+/// decide feasibility cannot turn an unreachable branch into a hard error.
+fn reachable_verdict(post: &Expr, state: &SymbolicState) -> ProofVerdict {
+    match verdict_for_path(post, state) {
+        ProofVerdict::Violated => match path_feasible(state) {
+            Some(true) => ProofVerdict::Violated,
+            Some(false) => ProofVerdict::Holds,
+            None => ProofVerdict::Undecided,
+        },
+        other => other,
+    }
+}
+
+/// Establish a real path witness before reporting a hard violation. If the
+/// simple deterministic witness fails, ask the solver about the recorded facts.
+/// Unknown feasibility remains advisory, never a spurious hard rejection.
+fn path_feasible(state: &SymbolicState) -> Option<bool> {
+    if state
+        .path_constraints
+        .iter()
+        .any(|fact| !crate::smt::supported_boolean(fact))
+    {
+        return None;
+    }
+    let Some(bounds) = bounds_of(state) else {
+        return Some(false);
+    };
+    let mut witness = SymbolicState::empty();
+    for name in state.path_constraints.iter().flat_map(free_idents) {
+        let interval = bounds.get(&name).copied().unwrap_or(Bound::FULL);
+        let value = if interval.contains(0) {
+            0
+        } else {
+            interval.lower
+        };
+        witness
+            .assignments
+            .insert(name, SymbolicValue::int_literal(value));
+    }
+    if state
+        .path_constraints
+        .iter()
+        .all(|fact| eval_post(fact, &witness, &HashMap::new()) == ProofVerdict::Holds)
+    {
+        return Some(true);
+    }
+    if !crate::smt::is_z3_available() {
+        return None;
+    }
+    let query = crate::smt::build_vc_query(&state.path_constraints, &Expr::Bool(false));
+    match crate::smt::prove_smt_formula(&query, 1000) {
+        crate::smt::SmtResult::Sat(_) => Some(true),
+        crate::smt::SmtResult::Unsat => Some(false),
+        crate::smt::SmtResult::Unknown => None,
+    }
+}
+
 /// Try to decide an Undecided path with the SMT solver (C4).
 ///
 /// Returns `None` — leaving the caller's honest `Undecided` verdict intact —
 /// when no solver is installed, when the goal falls outside the encodable
 /// subset, or when the path's state cannot be substituted unambiguously (a
 /// prior-state `@x` reference or an unknown value).
-fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
+fn smt_discharge(
+    post: &Expr,
+    state: &SymbolicState,
+    term_sort: Option<crate::smt::encoding::Sort>,
+) -> Option<ProofVerdict> {
     if !crate::smt::is_z3_available() {
         return None;
     }
@@ -342,7 +753,7 @@ fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
         eprintln!("[vc] facts={facts:?}");
         eprintln!("[vc] goal={goal:?}");
     }
-    let query = crate::smt::build_vc_query(&facts, &goal);
+    let query = crate::smt::build_vc_query_with_term_sort(&facts, &goal, term_sort);
     if std::env::var_os("BRIEV_DIAG_VC").is_some() {
         eprintln!("[vc] query=\n{query}");
     }
@@ -387,105 +798,10 @@ fn collect_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
 /// Maximum transitive substitution depth before the discharge gives up.
 const SUBST_DEPTH_CAP: usize = 8;
 
-/// Rewrite every identifier the path bound to a symbolic value.
-///
-/// Substitution is transitive (a local may be defined in terms of another) with
-/// a depth cap; it bails out (`None`) rather than guessing.
+/// Evaluate current expression leaves once; saved symbolic values already refer
+/// to immutable entry atoms and must never be followed through later bindings.
 fn substitute_all(expr: &Expr, assignments: &HashMap<String, SymbolicValue>) -> Option<Expr> {
-    // A body assignment is self-referential: `acc = acc + 1` binds
-    // `acc -> acc + 1`. Following that chain reaches the depth cap and returns
-    // None, which silently meant NO verification condition was ever built — so
-    // no accumulating body could ever reach the solver. The `seen` guard stops
-    // at the cycle and leaves the name free, which is what a VC needs.
-    let mut seen = Vec::new();
-    subst_expr(expr, assignments, 0, &mut seen)
-}
-
-/// One substitution step; `depth` caps transitive chains.
-fn subst_expr(
-    expr: &Expr,
-    assignments: &HashMap<String, SymbolicValue>,
-    depth: usize,
-    seen: &mut Vec<String>,
-) -> Option<Expr> {
-    if depth > SUBST_DEPTH_CAP {
-        return None;
-    }
-    match expr {
-        Expr::Identifier(name) => match assignments.get(name) {
-            Some(value) => {
-                // Guard the name BEFORE descending. `acc -> acc + 1` is
-                // self-referential, so without this the inner `acc` expands
-                // again and one `acc = acc + 1` becomes acc+2 in the goal.
-                if seen.iter().any(|seen_name| seen_name == name) {
-                    return Some(Expr::Identifier(name.clone()));
-                }
-                seen.push(name.clone());
-                let expanded = symbolic_to_expr(value, assignments, depth + 1, seen);
-                seen.pop();
-                expanded
-            }
-            None => Some(expr.clone()),
-        },
-        Expr::BinaryOp(kind, l, r) => Some(Expr::BinaryOp(
-            *kind,
-            Box::new(subst_expr(l, assignments, depth, seen)?),
-            Box::new(subst_expr(r, assignments, depth, seen)?),
-        )),
-        Expr::UnaryOp(kind, inner) => Some(Expr::UnaryOp(
-            *kind,
-            Box::new(subst_expr(inner, assignments, depth, seen)?),
-        )),
-        other => Some(other.clone()),
-    }
-}
-
-/// Convert a tracked symbolic value back into an expression for the solver.
-fn symbolic_to_expr(
-    value: &SymbolicValue,
-    assignments: &HashMap<String, SymbolicValue>,
-    depth: usize,
-    seen: &mut Vec<String>,
-) -> Option<Expr> {
-    match value {
-        SymbolicValue::Literal(n, _) => Some(Expr::Decimal(*n)),
-        SymbolicValue::Identifier(name) => {
-            // A cycle means "this name refers to itself": keep it free rather
-            // than expanding until the depth cap and giving up.
-            if seen.iter().any(|seen_name| seen_name == name) {
-                return Some(Expr::Identifier(name.clone()));
-            }
-            match assignments.get(name) {
-                Some(_) if depth > SUBST_DEPTH_CAP => Some(Expr::Identifier(name.clone())),
-                Some(inner) => {
-                    seen.push(name.clone());
-                    let expanded = symbolic_to_expr(inner, assignments, depth + 1, seen);
-                    seen.pop();
-                    expanded
-                }
-                None => Some(Expr::Identifier(name.clone())),
-            }
-        }
-        SymbolicValue::Binary(op, l, r) => Some(Expr::BinaryOp(
-            op_kind(op)?,
-            Box::new(symbolic_to_expr(l, assignments, depth + 1, seen)?),
-            Box::new(symbolic_to_expr(r, assignments, depth + 1, seen)?),
-        )),
-        // Prior-state (`@x`) and unknown values have no solver encoding here.
-        SymbolicValue::Previous(_) | SymbolicValue::Unknown => None,
-    }
-}
-
-/// Map a symbolic operator symbol to its AST kind.
-fn op_kind(symbol: &str) -> Option<BinaryOpKind> {
-    match symbol {
-        "+" => Some(BinaryOpKind::Add),
-        "-" => Some(BinaryOpKind::Sub),
-        "*" => Some(BinaryOpKind::Mul),
-        "/" => Some(BinaryOpKind::Div),
-        "%" => Some(BinaryOpKind::Mod),
-        _ => None,
-    }
+    crate::symbolic::snapshot::expression(expr, assignments)
 }
 
 /// Whether the SMT encoder models this expression exactly.
@@ -623,16 +939,21 @@ fn step_guard(
     next: &mut Vec<SymbolicState>,
     terminated: &mut Vec<SymbolicState>,
 ) {
+    let decision = verdict_for_path(cond, &st);
     // Guard TAKEN: descend with the guard as a fact; whatever reaches the
     // inner block's end falls through with the guard still true.
-    let mut taken = st.clone();
-    taken.add_constraint(cond, true);
-    pin_points(&mut taken, cond);
-    next.extend(walk_block(inner, taken, terminated));
+    if decision != ProofVerdict::Violated {
+        let mut taken = st.clone();
+        taken.add_constraint(cond, true);
+        pin_points(&mut taken, cond);
+        next.extend(walk_block(inner, taken, terminated));
+    }
     // Guard NOT taken: continue in the enclosing block with the negated fact.
-    let mut skipped = st;
-    skipped.add_constraint(cond, false);
-    next.push(skipped);
+    if decision != ProofVerdict::Holds {
+        let mut skipped = st;
+        skipped.add_constraint(cond, false);
+        next.push(skipped);
+    }
 }
 
 /// Track a pure-integer assignment symbolically.
@@ -640,6 +961,10 @@ fn step_assign(lhs: &Expr, expr: &Expr, st: SymbolicState, next: &mut Vec<Symbol
     let mut s = st;
     if let Expr::Identifier(name) = lhs {
         s.assign(name, expr);
+    } else if let Expr::Field(base, field) = lhs {
+        if let Expr::Identifier(base_name) = base.as_ref() {
+            s.assign_field(base_name, field, expr);
+        }
     }
     next.push(s);
 }
@@ -657,12 +982,17 @@ fn bind_output(st: SymbolicState, expr: &Expr) -> SymbolicState {
 }
 
 /// Drain a path's constraints into per-identifier numeric bounds.
-fn bounds_of(state: &SymbolicState) -> HashMap<String, Bound> {
+fn bounds_of(state: &SymbolicState) -> Option<HashMap<String, Bound>> {
     let mut bounds: HashMap<String, Bound> = HashMap::new();
     for constraint in &state.path_constraints {
-        update_bounds(constraint, &mut bounds);
+        if !update_bounds(constraint, &mut bounds) {
+            return None;
+        }
     }
-    bounds
+    if bounds.values().any(|bound| bound.is_empty()) {
+        return None;
+    }
+    Some(bounds)
 }
 
 /// Merge one comparison fact into the identifier bounds map.
@@ -670,69 +1000,65 @@ fn bounds_of(state: &SymbolicState) -> HashMap<String, Bound> {
 /// Recurses through conjunctions (a precondition like
 /// `[a >= 0 && a <= 255]` contributes both facts) and maps negated
 /// comparisons to their flipped forms (`!(a > 5)` bounds `a <= 5`).
-fn update_bounds(constraint: &Expr, bounds: &mut HashMap<String, Bound>) {
+fn update_bounds(constraint: &Expr, bounds: &mut HashMap<String, Bound>) -> bool {
     match constraint {
+        Expr::Bool(value) => *value,
         Expr::BinaryOp(BinaryOpKind::And, l, r) => {
-            update_bounds(l, bounds);
-            update_bounds(r, bounds);
+            update_bounds(l, bounds) && update_bounds(r, bounds)
         }
-        Expr::UnaryOp(UnaryOpKind::Not, inner) => {
-            if let Some(fact) = negated_comparison(inner.as_ref()) {
-                update_bounds(&fact, bounds);
-            }
+        Expr::UnaryOp(UnaryOpKind::Not, inner) => match inner.as_ref() {
+            Expr::Bool(value) => !value,
+            Expr::BinaryOp(op, left, right) => Relation::from_ast(*op)
+                .is_none_or(|op| comparison_bounds(op.negate(), left, right, bounds)),
+            _ => true,
+        },
+        Expr::BinaryOp(op, left, right) => {
+            Relation::from_ast(*op).is_none_or(|op| comparison_bounds(op, left, right, bounds))
         }
-        Expr::BinaryOp(op, l, r) => {
-            let (name, lit) = match (l.as_ref(), r.as_ref()) {
-                (Expr::Identifier(n), Expr::Decimal(v)) => (n, *v),
-                (Expr::Decimal(v), Expr::Identifier(n)) => (n, *v),
-                _ => return,
-            };
-            tighten(&name.clone(), *op, lit, bounds);
-        }
-        _ => {}
+        _ => true,
     }
 }
 
-/// The negation of one comparison as a bound-expressible fact, when one
-/// exists. `!(a < b)` ⟺ `a >= b`; `!(a != b)` ⟺ `a == b` (integer math);
-/// `!(a == b)` is a disjunction (`a < b or a > b`) — NOT expressible as a
-/// single interval fact, so `None`. Skipping it is sound: facts only ever
-/// constrain an identifier; we never assume the world minus a fact.
-fn negated_comparison(expr: &Expr) -> Option<Expr> {
-    let Expr::BinaryOp(op, l, r) = expr else {
-        return None;
-    };
-    let flipped = match op {
-        BinaryOpKind::Lt => BinaryOpKind::Ge,
-        BinaryOpKind::Le => BinaryOpKind::Gt,
-        BinaryOpKind::Gt => BinaryOpKind::Le,
-        BinaryOpKind::Ge => BinaryOpKind::Lt,
-        BinaryOpKind::Neq => BinaryOpKind::Eq,
-        BinaryOpKind::Eq => return None,
-        _ => return None,
-    };
-    Some(Expr::BinaryOp(flipped, l.clone(), r.clone()))
+/// Constant unary negation follows signed-word wrapping semantics.
+fn literal_word(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Decimal(value) => Some(*value),
+        Expr::UnaryOp(UnaryOpKind::Neg, inner) => literal_word(inner).map(i64::wrapping_neg),
+        _ => None,
+    }
 }
 
-/// Tighten one identifier's bounds with `name <op> lit`.
-fn tighten(name: &str, op: BinaryOpKind, lit: i64, bounds: &mut HashMap<String, Bound>) {
-    let b = bounds.entry(name.to_string()).or_default();
-    match op {
-        BinaryOpKind::Ge => b.lower = Some(b.lower.map_or(lit, |l| l.max(lit))),
-        BinaryOpKind::Gt => b.lower = Some(b.lower.map_or(lit + 1, |l| l.max(lit + 1))),
-        BinaryOpKind::Le => b.upper = Some(b.upper.map_or(lit, |u| u.min(lit))),
-        BinaryOpKind::Lt => b.upper = Some(b.upper.map_or(lit - 1, |u| u.min(lit - 1))),
-        BinaryOpKind::Eq => {
-            b.lower = Some(b.lower.map_or(lit, |l| l.max(lit)));
-            b.upper = Some(b.upper.map_or(lit, |u| u.min(lit)));
-        }
-        _ => {}
+/// Normalize literal-left facts through the same production relation mirror
+/// checked by Kani; unknown/nonlinear facts retain their original SMT form.
+fn comparison_bounds(
+    op: Relation,
+    left: &Expr,
+    right: &Expr,
+    bounds: &mut HashMap<String, Bound>,
+) -> bool {
+    if let (Some(a), Some(b)) = (literal_word(left), literal_word(right)) {
+        return op.holds(a, b);
     }
+    let (name, value, op) = match (left, right) {
+        (Expr::Identifier(name), value) => (name, literal_word(value), op),
+        (value, Expr::Identifier(name)) => (name, literal_word(value), op.mirror()),
+        _ => return true,
+    };
+    if let Some(value) = value {
+        let current = bounds.entry(name.clone()).or_insert(Bound::FULL);
+        *current = current.restrict(op, value);
+    }
+    true
 }
 
 /// Tri-state evaluation of the postcondition against one path's state.
 fn verdict_for_path(post: &Expr, state: &SymbolicState) -> ProofVerdict {
-    let bounds = bounds_of(state);
+    let Some(mut bounds) = bounds_of(state) else {
+        return ProofVerdict::Holds;
+    };
+    // Mask expressions contribute intervals: `x & MASK32` is in [0, MASK32].
+    // Without this the uint-range postconditions never have a bound to consult.
+    add_mask_bounds(state, &mut bounds);
     // 2026-11-12 (point bounds): a precondition that pins an identifier
     // (`[a == 5]`) is a fact about its VALUE, not merely a range. Binding such
     // an identifier to its literal lets arithmetic over it fold — otherwise
@@ -748,12 +1074,9 @@ fn verdict_for_path(post: &Expr, state: &SymbolicState) -> ProofVerdict {
 fn with_point_bounds(state: &SymbolicState, bounds: &HashMap<String, Bound>) -> SymbolicState {
     let mut pinned = state.clone();
     for (name, bound) in bounds {
-        let (Some(lower), Some(upper)) = (bound.lower, bound.upper) else {
+        let Some(lower) = bound.point() else {
             continue;
         };
-        if lower != upper {
-            continue;
-        }
         pinned
             .assignments
             .entry(name.clone())
@@ -776,11 +1099,17 @@ fn eval_post(post: &Expr, state: &SymbolicState, bounds: &HashMap<String, Bound>
             // Conjunction / disjunction decompose so each conjunct is proven
             // independently (e.g. `[term >= -149 && term <= 104]`).
             BinaryOpKind::And => {
+                if let Some(verdict) = tautology_verdict(BinaryOpKind::And, l, r) {
+                    return verdict;
+                }
                 let lv = eval_post(l, state, bounds);
                 let rv = eval_post(r, state, bounds);
                 combine_and(lv, rv)
             }
             BinaryOpKind::Or => {
+                if let Some(verdict) = tautology_verdict(BinaryOpKind::Or, l, r) {
+                    return verdict;
+                }
                 let lv = eval_post(l, state, bounds);
                 let rv = eval_post(r, state, bounds);
                 combine_or(lv, rv)
@@ -794,6 +1123,55 @@ fn eval_post(post: &Expr, state: &SymbolicState, bounds: &HashMap<String, Bound>
         Expr::UnaryOp(UnaryOpKind::Not, inner) => not_verdict(eval_post(inner, state, bounds)),
         _ => ProofVerdict::Undecided,
     }
+}
+
+/// Decide a disjunction/conjunction whose operands are logically exhaustive.
+///
+/// Two shapes are exhaustive by construction, and deciding them syntactically
+/// avoids routing them to the solver (84 baseline escalations came from exactly
+/// these two):
+///
+/// * `p || !p` — a comparison paired with its flipped complement.
+/// * `a == true || a == false` — the whole Bool domain for one operand.
+///
+/// For `||` an exhaustive pair makes the postcondition TRUE; for `&&` the
+/// conjunction is unsatisfiable, which refutes the path.
+fn tautology_verdict(op: BinaryOpKind, l: &Expr, r: &Expr) -> Option<ProofVerdict> {
+    if !is_complement(l, r) && !is_bool_exhaustive(l, r) {
+        return None;
+    }
+    match op {
+        BinaryOpKind::Or => Some(ProofVerdict::Holds),
+        BinaryOpKind::And => Some(ProofVerdict::Violated),
+        _ => None,
+    }
+}
+
+/// True when one operand is the comparison complement of the other.
+///
+/// `negate` flips `<`/`>=`, `<=`/`>`, `==`/`!=` exactly over the integers, so
+/// the two comparisons together cover every value of the left operand.
+fn is_complement(l: &Expr, r: &Expr) -> bool {
+    negate(l) == *r || negate(r) == *l
+}
+
+/// True for `a == true` paired with `a == false` on the same operand.
+///
+/// Sound without type information: in a well-typed program only a Bool compares
+/// equal to a Bool literal, and Bool has exactly these two values. Deliberately
+/// narrow — `a == 0 || a == 1` is NOT exhaustive for an Int and must stay
+/// undecided.
+fn is_bool_exhaustive(l: &Expr, r: &Expr) -> bool {
+    let (Expr::BinaryOp(lop, ll, lr), Expr::BinaryOp(rop, rl, rr)) = (l, r) else {
+        return false;
+    };
+    if *lop != BinaryOpKind::Eq || *rop != BinaryOpKind::Eq || ll != rl {
+        return false;
+    }
+    matches!(
+        (&**lr, &**rr),
+        (Expr::Bool(true), Expr::Bool(false)) | (Expr::Bool(false), Expr::Bool(true))
+    )
 }
 
 /// Kleene negation.
@@ -843,18 +1221,182 @@ fn rel_verdict(
             _ => ProofVerdict::Undecided,
         };
     }
-    // Identifier-vs-literal: decide through the path's interval bounds.
-    if let SymbolicValue::Identifier(name) = lv {
-        if let SymbolicValue::Literal(v, _) = rv {
-            return ident_verdict(op, name, *v, false, bounds);
+    // Concrete arithmetic result: a binary expression that evaluates to a
+    // known integer (e.g. 2+3 → 5) compared against a literal.  Decides
+    // immediately without routing to Z3 — the dominant case for arithmetic
+    // body-postcondition obligations.
+    if let Some(lit) = lv.try_to_literal() {
+        if let SymbolicValue::Literal(r, _) = rv {
+            return order_verdict(op, lit.cmp(r));
         }
     }
-    if let SymbolicValue::Literal(v, _) = lv {
+    if let Some(lit) = rv.try_to_literal() {
+        if let SymbolicValue::Literal(l, _) = lv {
+            return order_verdict(op, l.cmp(&lit));
+        }
+    }
+    // Identifier-vs-literal: decide through the path's interval bounds.
+    // The other side may be a folded constant term (`1 << 24`) as well as a
+    // plain literal, so both spellings resolve through `try_to_literal`.
+    if let SymbolicValue::Identifier(name) = lv {
+        if let Some(v) = rv.try_to_literal() {
+            return ident_verdict(op, name, v, false, bounds);
+        }
+    }
+    if let Some(v) = lv.try_to_literal() {
         if let SymbolicValue::Identifier(name) = rv {
-            return ident_verdict(op, name, *v, true, bounds);
+            return ident_verdict(op, name, v, true, bounds);
+        }
+    }
+    // Masked value vs literal: `x & M` with `M >= 0` lies in `[0, M]`, which
+    // decides the uint-range postconditions (`term <= MASK32`) without a solver.
+    if let (Some(bound), SymbolicValue::Literal(v, _)) = (mask_bound(lv), rv) {
+        return interval_verdict(op, bound, *v, false);
+    }
+    if let (Some(bound), SymbolicValue::Literal(v, _)) = (mask_bound(rv), lv) {
+        return interval_verdict(op, bound, *v, true);
+    }
+    // Masked-plus-offset vs literal — the `mantissa_val` shape.
+    //
+    // `lv` is `(x & mask) + n` and `rv` is a literal `v`. Because
+    // `x & mask ∈ [0, mask]` for a non-negative mask, the whole expression
+    // lies in `[n, mask + n]` whenever `n >= 0`. That interval decides the
+    // comparison without a solver:
+    //   `Lt` holds when `mask + n < v`, refutes when `mask < v`.
+    //   `Le` holds when `mask + n <= v`, refutes when `mask > v`.
+    //   `Ge`/`Gt` are the mirrored lower-bound checks.
+    //
+    // Worked example (`mantissa_val`):
+    //   term = mant + 0x800000,  v = 1 << 24,  mant = bits & 0x7FFFFF
+    //   0x7FFFFF + 0x800000 = 16777215 < 16777216  ⇒  Holds.
+    if let SymbolicValue::Binary(add_op, inner_box, lit_sym_box) = lv {
+        if add_op.as_str() == "+" {
+            if let Some(offset) = lit_sym_box.try_to_literal() {
+                if offset >= 0 {
+                    if let Some(inner_bound) = value_bound(&inner_box, bounds) {
+                        // `rv` may be a literal or a foldable constant term such
+                        // as `1 << 24`; both denote an exact bound.
+                        if let Some(limit) = rv.try_to_literal() {
+                            let combined_max = inner_bound.upper.saturating_add(offset);
+                            // The reachable interval is [offset, combined_max].
+                            // Holds needs the whole interval on the true side,
+                            // refuted needs the whole interval on the false side,
+                            // and anything else stays undecided.
+                            match op {
+                                BinaryOpKind::Lt => {
+                                    return if combined_max < limit {
+                                        ProofVerdict::Holds
+                                    } else if inner_bound.lower.saturating_add(offset) >= limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                BinaryOpKind::Le => {
+                                    return if combined_max <= limit {
+                                        ProofVerdict::Holds
+                                    } else if inner_bound.lower.saturating_add(offset) > limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                BinaryOpKind::Ge => {
+                                    return if inner_bound.lower.saturating_add(offset) >= limit {
+                                        ProofVerdict::Holds
+                                    } else if combined_max < limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                BinaryOpKind::Gt => {
+                                    return if inner_bound.lower.saturating_add(offset) > limit {
+                                        ProofVerdict::Holds
+                                    } else if combined_max <= limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     ProofVerdict::Undecided
+}
+
+/// The best interval known for one symbolic operand.
+///
+/// Two sources contribute, and both are needed by the masked-offset rule:
+/// a mask expression (`x & MASK`) carries its own interval, while an ordinary
+/// identifier carries whatever the path's precondition and guards established.
+/// Returning `None` (rather than `Bound::FULL`) keeps the caller from treating
+/// "no information" as "the whole range is decided".
+fn value_bound(value: &SymbolicValue, bounds: &HashMap<String, Bound>) -> Option<Bound> {
+    if let Some(masked) = mask_bound(value) {
+        return Some(masked);
+    }
+    match value {
+        SymbolicValue::Literal(n, _) => Some(Bound {
+            lower: *n,
+            upper: *n,
+        }),
+        SymbolicValue::Identifier(name) => bounds.get(name).copied(),
+        _ => None,
+    }
+}
+
+/// The interval of a value masked by a non-negative constant.
+///
+/// `x & M` with `M >= 0` lies in `[0, M]`: the AND can never set a bit above
+/// the mask's highest set bit, and a non-negative mask keeps the sign bit clear.
+/// This is the general rule behind every `term <= MASK32` obligation rather than
+/// a rule for one function.
+///
+/// Deliberately narrow: a negative mask is not a range (`x & -1 == x`), so it
+/// contributes nothing instead of a bound that could be wrong.
+fn mask_bound(value: &SymbolicValue) -> Option<Bound> {
+    let SymbolicValue::Binary(op, left, right) = value else {
+        return None;
+    };
+    if op != "&" {
+        return None;
+    }
+    let mask = literal_value(left).or_else(|| literal_value(right))?;
+    if mask < 0 {
+        return None;
+    }
+    Some(Bound {
+        lower: 0,
+        upper: mask,
+    })
+}
+
+/// The integer behind a literal symbolic value.
+fn literal_value(value: &SymbolicValue) -> Option<i64> {
+    match value {
+        SymbolicValue::Literal(inner, _) => Some(*inner),
+        _ => None,
+    }
+}
+
+/// Fold mask-derived intervals for assigned locals into the path's bounds.
+///
+/// `let lo: Int = x & MASK32` binds `lo` to a mask expression; recording its
+/// interval lets a later `lo <= MASK32` resolve through `ident_verdict`.
+fn add_mask_bounds(state: &SymbolicState, bounds: &mut HashMap<String, Bound>) {
+    for (name, value) in &state.assignments {
+        let Some(masked) = mask_bound(value) else {
+            continue;
+        };
+        let entry = bounds.entry(name.clone()).or_insert(Bound::FULL);
+        *entry = entry.intersect(masked);
+    }
 }
 
 /// Decide `lit <op> x` (flipped) or `x <op> lit` for a bounded identifier.
@@ -865,19 +1407,22 @@ fn ident_verdict(
     flipped: bool,
     bounds: &HashMap<String, Bound>,
 ) -> ProofVerdict {
-    // `lit <op> x` ⟺ `x flip(op) lit` — normalise so bounds read naturally.
-    let (effective, v) = if flipped { (flip(op), lit) } else { (op, lit) };
-    let Some(b) = bounds.get(name) else {
+    let bound = bounds.get(name).copied().unwrap_or(Bound::FULL);
+    interval_verdict(op, bound, lit, flipped)
+}
+
+/// Decide a comparison against a literal from a known interval.
+///
+/// `None` from `classify` means the interval straddles the literal, which is a
+/// genuine undecided — never reported as holding.
+fn interval_verdict(op: BinaryOpKind, bound: Bound, lit: i64, flipped: bool) -> ProofVerdict {
+    let Some(relation) = Relation::from_ast(op) else {
         return ProofVerdict::Undecided;
     };
-    match effective {
-        BinaryOpKind::Eq => point_verdict(b, v, true),
-        BinaryOpKind::Neq => point_verdict(b, v, false),
-        BinaryOpKind::Lt => strict_upper_verdict(b, v),
-        BinaryOpKind::Le => inclusive_upper_verdict(b, v),
-        BinaryOpKind::Ge => inclusive_lower_verdict(b, v),
-        BinaryOpKind::Gt => strict_lower_verdict(b, v),
-        _ => ProofVerdict::Undecided,
+    let relation = if flipped { relation.mirror() } else { relation };
+    match bound.classify(relation, lit) {
+        Some(value) => tri(value),
+        None => ProofVerdict::Undecided,
     }
 }
 
@@ -887,77 +1432,6 @@ fn tri(holds: bool) -> ProofVerdict {
         ProofVerdict::Holds
     } else {
         ProofVerdict::Violated
-    }
-}
-
-/// Whether an interval is entirely outside `v` (every value > v or < v).
-fn disjoint_from(b: &Bound, v: i64) -> bool {
-    b.lower.map_or(false, |l| l > v) || b.upper.map_or(false, |h| h < v)
-}
-
-/// Decide `x == v` (want_eq) or `x != v` (!want_eq) against an interval.
-fn point_verdict(b: &Bound, v: i64, want_eq: bool) -> ProofVerdict {
-    if b.lower == Some(v) && b.upper == Some(v) {
-        return tri(want_eq);
-    }
-    if disjoint_from(b, v) {
-        return tri(!want_eq);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x < v` against an interval.
-fn strict_upper_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if b.upper.map_or(false, |h| h < v) {
-        return tri(true);
-    }
-    if b.lower.map_or(false, |l| l >= v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x <= v` against an interval.
-fn inclusive_upper_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if b.upper.map_or(false, |h| h <= v) {
-        return tri(true);
-    }
-    if disjoint_from(b, v) && b.lower.is_some_and(|l| l > v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x >= v` against an interval.
-fn inclusive_lower_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if b.lower.map_or(false, |l| l >= v) {
-        return tri(true);
-    }
-    if b.upper.map_or(false, |h| h < v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// Decide `x > v` against an interval.
-fn strict_lower_verdict(b: &Bound, v: i64) -> ProofVerdict {
-    if disjoint_from(b, v) && b.lower.is_some_and(|l| l > v) {
-        return tri(true);
-    }
-    if b.upper.map_or(false, |h| h <= v) {
-        return tri(false);
-    }
-    ProofVerdict::Undecided
-}
-
-/// The mirrored comparison operator (`v <op> x` ⟺ `x flip(<op>) v`).
-fn flip(op: BinaryOpKind) -> BinaryOpKind {
-    match op {
-        BinaryOpKind::Lt => BinaryOpKind::Gt,
-        BinaryOpKind::Le => BinaryOpKind::Ge,
-        BinaryOpKind::Gt => BinaryOpKind::Lt,
-        BinaryOpKind::Ge => BinaryOpKind::Le,
-        other => other,
     }
 }
 
@@ -980,16 +1454,41 @@ fn order_verdict(op: BinaryOpKind, ord: std::cmp::Ordering) -> ProofVerdict {
     }
 }
 
+/// Reduce a symbolic value through one pass of algebraic simplification.
+///
+/// Applies `simplify_binary` to `Binary` nodes; returns the simplified value.
+/// Handles the common cases that would otherwise route to Z3:
+///   a + 0 → a,  a - 0 → a,  a * 1 → a,  a * 0 → 0
+///   (a+b) − b → a,  2 + 3 → 5
+///
+/// Single pass (no recursion) — keeps O(1) complexity; nested reductions
+/// like (a+0)+1 are handled by `eval_symbolic`'s bottom-up construction.
+fn simplifies_to(sv: &SymbolicValue) -> SymbolicValue {
+    let SymbolicValue::Binary(op, l, r) = sv else {
+        return sv.clone();
+    };
+    let Some(simplified) = simplify_binary(op.as_str(), l, r) else {
+        return sv.clone();
+    };
+    simplified
+}
+
 /// Structural equality of two symbolic values — proves `x + 1 == x + 1`
 /// without a concrete numeric value. Unknown never equals anything (two
-/// unanalysable values are NOT provably identical).
+/// unanalysable values are NOT provably identical).  Both sides are first
+/// reduced through `simplifies_to` so algebraically equal terms match even
+/// when their surface forms differ.
 fn structural_eq(lv: &SymbolicValue, rv: &SymbolicValue) -> bool {
-    match (lv, rv) {
+    // Algebraic simplification: if both sides reduce to the same canonical form
+    // they are equal even when surface syntax differs (e.g. (a+0) vs a).
+    let sl = simplifies_to(lv);
+    let sr = simplifies_to(rv);
+    match (sl, sr) {
         (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => a == b,
         (SymbolicValue::Identifier(a), SymbolicValue::Identifier(b)) => a == b,
         (SymbolicValue::Previous(a), SymbolicValue::Previous(b)) => a == b,
         (SymbolicValue::Binary(a, al, ar), SymbolicValue::Binary(b, bl, br)) => {
-            a == b && structural_eq(al, bl) && structural_eq(ar, br)
+            a == b && structural_eq(&*al, &*bl) && structural_eq(&*ar, &*br)
         }
         _ => false,
     }
@@ -1139,7 +1638,10 @@ fn inferred_loop_obligations(
                 body: inner,
                 modifiers,
             } => {
-                if modifiers.iter().any(|annotation| annotation.name == "invariant") {
+                if modifiers
+                    .iter()
+                    .any(|annotation| annotation.name == "invariant")
+                {
                     continue;
                 }
                 let Expr::Range {
@@ -1394,11 +1896,7 @@ fn loop_obligations(
             ));
         }
     }
-    init.push(binop(
-        BinaryOpKind::Eq,
-        loop_var.clone(),
-        lower.clone(),
-    ));
+    init.push(binop(BinaryOpKind::Eq, loop_var.clone(), lower.clone()));
 
     // VC2 — the body preserves it, with the guard and the precondition available.
     let within = if inclusive {
@@ -1425,11 +1923,7 @@ fn loop_obligations(
     } else {
         binop(BinaryOpKind::Ge, loop_var, bound)
     };
-    let exit = vec![
-        contract.pre_condition.clone(),
-        invariant.clone(),
-        past,
-    ];
+    let exit = vec![contract.pre_condition.clone(), invariant.clone(), past];
 
     Some(vec![
         (
@@ -1468,12 +1962,27 @@ fn unsupported_reason(stmts: &[Statement], sums: &HashMap<String, Summary>) -> O
     stmts.iter().find_map(|stmt| statement_reason(stmt, sums))
 }
 
+/// Whether an assignment target is in the prover's reach: a plain name
+/// (`x`), or a field of a plain name (`x.n`).  Index bases (`arr[i].n`) and
+/// any deeper projection stay out of reach — the field map keys on the base
+/// identifier and cannot track which element of a collection is written.
+fn plain_assignment_target(lhs: &Expr) -> bool {
+    match lhs {
+        Expr::Identifier(_) => true,
+        Expr::Field(base, _) => matches!(base.as_ref(), Expr::Identifier(_)),
+        _ => false,
+    }
+}
+
 /// The reason one statement is unsupported, if it is.
 fn statement_reason(stmt: &Statement, sums: &HashMap<String, Summary>) -> Option<String> {
     match stmt {
         Statement::Assign(lhs, e) => {
-            if !matches!(lhs, Expr::Identifier(_)) {
-                return Some("an assignment whose target is not a plain name".to_string());
+            if !plain_assignment_target(lhs) {
+                return Some(
+                    "an assignment whose target is not a plain name or a field of a plain name"
+                        .to_string(),
+                );
             }
             expr_reason(e, sums)
         }
@@ -1517,6 +2026,9 @@ fn statement_reason(stmt: &Statement, sums: &HashMap<String, Summary>) -> Option
 /// A call is supported **only** when the callee has a value summary, so the
 /// prover never claims a proof over a value it cannot evaluate.
 fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
+    if let Some(reason) = crate::domain::expression_node_reason(expr) {
+        return Some(reason);
+    }
     match expr {
         Expr::Decimal(_)
         | Expr::Char(_)
@@ -1561,9 +2073,16 @@ struct Summary {
 /// retried next round. Recursion therefore never acquires a summary — the sound
 /// answer, since a self-referential summary would be a guess rather than a
 /// proof.
-fn build_summaries(items: &[TopLevel]) -> HashMap<String, Summary> {
-    let candidates: Vec<(&str, Vec<String>, &[Statement])> =
-        items.iter().filter_map(summary_candidate).collect();
+fn build_summaries(
+    items: &[TopLevel],
+    resolve: &crate::domain::TypeResolver<'_>,
+    globals: &std::collections::HashSet<String>,
+) -> HashMap<String, Summary> {
+    let candidates: Vec<(&str, Vec<String>, &[Statement])> = items
+        .iter()
+        .filter(|item| crate::domain::unsupported_declaration(item, resolve, globals).is_none())
+        .filter_map(summary_candidate)
+        .collect();
     let mut sums: HashMap<String, Summary> = HashMap::new();
     // Each round adds a summary or ends the loop, so this terminates.
     for _ in 0..=candidates.len() {
@@ -1616,10 +2135,9 @@ fn summary_candidate(item: &TopLevel) -> Option<(&str, Vec<String>, &[Statement]
 
 /// Evaluate a call-free, guard-free body to the expression it returns.
 ///
-/// Parameters are deliberately left UNBOUND: `eval_symbolic` already yields
-/// `Identifier(name)` for an unknown name, whereas binding `a -> Identifier(a)`
-/// is self-referential — `symbolic_to_expr` would follow it until the depth cap
-/// and give up, and no summary would ever be produced.
+/// Parameters stay unbound so `eval_symbolic` captures their immutable entry
+/// atoms. Returning a saved value must not resolve those atoms through the
+/// callee's final assignments (which may have overwritten its parameters).
 fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
     let mut state = SymbolicState::empty();
     for stmt in body {
@@ -1649,14 +2167,7 @@ fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
                 }
             }
             Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-                let mut seen = Vec::new();
-                return symbolic_to_expr(
-                    &eval_symbolic(e, &state),
-                    &state.assignments,
-                    0,
-                    &mut seen,
-                )
-                .ok_or(());
+                return crate::symbolic::snapshot::value_expr(&eval_symbolic(e, &state)).ok_or(());
             }
             Statement::Gate(_) | Statement::Check(_) | Statement::Expression(_) => {}
             // Guards pick between values; a non-value exit has no result.
@@ -1762,8 +2273,8 @@ fn mentions_only(expr: &Expr, allowed: &[String]) -> bool {
 
 #[cfg(test)]
 mod prover_api_tests {
-    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
     use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
 
     /// Build `defn f(x) [x >= 0][term >= 0] { term x; }` without any frontend.
     #[test]
@@ -1783,7 +2294,12 @@ mod prover_api_tests {
         let item = TopLevel::Definition(Definition::prover_defn("f", contract, body));
 
         let report = verify_bodies(&[item]);
-        assert_eq!(report.proven, vec!["f".to_string()], "unproven: {:?}", report.unproven);
+        assert_eq!(
+            report.proven,
+            vec!["f".to_string()],
+            "unproven: {:?}",
+            report.unproven
+        );
         assert!(report.violated.is_empty());
     }
 
@@ -1791,7 +2307,7 @@ mod prover_api_tests {
     #[test]
     fn a_constructed_false_contract_is_violated() {
         let contract = Contract::proven(
-            Expr::Identifier("true".into()),
+            Expr::Bool(true),
             Expr::BinaryOp(
                 BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("term".into())),
@@ -1803,5 +2319,361 @@ mod prover_api_tests {
 
         let report = verify_bodies(&[item]);
         assert_eq!(report.violated.len(), 1, "proven: {:?}", report.proven);
+    }
+}
+
+#[cfg(test)]
+mod structural_derivation_tests {
+    use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+
+    /// A field projection in a postcondition is resolved structurally from the
+    /// body's field assignment, without Z3: `x.n = 5; [x.n > 0]` holds because
+    /// the field map records `("x", "n") -> 5` and `5 > 0` is a concrete order.
+    #[test]
+    fn field_assignment_proves_field_postcondition() {
+        let x_n = || Expr::Field(Box::new(Expr::Identifier("x".into())), "n".into());
+        let body = vec![
+            Statement::Assign(x_n(), Expr::Decimal(5)),
+            Statement::Term(Some(Expr::Decimal(0))),
+        ];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(x_n()),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_field", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_field"),
+            "field postcondition should be proved structurally; unproven: {:?}; skipped: {:?}",
+            report.unproven,
+            report.skipped
+        );
+        assert!(report.violated.is_empty());
+    }
+
+    /// Reassigning the base object (`x = y`) invalidates any earlier `x.n = …`
+    /// value.  The stale entry must NOT be used to prove `x.n > 0` after the
+    /// reassignment, so the body must not appear as proven (the postcondition
+    /// is undecidable without a value for the new `x`).
+    #[test]
+    fn field_reassignment_invalidates_stale_value() {
+        let x_n = || Expr::Field(Box::new(Expr::Identifier("x".into())), "n".into());
+        let body = vec![
+            Statement::Assign(x_n(), Expr::Decimal(5)),
+            Statement::Assign(Expr::Identifier("x".into()), Expr::Identifier("y".into())),
+            Statement::Term(Some(Expr::Decimal(0))),
+        ];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(x_n()),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_stale", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            !report.proven.iter().any(|n| n == "f_stale"),
+            "stale field value was incorrectly used to prove; proven: {:?}",
+            report.proven
+        );
+    }
+
+    /// Additive identity: `term = a + 0` reduces to `a`, so `term == a` is
+    /// structural equality, provable without Z3.
+    #[test]
+    fn additive_identity_proves_structural_equality() {
+        let a = Expr::Identifier("a".into());
+        let body = vec![Statement::Term(Some(Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(a.clone()),
+            Box::new(Expr::Decimal(0)),
+        )))];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("term".into())),
+            Box::new(a),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_id", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_id"),
+            "a + 0 == a should be proved structurally; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Zero absorption: `term = a * 0` reduces to `0`, so `term == 0` holds
+    /// for any `a`, provable without Z3.
+    #[test]
+    fn zero_multiplication_proves_zero_result() {
+        let body = vec![Statement::Term(Some(Expr::BinaryOp(
+            BinaryOpKind::Mul,
+            Box::new(Expr::Identifier("a".into())),
+            Box::new(Expr::Decimal(0)),
+        )))];
+        let post = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("term".into())),
+            Box::new(Expr::Decimal(0)),
+        );
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn("f_zero", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert!(
+            report.proven.iter().any(|n| n == "f_zero"),
+            "a * 0 == 0 should be proved structurally; unproven: {:?}",
+            report.unproven
+        );
+    }
+}
+
+#[cfg(test)]
+mod tautology_discharge_tests {
+    use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+
+    /// Build `defn name() [true][post] { term <body_expr>; }` and return the report.
+    ///
+    /// The cache guard is held because a postcondition outside the structural
+    /// rules escalates to the solver, whose cache and statistics are
+    /// process-global and shared with `smt::tests`.
+    fn report_for(name: &str, post: Expr, body_expr: Expr) -> crate::verify::BodyReport {
+        let _guard = crate::smt::cache_test_guard();
+        let body = vec![Statement::Term(Some(body_expr))];
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn(name, contract, body));
+        verify_bodies(&[item])
+    }
+
+    fn ident(name: &str) -> Expr {
+        Expr::Identifier(name.into())
+    }
+
+    fn binop(op: BinaryOpKind, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(op, Box::new(l), Box::new(r))
+    }
+
+    /// `x == 0 || x != 0` is a complementary pair: every integer satisfies it,
+    /// so the postcondition holds without consulting the solver.
+    #[test]
+    fn complementary_comparisons_are_a_tautology() {
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0)),
+            binop(BinaryOpKind::Neq, ident("x"), Expr::Decimal(0)),
+        );
+        let report = report_for("f_complement", post, ident("x"));
+        assert!(
+            report.proven.iter().any(|n| n == "f_complement"),
+            "x == 0 || x != 0 must be a tautology; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Order pairs are complementary too: `x < k || x >= k`.
+    #[test]
+    fn complementary_order_pair_is_a_tautology() {
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Lt, ident("x"), Expr::Decimal(5)),
+            binop(BinaryOpKind::Ge, ident("x"), Expr::Decimal(5)),
+        );
+        let report = report_for("f_order", post, ident("x"));
+        assert!(report.proven.iter().any(|n| n == "f_order"));
+    }
+
+    /// The same pair under `&&` can never hold, so the path is refuted —
+    /// a violation, not an undecided obligation.
+    #[test]
+    fn complementary_conjunction_is_refuted() {
+        let post = binop(
+            BinaryOpKind::And,
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0)),
+            binop(BinaryOpKind::Neq, ident("x"), Expr::Decimal(0)),
+        );
+        let report = report_for("f_contra", post, ident("x"));
+        assert!(
+            report.violated.iter().any(|n| n.contains("f_contra")),
+            "x == 0 && x != 0 must be refuted; violated: {:?}; unproven: {:?}",
+            report.violated,
+            report.unproven
+        );
+    }
+
+    /// `b_term == true || b_term == false` covers the whole Bool domain.
+    /// Mirrors `is_ws_byte`, whose term is a disjunction of comparisons.
+    #[test]
+    fn bool_domain_exhaustion_is_a_tautology() {
+        let term_expr = || binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0));
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(true)),
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(false)),
+        );
+        let report = report_for("f_bool", post, term_expr());
+        assert!(
+            report.proven.iter().any(|n| n == "f_bool"),
+            "(x == 0) == true || (x == 0) == false must be a tautology; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Over-discharge guard: a repeated comparison is NOT exhaustive, so it
+    /// must stay undecided rather than being reported as proved.
+    #[test]
+    fn repeated_comparison_is_not_a_tautology() {
+        let term_expr = || binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0));
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(true)),
+            binop(BinaryOpKind::Eq, term_expr(), Expr::Bool(true)),
+        );
+        let report = report_for("f_repeat", post, term_expr());
+        assert!(
+            !report.proven.iter().any(|n| n == "f_repeat"),
+            "a repeated comparison is not exhaustive and must not be proved"
+        );
+    }
+
+    /// Over-discharge guard: two distinct integer constants do NOT exhaust the
+    /// Int domain, so `x == 0 || x == 1` must stay undecided.
+    #[test]
+    fn integer_domain_is_not_exhausted_by_two_constants() {
+        let post = binop(
+            BinaryOpKind::Or,
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(0)),
+            binop(BinaryOpKind::Eq, ident("x"), Expr::Decimal(1)),
+        );
+        let report = report_for("f_int", post, ident("x"));
+        assert!(
+            !report.proven.iter().any(|n| n == "f_int"),
+            "x == 0 || x == 1 must not be treated as exhaustive"
+        );
+        assert!(!report.violated.iter().any(|n| n.contains("f_int")));
+    }
+}
+
+#[cfg(test)]
+mod mask_bound_tests {
+    use super::verify_bodies;
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+
+    fn report_for(name: &str, post: Expr, body: Vec<Statement>) -> crate::verify::BodyReport {
+        let _guard = crate::smt::cache_test_guard();
+        let contract = Contract::proven(Expr::Bool(true), post);
+        let item = TopLevel::Definition(Definition::prover_defn(name, contract, body));
+        verify_bodies(&[item])
+    }
+
+    fn ident(name: &str) -> Expr {
+        Expr::Identifier(name.into())
+    }
+
+    fn masked(mask: i64) -> Expr {
+        Expr::BinaryOp(
+            BinaryOpKind::BitAnd,
+            Box::new(ident("x")),
+            Box::new(Expr::Decimal(mask)),
+        )
+    }
+
+    fn cmp(op: BinaryOpKind, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(op, Box::new(l), Box::new(r))
+    }
+
+    /// `x & 0xFF` is in [0, 255], so the upper bound is decided.
+    ///
+    /// The postcondition names `term` rather than the mask expression: a
+    /// contract that itself contains `&` is rejected as ill-sorted by the word
+    /// model (the same admission gate that rejected shift expressions), so
+    /// writing it inline would test the gate, not the inference.
+    #[test]
+    fn byte_mask_is_non_negative_and_bounded() {
+        let post = cmp(BinaryOpKind::Le, ident("term"), Expr::Decimal(255));
+        let report = report_for(
+            "f_byte_mask",
+            post,
+            vec![Statement::Term(Some(masked(0xFF)))],
+        );
+        assert!(
+            report.proven.iter().any(|n| n == "f_byte_mask"),
+            "x & 0xFF <= 255 must be proved; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// The 32-bit mask case (`sha1_f`, `rotl32`).
+    #[test]
+    fn word_mask_is_bounded_by_the_mask() {
+        let post = cmp(BinaryOpKind::Le, ident("term"), Expr::Decimal(4294967295));
+        let report = report_for(
+            "f_word_mask",
+            post,
+            vec![Statement::Term(Some(masked(4294967295)))],
+        );
+        assert!(
+            report.proven.iter().any(|n| n == "f_word_mask"),
+            "x & MASK32 <= MASK32 must be proved; unproven: {:?}",
+            report.unproven
+        );
+    }
+
+    /// Soundness guard: a negative mask is the identity, not a range, so a
+    /// small upper bound must NOT be inferred.
+    #[test]
+    fn negative_mask_yields_no_bound() {
+        let post = cmp(BinaryOpKind::Le, ident("term"), Expr::Decimal(5));
+        let report = report_for("f_neg_mask", post, vec![Statement::Term(Some(masked(-1)))]);
+        assert!(
+            !report.proven.iter().any(|n| n == "f_neg_mask"),
+            "x & -1 must not be bounded by 5"
+        );
+        assert!(!report.violated.iter().any(|n| n.contains("f_neg_mask")));
+    }
+
+    /// A masked value assigned to a local carries its interval to that local.
+    #[test]
+    fn assigned_mask_interval_reaches_the_local() {
+        let body = vec![
+            Statement::Let {
+                name: "lo".into(),
+                names: Vec::new(),
+                ty: None,
+                expr: Some(masked(4294967295)),
+                modifiers: Vec::new(),
+            },
+            Statement::Term(Some(ident("lo"))),
+        ];
+        let post = cmp(BinaryOpKind::Le, ident("lo"), Expr::Decimal(4294967295));
+        let report = report_for("f_mask_let", post, body);
+        assert!(
+            report.proven.iter().any(|n| n == "f_mask_let"),
+            "a masked local must carry its interval; unproven: {:?}",
+            report.unproven
+        );
+    }
+}
+
+#[cfg(test)]
+mod unknown_identity_tests {
+    use super::*;
+    #[test]
+    fn pointer_identity_does_not_prove_unknown_trees_equal() {
+        let unknown = SymbolicValue::Unknown;
+        assert!(!structural_eq(&unknown, &unknown));
+        let tree = SymbolicValue::Binary(
+            "+".into(),
+            Box::new(unknown),
+            Box::new(SymbolicValue::int_literal(1)),
+        );
+        assert!(!structural_eq(&tree, &tree));
     }
 }

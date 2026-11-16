@@ -36,8 +36,13 @@ fn zero_friction_gate() {
     let gate = format!("{}/benchmarks/bridge/gate/run_gate.sh", PROJECT_ROOT);
     let run = Command::new("bash")
         .arg(&gate)
-        .output().expect("failed run_gate.sh");
-    assert!(run.status.success(), "gate failed: {}", String::from_utf8_lossy(&run.stderr));
+        .output()
+        .expect("failed run_gate.sh");
+    assert!(
+        run.status.success(),
+        "gate failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let out = String::from_utf8_lossy(&run.stdout);
 
     // Parse host rows: "C  1100.3  1095.7  1.00  1.99  1.87  1.06"
@@ -52,20 +57,35 @@ fn zero_friction_gate() {
         let host = f[0];
         let fh_ratio: f64 = f[3].parse().unwrap_or(f64::MAX);
         let add_ratio: f64 = f[6].parse().unwrap_or(f64::MAX);
-        assert!(fh_ratio < 1.6,
-            "{}: Briv feature_hash {:.2}x native — real work regressed", host, fh_ratio);
+        assert!(
+            fh_ratio < 1.6,
+            "{}: Briv feature_hash {:.2}x native — real work regressed",
+            host,
+            fh_ratio
+        );
         match host {
             "Py" | "Lua" | "Node" => {
-                assert!(fh_ratio < 0.6,
-                    "{}: Briv must beat interpreted-native by >1.7x, got {:.2}x", host, fh_ratio);
+                assert!(
+                    fh_ratio < 0.6,
+                    "{}: Briv must beat interpreted-native by >1.7x, got {:.2}x",
+                    host,
+                    fh_ratio
+                );
             }
             "Py" => {
-                assert!(add_ratio < 2.0,
-                    "{}: METH_FASTCALL dispatch regressed (add {:.2}x native)", host, add_ratio);
+                assert!(
+                    add_ratio < 2.0,
+                    "{}: METH_FASTCALL dispatch regressed (add {:.2}x native)",
+                    host,
+                    add_ratio
+                );
             }
             _ => {}
         }
     }
     assert!(hosts > 0, "no gate rows parsed");
-    eprintln!("zero-friction gate: {} hosts, all ratios within bounds", hosts);
+    eprintln!(
+        "zero-friction gate: {} hosts, all ratios within bounds",
+        hosts
+    );
 }

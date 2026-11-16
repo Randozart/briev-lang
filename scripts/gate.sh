@@ -1,49 +1,48 @@
 #!/usr/bin/env bash
 # 2026-11-09: test gate wrapper.
 #
-#   scripts/gate.sh quick   per-commit: library (minus the full conformance
-#                           sweep) + the focused integration suites
-#   scripts/gate.sh full    pre-push: every test binary, both profiles
+#   scripts/gate.sh quick      per-commit: library (minus conformance sweep),
+#                              focused integrations, verifier + explicit Z3 tests
+#   scripts/gate.sh verifier   required prover checks, including ignored Z3 tests
+#   scripts/gate.sh full       every workspace test binary, current Cargo profile
 #
 # Uses cargo-nextest when installed (parallel test binaries); falls back to
-# cargo test otherwise. The opt-out (AST) suite is a nightly/CI check, not a
+# cargo test otherwise. Quick/verifier share selection and retain a manifest.
+# 2026-11-15: gate.py owns accounting so missing tools or empty test runs cannot
+# pass; retire its text adapter when Cargo supplies stable structured test results.
+# The opt-out (AST) suite is a nightly/CI check, not a
 # per-commit one: BRIEV_HIR_EMIT=0 is only validated on releases/flip changes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Conflict-marker guard: a committed conflict block is a latent parse/merge
-# bug (cost us a broken fixture and a red suite). Cheap, always first.
-if git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' -- ':!target' >/tmp/opencode/conflict_markers 2>/dev/null; then
-  echo "conflict markers found in tracked files:" >&2
-  cat /tmp/opencode/conflict_markers >&2
-  exit 1
-fi
-
 mode=${1:-quick}
-have_nextest=0
-command -v cargo-nextest >/dev/null 2>&1 && have_nextest=1
-
 case "$mode" in
-  quick)
-    if [ "$have_nextest" = 1 ]; then
-      cargo nextest run --lib -j 4 -E 'not test(conformance_sweep)'
-      cargo nextest run -j 4 -E \
-        'binary(diagnostics) | binary(hir_snapshots) | binary(hold_law) | binary(publish_reclamation) | binary(deterministic_transitions) | binary(unit_test_blocks) | binary(interpreter_corpus_parity) | binary(hir_reclamation_parity) | binary(reduction_scripts) | binary(verify_report)'
-    else
-      cargo test --lib -- --skip conformance_sweep
-      cargo test --test diagnostics --test hir_snapshots --test hold_law \
-        --test publish_reclamation --test deterministic_transitions
-    fi
+  quick|verifier)
+    exec python3 -B scripts/gate.py "$@"
     ;;
   full)
-    if [ "$have_nextest" = 1 ]; then
-      cargo nextest run --all -j 4
+    if [ "$#" -gt 1 ]; then
+      echo "full takes no extra arguments; use quick --help for recorded gate options" >&2
+      exit 2
+    fi
+    # A conflict block once broke a fixture. Also reject Git failures: only
+    # grep exit 1 establishes absence; command substitution isolates concurrent runs.
+    if matches=$(git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' -- ':!target'); then
+      echo "conflict markers found in tracked files:" >&2
+      echo "$matches" >&2
+      exit 1
     else
-      cargo test --all
+      status=$?
+      if [ "$status" != 1 ]; then exit "$status"; fi
+    fi
+    if command -v cargo-nextest >/dev/null 2>&1; then
+      cargo nextest run --workspace -j 4
+    else
+      cargo test --workspace
     fi
     ;;
   *)
-    echo "usage: scripts/gate.sh [quick|full]" >&2
+    echo "usage: scripts/gate.sh [quick|verifier] [--runner auto|nextest|cargo] [--artifacts DIR] [--timeout-seconds N] | full" >&2
     exit 2
     ;;
 esac

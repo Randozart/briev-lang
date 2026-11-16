@@ -7,19 +7,23 @@
 // never matches type names). Strips metadata the webstack shim and generator
 // don't consume (keeps Cast. + js_type + width metadata).
 
-use std::collections::HashSet;
 use crate::ast::*;
 use crate::backend::normalizer;
 use crate::backend::register_types::register_typedefs;
 use crate::type_universe::TypeUniverse;
 use crate::type_universe::protocol_category;
+use std::collections::HashSet;
 
 /// 2026-07-14: Normalize the AST for the Webstack (WASM + JS) backend.
 /// 1. Register all user typedefs (shared pass) — wasm32 ⇒ int_bits = 32.
 /// 2. Derive js_type from protocol category (Cast.).
 /// 3. Validate intrinsics against the WASM supported set.
 /// 4. Retain only the metadata the webstack backend consumes.
-pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, _int_bits: u64) -> Result<(), String> {
+pub fn normalize(
+    items: &mut Vec<TopLevel>,
+    universe: &mut TypeUniverse,
+    _int_bits: u64,
+) -> Result<(), String> {
     // 2026-08-10: wasm32 target width is fixed at 32 for flexible types
     // (the LLVM wasm backend resolves 32-bit pointers regardless); the
     // shared pass records a warning when a type needs the fallback.
@@ -47,7 +51,8 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, _int_bi
     }
     for rt in universe.types.values_mut() {
         if let Some(js) = js_types.get(&rt.name) {
-            rt.properties.insert("js_type".into(), PropertyValue::String(js.clone()));
+            rt.properties
+                .insert("js_type".into(), PropertyValue::String(js.clone()));
         }
     }
 
@@ -67,11 +72,13 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, _int_bi
     // 2026-08-10: retain what the backend consumes — protocol membership,
     // js_type, and width/alignment metadata (mirrors the LLVM normalizer's
     // keep-list; `llvm_type`/`disamb` are legacy, never set by the universe).
-    let keep: HashSet<String> = [
-        "js_type", "bits", "maxbits", "minbits", "alignment",
-    ].iter().map(|s| s.to_string()).collect();
+    let keep: HashSet<String> = ["js_type", "bits", "maxbits", "minbits", "alignment"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     for rt in universe.types.values_mut() {
-        rt.properties.retain(|k, _| k.starts_with("Cast.") || keep.contains(k));
+        rt.properties
+            .retain(|k, _| k.starts_with("Cast.") || keep.contains(k));
     }
 
     Ok(())
@@ -86,28 +93,65 @@ fn build_supported_ops() -> HashSet<String> {
     let mut set = HashSet::new();
     // Tier 1: WASM native (arithmetic, comparison, bitwise, float math)
     for op in &[
-        "Add#", "Sub#", "Mul#", "Div#", "Rem#", "Neg#", "Abs#",
-        "Eq#", "Neq#", "Lt#", "Gt#", "Le#", "Ge#",
-        "BitAnd#", "BitOr#", "BitXor#", "Shl#", "Shr#", "BitNot#",
-        "Not#",
-        "Fabs#", "Ceil#", "Floor#", "Sqrt#", "Sin#", "Cos#", "Exp#", "Max#", "Min#", "Pow#",
-    ] { set.insert(op.to_string()); }
+        "Add#", "Sub#", "Mul#", "Div#", "Rem#", "Neg#", "Abs#", "Eq#", "Neq#", "Lt#", "Gt#", "Le#",
+        "Ge#", "BitAnd#", "BitOr#", "BitXor#", "Shl#", "Shr#", "BitNot#", "Not#", "Fabs#", "Ceil#",
+        "Floor#", "Sqrt#", "Sin#", "Cos#", "Exp#", "Max#", "Min#", "Pow#",
+    ] {
+        set.insert(op.to_string());
+    }
     // Tier 2: WASM runtime (memory, atomics, pointer, string ops)
     for op in &[
-        "Ptr#", "Deref#", "Index#", "Cast#", "AddressOf#",
-        "Load#", "Store#", "Malloc#", "Alloc#", "Free#", "Copy#", "Fill#",
-        "Memcpy#", "Memset#",
-        "Len#", "Length#", "CharCount#", "Count#", "At#",
-        "Iter#", "Step#", "Concat#", "Get#", "Insert#",
-        "ToInt#", "ToFloat#", "ToString#",
-        "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#",
-        "AtomicAdd#", "Fence#",
-    ] { set.insert(op.to_string()); }
+        "Ptr#",
+        "Deref#",
+        "Index#",
+        "Cast#",
+        "AddressOf#",
+        "Load#",
+        "Store#",
+        "Malloc#",
+        "Alloc#",
+        "Free#",
+        "Copy#",
+        "Fill#",
+        "Memcpy#",
+        "Memset#",
+        "Len#",
+        "Length#",
+        "CharCount#",
+        "Count#",
+        "At#",
+        "Iter#",
+        "Step#",
+        "Concat#",
+        "Get#",
+        "Insert#",
+        "ToInt#",
+        "ToFloat#",
+        "ToString#",
+        "AtomicLoad#",
+        "AtomicStore#",
+        "AtomicCas#",
+        "AtomicXchg#",
+        "AtomicAdd#",
+        "Fence#",
+    ] {
+        set.insert(op.to_string());
+    }
     // Tier 3: Browser API (console, time, env queries — JS shim provides)
     for op in &[
-        "PrintInt#", "PrintFloat#", "PrintChar#", "Print#",
-        "Time#", "CpuCount#", "Hostname#", "PageSize#", "Errno#", "Sleep#",
-    ] { set.insert(op.to_string()); }
+        "PrintInt#",
+        "PrintFloat#",
+        "PrintChar#",
+        "Print#",
+        "Time#",
+        "CpuCount#",
+        "Hostname#",
+        "PageSize#",
+        "Errno#",
+        "Sleep#",
+    ] {
+        set.insert(op.to_string());
+    }
     set
 }
 
@@ -131,9 +175,14 @@ mod tests {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                slots: slots.into_iter().map(|(n, ty)| TypeDefSlot {
-                    name: n.to_string(), ty, bit_range: None,
-                }).collect(),
+                slots: slots
+                    .into_iter()
+                    .map(|(n, ty)| TypeDefSlot {
+                        name: n.to_string(),
+                        ty,
+                        bit_range: None,
+                    })
+                    .collect(),
                 metadata: std::collections::HashMap::new(),
                 projections: vec![],
                 bindings: vec![],
@@ -173,7 +222,11 @@ mod tests {
     #[test]
     fn test_custom_type_registered() {
         let mut u = TypeUniverse::new();
-        let items = vec![make_type_def("Widget", Some("Bit"), vec![("id", Type::int())])];
+        let items = vec![make_type_def(
+            "Widget",
+            Some("Bit"),
+            vec![("id", Type::int())],
+        )];
         normalize(&mut items.clone(), &mut u, 32).unwrap();
         assert!(u.get("Widget").is_some(), "user typedef must be registered");
     }

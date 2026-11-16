@@ -4,36 +4,83 @@
 // Flat dispatch: one match arm per intrinsic name, first match wins.
 
 use crate::errors::RuntimeError;
-use crate::interpreter::{Atom, bool_to_bits, f64_to_bits, i64_to_bits, zero_bits, Value, VirtualHeap};
+use crate::interpreter::{
+    Atom, Value, VirtualHeap, bool_to_bits, f64_to_bits, i64_to_bits, zero_bits,
+};
 
 // 2026-07-15: SysCall# abstract op → syscall number mapping (x86_64)
 fn resolve_syscall_number_interp(name: &str) -> Option<i64> {
     Some(match name {
-        "Read" => 0, "Write" => 1, "Open" => 2, "Close" => 3,
-        "Stat" => 4, "FStat" => 5, "LSeek" => 8, "Mmap" => 9,
-        "Munmap" => 11, "Brk" => 12, "RtSigAction" => 13,
-        "RtSigProcmask" => 14, "IoCtl" => 16, "Pipe" => 22,
-        "SchedYield" => 24, "NanoSleep" => 35,
-        "GetPid" => 39, "GetPPid" => 40, "Socket" => 41,
-        "Connect" => 42, "Accept" => 43, "Send" => 44,
-        "Recv" => 45, "SendTo" => 44, "RecvFrom" => 45,
-        "Bind" => 49, "Listen" => 50, "Exit" => 60,
-        "Fcntl" => 72, "FTruncate" => 77, "GetCwd" => 79,
-        "ChDir" => 80, "MkDir" => 83, "RmDir" => 84,
-        "Unlink" => 87, "Dup" => 32, "Dup2" => 33,
-        "FSync" => 74, "MkDt" => 85, "ReadLink" => 89,
-        "ChMod" => 90, "ChOwn" => 92, "Clone" => 56,
-        "GetEgid" => 108, "GetEuid" => 107, "GetGid" => 104,
-        "GetPgid" => 109, "GetSid" => 124,
-        "GetSockOpt" => 55, "GetUid" => 102, "Mlock" => 149,
-        "Mprotect" => 10, "SetSockOpt" => 54,
-        "ShmGet" => 29, "Shutdown" => 48, "UMask" => 95,
-        "ShmAt" => 30, "ShmDt" => 31, "SemGet" => 64,
-        "SemOp" => 65, "SemCtl" => 66, "ClockGetTime" => 228,
-        "ClockSetTime" => 229, "Futex" => 202,
-        "GetRandom" => 318, "Openat" => 257,
-        "Membarrier" => 324, "CopyFileRange" => 326,
-        "PRead" => 17, "PWrite" => 18,
+        "Read" => 0,
+        "Write" => 1,
+        "Open" => 2,
+        "Close" => 3,
+        "Stat" => 4,
+        "FStat" => 5,
+        "LSeek" => 8,
+        "Mmap" => 9,
+        "Munmap" => 11,
+        "Brk" => 12,
+        "RtSigAction" => 13,
+        "RtSigProcmask" => 14,
+        "IoCtl" => 16,
+        "Pipe" => 22,
+        "SchedYield" => 24,
+        "NanoSleep" => 35,
+        "GetPid" => 39,
+        "GetPPid" => 40,
+        "Socket" => 41,
+        "Connect" => 42,
+        "Accept" => 43,
+        "Send" => 44,
+        "Recv" => 45,
+        "SendTo" => 44,
+        "RecvFrom" => 45,
+        "Bind" => 49,
+        "Listen" => 50,
+        "Exit" => 60,
+        "Fcntl" => 72,
+        "FTruncate" => 77,
+        "GetCwd" => 79,
+        "ChDir" => 80,
+        "MkDir" => 83,
+        "RmDir" => 84,
+        "Unlink" => 87,
+        "Dup" => 32,
+        "Dup2" => 33,
+        "FSync" => 74,
+        "MkDt" => 85,
+        "ReadLink" => 89,
+        "ChMod" => 90,
+        "ChOwn" => 92,
+        "Clone" => 56,
+        "GetEgid" => 108,
+        "GetEuid" => 107,
+        "GetGid" => 104,
+        "GetPgid" => 109,
+        "GetSid" => 124,
+        "GetSockOpt" => 55,
+        "GetUid" => 102,
+        "Mlock" => 149,
+        "Mprotect" => 10,
+        "SetSockOpt" => 54,
+        "ShmGet" => 29,
+        "Shutdown" => 48,
+        "UMask" => 95,
+        "ShmAt" => 30,
+        "ShmDt" => 31,
+        "SemGet" => 64,
+        "SemOp" => 65,
+        "SemCtl" => 66,
+        "ClockGetTime" => 228,
+        "ClockSetTime" => 229,
+        "Futex" => 202,
+        "GetRandom" => 318,
+        "Openat" => 257,
+        "Membarrier" => 324,
+        "CopyFileRange" => 326,
+        "PRead" => 17,
+        "PWrite" => 18,
         _ => return None,
     })
 }
@@ -49,9 +96,9 @@ pub fn execute_intrinsic(
         // count of a String (a computed property, so an intrinsic; `.^Length`
         // is the stored byte count).
         "CharCount#" => {
-            let s = args.first().ok_or_else(|| crate::errors::RuntimeError::HeapError(
-                "CharCount# takes one argument".into(),
-            ))?;
+            let s = args.first().ok_or_else(|| {
+                crate::errors::RuntimeError::HeapError("CharCount# takes one argument".into())
+            })?;
             let bytes = s.string_bytes(heap).unwrap_or_default();
             let chars = bytes.iter().filter(|b| (**b & 0xC0) != 0x80).count();
             Ok(Value::int(chars as i64))
@@ -64,9 +111,9 @@ pub fn execute_intrinsic(
         // the field list. `Count#` on a String value is the char count (the
         // `String` case the codegen routes to `CharCount#`).
         "Count#" => {
-            let v = args.first().ok_or_else(|| crate::errors::RuntimeError::HeapError(
-                "Count# takes one argument".into(),
-            ))?;
+            let v = args.first().ok_or_else(|| {
+                crate::errors::RuntimeError::HeapError("Count# takes one argument".into())
+            })?;
             match v {
                 Value::Product { fields, .. } => Ok(Value::int(fields.len() as i64)),
                 Value::Bits(bytes) => {
@@ -82,9 +129,9 @@ pub fn execute_intrinsic(
         // exact-fit); the write forms are NO-OPs (a Vec grows freely, capacity
         // is not observable). Parity with the codegen's hidden cap slot.
         "Capacity#" => {
-            let v = args.first().ok_or_else(|| crate::errors::RuntimeError::HeapError(
-                "Capacity# takes one argument".into(),
-            ))?;
+            let v = args.first().ok_or_else(|| {
+                crate::errors::RuntimeError::HeapError("Capacity# takes one argument".into())
+            })?;
             match v {
                 Value::Product { fields, .. } => Ok(Value::int(fields.len() as i64)),
                 _ => Ok(Value::int(0)),
@@ -99,19 +146,30 @@ pub fn execute_intrinsic(
         }
         "At#" => {
             if args.len() < 2 {
-                return Err(RuntimeError::HeapError("At# takes (collection, index)".into()));
+                return Err(RuntimeError::HeapError(
+                    "At# takes (collection, index)".into(),
+                ));
             }
             match &args[0] {
                 Value::Product { fields, .. } => {
-                    let i = args[1].as_i64().ok_or_else(|| RuntimeError::HeapError("At# index must be Int".into()))?;
-                    fields.get(i as usize).cloned().ok_or_else(|| RuntimeError::HeapError("At# index out of range".into()))
+                    let i = args[1]
+                        .as_i64()
+                        .ok_or_else(|| RuntimeError::HeapError("At# index must be Int".into()))?;
+                    fields
+                        .get(i as usize)
+                        .cloned()
+                        .ok_or_else(|| RuntimeError::HeapError("At# index out of range".into()))
                 }
-                _ => Err(RuntimeError::HeapError("At# receiver must be a collection".into())),
+                _ => Err(RuntimeError::HeapError(
+                    "At# receiver must be a collection".into(),
+                )),
             }
         }
         "Slice#" => {
             if args.len() < 3 {
-                return Err(RuntimeError::HeapError("Slice# takes (collection, lo, hi)".into()));
+                return Err(RuntimeError::HeapError(
+                    "Slice# takes (collection, lo, hi)".into(),
+                ));
             }
             match &args[0] {
                 Value::Product { fields, .. } => {
@@ -122,7 +180,9 @@ pub fn execute_intrinsic(
                         names: None,
                     })
                 }
-                _ => Err(RuntimeError::HeapError("Slice# receiver must be a collection".into())),
+                _ => Err(RuntimeError::HeapError(
+                    "Slice# receiver must be a collection".into(),
+                )),
             }
         }
         "InsertAt#" => {
@@ -132,18 +192,26 @@ pub fn execute_intrinsic(
             // the collection-op VALUE parity for reads is what the interpreter
             // exercises (Count#/At#/Slice#).
             if args.len() < 2 {
-                return Err(RuntimeError::HeapError("InsertAt# takes (collection, value)".into()));
+                return Err(RuntimeError::HeapError(
+                    "InsertAt# takes (collection, value)".into(),
+                ));
             }
             Ok(Value::Void)
         }
         "ExtractFrom#" | "CopyFrom#" => {
-            let v = args.first().ok_or_else(|| RuntimeError::HeapError("ExtractFrom# takes a collection".into()))?;
+            let v = args
+                .first()
+                .ok_or_else(|| RuntimeError::HeapError("ExtractFrom# takes a collection".into()))?;
             match v {
                 Value::Product { fields, .. } => {
-                    let last = fields.last().cloned().ok_or_else(|| RuntimeError::HeapError("extract from empty collection".into()))?;
+                    let last = fields.last().cloned().ok_or_else(|| {
+                        RuntimeError::HeapError("extract from empty collection".into())
+                    })?;
                     Ok(last)
                 }
-                _ => Err(RuntimeError::HeapError("ExtractFrom# receiver must be a collection".into())),
+                _ => Err(RuntimeError::HeapError(
+                    "ExtractFrom# receiver must be a collection".into(),
+                )),
             }
         }
         // ── Arithmetic (type-polymorphic) ───────────────────────────
@@ -181,17 +249,29 @@ pub fn execute_intrinsic(
         }
 
         // ── Comparison (type-polymorphic) ───────────────────────────
-        "Eq#"  => exec_cmp(args, |a, b| a == b, |a, b| (a - b).abs() < 1e-10),
+        "Eq#" => exec_cmp(args, |a, b| a == b, |a, b| (a - b).abs() < 1e-10),
         "Neq#" => exec_cmp(args, |a, b| a != b, |a, b| (a - b).abs() >= 1e-10),
-        "Lt#"  => exec_cmp(args, |a, b| a < b,  |a, b| a < b),
-        "Gt#"  => exec_cmp(args, |a, b| a > b,  |a, b| a > b),
-        "Le#"  => exec_cmp(args, |a, b| a <= b, |a, b| a <= b),
-        "Ge#"  => exec_cmp(args, |a, b| a >= b, |a, b| a >= b),
+        "Lt#" => exec_cmp(args, |a, b| a < b, |a, b| a < b),
+        "Gt#" => exec_cmp(args, |a, b| a > b, |a, b| a > b),
+        "Le#" => exec_cmp(args, |a, b| a <= b, |a, b| a <= b),
+        "Ge#" => exec_cmp(args, |a, b| a >= b, |a, b| a >= b),
 
         // ── Bitwise (int-only — no float path) ────────────────────────
-        "BitAnd#" => { let a = arg_as_i64(args, 0)?; let b = arg_as_i64(args, 1)?; Ok(i64_to_bits(a & b)) }
-        "BitOr#" => { let a = arg_as_i64(args, 0)?; let b = arg_as_i64(args, 1)?; Ok(i64_to_bits(a | b)) }
-        "BitXor#" => { let a = arg_as_i64(args, 0)?; let b = arg_as_i64(args, 1)?; Ok(i64_to_bits(a ^ b)) }
+        "BitAnd#" => {
+            let a = arg_as_i64(args, 0)?;
+            let b = arg_as_i64(args, 1)?;
+            Ok(i64_to_bits(a & b))
+        }
+        "BitOr#" => {
+            let a = arg_as_i64(args, 0)?;
+            let b = arg_as_i64(args, 1)?;
+            Ok(i64_to_bits(a | b))
+        }
+        "BitXor#" => {
+            let a = arg_as_i64(args, 0)?;
+            let b = arg_as_i64(args, 1)?;
+            Ok(i64_to_bits(a ^ b))
+        }
         "Shl#" => {
             let a = arg_as_i64(args, 0)?;
             let b = arg_as_i64(args, 1)?;
@@ -226,20 +306,54 @@ pub fn execute_intrinsic(
             Ok(args.get(0).cloned().unwrap_or(Value::Atom(Atom::Int(0))))
         }
         // ── Float math ──────────────────────────────────────────────
-        "Sqrt#"  => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.sqrt())) }
-        "Sin#"   => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.sin())) }
-        "Cos#"   => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.cos())) }
-        "Fabs#"  => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.abs())) }
-        "Max#"   => { let a = arg_as_f64(args, 0)?; let b = arg_as_f64(args, 1)?; Ok(f64_to_bits(a.max(b))) }
-        "Min#"   => { let a = arg_as_f64(args, 0)?; let b = arg_as_f64(args, 1)?; Ok(f64_to_bits(a.min(b))) }
-        "Ceil#"  => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.ceil())) }
-        "Floor#" => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.floor())) }
-        "Exp#"   => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.exp())) }
-        "Pow#"   => { let a = arg_as_f64(args, 0)?; let b = arg_as_f64(args, 1)?; Ok(f64_to_bits(a.powf(b))) }
-        // ── Warp shuffle (CPU fallback: identity — single lane) ───
-        "ShuffleDown#" | "ShuffleXor#" => {
-            args.first().cloned().ok_or_else(|| RuntimeError::HeapError("shuffle needs a value".into()))
+        "Sqrt#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x.sqrt()))
         }
+        "Sin#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x.sin()))
+        }
+        "Cos#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x.cos()))
+        }
+        "Fabs#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x.abs()))
+        }
+        "Max#" => {
+            let a = arg_as_f64(args, 0)?;
+            let b = arg_as_f64(args, 1)?;
+            Ok(f64_to_bits(a.max(b)))
+        }
+        "Min#" => {
+            let a = arg_as_f64(args, 0)?;
+            let b = arg_as_f64(args, 1)?;
+            Ok(f64_to_bits(a.min(b)))
+        }
+        "Ceil#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x.ceil()))
+        }
+        "Floor#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x.floor()))
+        }
+        "Exp#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x.exp()))
+        }
+        "Pow#" => {
+            let a = arg_as_f64(args, 0)?;
+            let b = arg_as_f64(args, 1)?;
+            Ok(f64_to_bits(a.powf(b)))
+        }
+        // ── Warp shuffle (CPU fallback: identity — single lane) ───
+        "ShuffleDown#" | "ShuffleXor#" => args
+            .first()
+            .cloned()
+            .ok_or_else(|| RuntimeError::HeapError("shuffle needs a value".into())),
         "SubgroupFAdd#" => {
             let x = arg_as_f64(args, 0)?;
             Ok(f64_to_bits(x))
@@ -264,7 +378,9 @@ pub fn execute_intrinsic(
         }
         "SubgroupBroadcast#" => {
             // CPU fallback: identity (single lane, val is from lane 0)
-            args.first().cloned().ok_or_else(|| RuntimeError::HeapError("broadcast needs a value".into()))
+            args.first()
+                .cloned()
+                .ok_or_else(|| RuntimeError::HeapError("broadcast needs a value".into()))
         }
 
         // ── Memory (observable) ─────────────────────────────────────
@@ -317,20 +433,41 @@ pub fn execute_intrinsic(
             }
             Ok(i64_to_bits(base as i64))
         }
-         "Load#" => {
+        "Load#" => {
             let addr = arg_as_i64(args, 0)? as u64;
-            let bytes = args.get(1).and_then(|a| if let Value::Atom(Atom::Int(n)) = a { Some(*n as usize) } else { None }).unwrap_or(8);
-            let data = heap.read(addr, bytes)
+            let bytes = args
+                .get(1)
+                .and_then(|a| {
+                    if let Value::Atom(Atom::Int(n)) = a {
+                        Some(*n as usize)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(8);
+            let data = heap
+                .read(addr, bytes)
                 .ok_or_else(|| RuntimeError::HeapError("Load# read failed".into()))?;
             let mut buf = data.to_vec();
             buf.resize(8, 0);
-            let val = i64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
+            let val = i64::from_le_bytes([
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+            ]);
             Ok(i64_to_bits(val))
         }
         "Store#" => {
             let addr = arg_as_i64(args, 0)? as u64;
             let val = arg_as_i64(args, 1)?;
-            let bytes = args.get(2).and_then(|a| if let Value::Atom(Atom::Int(n)) = a { Some(*n as usize) } else { None }).unwrap_or(8);
+            let bytes = args
+                .get(2)
+                .and_then(|a| {
+                    if let Value::Atom(Atom::Int(n)) = a {
+                        Some(*n as usize)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(8);
             let data = val.to_le_bytes()[..bytes].to_vec();
             heap.write(addr, &data)
                 .map_err(|_| RuntimeError::HeapError("Store# write failed".into()))?;
@@ -341,7 +478,8 @@ pub fn execute_intrinsic(
         // nuance is a backend concern — parity tests compare word values).
         "VolatileLoad#" => {
             let addr = arg_as_i64(args, 0)? as u64;
-            let data = heap.read(addr, 8)
+            let data = heap
+                .read(addr, 8)
                 .ok_or_else(|| RuntimeError::HeapError("VolatileLoad# read failed".into()))?;
             let val = i64::from_le_bytes(data.try_into().unwrap());
             Ok(i64_to_bits(val))
@@ -357,7 +495,8 @@ pub fn execute_intrinsic(
             let dst = arg_as_i64(args, 0)? as u64;
             let src = arg_as_i64(args, 1)? as u64;
             let n = arg_as_i64(args, 2)? as usize;
-            let data = heap.read(src, n)
+            let data = heap
+                .read(src, n)
                 .ok_or_else(|| RuntimeError::HeapError("Copy# read failed".into()))?;
             let data_vec = data.to_vec();
             heap.write(dst, &data_vec)
@@ -375,10 +514,16 @@ pub fn execute_intrinsic(
         }
 
         // ── String / Conversion ─────────────────────────────────────
-        "Concat#"   => Err(RuntimeError::UnsupportedIntrinsic("Concat#".to_string())),
-        "Length#"   => Err(RuntimeError::UnsupportedIntrinsic("Length#".to_string())),
-        "ToInt#"    => { let f = arg_as_f64(args, 0)?; Ok(i64_to_bits(f as i64)) }
-        "ToFloat#"  => { let n = arg_as_i64(args, 0)?; Ok(f64_to_bits(n as f64)) }
+        "Concat#" => Err(RuntimeError::UnsupportedIntrinsic("Concat#".to_string())),
+        "Length#" => Err(RuntimeError::UnsupportedIntrinsic("Length#".to_string())),
+        "ToInt#" => {
+            let f = arg_as_f64(args, 0)?;
+            Ok(i64_to_bits(f as i64))
+        }
+        "ToFloat#" => {
+            let n = arg_as_i64(args, 0)?;
+            Ok(f64_to_bits(n as f64))
+        }
         "ToString#" => {
             let s = if let Ok(n) = arg_as_i64(args, 0) {
                 n.to_string()
@@ -397,16 +542,22 @@ pub fn execute_intrinsic(
             } else {
                 Ok(i64_to_bits(0))
             }
-        },
+        }
 
         // ── Collection ──────────────────────────────────────────────
-        "Get#"    => Err(RuntimeError::UnsupportedIntrinsic("Get#".to_string())),
+        "Get#" => Err(RuntimeError::UnsupportedIntrinsic("Get#".to_string())),
         "Insert#" => Err(RuntimeError::UnsupportedIntrinsic("Insert#".to_string())),
 
         // ── GPU ─────────────────────────────────────────────────────
-        "GetGlobalId#"   => Err(RuntimeError::UnsupportedIntrinsic("GetGlobalId#".to_string())),
-        "GetGlobalSize#" => Err(RuntimeError::UnsupportedIntrinsic("GetGlobalSize#".to_string())),
-        "GetLocalId#"    => Err(RuntimeError::UnsupportedIntrinsic("GetLocalId#".to_string())),
+        "GetGlobalId#" => Err(RuntimeError::UnsupportedIntrinsic(
+            "GetGlobalId#".to_string(),
+        )),
+        "GetGlobalSize#" => Err(RuntimeError::UnsupportedIntrinsic(
+            "GetGlobalSize#".to_string(),
+        )),
+        "GetLocalId#" => Err(RuntimeError::UnsupportedIntrinsic(
+            "GetLocalId#".to_string(),
+        )),
         "AddressOf#" => {
             let id = arg_as_string(args, 0)?;
             let addr = resolve_address_for_interp(&id);
@@ -415,7 +566,9 @@ pub fn execute_intrinsic(
 
         // ── POSIX sysconf (observable) ────────────────────────────────
         "SysConf#" => {
-            if args.is_empty() { return Ok(i64_to_bits(0)); }
+            if args.is_empty() {
+                return Ok(i64_to_bits(0));
+            }
             let name: i64 = match &args[0] {
                 Value::Atom(Atom::Int(n)) => *n,
                 Value::Bits(b) => {
@@ -448,10 +601,14 @@ pub fn execute_intrinsic(
         // The first arg is the syscall number (Int) or PascalCase abstract op
         // name (resolved to a number here).
         "SysCall#" => {
-            if args.is_empty() { return Ok(zero_bits(0)); }
+            if args.is_empty() {
+                return Ok(zero_bits(0));
+            }
             let mut sysno: i64 = 0;
             match &args[0] {
-                Value::Atom(Atom::Int(n)) => { sysno = *n; }
+                Value::Atom(Atom::Int(n)) => {
+                    sysno = *n;
+                }
                 Value::Bits(b) => {
                     // Convert Vec<u8> to i64 (little-endian)
                     let mut arr = [0u8; 8];
@@ -466,20 +623,54 @@ pub fn execute_intrinsic(
             }
             // Extract up to 6 Int arguments, default 0
             let arg_val = |i: usize| -> i64 {
-                args.get(i).map(|v| match v {
-                    Value::Atom(Atom::Int(n)) => *n,
-                    Value::Bits(b) => {
-                        let mut arr = [0u8; 8];
-                        let copy_len = b.len().min(8);
-                        arr[..copy_len].copy_from_slice(&b[..copy_len]);
-                        i64::from_le_bytes(arr)
-                    }
-                    _ => 0
-                }).unwrap_or(0)
+                args.get(i)
+                    .map(|v| match v {
+                        Value::Atom(Atom::Int(n)) => *n,
+                        Value::Bits(b) => {
+                            let mut arr = [0u8; 8];
+                            let copy_len = b.len().min(8);
+                            arr[..copy_len].copy_from_slice(&b[..copy_len]);
+                            i64::from_le_bytes(arr)
+                        }
+                        _ => 0,
+                    })
+                    .unwrap_or(0)
             };
-            let a1 = arg_val(1); let a2 = arg_val(2); let a3 = arg_val(3);
-            let a4 = arg_val(4); let a5 = arg_val(5); let a6 = arg_val(6);
-            let result = unsafe { libc::syscall(sysno, a1, a2, a3, a4, a5, a6) };
+            let a1 = arg_val(1);
+            let a2 = arg_val(2);
+            let a3 = arg_val(3);
+            let a4 = arg_val(4);
+            let a5 = arg_val(5);
+            let a6 = arg_val(6);
+            // 2026-11-15 (issue #4, macOS): libc::syscall's first argument is
+            // c_long (i64) on Linux but c_int (i32) on macOS. The variadic
+            // arguments are c_long/c_int respectively. Cast through c_long
+            // for the first arg and each variadic arg — on Linux c_long IS
+            // i64 (no-op), on macOS c_long is i64 but the first arg wants
+            // i32 so we widen i32→i64. For the variadic args, on macOS
+            // c_int is i32; passing an i64 where i32 is expected is the
+            // original bug. The portable fix: cast each arg to the native
+            // C integer width via `as libc::c_long` for the number (i64 on
+            // both) and pass the variadics as raw i64 — the C variadic ABI
+            // on x86-64 passes all integer args in 64-bit registers, so an
+            // i64 value is always register-compatible regardless of the
+            // declared C type. The only issue is the FIRST argument, whose
+            // Rust type must match exactly.
+            let result = unsafe {
+                // First arg: c_long on Linux (i64), c_int on macOS (i32).
+                // Use `as` to the platform's native width — this compiles
+                // on both because Rust's `as` is a compile-time width cast.
+                let sysno_c = sysno as libc::c_long;
+                libc::syscall(
+                    sysno_c,
+                    a1 as libc::c_long,
+                    a2 as libc::c_long,
+                    a3 as libc::c_long,
+                    a4 as libc::c_long,
+                    a5 as libc::c_long,
+                    a6 as libc::c_long,
+                )
+            };
             Ok(i64_to_bits(result as i64))
         }
 
@@ -488,7 +679,10 @@ pub fn execute_intrinsic(
         // load/store. Full LLVM atomicrmw is emitted at runtime.
         "AtomicLoad#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
-            let data = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let data = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             Ok(i64_to_bits(data))
         }
         "AtomicStore#" => {
@@ -502,7 +696,10 @@ pub fn execute_intrinsic(
             let ptr = arg_as_i64(args, 0)? as u64;
             let expected = arg_as_i64(args, 1)?;
             let desired = arg_as_i64(args, 2)?;
-            let current = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let current = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             if current == expected {
                 heap.write(ptr, &desired.to_le_bytes()).ok();
             }
@@ -511,14 +708,20 @@ pub fn execute_intrinsic(
         "AtomicXchg#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
             let val = arg_as_i64(args, 1)?;
-            let old = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let old = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             heap.write(ptr, &val.to_le_bytes()).ok();
             Ok(i64_to_bits(old))
         }
         "AtomicAdd#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
             let val = arg_as_i64(args, 1)?;
-            let old = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let old = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             let new = old.wrapping_add(val);
             heap.write(ptr, &new.to_le_bytes()).ok();
             Ok(i64_to_bits(old))
@@ -529,7 +732,10 @@ pub fn execute_intrinsic(
         "AtomicSub#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
             let val = arg_as_i64(args, 1)?;
-            let old = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let old = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             let new = old.wrapping_sub(val);
             heap.write(ptr, &new.to_le_bytes()).ok();
             Ok(i64_to_bits(old))
@@ -537,7 +743,10 @@ pub fn execute_intrinsic(
         "AtomicOr#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
             let val = arg_as_i64(args, 1)?;
-            let old = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let old = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             let new = old | val;
             heap.write(ptr, &new.to_le_bytes()).ok();
             Ok(i64_to_bits(old))
@@ -545,7 +754,10 @@ pub fn execute_intrinsic(
         "AtomicAnd#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
             let val = arg_as_i64(args, 1)?;
-            let old = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let old = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             let new = old & val;
             heap.write(ptr, &new.to_le_bytes()).ok();
             Ok(i64_to_bits(old))
@@ -553,7 +765,10 @@ pub fn execute_intrinsic(
         "AtomicXor#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
             let val = arg_as_i64(args, 1)?;
-            let old = heap.read(ptr, 8).map(|b| i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
+            let old = heap
+                .read(ptr, 8)
+                .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
             let new = old ^ val;
             heap.write(ptr, &new.to_le_bytes()).ok();
             Ok(i64_to_bits(old))
@@ -561,11 +776,14 @@ pub fn execute_intrinsic(
         "AtomicLoadN#" => {
             let ptr = arg_as_i64(args, 0)? as u64;
             let n = arg_as_i64(args, 1)? as usize;
-            let data = heap.read(ptr, n).map(|b| {
-                let mut arr = [0u8; 8];
-                arr[..n.min(8)].copy_from_slice(&b[..n.min(8)]);
-                i64::from_le_bytes(arr)
-            }).unwrap_or(0);
+            let data = heap
+                .read(ptr, n)
+                .map(|b| {
+                    let mut arr = [0u8; 8];
+                    arr[..n.min(8)].copy_from_slice(&b[..n.min(8)]);
+                    i64::from_le_bytes(arr)
+                })
+                .unwrap_or(0);
             Ok(i64_to_bits(data))
         }
         "AtomicStoreN#" => {
@@ -576,9 +794,7 @@ pub fn execute_intrinsic(
             heap.write(ptr, &bytes[..n.min(8)]).ok();
             Ok(Value::Void)
         }
-        "Fence#" => {
-            Ok(Value::Void)
-        }
+        "Fence#" => Ok(Value::Void),
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): portable SIMD
         // family — check-mode semantics are word-wise (i64) element loops
         // over the heap, the same single-threaded convention as the other
@@ -589,17 +805,31 @@ pub fn execute_intrinsic(
             let dst = arg_as_i64(args, 0)? as u64;
             let a = arg_as_i64(args, 1)? as u64;
             let b = arg_as_i64(args, 2)? as u64;
-            let c = if is_fma { arg_as_i64(args, 3)? as u64 } else { 0 };
+            let c = if is_fma {
+                arg_as_i64(args, 3)? as u64
+            } else {
+                0
+            };
             let count_idx = if is_fma { 4 } else { 3 };
             let count = arg_as_i64(args, count_idx)? as usize;
             let word = 8usize;
             for k in 0..count {
                 let off = k * word;
-                let av = heap.read(a + off as u64, 8).map(|b| i64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
-                let bv = heap.read(b + off as u64, 8).map(|b| i64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
+                let av = heap
+                    .read(a + off as u64, 8)
+                    .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+                    .unwrap_or(0);
+                let bv = heap
+                    .read(b + off as u64, 8)
+                    .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+                    .unwrap_or(0);
                 let cv = if is_fma {
-                    heap.read(c + off as u64, 8).map(|b| i64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
-                } else { 0 };
+                    heap.read(c + off as u64, 8)
+                        .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 let r = match name {
                     "SimdAdd#" => av.wrapping_add(bv),
                     "SimdSub#" => av.wrapping_sub(bv),
@@ -633,9 +863,7 @@ pub fn execute_intrinsic(
 
         // ── Backtrace intrinsic (observable) ──────────────────────────
         // 2026-07-15: In check mode, stub returning 0.
-        "Backtrace#" => {
-            Ok(i64_to_bits(0))
-        }
+        "Backtrace#" => Ok(i64_to_bits(0)),
 
         // ── Runtime string operations (2026-07-25) ─────────────────────
         // In check mode these execute host calls directly.
@@ -678,7 +906,8 @@ pub fn execute_intrinsic(
             match query.as_str() {
                 "cpu.cores" => {
                     let cores = std::thread::available_parallelism()
-                        .map(|n| n.get() as i64).unwrap_or(1);
+                        .map(|n| n.get() as i64)
+                        .unwrap_or(1);
                     Ok(i64_to_bits(cores))
                 }
                 "cpu.arch" => {
@@ -701,7 +930,7 @@ pub fn execute_intrinsic(
                     heap.write(addr as u64, &header).ok();
                     Ok(i64_to_bits(addr as i64))
                 }
-                _ => Ok(i64_to_bits(0))
+                _ => Ok(i64_to_bits(0)),
             }
         }
         "TimeNow#" => {
@@ -711,8 +940,13 @@ pub fn execute_intrinsic(
                 .ok()
                 .and_then(|o| {
                     if o.status.success() {
-                        String::from_utf8_lossy(&o.stdout).trim().parse::<i64>().ok()
-                    } else { None }
+                        String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse::<i64>()
+                            .ok()
+                    } else {
+                        None
+                    }
                 })
                 .unwrap_or_else(|| {
                     std::time::SystemTime::now()
@@ -726,9 +960,11 @@ pub fn execute_intrinsic(
         // ── External I/O intrinsics (observable, 2026-07-25) ────────────
         "HttpFetch#" => {
             let url = arg_as_string(args, 0)?;
-            let resp = ureq::get(&url).call()
+            let resp = ureq::get(&url)
+                .call()
                 .map_err(|e| RuntimeError::HeapError(format!("HttpFetch#: {}", e)))?;
-            let body = resp.into_string()
+            let body = resp
+                .into_string()
                 .map_err(|e| RuntimeError::HeapError(format!("HttpFetch#: {}", e)))?;
             let bytes = body.into_bytes();
             let len = bytes.len() as i64;
@@ -743,7 +979,8 @@ pub fn execute_intrinsic(
         }
         "ShellCmd#" => {
             let cmd = arg_as_string(args, 0)?;
-            let cmd_args: Vec<String> = args[1..].iter()
+            let cmd_args: Vec<String> = args[1..]
+                .iter()
                 .filter_map(|a| a.as_i64())
                 .map(|n| n.to_string())
                 .collect();
@@ -753,7 +990,10 @@ pub fn execute_intrinsic(
                 .map_err(|e| RuntimeError::HeapError(format!("ShellCmd#: {}", e)))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(RuntimeError::HeapError(format!("ShellCmd#: '{}' failed: {}", cmd, stderr)));
+                return Err(RuntimeError::HeapError(format!(
+                    "ShellCmd#: '{}' failed: {}",
+                    cmd, stderr
+                )));
             }
             let body = String::from_utf8_lossy(&output.stdout).to_string();
             let bytes = body.into_bytes();
@@ -836,12 +1076,16 @@ fn exec_cmp(
 /// Division with zero check. Tries float first, then int.
 fn exec_div(args: &[Value]) -> Result<Value, RuntimeError> {
     if let (Ok(a), Ok(b)) = (arg_as_f64(args, 0), arg_as_f64(args, 1)) {
-        if b == 0.0 { return Err(RuntimeError::DivisionByZero); }
+        if b == 0.0 {
+            return Err(RuntimeError::DivisionByZero);
+        }
         return Ok(f64_to_bits(a / b));
     }
     let a = arg_as_i64(args, 0)?;
     let b = arg_as_i64(args, 1)?;
-    if b == 0 { return Err(RuntimeError::DivisionByZero); }
+    if b == 0 {
+        return Err(RuntimeError::DivisionByZero);
+    }
     Ok(i64_to_bits(a.wrapping_div(b)))
 }
 
@@ -849,7 +1093,9 @@ fn exec_div(args: &[Value]) -> Result<Value, RuntimeError> {
 fn exec_rem(args: &[Value]) -> Result<Value, RuntimeError> {
     let a = arg_as_i64(args, 0)?;
     let b = arg_as_i64(args, 1)?;
-    if b == 0 { return Err(RuntimeError::DivisionByZero); }
+    if b == 0 {
+        return Err(RuntimeError::DivisionByZero);
+    }
     Ok(i64_to_bits(a.wrapping_rem(b)))
 }
 
@@ -945,9 +1191,15 @@ mod tests {
     fn test_volatile_roundtrip() {
         let mut heap = VirtualHeap::new();
         let addr = heap.allocate(8);
-        let store = execute_intrinsic("VolatileStore#", &[i64_to_bits(addr as i64), i64_to_bits(0x41)], &mut heap).unwrap();
+        let store = execute_intrinsic(
+            "VolatileStore#",
+            &[i64_to_bits(addr as i64), i64_to_bits(0x41)],
+            &mut heap,
+        )
+        .unwrap();
         assert!(store.is_true(), "store yields Bool true");
-        let load = execute_intrinsic("VolatileLoad#", &[i64_to_bits(addr as i64)], &mut heap).unwrap();
+        let load =
+            execute_intrinsic("VolatileLoad#", &[i64_to_bits(addr as i64)], &mut heap).unwrap();
         assert_eq!(load.as_i64(), Some(0x41));
     }
 
@@ -955,7 +1207,10 @@ mod tests {
     fn test_volatile_load_unmapped_errors() {
         let mut heap = VirtualHeap::new();
         let r = execute_intrinsic("VolatileLoad#", &[i64_to_bits(0x40010000)], &mut heap);
-        assert!(r.is_err(), "unmapped hardware-style address errors in interp");
+        assert!(
+            r.is_err(),
+            "unmapped hardware-style address errors in interp"
+        );
     }
 
     #[test]
@@ -974,7 +1229,9 @@ mod tests {
                 Box::new(Expr::Quoted(a.as_bytes().to_vec())),
                 Box::new(Expr::Quoted(b.as_bytes().to_vec())),
             );
-            eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new()).unwrap().is_true()
+            eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .is_true()
         };
         assert!(eq("hello", "hello"));
         assert!(!eq("hello", "world"));
@@ -1012,7 +1269,11 @@ mod tests {
         );
         bindings.insert("a".into(), Value::Atom(Atom::Int(a1)));
         bindings.insert("b".into(), Value::Atom(Atom::Int(a2)));
-        assert!(eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new()).unwrap().is_true());
+        assert!(
+            eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .is_true()
+        );
 
         // Ne on the same two handles is false.
         let expr_ne = Expr::BinaryOp(
@@ -1020,7 +1281,11 @@ mod tests {
             Box::new(Expr::Identifier("a".into())),
             Box::new(Expr::Identifier("b".into())),
         );
-        assert!(!eval_expr(&expr_ne, &mut heap, &mut bindings, &HashMap::new()).unwrap().is_true());
+        assert!(
+            !eval_expr(&expr_ne, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .is_true()
+        );
 
         // Differing content at distinct addresses is unequal.
         let c = alloc_str(&mut heap, "different content");
@@ -1030,7 +1295,11 @@ mod tests {
             Box::new(Expr::Identifier("a".into())),
             Box::new(Expr::Identifier("c".into())),
         );
-        assert!(!eval_expr(&expr2, &mut heap, &mut bindings, &HashMap::new()).unwrap().is_true());
+        assert!(
+            !eval_expr(&expr2, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .is_true()
+        );
     }
 
     #[test]
@@ -1048,13 +1317,21 @@ mod tests {
             Box::new(Expr::Decimal(5)),
             Box::new(Expr::Decimal(5)),
         );
-        assert!(eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new()).unwrap().is_true());
+        assert!(
+            eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .is_true()
+        );
         let expr = Expr::BinaryOp(
             BinaryOpKind::Eq,
             Box::new(Expr::Decimal(5)),
             Box::new(Expr::Decimal(6)),
         );
-        assert!(!eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new()).unwrap().is_true());
+        assert!(
+            !eval_expr(&expr, &mut heap, &mut bindings, &HashMap::new())
+                .unwrap()
+                .is_true()
+        );
     }
 
     #[test]
@@ -1079,7 +1356,10 @@ mod tests {
         };
         // AND: 'a'(0x61) & 'd'(0x64) = 0x60, 'b'(0x62) & 'e'(0x65) = 0x60,
         // 'c'(0x63) & 'f'(0x66) = 0x62
-        assert_eq!(eval(BinaryOpKind::BitAnd, "abc", "def"), vec![0x60, 0x60, 0x62]);
+        assert_eq!(
+            eval(BinaryOpKind::BitAnd, "abc", "def"),
+            vec![0x60, 0x60, 0x62]
+        );
         // OR: 'a' | 'd' = 0x65
         assert_eq!(eval(BinaryOpKind::BitOr, "a", "d"), vec![0x65]);
         // XOR: 'a' ^ 'a' = 0
@@ -1104,7 +1384,8 @@ mod tests {
     #[test]
     fn test_fadd_f64() {
         let mut heap = VirtualHeap::new();
-        let r = execute_intrinsic("Add#", &[f64_to_bits(1.5), f64_to_bits(2.5)], &mut heap).unwrap();
+        let r =
+            execute_intrinsic("Add#", &[f64_to_bits(1.5), f64_to_bits(2.5)], &mut heap).unwrap();
         assert!((r.as_f64().unwrap() - 4.0).abs() < 1e-10);
     }
 
@@ -1150,15 +1431,29 @@ mod tests {
             names: None,
         };
         assert_eq!(
-            execute_intrinsic("Count#", &[coll.clone()], &mut heap).unwrap().as_i64(),
+            execute_intrinsic("Count#", &[coll.clone()], &mut heap)
+                .unwrap()
+                .as_i64(),
             Some(3)
         );
         assert_eq!(
-            execute_intrinsic("At#", &[coll.clone(), Value::int(1)], &mut heap).unwrap().as_i64(),
+            execute_intrinsic("At#", &[coll.clone(), Value::int(1)], &mut heap)
+                .unwrap()
+                .as_i64(),
             Some(20)
         );
-        let sliced = execute_intrinsic("Slice#", &[coll.clone(), Value::int(0), Value::int(2)], &mut heap).unwrap();
-        assert_eq!(execute_intrinsic("Count#", &[sliced], &mut heap).unwrap().as_i64(), Some(2));
+        let sliced = execute_intrinsic(
+            "Slice#",
+            &[coll.clone(), Value::int(0), Value::int(2)],
+            &mut heap,
+        )
+        .unwrap();
+        assert_eq!(
+            execute_intrinsic("Count#", &[sliced], &mut heap)
+                .unwrap()
+                .as_i64(),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1169,19 +1464,27 @@ mod tests {
         // = 0x6000000000000000.
         let mut heap = VirtualHeap::new();
         assert_eq!(
-            execute_intrinsic("Popcount#", &[i64_to_bits(6)], &mut heap).unwrap().as_i64(),
+            execute_intrinsic("Popcount#", &[i64_to_bits(6)], &mut heap)
+                .unwrap()
+                .as_i64(),
             Some(2)
         );
         assert_eq!(
-            execute_intrinsic("LeadingZeros#", &[i64_to_bits(6)], &mut heap).unwrap().as_i64(),
+            execute_intrinsic("LeadingZeros#", &[i64_to_bits(6)], &mut heap)
+                .unwrap()
+                .as_i64(),
             Some(61)
         );
         assert_eq!(
-            execute_intrinsic("TrailingZeros#", &[i64_to_bits(6)], &mut heap).unwrap().as_i64(),
+            execute_intrinsic("TrailingZeros#", &[i64_to_bits(6)], &mut heap)
+                .unwrap()
+                .as_i64(),
             Some(1)
         );
         assert_eq!(
-            execute_intrinsic("BitReverse#", &[i64_to_bits(6)], &mut heap).unwrap().as_i64(),
+            execute_intrinsic("BitReverse#", &[i64_to_bits(6)], &mut heap)
+                .unwrap()
+                .as_i64(),
             Some(0x6000000000000000i64)
         );
     }
@@ -1222,8 +1525,8 @@ mod tests {
         // (the [len] header), `x.^^Bytes` = byte length, `CharCount#` = the
         // UTF8 char count. 'héllo' is 5 chars / 6 bytes.
         use crate::ast::Expr;
-        use crate::interpreter::eval_expr;
         use crate::interpreter::ReflectKind;
+        use crate::interpreter::eval_expr;
         let mut heap = VirtualHeap::new();
         let mut bindings = std::collections::HashMap::new();
         bindings.insert("s".into(), Value::bits("héllo".as_bytes().to_vec()));
@@ -1235,12 +1538,21 @@ mod tests {
         let len = eval_expr(&len_expr, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(len.as_i64(), Some(6), "héllo is 6 bytes (stored header)");
         let chars = eval_expr(
-            &Expr::Call("CharCount#".into(), vec![Expr::Identifier("s".into())], None),
+            &Expr::Call(
+                "CharCount#".into(),
+                vec![Expr::Identifier("s".into())],
+                None,
+            ),
             &mut heap,
             &mut bindings,
             &HashMap::new(),
-        ).unwrap();
-        assert_eq!(chars.as_i64(), Some(5), "héllo has 5 UTF8 chars (CharCount#)");
+        )
+        .unwrap();
+        assert_eq!(
+            chars.as_i64(),
+            Some(5),
+            "héllo has 5 UTF8 chars (CharCount#)"
+        );
         let bytes_expr = Expr::Reflect(
             Box::new(Expr::Identifier("s".into())),
             "Bytes".into(),
@@ -1262,13 +1574,16 @@ mod tests {
         };
         let cap = execute_intrinsic("Capacity#", &[coll.clone()], &mut heap).unwrap();
         assert_eq!(cap.as_i64(), Some(3), "Capacity# on a 3-field product = 3");
-        let resized = execute_intrinsic(
-            "Resize#",
-            &[coll.clone(), Value::int(64)],
-            &mut heap,
-        ).unwrap();
-        assert!(matches!(resized, Value::Void), "Resize# is a no-op on a product");
+        let resized =
+            execute_intrinsic("Resize#", &[coll.clone(), Value::int(64)], &mut heap).unwrap();
+        assert!(
+            matches!(resized, Value::Void),
+            "Resize# is a no-op on a product"
+        );
         let trimmed = execute_intrinsic("TrimCap#", &[coll], &mut heap).unwrap();
-        assert!(matches!(trimmed, Value::Void), "TrimCap# is a no-op on a product");
+        assert!(
+            matches!(trimmed, Value::Void),
+            "TrimCap# is a no-op on a product"
+        );
     }
 }

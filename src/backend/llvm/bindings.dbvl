@@ -2,9 +2,9 @@
 // Format: intrinsic_name -> LLVM IR template
 // %0, %1, ... refer to arguments by index
 
-AddI64#    -> add nsw i64 %0, %1
-SubI64#    -> sub nsw i64 %0, %1
-MulI64#    -> mul nsw i64 %0, %1
+AddI64#    -> add i64 %0, %1
+SubI64#    -> sub i64 %0, %1
+MulI64#    -> mul i64 %0, %1
 DivI64#    -> sdiv i64 %0, %1
 RemI64#    -> srem i64 %0, %1
 EqI64#     -> icmp eq i64 %0, %1

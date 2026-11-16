@@ -51,11 +51,11 @@
 // src/backend/bld/mod.rs, and revert the param stash in
 // src/backend/bld/lower.rs (bind_params / stmts_contain_call).
 
+use super::lower::BldLowerer;
 use crate::ast::bad::{
     BadBodyItem, BadBranch, BadInstr, BadLabel, BadOperand, BadProgram, BadSite, BadTopLevel,
 };
 use crate::backend::bad::registry::{BadIsa, BadRegisters, RegProp};
-use super::lower::BldLowerer;
 use std::collections::HashMap;
 
 const SPILL_SCRATCHES: usize = 2;
@@ -149,11 +149,17 @@ pub fn allocate(
             other => other,
         });
     }
-    Ok(BadProgram { items, span: prog.span })
+    Ok(BadProgram {
+        items,
+        span: prog.span,
+    })
 }
 
 fn allocate_label(
-    l: BadLabel, isa: &BadIsa, regs: &BadRegisters, family: &str,
+    l: BadLabel,
+    isa: &BadIsa,
+    regs: &BadRegisters,
+    family: &str,
 ) -> Result<BadLabel, String> {
     let analysis = analyze(&l.body, isa)?;
     if analysis.order.is_empty() {
@@ -204,7 +210,11 @@ fn analyze(items: &[BadBodyItem], isa: &BadIsa) -> Result<Analysis, String> {
                 if ins.mnemonic == "call" {
                     a.calls.push(pos);
                 }
-                if ins.operands.iter().any(|o| matches!(o, BadOperand::Name(n) if n == "sp")) {
+                if ins
+                    .operands
+                    .iter()
+                    .any(|o| matches!(o, BadOperand::Name(n) if n == "sp"))
+                {
                     a.sp_touched = true;
                 }
             }
@@ -216,9 +226,9 @@ fn analyze(items: &[BadBodyItem], isa: &BadIsa) -> Result<Analysis, String> {
             | BadBodyItem::While(_)
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => {}
+            | BadBodyItem::CallStmt { .. }
+            | BadBodyItem::Return { .. }
+            | BadBodyItem::RawRegion { .. } => {}
         }
     }
     // A loop's span ends at its LAST jump back to the head (the
@@ -463,7 +473,9 @@ struct Pools {
 
 impl Pools {
     fn load(
-        regs: &BadRegisters, family: &str, reserved: &[String],
+        regs: &BadRegisters,
+        family: &str,
+        reserved: &[String],
         clobbers: &std::collections::HashSet<String>,
     ) -> Pools {
         // ABI argument registers are usable as temporaries unless a
@@ -565,9 +577,10 @@ fn pick_pass(
 fn build_intervals(a: &Analysis) -> Result<Vec<(String, ScanValue, bool)>, String> {
     let mut out = Vec::with_capacity(a.order.len());
     for name in &a.order {
-        let e = a.events.get(name).ok_or_else(|| {
-            format!("value `{name}` was walked but never recorded - report this")
-        })?;
+        let e = a
+            .events
+            .get(name)
+            .ok_or_else(|| format!("value `{name}` was walked but never recorded - report this"))?;
         let Some(start) = interval_start(name, e)? else {
             continue;
         };
@@ -580,7 +593,15 @@ fn build_intervals(a: &Analysis) -> Result<Vec<(String, ScanValue, bool)>, Strin
             .unwrap_or(start);
         let end = extend_over_loops(start, end, &e.uses, &a.spans);
         let crossing = a.calls.iter().any(|c| start <= *c && *c <= end);
-        out.push((name.clone(), ScanValue { start, end, crossing }, e.is_float));
+        out.push((
+            name.clone(),
+            ScanValue {
+                start,
+                end,
+                crossing,
+            },
+            e.is_float,
+        ));
     }
     Ok(out)
 }
@@ -709,9 +730,9 @@ fn rewrite(
             | BadBodyItem::While(_)
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => out.push(item.clone()),
+            | BadBodyItem::CallStmt { .. }
+            | BadBodyItem::Return { .. }
+            | BadBodyItem::RawRegion { .. } => out.push(item.clone()),
         }
     }
     // Fall-off-the-end exit: restore the frame (no auto-ret — the naked

@@ -50,7 +50,7 @@ pub fn find_defn_body<'a>(name: &str, items: &'a [TopLevel]) -> Option<&'a Expr>
 /// identity — the caller then simply doesn't collapse the pair (the cast is
 /// emitted correctly, just not for free). Never a guess.
 fn prove_composition_inverse(param: &str, forward_body: &Expr, inverse_body: &Expr) -> bool {
-    use crate::symbolic::{eval_symbolic_expr, SymbolicValue};
+    use crate::symbolic::{SymbolicValue, eval_symbolic_expr};
     let sym_input = {
         let mut m = std::collections::HashMap::new();
         m.insert(param.to_string(), SymbolicValue::Identifier("__x".into()));
@@ -65,7 +65,9 @@ fn prove_composition_inverse(param: &str, forward_body: &Expr, inverse_body: &Ex
         return true;
     }
 
-    let formula = build_roundtrip_smt(forward_body, inverse_body);
+    let Some(formula) = build_roundtrip_smt(forward_body, inverse_body) else {
+        return false;
+    };
     matches!(
         crate::proof_engine::smt::prove_smt_formula(&formula, 1000),
         crate::proof_engine::smt::SmtResult::Unsat
@@ -188,7 +190,9 @@ pub fn verify_protocol_roundtrip(pd: &ProtocolDef, items: &[TopLevel]) -> Result
                 "warning: symbolic round-trip inconclusive for '{}', trying SMT",
                 pd.name
             );
-            let formula = build_roundtrip_smt(fwd, inv);
+            let Some(formula) = build_roundtrip_smt(fwd, inv) else {
+                return Err("round-trip expression is outside the supported word SMT model".into());
+            };
             let result = crate::proof_engine::smt::prove_smt_formula(&formula, 1000);
             match result {
                 crate::proof_engine::smt::SmtResult::Unsat => Ok(()),
@@ -269,14 +273,18 @@ pub fn verify_crossop_equivalence(pd: &ProtocolDef, items: &[TopLevel]) -> Resul
             continue;
         };
 
-        let formula = build_crossop_smt(forward_body, inverse_body, custom_body);
+        let Some(formula) = build_crossop_smt(forward_body, inverse_body, custom_body) else {
+            return Err("cross-op expression is outside the supported word SMT model".into());
+        };
         let result = crate::proof_engine::smt::prove_smt_formula(&formula, 1000);
         match result {
-            crate::proof_engine::smt::SmtResult::Unsat => {},
-            _ => return Err(format!(
-                "cross-op equivalence proof failed for protocol '{}': op '{}' not equivalent to round-trip",
-                pd.name, op.op
-            )),
+            crate::proof_engine::smt::SmtResult::Unsat => {}
+            _ => {
+                return Err(format!(
+                    "cross-op equivalence proof failed for protocol '{}': op '{}' not equivalent to round-trip",
+                    pd.name, op.op
+                ));
+            }
         }
     }
 
@@ -284,38 +292,41 @@ pub fn verify_crossop_equivalence(pd: &ProtocolDef, items: &[TopLevel]) -> Resul
 }
 
 /// Build an SMT-LIB formula proving the round-trip identity.
-fn build_roundtrip_smt(forward: &Expr, inverse: &Expr) -> String {
-    let fwd_smt = crate::proof_engine::smt::encode_expr_smt_for_proof(forward);
-    let inv_smt = crate::proof_engine::smt::encode_expr_smt_for_proof(inverse);
-    format!(
+fn build_roundtrip_smt(forward: &Expr, inverse: &Expr) -> Option<String> {
+    let fwd_smt = crate::proof_engine::smt::try_encode_word_for_proof(forward)?;
+    let inv_smt = crate::proof_engine::smt::try_encode_word_for_proof(inverse)?;
+    let x = crate::proof_engine::smt::encode_identifier_for_proof("x");
+    Some(format!(
         "(set-logic QF_BV)\n\
-         (declare-const x (_ BitVec 64))\n\
-         (define-fun forward ((x (_ BitVec 64))) (_ BitVec 64) {})\n\
-         (define-fun inverse ((x (_ BitVec 64))) (_ BitVec 64) {})\n\
-         (assert (not (= (inverse (forward x)) x)))\n\
+         (declare-const {x} (_ BitVec 64))\n\
+         (define-fun forward (({x} (_ BitVec 64))) (_ BitVec 64) {})\n\
+         (define-fun inverse (({x} (_ BitVec 64))) (_ BitVec 64) {})\n\
+         (assert (not (= (inverse (forward {x})) {x})))\n\
          (check-sat)\n",
         fwd_smt, inv_smt
-    )
+    ))
 }
 
 /// Build an SMT-LIB formula proving cross-op equivalence.
-fn build_crossop_smt(forward: &Expr, inverse: &Expr, custom: &Expr) -> String {
-    let fwd_smt = crate::proof_engine::smt::encode_expr_smt_for_proof(forward);
-    let inv_smt = crate::proof_engine::smt::encode_expr_smt_for_proof(inverse);
-    let custom_smt = crate::proof_engine::smt::encode_expr_smt_for_proof(custom);
-    format!(
+fn build_crossop_smt(forward: &Expr, inverse: &Expr, custom: &Expr) -> Option<String> {
+    let fwd_smt = crate::proof_engine::smt::try_encode_word_for_proof(forward)?;
+    let inv_smt = crate::proof_engine::smt::try_encode_word_for_proof(inverse)?;
+    let custom_smt = crate::proof_engine::smt::try_encode_word_for_proof(custom)?;
+    let x = crate::proof_engine::smt::encode_identifier_for_proof("x");
+    let y = crate::proof_engine::smt::encode_identifier_for_proof("y");
+    Some(format!(
         "(set-logic QF_BV)\n\
-         (declare-const x (_ BitVec 64))\n\
-         (declare-const y (_ BitVec 64))\n\
-         (define-fun forward ((x (_ BitVec 64))) (_ BitVec 64) {})\n\
-         (define-fun inverse ((x (_ BitVec 64))) (_ BitVec 64) {})\n\
-         (define-fun default_path ((x (_ BitVec 64)) (y (_ BitVec 64))) (_ BitVec 64)\n\
-           (inverse (bvadd (forward x) y)))\n\
-         (define-fun custom_path ((x (_ BitVec 64)) (y (_ BitVec 64))) (_ BitVec 64) {})\n\
-         (assert (not (= (default_path x y) (custom_path x y))))\n\
+         (declare-const {x} (_ BitVec 64))\n\
+         (declare-const {y} (_ BitVec 64))\n\
+         (define-fun forward (({x} (_ BitVec 64))) (_ BitVec 64) {})\n\
+         (define-fun inverse (({x} (_ BitVec 64))) (_ BitVec 64) {})\n\
+         (define-fun default_path (({x} (_ BitVec 64)) ({y} (_ BitVec 64))) (_ BitVec 64)\n\
+           (inverse (bvadd (forward {x}) {y})))\n\
+         (define-fun custom_path (({x} (_ BitVec 64)) ({y} (_ BitVec 64))) (_ BitVec 64) {})\n\
+         (assert (not (= (default_path {x} {y}) (custom_path {x} {y}))))\n\
          (check-sat)\n",
         fwd_smt, inv_smt, custom_smt
-    )
+    ))
 }
 
 /// Simple symbolic comparison (deep equals).
@@ -337,6 +348,42 @@ fn symbolic_deep_equals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_protocol_word_bodies_have_no_smt_query() {
+        let bad = Expr::If(Box::new(Expr::Bool(true)), Box::new(Expr::Decimal(0)), None);
+        let identity = Expr::Identifier("x".into());
+        assert!(build_roundtrip_smt(&bad, &identity).is_none());
+        assert!(build_crossop_smt(&identity, &identity, &bad).is_none());
+    }
+
+    #[test]
+    #[ignore = "requires real Z3; exercised by the protocol SMT gate"]
+    fn namespaced_protocol_queries_preserve_real_solver_results() {
+        use crate::ast::BinaryOpKind as Op;
+        use crate::proof_engine::smt::{SmtResult, is_z3_available, prove_smt_formula};
+        assert!(is_z3_available());
+        let x = Expr::Identifier("x".into());
+        let add = Expr::BinaryOp(Op::Add, Box::new(x.clone()), Box::new(Expr::Decimal(1)));
+        let sub = Expr::BinaryOp(Op::Sub, Box::new(x.clone()), Box::new(Expr::Decimal(1)));
+        assert!(matches!(
+            prove_smt_formula(&build_roundtrip_smt(&add, &sub).unwrap(), 1000),
+            SmtResult::Unsat
+        ));
+        assert!(matches!(
+            prove_smt_formula(&build_roundtrip_smt(&add, &x).unwrap(), 1000),
+            SmtResult::Sat(_)
+        ));
+        let custom = Expr::BinaryOp(
+            Op::Add,
+            Box::new(x.clone()),
+            Box::new(Expr::Identifier("y".into())),
+        );
+        assert!(matches!(
+            prove_smt_formula(&build_crossop_smt(&x, &x, &custom).unwrap(), 1000),
+            SmtResult::Unsat
+        ));
+    }
 
     fn make_edge(dir: CastDirection, cat: &str, var: &str) -> CastEdge {
         CastEdge {

@@ -2,8 +2,8 @@ use crate::ast::{BinaryOpKind, Expr, OutputType, Statement, TopLevel, Type};
 use crate::backend::llvm::emit_stmt::emit_statement;
 use crate::backend::llvm::helpers::WordImageCopy;
 use crate::backend::llvm::{
-    f32_to_f16_hex, float64_to_llvm_hex, float_to_llvm_hex, llvm_type_byte_size,
-    protocol_llvm_type, LlvmBackend, TypedRegister,
+    LlvmBackend, TypedRegister, f32_to_f16_hex, float_to_llvm_hex, float64_to_llvm_hex,
+    llvm_type_byte_size, protocol_llvm_type,
 };
 use crate::type_universe::{ResolvedType, TypeUniverse};
 use crate::typechecker::defn_section_name;
@@ -996,11 +996,7 @@ impl LlvmBackend {
             crate::ast::TopLevel::TypeDefOperator(d) => &d.parameters,
             _ => return None,
         };
-        if params.is_empty() {
-            Some(def)
-        } else {
-            None
-        }
+        if params.is_empty() { Some(def) } else { None }
     }
 
     pub(super) fn emit_header(&self, out: &mut String) {
@@ -5196,7 +5192,9 @@ impl LlvmBackend {
                 self.fun.reg_llvm_ty.insert(conv.clone(), "i64".to_string());
                 // 2026-11-14 (#96): ABI pointer parameters use i64 handles
                 // even on wasm32; cast-width adaptation needs the emitted type.
-                self.fun.reg_value_ll.insert(conv.clone(), "i64".to_string());
+                self.fun
+                    .reg_value_ll
+                    .insert(conv.clone(), "i64".to_string());
                 // 2026-10-20 (pointer provenance): the raw ABI pointer is
                 // already the canonical ptr for this argument; keep it instead
                 // of re-inttoptr-ing the i64 at every access. It is defined in
@@ -9196,6 +9194,62 @@ impl LlvmBackend {
             Some(ty) => self.llvm_ret_abi_type(ty),
             None => "i64".to_string(),
         }
+    }
+
+    /// LLVM ABI type of a registered defn's first parameter.
+    ///
+    /// Mirrors `emit_definition`'s parameter emission so a call site can spell
+    /// the same type the `define` line declares. Returns `i64` for unregistered
+    /// symbols, matching the legacy frgn convention.
+    pub(super) fn defn_first_param_ll(&self, name: &str) -> String {
+        match self
+            .ctx
+            .defn_params
+            .get(name)
+            .and_then(|params| params.first())
+        {
+            Some(ty) => self.llvm_ret_abi_type(ty),
+            None => "i64".to_string(),
+        }
+    }
+
+    /// Emit the `endprogram` exit call with the callee's registered ABI.
+    ///
+    /// 2026-11-15 (wasm32 cross-backend gate): the call site hardcoded
+    /// `call i64 @exit_prog(... i64 ...)` while `emit_definition` declares
+    /// `define i32 @exit_prog(i32)` on wasm32 (Int = i{int_bits}). On x86-64 the
+    /// two agree by accident, but on wasm a call whose signature disagrees with
+    /// the definition lowers to a funcref-bitcast trap stub — so *every*
+    /// `endprogram` trapped (`..Lexit_prog_bitcast_invalid`) instead of exiting,
+    /// while the native run exited normally. Derive the return and argument
+    /// types from the registered defn and narrow the i64 code with an explicit
+    /// `trunc`, so the emitted IR is well-typed on every target.
+    pub(super) fn emit_exit_prog_call(&mut self, out: &mut String, indent: &str, code: &str) {
+        let state_arg = if self.ctx.defn_takes_state("exit_prog") {
+            "ptr %state, "
+        } else {
+            ""
+        };
+        let ret_ty = self.defn_call_ret_ll("exit_prog");
+        let arg_ty = self.defn_first_param_ll("exit_prog");
+        let code = if arg_ty == "i64" {
+            code.to_string()
+        } else {
+            let narrowed = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = trunc i64 {} to {}",
+                indent, narrowed, code, arg_ty
+            )
+            .ok();
+            narrowed
+        };
+        writeln!(
+            out,
+            "{}call {} @exit_prog({}{} {})",
+            indent, ret_ty, state_arg, arg_ty, code
+        )
+        .ok();
     }
 
     /// 2026-10-07 (frgn void signature agreement): does `name` declare

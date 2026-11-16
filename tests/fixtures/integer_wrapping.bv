@@ -1,0 +1,25 @@
+// Runtime inputs keep overflow observable after LLVM optimization.
+import { print_int, print_str } from "std/io";
+
+defn add(a: Int, b: Int) -> Int { term a + b; };
+defn subtract(a: Int, b: Int) -> Int { term a - b; };
+defn multiply(a: Int, b: Int) -> Int { term a * b; };
+defn negate(a: Int) -> Int { term -a; };
+defn rises(a: Int) -> Bool { term a + 1 > a; };
+defn falls(a: Int) -> Bool { term a - 1 < a; };
+defn doubled_rises(a: Int) -> Bool { term a * 2 > a; };
+
+let done: Bool = false;
+node entry [!done][done] {
+    let a: Int = get_env_int!("WRAP_A");
+    let b: Int = get_env_int!("WRAP_B");
+    print_int(add(a, b)); print_str("|");
+    print_int(subtract(a, b)); print_str("|");
+    print_int(multiply(a, b)); print_str("|");
+    print_int(negate(a)); print_str("|");
+    print_int(rises(a) as Int); print_str("|");
+    print_int(falls(a) as Int); print_str("|");
+    print_int(doubled_rises(a) as Int); print_str("\n");
+    done = true;
+    endprogram;
+};

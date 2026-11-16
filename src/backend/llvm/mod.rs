@@ -2,39 +2,38 @@ pub mod abi;
 pub mod builder;
 pub(crate) mod coll_scaffold;
 mod collection_assignment;
-mod tuple_values;
 pub mod context;
-mod reclamation;
 pub mod directive;
 pub mod dispatch;
-pub mod enum_lowering;
 pub mod emit_expr;
 pub mod emit_hir_stmt;
 pub mod emit_stmt;
 pub mod emit_toplevel;
-pub(crate) mod kernel;
+pub mod enum_lowering;
 pub mod helpers;
-pub mod intrinsics;
-pub mod loop_engine;
-mod logical;
 mod integer_operands;
+pub mod intrinsics;
+pub(crate) mod kernel;
+mod logical;
+pub mod loop_engine;
 pub mod normalizer;
-pub mod types;
+mod reclamation;
 pub mod strategy;
+mod tuple_values;
+pub mod types;
 pub mod value_lowering;
 pub mod vector_phi;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod match_termination_tests;
+mod crash_regressions;
 #[cfg(test)]
 mod logical_tests;
 #[cfg(test)]
+mod match_termination_tests;
+#[cfg(test)]
 mod metadata_tests;
 #[cfg(test)]
-mod crash_regressions;
-
+mod tests;
 
 pub use builder::LLVMBuilder;
 pub use context::{CompilerContext, FunctionContext, FunctionGuard};
@@ -53,7 +52,9 @@ fn escape_llvm_string(s: &str) -> String {
             b'\r' => out.push_str("\\0d"),
             b'\t' => out.push_str("\\09"),
             0x20..=0x7e => out.push(byte as char),
-            b => { let _ = write!(out, "\\{:02x}", b); }
+            b => {
+                let _ = write!(out, "\\{:02x}", b);
+            }
         }
     }
     out
@@ -76,22 +77,33 @@ fn compute_transitive_may_trap(items: &[TopLevel]) -> std::collections::HashSet<
             TopLevel::Definition(d) => out.push(d),
             TopLevel::Export(e) => gather(&e.inner, out),
             TopLevel::TypeDef(td) => {
-                for m in &td.body.members { gather(m, out); }
+                for m in &td.body.members {
+                    gather(m, out);
+                }
             }
             TopLevel::Impl(im) => {
-                for d in &im.functions { out.push(d); }
+                for d in &im.functions {
+                    out.push(d);
+                }
             }
             _ => {}
         }
     }
     let mut defs: Vec<&crate::ast::Definition> = Vec::new();
-    for item in items { gather(item, &mut defs); }
-    let mut called: std::collections::HashMap<&str, HashSet<String>> = std::collections::HashMap::new();
+    for item in items {
+        gather(item, &mut defs);
+    }
+    let mut called: std::collections::HashMap<&str, HashSet<String>> =
+        std::collections::HashMap::new();
     let mut may_trap: HashSet<String> = HashSet::new();
     for d in &defs {
         let mut calls = HashSet::new();
-        for stmt in &d.body { collect_called_names_stmt(stmt, &mut calls); }
-        if LlvmBackend::definition_may_trap(&d.body) { may_trap.insert(d.name.clone()); }
+        for stmt in &d.body {
+            collect_called_names_stmt(stmt, &mut calls);
+        }
+        if LlvmBackend::definition_may_trap(&d.body) {
+            may_trap.insert(d.name.clone());
+        }
         called.insert(d.name.as_str(), calls);
     }
     close_over_calls(&mut may_trap, &called);
@@ -136,7 +148,8 @@ fn compute_transitive_raw_memory(
         // not argmem. Consume the frontend's transitive access fact so LLVM
         // cannot reuse a global-reading result across a global-writing call.
         if plain_access.get(&d.name).copied().unwrap_or(false)
-            || emit_toplevel::definition_touches_raw_memory_fn(&d.body) {
+            || emit_toplevel::definition_touches_raw_memory_fn(&d.body)
+        {
             raw.insert(d.name.clone());
         }
         called.insert(d.name.as_str(), calls);
@@ -154,9 +167,7 @@ fn close_over_calls(
     loop {
         let pending: Vec<String> = called
             .iter()
-            .filter(|(name, calls)| {
-                !raw.contains(**name) && calls.iter().any(|c| raw.contains(c))
-            })
+            .filter(|(name, calls)| !raw.contains(**name) && calls.iter().any(|c| raw.contains(c)))
             .map(|(name, _)| name.to_string())
             .collect();
         if pending.is_empty() {
@@ -212,8 +223,7 @@ fn collect_called_names_expr(e: &Expr, out: &mut std::collections::HashSet<Strin
 fn collect_pattern_calls(p: &crate::ast::Pattern, out: &mut std::collections::HashSet<String>) {
     match p {
         crate::ast::Pattern::Literal(e) => collect_called_names_expr(e, out),
-        crate::ast::Pattern::EnumVariant(_, subs)
-        | crate::ast::Pattern::Tuple(subs) => {
+        crate::ast::Pattern::EnumVariant(_, subs) | crate::ast::Pattern::Tuple(subs) => {
             for sp in subs {
                 collect_pattern_calls(sp, out);
             }
@@ -246,8 +256,10 @@ fn collect_called_names_stmt(s: &Statement, out: &mut std::collections::HashSet<
                 collect_called_names_stmt(inner, out);
             }
         }
-        Statement::Block(body) | Statement::SyncBlock(body)
-        | Statement::Defer(body) | Statement::Mutex(body) => {
+        Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body) => {
             for inner in body {
                 collect_called_names_stmt(inner, out);
             }
@@ -381,7 +393,11 @@ pub(crate) fn f32_to_f16_bits(v: f32) -> u16 {
     let mant = bits & 0x007f_ffff;
     let h: u16 = if exp == 255 {
         // Inf / NaN — preserve quietness in the top mantissa bit.
-        if mant == 0 { sign | 0x7c00 } else { sign | 0x7e00 | ((mant >> 13) as u16 & 0x03ff) }
+        if mant == 0 {
+            sign | 0x7c00
+        } else {
+            sign | 0x7e00 | ((mant >> 13) as u16 & 0x03ff)
+        }
     } else {
         let unbiased = exp - 127;
         if unbiased > 15 {
@@ -390,10 +406,19 @@ pub(crate) fn f32_to_f16_bits(v: f32) -> u16 {
             // Normal: round the 23-bit mantissa to 10 bits (RNE).
             let mut m = mant >> 13;
             let rem = mant & 0x1fff;
-            if rem > 0x1000 || (rem == 0x1000 && (m & 1) == 1) { m += 1; }
+            if rem > 0x1000 || (rem == 0x1000 && (m & 1) == 1) {
+                m += 1;
+            }
             let mut e = (unbiased + 15) as u16;
-            if m == 0x800 { m = 0; e += 1; } // mantissa carry bumps the exponent
-            if e >= 31 { sign | 0x7c00 } else { sign | (e << 10) | m as u16 }
+            if m == 0x800 {
+                m = 0;
+                e += 1;
+            } // mantissa carry bumps the exponent
+            if e >= 31 {
+                sign | 0x7c00
+            } else {
+                sign | (e << 10) | m as u16
+            }
         } else if unbiased >= -25 {
             // Subnormal (RNE, including the round-up-to-min-normal boundary).
             let combined = 0x0080_0000u32 | mant;
@@ -401,8 +426,14 @@ pub(crate) fn f32_to_f16_bits(v: f32) -> u16 {
             let mut f10 = combined >> d;
             let rem = combined & ((1u32 << d) - 1);
             let half = 1u32 << (d - 1);
-            if rem > half || (rem == half && (f10 & 1) == 1) { f10 += 1; }
-            if f10 >= 0x400 { sign | (1 << 10) } else { sign | f10 as u16 }
+            if rem > half || (rem == half && (f10 & 1) == 1) {
+                f10 += 1;
+            }
+            if f10 >= 0x400 {
+                sign | (1 << 10)
+            } else {
+                sign | f10 as u16
+            }
         } else {
             sign // underflow → ±0
         }
@@ -441,12 +472,10 @@ fn try_eval_cfloat(
 ) -> Option<f64> {
     match expr {
         Expr::Float(f) => Some(*f),
-        Expr::Identifier(name) => {
-            match constants.get(name) {
-                Some((ty, inner)) if is_float(ty) => try_eval_cfloat(inner, constants, is_float),
-                _ => None,
-            }
-        }
+        Expr::Identifier(name) => match constants.get(name) {
+            Some((ty, inner)) if is_float(ty) => try_eval_cfloat(inner, constants, is_float),
+            _ => None,
+        },
         Expr::BinaryOp(kind, l, r) => {
             let lv = try_eval_cfloat(l, constants, is_float)?;
             let rv = try_eval_cfloat(r, constants, is_float)?;
@@ -577,7 +606,11 @@ fn collect_byte_literals(items: &[TopLevel]) -> Vec<Vec<u8>> {
     out
 }
 
-fn collect_bytes_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<Vec<u8>>, out: &mut Vec<Vec<u8>>) {
+fn collect_bytes_tl(
+    tl: &TopLevel,
+    seen: &mut std::collections::HashSet<Vec<u8>>,
+    out: &mut Vec<Vec<u8>>,
+) {
     match tl {
         TopLevel::Transaction(t) => {
             collect_bytes_expr(&t.contract.pre_condition, seen, out);
@@ -597,7 +630,11 @@ fn collect_bytes_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<Vec<u8>>
     }
 }
 
-fn collect_bytes_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<Vec<u8>>, out: &mut Vec<Vec<u8>>) {
+fn collect_bytes_stmt(
+    stmt: &Statement,
+    seen: &mut std::collections::HashSet<Vec<u8>>,
+    out: &mut Vec<Vec<u8>>,
+) {
     match stmt {
         Statement::Let { expr, .. } => {
             if let Some(e) = expr {
@@ -622,7 +659,11 @@ fn collect_bytes_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<Vec
     }
 }
 
-fn collect_bytes_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>, out: &mut Vec<Vec<u8>>) {
+fn collect_bytes_expr(
+    expr: &Expr,
+    seen: &mut std::collections::HashSet<Vec<u8>>,
+    out: &mut Vec<Vec<u8>>,
+) {
     match expr {
         Expr::TaggedQuotedLiteral(bytes, prefix) if prefix == "b" => {
             if seen.insert(bytes.clone()) {
@@ -638,11 +679,22 @@ fn collect_bytes_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
                 collect_bytes_expr(a, seen, out);
             }
         }
-        Expr::Cast(i, _) | Expr::IsType(i, _) | Expr::Consume(i) | Expr::Deref(i) | Expr::AddrOf(i) | Expr::Await(i) => {
+        Expr::Cast(i, _)
+        | Expr::IsType(i, _)
+        | Expr::Consume(i)
+        | Expr::Deref(i)
+        | Expr::AddrOf(i)
+        | Expr::Await(i) => {
             collect_bytes_expr(i, seen, out);
         }
         Expr::Field(o, _) | Expr::Index(o, _) => collect_bytes_expr(o, seen, out),
-        Expr::Slice { array, start, end, stride, .. } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+            ..
+        } => {
             collect_bytes_expr(array, seen, out);
             for b in [start, end, stride].into_iter().flatten() {
                 collect_bytes_expr(b, seen, out);
@@ -687,7 +739,11 @@ fn collect_mask_literals(items: &[TopLevel]) -> Vec<Vec<u8>> {
     out
 }
 
-fn collect_masks_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<Vec<u8>>, out: &mut Vec<Vec<u8>>) {
+fn collect_masks_tl(
+    tl: &TopLevel,
+    seen: &mut std::collections::HashSet<Vec<u8>>,
+    out: &mut Vec<Vec<u8>>,
+) {
     match tl {
         TopLevel::Transaction(t) => {
             collect_masks_expr(&t.contract.pre_condition, seen, out);
@@ -707,10 +763,16 @@ fn collect_masks_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<Vec<u8>>
     }
 }
 
-fn collect_masks_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<Vec<u8>>, out: &mut Vec<Vec<u8>>) {
+fn collect_masks_stmt(
+    stmt: &Statement,
+    seen: &mut std::collections::HashSet<Vec<u8>>,
+    out: &mut Vec<Vec<u8>>,
+) {
     match stmt {
         Statement::Let { expr: Some(e), .. } => collect_masks_expr(e, seen, out),
-        Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) | Statement::Tail(expr) => collect_masks_expr(expr, seen, out),
+        Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) | Statement::Tail(expr) => {
+            collect_masks_expr(expr, seen, out)
+        }
         Statement::Assign(_, rhs) => collect_masks_expr(rhs, seen, out),
         Statement::Expression(e) | Statement::Gate(e) => collect_masks_expr(e, seen, out),
         Statement::Guarded(_, body) | Statement::Block(body) | Statement::SyncBlock(body) => {
@@ -728,7 +790,11 @@ fn collect_masks_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<Vec
     }
 }
 
-fn collect_masks_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>, out: &mut Vec<Vec<u8>>) {
+fn collect_masks_expr(
+    expr: &Expr,
+    seen: &mut std::collections::HashSet<Vec<u8>>,
+    out: &mut Vec<Vec<u8>>,
+) {
     match expr {
         Expr::Index(obj, index) => {
             if let Some(bytes) = const_bool_mask_bytes(index) {
@@ -748,11 +814,22 @@ fn collect_masks_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
                 collect_masks_expr(a, seen, out);
             }
         }
-        Expr::Cast(i, _) | Expr::IsType(i, _) | Expr::Consume(i) | Expr::Deref(i) | Expr::AddrOf(i) | Expr::Await(i) => {
+        Expr::Cast(i, _)
+        | Expr::IsType(i, _)
+        | Expr::Consume(i)
+        | Expr::Deref(i)
+        | Expr::AddrOf(i)
+        | Expr::Await(i) => {
             collect_masks_expr(i, seen, out);
         }
         Expr::Field(o, _) => collect_masks_expr(o, seen, out),
-        Expr::Slice { array, start, end, stride, .. } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+            ..
+        } => {
             collect_masks_expr(array, seen, out);
             for b in [start, end, stride].into_iter().flatten() {
                 collect_masks_expr(b, seen, out);
@@ -800,7 +877,9 @@ fn const_bool_mask_bytes(expr: &Expr) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn collect_strings(items: &[TopLevel]) -> Vec<String> {    let mut seen = std::collections::HashSet::new();    let mut out = Vec::new();
+fn collect_strings(items: &[TopLevel]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
     // 2026-07-17: Always start with the empty string at index 0.
     // emit_field_init_value references @str.0 as the uninitialized String
     // sentinel (Site B at line 866). Without this, @str.0 is never emitted
@@ -813,7 +892,11 @@ fn collect_strings(items: &[TopLevel]) -> Vec<String> {    let mut seen = std::c
     }
     out
 }
-fn collect_strings_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>) {
+fn collect_strings_tl(
+    tl: &TopLevel,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<String>,
+) {
     match tl {
         TopLevel::Transaction(t) => {
             // 2026-08-01 (Phase 3b): entry!/args! rewrite string literals into
@@ -821,20 +904,34 @@ fn collect_strings_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<String
             // the contract so those @str.N constants are emitted.
             collect_strings_expr(&t.contract.pre_condition, seen, out);
             collect_strings_expr(&t.contract.post_condition, seen, out);
-            for s in &t.body { collect_strings_stmt(s, seen, out); }
+            for s in &t.body {
+                collect_strings_stmt(s, seen, out);
+            }
         }
         TopLevel::Definition(d) => {
             collect_strings_expr(&d.contract.pre_condition, seen, out);
             collect_strings_expr(&d.contract.post_condition, seen, out);
-            for s in &d.body { collect_strings_stmt(s, seen, out); }
+            for s in &d.body {
+                collect_strings_stmt(s, seen, out);
+            }
         }
         TopLevel::Export(e) => collect_strings_tl(&e.inner, seen, out),
         TopLevel::Cell(c) => {
             // 2026-07-13: Field.default removed in new AST.
-            for _ in &c.fields { }
-            for txn in &c.transactions { for s in &txn.body { collect_strings_stmt(s, seen, out); } }
-            for d in &c.definitions { for s in &d.body { collect_strings_stmt(s, seen, out); } }
-            for trg in &c.internal_triggers { collect_strings_expr(&Expr::Identifier(trg.name.clone()), seen, out); }
+            for _ in &c.fields {}
+            for txn in &c.transactions {
+                for s in &txn.body {
+                    collect_strings_stmt(s, seen, out);
+                }
+            }
+            for d in &c.definitions {
+                for s in &d.body {
+                    collect_strings_stmt(s, seen, out);
+                }
+            }
+            for trg in &c.internal_triggers {
+                collect_strings_expr(&Expr::Identifier(trg.name.clone()), seen, out);
+            }
         }
         // 2026-07-26: TopLevel::Statement wraps top-level let bindings
         // that contain string literals (e.g. GetEnvInt!("BOUND")).
@@ -866,38 +963,70 @@ fn collect_strings_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<String
         _ => {}
     }
 }
-fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>) {
+fn collect_strings_stmt(
+    stmt: &Statement,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<String>,
+) {
     match stmt {
         Statement::Yield => {}
         Statement::Expect(e) => collect_strings_expr(e, seen, out),
         Statement::Check(_) => {}
-        Statement::Let { expr, .. } => { if let Some(e) = expr { collect_strings_expr(e, seen, out); } }
-        Statement::Assign(_, expr) => { collect_strings_expr(expr, seen, out); }
+        Statement::Let { expr, .. } => {
+            if let Some(e) = expr {
+                collect_strings_expr(e, seen, out);
+            }
+        }
+        Statement::Assign(_, expr) => {
+            collect_strings_expr(expr, seen, out);
+        }
         Statement::ArrowAssign { target, value, .. } => {
-            if let Some(t) = target { collect_strings_expr(t, seen, out); }
+            if let Some(t) = target {
+                collect_strings_expr(t, seen, out);
+            }
             collect_strings_expr(value, seen, out);
         }
         Statement::FreeHint(_) | Statement::KeepHint(_) | Statement::Trap | Statement::Halt => {}
         Statement::Break => {}
-        Statement::Expression(e) => { collect_strings_expr(e, seen, out); }
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => { collect_strings_expr(e, seen, out); }
+        Statement::Expression(e) => {
+            collect_strings_expr(e, seen, out);
+        }
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
+            collect_strings_expr(e, seen, out);
+        }
         Statement::Term(None) | Statement::EndProgram(None) => {}
         Statement::Guarded(condition, statements) => {
             collect_strings_expr(condition, seen, out);
-            for s in statements { collect_strings_stmt(s, seen, out); }
+            for s in statements {
+                collect_strings_stmt(s, seen, out);
+            }
         }
-        Statement::Gate(cond) => { collect_strings_expr(cond, seen, out); }
-        Statement::Block(body) | Statement::SyncBlock(body)
-        | Statement::Defer(body) | Statement::Mutex(body) => {
-            for s in body { collect_strings_stmt(s, seen, out); }
+        Statement::Gate(cond) => {
+            collect_strings_expr(cond, seen, out);
         }
-        Statement::Rollback(Some(e)) => { collect_strings_expr(e, seen, out); }
+        Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body) => {
+            for s in body {
+                collect_strings_stmt(s, seen, out);
+            }
+        }
+        Statement::Rollback(Some(e)) => {
+            collect_strings_expr(e, seen, out);
+        }
         Statement::Rollback(None) => {}
         Statement::Foreach { list, body, .. } => {
             collect_strings_expr(list, seen, out);
-            for s in body { collect_strings_stmt(s, seen, out); }
+            for s in body {
+                collect_strings_stmt(s, seen, out);
+            }
         }
-        Statement::InlineAsm { .. } | Statement::TrgBinding { .. } | Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::Match { .. } => {}
+        Statement::InlineAsm { .. }
+        | Statement::TrgBinding { .. }
+        | Statement::MetadataAssignment(..)
+        | Statement::InlineDefn(_)
+        | Statement::Match { .. } => {}
         // 2026-09-22 (D16 p3b): `open` — collect strings from its
         // expressions.
         Statement::Open(lhs, rhs) => {
@@ -907,10 +1036,18 @@ fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<S
     }
 }
 
-fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>) {
+fn collect_strings_expr(
+    expr: &Expr,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<String>,
+) {
     match expr {
-        Expr::Consume(inner) => { collect_strings_expr(inner, seen, out); }
-        Expr::Await(inner) => { collect_strings_expr(inner, seen, out); }
+        Expr::Consume(inner) => {
+            collect_strings_expr(inner, seen, out);
+        }
+        Expr::Await(inner) => {
+            collect_strings_expr(inner, seen, out);
+        }
         // 2026-09-28 (E3): the `[*]` selector is a leaf — no strings inside.
         Expr::Wildcard => {}
         Expr::BeginProgram => {}
@@ -939,34 +1076,48 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
             collect_strings_expr(inner, seen, out);
         }
         Expr::List(elems) | Expr::Tuple(elems) => {
-            for e in elems { collect_strings_expr(e, seen, out); }
+            for e in elems {
+                collect_strings_expr(e, seen, out);
+            }
         }
         Expr::Field(o, _) | Expr::Index(o, _) => {
             collect_strings_expr(o, seen, out);
         }
         Expr::Call(_, args, _) => {
-            for a in args { collect_strings_expr(a, seen, out); }
+            for a in args {
+                collect_strings_expr(a, seen, out);
+            }
         }
         Expr::Spawn { args, .. } => {
-            for a in args { collect_strings_expr(a, seen, out); }
+            for a in args {
+                collect_strings_expr(a, seen, out);
+            }
         }
         Expr::Match(value, arms) => {
             collect_strings_expr(value, seen, out);
-            for arm in arms { collect_strings_expr(&arm.body, seen, out); }
+            for arm in arms {
+                collect_strings_expr(&arm.body, seen, out);
+            }
         }
         Expr::Block(stmts) => {
-            for s in stmts { collect_strings_stmt(s, seen, out); }
+            for s in stmts {
+                collect_strings_stmt(s, seen, out);
+            }
         }
         // 2026-08-13: a struct-literal field holds a quoted string
         // (`StringBuilder { buffer: builder.buffer + "false" }`) — collect it
         // or the @str.N global is referenced but undefined.
         Expr::StructLiteral { fields, .. } => {
-            for (_, fexpr) in fields { collect_strings_expr(fexpr, seen, out); }
+            for (_, fexpr) in fields {
+                collect_strings_expr(fexpr, seen, out);
+            }
         }
         Expr::If(cond, then_b, else_b) => {
             collect_strings_expr(cond, seen, out);
             collect_strings_expr(then_b, seen, out);
-            if let Some(eb) = else_b { collect_strings_expr(eb, seen, out); }
+            if let Some(eb) = else_b {
+                collect_strings_expr(eb, seen, out);
+            }
         }
         Expr::Lambda(_, body) => {
             collect_strings_expr(body, seen, out);
@@ -977,7 +1128,9 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
         }
         Expr::DerivationBlock(db) => {
             for ex in &db.examples {
-                for inp in &ex.inputs { collect_strings_expr(inp, seen, out); }
+                for inp in &ex.inputs {
+                    collect_strings_expr(inp, seen, out);
+                }
                 collect_strings_expr(&ex.output, seen, out);
             }
         }
@@ -988,31 +1141,60 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
             collect_strings_expr(inner, seen, out);
         }
         Expr::PluginIntercept { args, .. } => {
-            for a in args { collect_strings_expr(a, seen, out); }
+            for a in args {
+                collect_strings_expr(a, seen, out);
+            }
         }
         // Leaves — no sub-expressions
-        Expr::Decimal(_) | Expr::TaggedLiteral(_, _) | Expr::Char(_) | Expr::Bool(_) | Expr::Float(_) | Expr::Identifier(_)
-        | Expr::FormattingAnnotation(_) | Expr::StructLiteral { .. } => {}
+        Expr::Decimal(_)
+        | Expr::TaggedLiteral(_, _)
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Float(_)
+        | Expr::Identifier(_)
+        | Expr::FormattingAnnotation(_)
+        | Expr::StructLiteral { .. } => {}
         Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
             collect_strings_expr(recv, seen, out);
         }
         Expr::MethodCall(recv, _, args, _) => {
             collect_strings_expr(recv, seen, out);
-            for a in args { collect_strings_expr(a, seen, out); }
+            for a in args {
+                collect_strings_expr(a, seen, out);
+            }
         }
-        Expr::Exists(name) => { panic!("compile-time existence check '{}' reached LLVM codegen", name) },
-            Expr::Slice { array, start, end, stride } => {
-                collect_strings_expr(array, seen, out);
-                if let Some(e) = start.as_deref() { collect_strings_expr(e, seen, out); }
-                if let Some(e) = end.as_deref() { collect_strings_expr(e, seen, out); }
-                if let Some(e) = stride.as_deref() { collect_strings_expr(e, seen, out); }
+        Expr::Exists(name) => {
+            panic!(
+                "compile-time existence check '{}' reached LLVM codegen",
+                name
+            )
+        }
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
+            collect_strings_expr(array, seen, out);
+            if let Some(e) = start.as_deref() {
+                collect_strings_expr(e, seen, out);
             }
-            Expr::Range { start, end, inclusive: _ } => {
-                collect_strings_expr(start, seen, out);
-                collect_strings_expr(end, seen, out);
+            if let Some(e) = end.as_deref() {
+                collect_strings_expr(e, seen, out);
             }
-            Expr::UnitLiteral { .. } => {}
-
+            if let Some(e) = stride.as_deref() {
+                collect_strings_expr(e, seen, out);
+            }
+        }
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
+            collect_strings_expr(start, seen, out);
+            collect_strings_expr(end, seen, out);
+        }
+        Expr::UnitLiteral { .. } => {}
     }
 }
 
@@ -1047,7 +1229,10 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
 /// Protocol-based resolution is handled by CastingGraph::resolve_llvm_type()
 /// (accessible via LlvmBackend::llvm_type() in codegen contexts).
 /// Ptr<T> and Vector<T,N> are compiler constructs, not universe types.
-pub fn protocol_llvm_type(ty: &Type, universe: Option<&crate::type_universe::TypeUniverse>) -> String {
+pub fn protocol_llvm_type(
+    ty: &Type,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> String {
     if matches!(ty, Type::Ptr(_) | Type::Vector(_, _)) {
         return "ptr".to_string();
     }
@@ -1073,9 +1258,13 @@ pub fn protocol_llvm_type(ty: &Type, universe: Option<&crate::type_universe::Typ
         if let Some(rt) = ty.universe_key().and_then(|k| u.get(k)) {
             // Check protocol membership first — float types get native float/double
             if rt.properties.contains_key("Cast.Float") {
-                return if rt.max_bits <= 32 { "float".to_string() }
-                       else if rt.max_bits <= 64 { "double".to_string() }
-                       else { "i64".to_string() };
+                return if rt.max_bits <= 32 {
+                    "float".to_string()
+                } else if rt.max_bits <= 64 {
+                    "double".to_string()
+                } else {
+                    "i64".to_string()
+                };
             }
             // Use bytes as fallback for non-protocol types
             if rt.bytes > 0 {
@@ -1138,22 +1327,44 @@ pub(super) fn web_vector_element_size(llvm_ty: &str) -> u64 {
 /// write_set (each txn's update batch fits; unused tail entries are zero).
 /// Frontend-provided analysis (transition graph write_sets), never re-walked.
 pub(super) fn web_max_flush_entries(ctx: &crate::backend::llvm::context::CompilerContext) -> u32 {
-    let max = ctx.transition_graph.as_ref()
+    let max = ctx
+        .transition_graph
+        .as_ref()
         .map(|g| g.nodes.iter().map(|n| n.write_set.len()).max().unwrap_or(0))
         .unwrap_or(0);
     // 2026-10-21: helper-call writes join the commit batch, so size the buffer
     // for the largest helper closure and for the union of direct + helper
     // writes on a node. Without this a helper that writes several fields can
     // overflow @__web_flush_buf.
-    let helper_max = ctx.web_commit_writes.values().map(|writes| writes.len()).max().unwrap_or(0);
-    let union_max = ctx.transition_graph.as_ref().map(|graph| graph.nodes.iter().map(|node| {
-        ctx.web_commit_writes.get(&node.name).map(|writes|
-            writes.len() + node.write_set.difference(writes).count()
-        ).unwrap_or(node.write_set.len())
-    }).max().unwrap_or(0)).unwrap_or(0);
+    let helper_max = ctx
+        .web_commit_writes
+        .values()
+        .map(|writes| writes.len())
+        .max()
+        .unwrap_or(0);
+    let union_max = ctx
+        .transition_graph
+        .as_ref()
+        .map(|graph| {
+            graph
+                .nodes
+                .iter()
+                .map(|node| {
+                    ctx.web_commit_writes
+                        .get(&node.name)
+                        .map(|writes| writes.len() + node.write_set.difference(writes).count())
+                        .unwrap_or(node.write_set.len())
+                })
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
     max.max(helper_max).max(union_max).max(1) as u32
 }
-pub(super) fn trg_llvm_storage_ty(ty: &Type, universe: Option<&crate::type_universe::TypeUniverse>) -> String {
+pub(super) fn trg_llvm_storage_ty(
+    ty: &Type,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> String {
     protocol_llvm_type(ty, universe)
 }
 
@@ -1181,10 +1392,8 @@ fn register_atomic_fields(
         for entry in entries {
             if let crate::ast::PropertyValue::String(field) = entry {
                 let (name, ordering) = field.split_once(':').unwrap_or((field.as_str(), "seq"));
-                ctx.atomic_fields.insert(
-                    format!("{}.{}", type_name, name),
-                    ordering.to_string(),
-                );
+                ctx.atomic_fields
+                    .insert(format!("{}.{}", type_name, name), ordering.to_string());
             }
         }
     }
@@ -1192,7 +1401,10 @@ fn register_atomic_fields(
 
 /// name "Int". All three TBAA sites use this helper so the metadata
 /// declaration and the node-index lookups stay in agreement.
-fn sort_tbaa_groups(universe: Option<&crate::type_universe::TypeUniverse>, groups: &mut Vec<String>) {
+fn sort_tbaa_groups(
+    universe: Option<&crate::type_universe::TypeUniverse>,
+    groups: &mut Vec<String>,
+) {
     groups.sort();
     let is_int_protocol = |name: &str| {
         universe
@@ -1226,29 +1438,36 @@ impl LlvmBackend {
     }
 }
 
-pub(super) fn tbaa_node(ty_str: &str, universe: Option<&crate::type_universe::TypeUniverse>) -> i32 {
+pub(super) fn tbaa_node(
+    ty_str: &str,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> i32 {
     // Map string to TBAA group name
     let group = match ty_str {
         "i64" => "Int",
-        "i8"  => "Bool",
+        "i8" => "Bool",
         "i32" => "Char",
         "i8*" | "ptr" => "String",
         "float" | "double" => "Float",
-        _ => "Int",  // fallback
+        _ => "Int", // fallback
     };
     if let Some(u) = universe {
         // 2026-07-13: Inline sorted groups from type names.
         let mut groups: Vec<String> = u.types.keys().cloned().collect();
         sort_tbaa_groups(Some(u), &mut groups);
-        groups.iter().position(|g| g == group).map(|i| i as i32 + 1).unwrap_or(1)
+        groups
+            .iter()
+            .position(|g| g == group)
+            .map(|i| i as i32 + 1)
+            .unwrap_or(1)
     } else {
         // Fallback: hardcoded indices
         match group {
-            "Int"    => 1,
-            "Bool"   => 2,
-            "Char"   => 3,
+            "Int" => 1,
+            "Bool" => 2,
+            "Char" => 3,
             "String" => 4,
-            "Float"  => 5,
+            "Float" => 5,
             _ => 1,
         }
     }
@@ -1264,10 +1483,14 @@ pub(super) fn tbaa_node_for_type(ty: &Type, universe: &crate::type_universe::Typ
     };
     let mut groups: Vec<String> = universe.types.keys().cloned().collect();
     sort_tbaa_groups(Some(universe), &mut groups);
-    groups.iter().position(|g| g == group).map(|i| i as i32 + 1).unwrap_or(1)
+    groups
+        .iter()
+        .position(|g| g == group)
+        .map(|i| i as i32 + 1)
+        .unwrap_or(1)
 }
-    /// at the IR level. Without TBAA, all i64 accesses within %State are
-    /// MayAlias, preventing GVN load elimination.
+/// at the IR level. Without TBAA, all i64 accesses within %State are
+/// MayAlias, preventing GVN load elimination.
 
 /// Why metadata defs must be deferred: LLVM 18+ rejects metadata definitions
 /// (!N = !{...}) inside function bodies. Metadata must be defined at module
@@ -1292,7 +1515,12 @@ pub(super) fn emit_loop_metadata(
     disable_fold: bool,
 ) {
     let md_idx = emit_loop_metadata_nodes(metadata_counter, pending_metadata, disable_fold);
-    writeln!(out, "{0}br label %{1}, !llvm.loop !{2}", indent, backedge_label, md_idx).ok();
+    writeln!(
+        out,
+        "{0}br label %{1}, !llvm.loop !{2}",
+        indent, backedge_label, md_idx
+    )
+    .ok();
 }
 
 /// Reserve a contiguous module-wide ID range for one metadata family.
@@ -1316,14 +1544,24 @@ pub(super) fn emit_loop_metadata_nodes(
     let mut md_entries = Vec::new();
     // Default: vectorize.enable for all counted loops
     let vd_md = start + md_count;
-    writeln!(pending_metadata, "!{0} = !{{!\"llvm.loop.vectorize.enable\", i1 true}}", vd_md).ok();
+    writeln!(
+        pending_metadata,
+        "!{0} = !{{!\"llvm.loop.vectorize.enable\", i1 true}}",
+        vd_md
+    )
+    .ok();
     md_entries.push(format!("!{}", vd_md));
     md_count += 1;
 
     // 2026-07-21: Loop alignment — prevents DSB/MITE penalty from instructions
     // crossing 32-byte fetch window boundaries (ring_buffer mul instruction).
     let align_md = start + md_count;
-    writeln!(pending_metadata, "!{0} = !{{!\"llvm.loop.align\", i32 32}}", align_md).ok();
+    writeln!(
+        pending_metadata,
+        "!{0} = !{{!\"llvm.loop.align\", i32 32}}",
+        align_md
+    )
+    .ok();
     md_entries.push(format!("!{}", align_md));
     md_count += 1;
 
@@ -1333,7 +1571,12 @@ pub(super) fn emit_loop_metadata_nodes(
     // root. !llvm.loop.disable_nonforced forbids non-forced transformations.
     if disable_fold {
         let df_md = start + md_count;
-        writeln!(pending_metadata, "!{0} = !{{!\"llvm.loop.disable_nonforced\"}}", df_md).ok();
+        writeln!(
+            pending_metadata,
+            "!{0} = !{{!\"llvm.loop.disable_nonforced\"}}",
+            df_md
+        )
+        .ok();
         md_entries.push(format!("!{}", df_md));
         md_count += 1;
     }
@@ -1341,14 +1584,18 @@ pub(super) fn emit_loop_metadata_nodes(
     let entries = md_entries.join(", ");
     writeln!(pending_metadata, "!{0} = !{{!{0}, {1}}}", start, entries).ok();
     reserve_metadata_ids(metadata_counter, md_count)
-
 }
 
-fn extract_trigger_keys(pre: &Expr, trigger_names: &std::collections::HashSet<&str>) -> Option<Vec<i64>> {
+fn extract_trigger_keys(
+    pre: &Expr,
+    trigger_names: &std::collections::HashSet<&str>,
+) -> Option<Vec<i64>> {
     let mut keys = Vec::new();
     match pre {
         Expr::BinaryOp(BinaryOpKind::Eq, l, r) => {
-            let (ident, val) = if let (Expr::Identifier(name), Expr::Decimal(n)) = (l.as_ref(), r.as_ref()) {
+            let (ident, val) = if let (Expr::Identifier(name), Expr::Decimal(n)) =
+                (l.as_ref(), r.as_ref())
+            {
                 (name.clone(), *n)
             } else if let (Expr::Decimal(n), Expr::Identifier(name)) = (l.as_ref(), r.as_ref()) {
                 (name.clone(), *n)
@@ -1385,11 +1632,15 @@ fn extract_trigger_keys(pre: &Expr, trigger_names: &std::collections::HashSet<&s
 /// Dense sets (gap ratio < 4) don't need perfect hashing — standard
 /// switch dispatch with consecutive offsets works fine.
 fn sparsity_ratio(keys: &[i64]) -> f64 {
-    if keys.len() < 2 { return 0.0; }
+    if keys.len() < 2 {
+        return 0.0;
+    }
     let gaps: Vec<u64> = keys.windows(2).map(|w| (w[1] - w[0]) as u64).collect();
     let min_gap = *gaps.iter().min().unwrap_or(&1);
     let max_gap = *gaps.iter().max().unwrap_or(&0);
-    if min_gap == 0 { return f64::MAX; }
+    if min_gap == 0 {
+        return f64::MAX;
+    }
     max_gap as f64 / min_gap as f64
 }
 
@@ -1403,16 +1654,23 @@ fn find_perfect_hash(keys: &[i64]) -> Option<(u64, u32)> {
     let shift = 64 - num_slots.trailing_zeros();
     let mut rng: u64 = 123456789;
     for _ in 0..10000 {
-        rng = rng.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
+        rng = rng
+            .wrapping_mul(2862933555777941757)
+            .wrapping_add(3037000493);
         let multiplier = rng | 1;
         let mut seen = vec![false; num_slots];
         let mut ok = true;
         for &k in keys {
             let hash = (k.wrapping_mul(multiplier as i64) as u64) >> shift;
-            if seen[hash as usize] { ok = false; break; }
+            if seen[hash as usize] {
+                ok = false;
+                break;
+            }
             seen[hash as usize] = true;
         }
-        if ok { return Some((multiplier, shift)); }
+        if ok {
+            return Some((multiplier, shift));
+        }
     }
     None
 }
@@ -1530,7 +1788,8 @@ pub struct LlvmBackend {
     // 2026-07-22: Pre-resolved frgn dispatch strategies computed
     // during the main compilation pass. The backend uses these to
     // decide whether to inline a foreign call or emit a bridge call.
-    pub(crate) resolved_frgns: Option<std::collections::HashMap<String, crate::analysis::frgn_dispatch::ResolvedFrgn>>,
+    pub(crate) resolved_frgns:
+        Option<std::collections::HashMap<String, crate::analysis::frgn_dispatch::ResolvedFrgn>>,
 
     // ── Precomputed Frontend Analysis ─────────────────────────
     // 2026-08-23 (Plan 0.1, backend-scaffolding-foundation): the pipeline
@@ -1687,7 +1946,10 @@ impl LlvmBackend {
         self
     }
 
-    pub fn with_alloc_strategies(mut self, strategies: std::collections::HashMap<usize, AllocStrategy>) -> Self {
+    pub fn with_alloc_strategies(
+        mut self,
+        strategies: std::collections::HashMap<usize, AllocStrategy>,
+    ) -> Self {
         self.analysis_alloc_strategies = Some(strategies);
         self
     }
@@ -1785,11 +2047,17 @@ impl LlvmBackend {
             if let Some(rt) = ty.universe_key().and_then(|k| universe.get(k)) {
                 if rt.min_bits == rt.max_bits && rt.max_bits > 0 {
                     // Exact integer types get native iN width.
-                    let bits = if rt.max_bits <= 8 { 8 }
-                        else if rt.max_bits <= 16 { 16 }
-                        else if rt.max_bits <= 32 { 32 }
-                        else if rt.max_bits <= 64 { 64 }
-                        else { 128 };
+                    let bits = if rt.max_bits <= 8 {
+                        8
+                    } else if rt.max_bits <= 16 {
+                        16
+                    } else if rt.max_bits <= 32 {
+                        32
+                    } else if rt.max_bits <= 64 {
+                        64
+                    } else {
+                        128
+                    };
                     format!("i{}", bits)
                 } else if rt.properties.contains_key("Cast.Bool")
                     || rt.properties.contains_key("Cast.String")
@@ -1857,21 +2125,34 @@ impl LlvmBackend {
         // 2026-08-10: field names sorted by handle (field index) for a stable
         // name→handle map — the binding table lookup is by name, so this order
         // only affects iteration determinism, which we keep anyway.
-        let mut named: Vec<(usize, String)> = self.ctx.field_index_map.iter()
+        let mut named: Vec<(usize, String)> = self
+            .ctx
+            .field_index_map
+            .iter()
             .map(|(name, idx)| (*idx, name.clone()))
             .collect();
         named.sort_by_key(|(idx, _)| *idx);
         let mut fields = Vec::new();
         let mut offset = 0u64;
         for (idx, name) in &named {
-            let llvm_ty = self.ctx.field_types.get(*idx).cloned().unwrap_or_else(|| "i64".to_string());
+            let llvm_ty = self
+                .ctx
+                .field_types
+                .get(*idx)
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string());
             let size = web_llvm_byte_size(&llvm_ty);
             if size == 0 {
                 continue; // matches the WASM table's skip rule
             }
             let cat = match self.ctx.type_universe.as_ref() {
                 Some(u) => {
-                    let briev_ty = self.ctx.field_briev_types.get(*idx).cloned().unwrap_or_else(Type::int);
+                    let briev_ty = self
+                        .ctx
+                        .field_briev_types
+                        .get(*idx)
+                        .cloned()
+                        .unwrap_or_else(Type::int);
                     crate::type_universe::protocol_category(u, &briev_ty)
                 }
                 None => None,
@@ -1895,7 +2176,7 @@ impl LlvmBackend {
         }
         StateLayout {
             app_name: app_name.to_string(),
-            generation_offset: 0,   // resolved at link time via ptrtoint; shim re-reads at runtime
+            generation_offset: 0, // resolved at link time via ptrtoint; shim re-reads at runtime
             flush_buffer_offset: 0, // ditto
             max_flush_entries: self.ctx.web_max_entries.max(1),
             fields,
@@ -1979,7 +2260,10 @@ impl LlvmBackend {
     }
 
     /// 2026-07-20: Set operator definitions for <- operator dispatch.
-    pub fn with_operator_defs(mut self, defs: HashMap<String, Vec<crate::ast::top::OperatorDef>>) -> Self {
+    pub fn with_operator_defs(
+        mut self,
+        defs: HashMap<String, Vec<crate::ast::top::OperatorDef>>,
+    ) -> Self {
         self.ctx.operator_defs = defs;
         self
     }
@@ -2085,9 +2369,20 @@ impl LlvmBackend {
     /// Emit an inttoptr instruction with the correct pointer-width integer type.
     /// Uses int_bits (from data layout or CLI --int-bits) for the integer side.
     /// 2026-07-27: DataLayout-driven int_bits replaces pointer_llvm_type().
-    pub(super) fn emit_inttoptr(&self, out: &mut String, indent: &str, dest: &dyn Display, src: &dyn Display) {
+    pub(super) fn emit_inttoptr(
+        &self,
+        out: &mut String,
+        indent: &str,
+        dest: &dyn Display,
+        src: &dyn Display,
+    ) {
         let int_ty = format!("i{}", self.ctx.int_bits);
-        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dest, int_ty, src).ok();
+        writeln!(
+            out,
+            "{}{} = inttoptr {} {} to ptr",
+            indent, dest, int_ty, src
+        )
+        .ok();
     }
 
     /// Return the canonical `ptr` value for an i64 pointer register, emitting
@@ -2120,14 +2415,25 @@ impl LlvmBackend {
         field_names.sort();
         for name in &field_names {
             let idx = self.ctx.field_index_map.get(*name).copied().unwrap_or(0);
-            let ty = self.ctx.field_types.get(idx).map(|s| s.as_str()).unwrap_or("?");
-            let mode = self.ctx.field_modes.get(*name)
+            let ty = self
+                .ctx
+                .field_types
+                .get(idx)
+                .map(|s| s.as_str())
+                .unwrap_or("?");
+            let mode = self
+                .ctx
+                .field_modes
+                .get(*name)
                 .map(|m| format!("{:?}", m))
                 .unwrap_or_else(|| "Always".to_string());
             out.push_str(&format!("  {} @[{}]: {} (mode: {})", name, idx, ty, mode));
             if let Some(targets) = self.ctx.cache_slots.get(*name) {
                 for (target_name, &(cache_idx, valid_idx)) in targets {
-                    out.push_str(&format!(" | cache[{}]: [{}](i64), [{}](i8)", target_name, cache_idx, valid_idx));
+                    out.push_str(&format!(
+                        " | cache[{}]: [{}](i64), [{}](i8)",
+                        target_name, cache_idx, valid_idx
+                    ));
                 }
             }
             out.push('\n');
@@ -2143,7 +2449,13 @@ impl LlvmBackend {
     /// i8* pointer.
     /// Emit preallocation for a single collection field within a bounded loop.
     /// Shared by both emit_prealloc_for_body and emit_prealloc_for_targets.
-    fn emit_prealloc_one_field(&mut self, out: &mut String, indent: &str, field_name: &str, bound_reg: &str) {
+    fn emit_prealloc_one_field(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        field_name: &str,
+        bound_reg: &str,
+    ) {
         if !self.ctx.field_index_map.contains_key(field_name) {
             return;
         }
@@ -2163,22 +2475,52 @@ impl LlvmBackend {
         let buf_reg = self.emit_arena_alloc(out, indent, &alloc_sz);
         let buf_i64 = format!("%pbp_{}", c);
         // 2026-07-19: emit_arena_alloc returns i64 — inttoptr to get ptr.
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, buf_i64, buf_reg).ok();
+        writeln!(
+            out,
+            "{}{} = inttoptr i64 {} to ptr",
+            indent, buf_i64, buf_reg
+        )
+        .ok();
         let base = format!("%pba_{}", c);
         // 2026-07-19: buf_reg is already i64 from emit_arena_alloc.
         writeln!(out, "{}{} = add i64 0, {}", indent, base, buf_reg).ok();
         let data_ptr = format!("%pdv_{}", c);
         writeln!(out, "{}{} = add i64 {}, 16", indent, data_ptr, base).ok();
         let s0 = format!("%ps0_{}", c);
-        writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 0", indent, s0, buf_i64).ok();
-        writeln!(out, "{}store i64 {}, ptr {}, align 8, !tbaa !1", indent, data_ptr, s0).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr i64, ptr {}, i64 0",
+            indent, s0, buf_i64
+        )
+        .ok();
+        writeln!(
+            out,
+            "{}store i64 {}, ptr {}, align 8, !tbaa !1",
+            indent, data_ptr, s0
+        )
+        .ok();
         let s1 = format!("%ps1_{}", c);
-        writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 1", indent, s1, buf_i64).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr i64, ptr {}, i64 1",
+            indent, s1, buf_i64
+        )
+        .ok();
         writeln!(out, "{}store i64 0, ptr {}, align 8, !tbaa !1", indent, s1).ok();
         let ap = self.emit_state_gep(out, indent, "pap", "%state", idx);
-        let tn = crate::backend::llvm::tbaa_node(&self.ctx.field_types[idx], self.ctx.type_universe.as_ref());
-        writeln!(out, "{}store i64 {}, ptr {}, align 8, !tbaa !{}", indent, base, ap, tn).ok();
-        self.fun.field_prealloc_info.insert(field_name.to_string(), (cap, buf_i64));
+        let tn = crate::backend::llvm::tbaa_node(
+            &self.ctx.field_types[idx],
+            self.ctx.type_universe.as_ref(),
+        );
+        writeln!(
+            out,
+            "{}store i64 {}, ptr {}, align 8, !tbaa !{}",
+            indent, base, ap, tn
+        )
+        .ok();
+        self.fun
+            .field_prealloc_info
+            .insert(field_name.to_string(), (cap, buf_i64));
     }
 
     /// Emit preallocation for collection fields that receive `<- push` within
@@ -2215,27 +2557,32 @@ impl LlvmBackend {
         }
     }
 
-
-/// 2026-09-10 (Family E, allocator ownership): emit an INLINE `brk` syscall
-/// (SYS_brk = 12) — the libc-free arena primitive. Same inline-asm shape as
-/// the SysCall# emission (intrinsics.rs). Returns false when the target has
-/// no brk lowering (caller keeps the libc fallback).
-pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &str, indent: &str) -> bool {
-    let triple = self.ctx.target_triple.clone();
-    if triple.starts_with("x86_64") && triple.contains("linux") {
-        // 2026-10-20 (BUGS.md concat -O2): brk() returns the new program
-        // break; ~{memory} keeps the allocator's stores ordered around it.
-        writeln!(out, "{}{} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},~{{rcx}},~{{r11}},~{{memory}}\" (i64 12, i64 {})",
+    /// 2026-09-10 (Family E, allocator ownership): emit an INLINE `brk` syscall
+    /// (SYS_brk = 12) — the libc-free arena primitive. Same inline-asm shape as
+    /// the SysCall# emission (intrinsics.rs). Returns false when the target has
+    /// no brk lowering (caller keeps the libc fallback).
+    pub(crate) fn emit_brk_syscall(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        arg_reg: &str,
+        indent: &str,
+    ) -> bool {
+        let triple = self.ctx.target_triple.clone();
+        if triple.starts_with("x86_64") && triple.contains("linux") {
+            // 2026-10-20 (BUGS.md concat -O2): brk() returns the new program
+            // break; ~{memory} keeps the allocator's stores ordered around it.
+            writeln!(out, "{}{} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},~{{rcx}},~{{r11}},~{{memory}}\" (i64 12, i64 {})",
             indent, v, arg_reg).ok();
-        true
-    } else if triple.starts_with("aarch64") && triple.contains("linux") {
-        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}},~{{memory}}\" (i64 12, i64 12, i64 {})",
+            true
+        } else if triple.starts_with("aarch64") && triple.contains("linux") {
+            writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}},~{{memory}}\" (i64 12, i64 12, i64 {})",
             indent, v, arg_reg).ok();
-        true
-    } else {
-        false
+            true
+        } else {
+            false
+        }
     }
-}
 
     /// 2026-09-24: the shared malloc fallback for emit_arena_alloc's three
     /// non-arena exits (stateless body, budget below arena_min_budget, no
@@ -2244,13 +2591,23 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     /// all three (was two inline copies + the new stateless guard).
     fn emit_malloc_fallback(&mut self, out: &mut String, indent: &str, size_reg: &str) -> String {
         let r = self.fun.next_reg_with_prefix("aam");
-        writeln!(out, "{}{} = call noalias ptr @malloc(i64 {})", indent, r, size_reg).ok();
+        writeln!(
+            out,
+            "{}{} = call noalias ptr @malloc(i64 {})",
+            indent, r, size_reg
+        )
+        .ok();
         let ri = self.fun.next_reg_with_prefix("aami");
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ri, r).ok();
         ri
     }
 
-    pub(crate) fn emit_arena_alloc(&mut self, out: &mut String, indent: &str, size_reg: &str) -> String {
+    pub(crate) fn emit_arena_alloc(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        size_reg: &str,
+    ) -> String {
         // 2026-09-24 (stateless-defn × arena): a stateless body has no
         // %state parameter — arena fields live in %State, so referencing
         // them emits `ptr %state` inside `define @f(i64 ...)` and clang
@@ -2271,7 +2628,8 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // below the config arena_min_budget, skip the bump arena entirely and
         // use heap allocation.
         // 2026-07-31: Phase 3 (§8.2) — threshold from config/ir-lowering.toml.
-        if (self.ctx.optimize_budget as u32) < crate::config_tuning::ir_lowering().arena_min_budget {
+        if (self.ctx.optimize_budget as u32) < crate::config_tuning::ir_lowering().arena_min_budget
+        {
             return self.emit_malloc_fallback(out, indent, size_reg);
         }
 
@@ -2285,25 +2643,37 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         let abase_idx = self.arena_base_idx.unwrap();
 
         // Helper: emit GEP+load+inttoptr for an arena %State field → returns ptr reg.
-        macro_rules! load_state_ptr { ($idx:expr, $pfx:expr) => {{
-            let _gep = self.fun.next_reg_with_prefix(concat!($pfx, "g"));
-            writeln!(out, "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-                indent, _gep, $idx).ok();
-            let _vi = self.fun.next_reg_with_prefix(concat!($pfx, "i"));
-            writeln!(out, "{}{} = load i64, ptr {}", indent, _vi, _gep).ok();
-            let _vp = self.fun.next_reg_with_prefix(concat!($pfx, "p"));
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, _vp, _vi).ok();
-            _vp
-        }}; }
+        macro_rules! load_state_ptr {
+            ($idx:expr, $pfx:expr) => {{
+                let _gep = self.fun.next_reg_with_prefix(concat!($pfx, "g"));
+                writeln!(
+                    out,
+                    "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+                    indent, _gep, $idx
+                )
+                .ok();
+                let _vi = self.fun.next_reg_with_prefix(concat!($pfx, "i"));
+                writeln!(out, "{}{} = load i64, ptr {}", indent, _vi, _gep).ok();
+                let _vp = self.fun.next_reg_with_prefix(concat!($pfx, "p"));
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, _vp, _vi).ok();
+                _vp
+            }};
+        }
         // Helper: emit GEP+ptrtoint+store for an arena %State field.
-        macro_rules! store_state_ptr { ($idx:expr, $pfx:expr, $ptr:expr) => {{
-            let _gep = self.fun.next_reg_with_prefix(concat!($pfx, "g"));
-            writeln!(out, "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-                indent, _gep, $idx).ok();
-            let _pi = self.fun.next_reg_with_prefix(concat!($pfx, "pi"));
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, _pi, $ptr).ok();
-            writeln!(out, "{}store i64 {}, ptr {}, align 8", indent, _pi, _gep).ok();
-        }}; }
+        macro_rules! store_state_ptr {
+            ($idx:expr, $pfx:expr, $ptr:expr) => {{
+                let _gep = self.fun.next_reg_with_prefix(concat!($pfx, "g"));
+                writeln!(
+                    out,
+                    "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+                    indent, _gep, $idx
+                )
+                .ok();
+                let _pi = self.fun.next_reg_with_prefix(concat!($pfx, "pi"));
+                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, _pi, $ptr).ok();
+                writeln!(out, "{}store i64 {}, ptr {}, align 8", indent, _pi, _gep).ok();
+            }};
+        }
 
         let ok_l_n = self.fun.txn_counter;
         self.fun.txn_counter += 1;
@@ -2320,14 +2690,23 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // final blocks.
         let base_i = self.fun.next_reg_with_prefix("aalb");
         let base_g = self.fun.next_reg_with_prefix("aalbg");
-        writeln!(out, "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-            indent, base_g, abase_idx).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+            indent, base_g, abase_idx
+        )
+        .ok();
         writeln!(out, "{}{} = load i64, ptr {}", indent, base_i, base_g).ok();
         let zero = self.fun.next_reg_with_prefix("aalz");
         writeln!(out, "{}{} = icmp eq i64 {}, 0", indent, zero, base_i).ok();
         let init_l = format!("aalinit_{}", ok_l_n);
         let ready_l = format!("aalready_{}", ok_l_n);
-        writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, zero, init_l, ready_l).ok();
+        writeln!(
+            out,
+            "{}br i1 {}, label %{}, label %{}",
+            indent, zero, init_l, ready_l
+        )
+        .ok();
         writeln!(out, "{}{}:", indent, init_l).ok();
         self.emit_arena_init(out, indent);
         writeln!(out, "{}br label %{}", indent, ready_l).ok();
@@ -2340,10 +2719,25 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         writeln!(out, "{}br label %{}", indent, check_l).ok();
         writeln!(out, "{}{}:", indent, check_l).ok();
         let new_ptr = self.fun.next_reg_with_prefix("aanew");
-        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_ptr, cur, size_reg).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr i8, ptr {}, i64 {}",
+            indent, new_ptr, cur, size_reg
+        )
+        .ok();
         let ok_val = self.fun.next_reg_with_prefix("aaok");
-        writeln!(out, "{}{} = icmp ule ptr {}, {}", indent, ok_val, new_ptr, end).ok();
-        writeln!(out, "{}br i1 {}, label %aaok_{}, label %{}", indent, ok_val, ok_l_n, grow_l).ok();
+        writeln!(
+            out,
+            "{}{} = icmp ule ptr {}, {}",
+            indent, ok_val, new_ptr, end
+        )
+        .ok();
+        writeln!(
+            out,
+            "{}br i1 {}, label %aaok_{}, label %{}",
+            indent, ok_val, ok_l_n, grow_l
+        )
+        .ok();
 
         // Grow path
         writeln!(out, "{}{}:", indent, grow_l).ok();
@@ -2363,18 +2757,33 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             // @realloc for targets without brk lowering.
             let end_g = load_state_ptr!(aend_idx, "aaeg");
             let end_i64g = self.fun.next_reg_with_prefix("aagi");
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, end_i64g, end_g).ok();
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr {} to i64",
+                indent, end_i64g, end_g
+            )
+            .ok();
             let grow_sz = self.fun.next_reg_with_prefix("aags");
             writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz, size_reg).ok();
             let min_sz = self.fun.next_reg_with_prefix("aams");
-            writeln!(out, "{}{} = add i64 {}, {}", indent, min_sz, grow_sz, self.ctx.arena_initial_size).ok();
+            writeln!(
+                out,
+                "{}{} = add i64 {}, {}",
+                indent, min_sz, grow_sz, self.ctx.arena_initial_size
+            )
+            .ok();
             let want = self.fun.next_reg_with_prefix("aabw");
             writeln!(out, "{}{} = add i64 {}, {}", indent, want, end_i64g, min_sz).ok();
             let ok = self.fun.next_reg_with_prefix("aabo");
             let have_brk = self.emit_brk_syscall(out, &ok, &want, indent);
             if have_brk {
                 let new_end = self.fun.next_reg_with_prefix("aane");
-                writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, end_g, min_sz).ok();
+                writeln!(
+                    out,
+                    "{}{} = getelementptr i8, ptr {}, i64 {}",
+                    indent, new_end, end_g, min_sz
+                )
+                .ok();
                 store_state_ptr!(aend_idx, "aaes", &new_end);
                 // 2026-11-03 (soundness): grow EXTENDS in place and KEEPS the
                 // bump. Resetting to base would overwrite live arena
@@ -2387,18 +2796,38 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 let grow_sz2 = self.fun.next_reg_with_prefix("aags2");
                 writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz2, size_reg).ok();
                 let min_sz2 = self.fun.next_reg_with_prefix("aams2");
-                writeln!(out, "{}{} = add i64 {}, {}", indent, min_sz2, grow_sz2, self.ctx.arena_initial_size).ok();
+                writeln!(
+                    out,
+                    "{}{} = add i64 {}, {}",
+                    indent, min_sz2, grow_sz2, self.ctx.arena_initial_size
+                )
+                .ok();
                 let new_base = self.fun.next_reg_with_prefix("aanb");
-                writeln!(out, "{}{} = call ptr @realloc(ptr {}, i64 {})", indent, new_base, base_ptr, min_sz2).ok();
+                writeln!(
+                    out,
+                    "{}{} = call ptr @realloc(ptr {}, i64 {})",
+                    indent, new_base, base_ptr, min_sz2
+                )
+                .ok();
                 store_state_ptr!(abase_idx, "aabs", &new_base);
                 let new_end = self.fun.next_reg_with_prefix("aane");
-                writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, new_base, min_sz2).ok();
+                writeln!(
+                    out,
+                    "{}{} = getelementptr i8, ptr {}, i64 {}",
+                    indent, new_end, new_base, min_sz2
+                )
+                .ok();
                 store_state_ptr!(aend_idx, "aaes", &new_end);
                 // Rebase the bump onto the moved base (preserve live data).
                 let cur_i = self.fun.next_reg_with_prefix("aacurb");
                 writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, cur_i, cur).ok();
                 let base_i = self.fun.next_reg_with_prefix("aabasi");
-                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, base_i, base_ptr).ok();
+                writeln!(
+                    out,
+                    "{}{} = ptrtoint ptr {} to i64",
+                    indent, base_i, base_ptr
+                )
+                .ok();
                 let off = self.fun.next_reg_with_prefix("aaoff");
                 writeln!(out, "{}{} = sub i64 {}, {}", indent, off, cur_i, base_i).ok();
                 let nb_i = self.fun.next_reg_with_prefix("aanbi");
@@ -2420,10 +2849,19 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // the REAL final block (aaok_), not the block the Alloc# started in.
         self.fun.cur_block = Some(format!("aaok_{}", ok_l_n));
         let phi = self.fun.next_reg_with_prefix("aaphi");
-        writeln!(out, "{}{} = phi ptr [ {}, %{} ], [ {}, %{} ]",
-            indent, phi, cur, check_l, grow_incoming, grow_l).ok();
+        writeln!(
+            out,
+            "{}{} = phi ptr [ {}, %{} ], [ {}, %{} ]",
+            indent, phi, cur, check_l, grow_incoming, grow_l
+        )
+        .ok();
         let new_bump = self.fun.next_reg_with_prefix("aanbp");
-        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_bump, phi, size_reg).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr i8, ptr {}, i64 {}",
+            indent, new_bump, phi, size_reg
+        )
+        .ok();
         store_state_ptr!(aptr_idx, "aaps2", &new_bump);
         let result = self.fun.next_reg_with_prefix("aapi");
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, result, phi).ok();
@@ -2440,9 +2878,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         if self.ctx.needs_arena.is_empty() {
             return;
         }
-        let Some(aptr_idx) = self.arena_ptr_idx else { return; };
-        let Some(aend_idx) = self.arena_end_idx else { return; };
-        let Some(abase_idx) = self.arena_base_idx else { return; };
+        let Some(aptr_idx) = self.arena_ptr_idx else {
+            return;
+        };
+        let Some(aend_idx) = self.arena_end_idx else {
+            return;
+        };
+        let Some(abase_idx) = self.arena_base_idx else {
+            return;
+        };
         // 2026-07-19: Uses next_reg_with_prefix (txn_counter) for unique names.
         // Eliminates arena_counter — consistent with emit_arena_alloc pattern.
         // 2026-11-03 (D35): the vestigial %arena_mutex was removed. It was
@@ -2453,14 +2897,28 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // at the static @embedded_heap global (no @malloc, no heap growth).
         if self.ctx.is_embedded {
             let base = self.fun.next_reg_with_prefix("arib");
-            writeln!(out, "{}{} = ptrtoint ptr @embedded_heap to i64", indent, base).ok();
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr @embedded_heap to i64",
+                indent, base
+            )
+            .ok();
             self.emit_state_store_i64_by_idx(out, indent, aptr_idx, &base);
             self.emit_state_store_i64_by_idx(out, indent, abase_idx, &base);
             let init_end = self.fun.next_reg_with_prefix("arie");
-            writeln!(out, "{}{} = getelementptr i8, ptr @embedded_heap, i64 {}",
-                indent, init_end, self.ctx.arena_initial_size).ok();
+            writeln!(
+                out,
+                "{}{} = getelementptr i8, ptr @embedded_heap, i64 {}",
+                indent, init_end, self.ctx.arena_initial_size
+            )
+            .ok();
             let end_i64 = self.fun.next_reg_with_prefix("ariei");
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, end_i64, init_end).ok();
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr {} to i64",
+                indent, end_i64, init_end
+            )
+            .ok();
             self.emit_state_store_i64_by_idx(out, indent, aend_idx, &end_i64);
             return;
         }
@@ -2474,20 +2932,35 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         let have_brk = self.emit_brk_syscall(out, &b0, "0", indent);
         if have_brk {
             let want = self.fun.next_reg_with_prefix("arbw");
-            writeln!(out, "{}{} = add i64 {}, {}", indent, want, b0, self.ctx.arena_initial_size).ok();
+            writeln!(
+                out,
+                "{}{} = add i64 {}, {}",
+                indent, want, b0, self.ctx.arena_initial_size
+            )
+            .ok();
             let ok = self.fun.next_reg_with_prefix("arbo");
             self.emit_brk_syscall(out, &ok, &want, indent);
             writeln!(out, "{}{} = add i64 0, {}", indent, init_i64, b0).ok();
         } else {
             let init = self.fun.next_reg_with_prefix("arinit");
-            writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, init, self.ctx.arena_initial_size).ok();
+            writeln!(
+                out,
+                "{}{} = call ptr @malloc(i64 {})",
+                indent, init, self.ctx.arena_initial_size
+            )
+            .ok();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, init_i64, init).ok();
         }
         // Store arena_ptr, arena_base, arena_end
         self.emit_state_store_i64_by_idx(out, indent, aptr_idx, &init_i64);
         self.emit_state_store_i64_by_idx(out, indent, abase_idx, &init_i64);
         let end_i64 = self.fun.next_reg_with_prefix("arie");
-        writeln!(out, "{}{} = add i64 {}, {}", indent, end_i64, init_i64, self.ctx.arena_initial_size).ok();
+        writeln!(
+            out,
+            "{}{} = add i64 {}, {}",
+            indent, end_i64, init_i64, self.ctx.arena_initial_size
+        )
+        .ok();
         self.emit_state_store_i64_by_idx(out, indent, aend_idx, &end_i64);
     }
 
@@ -2499,11 +2972,20 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         if self.ctx.needs_arena.is_empty() {
             return;
         }
-        let Some(aptr_idx) = self.arena_ptr_idx else { return; };
-        let Some(abase_idx) = self.arena_base_idx else { return; };
+        let Some(aptr_idx) = self.arena_ptr_idx else {
+            return;
+        };
+        let Some(abase_idx) = self.arena_base_idx else {
+            return;
+        };
         let (base_val, _) = self.emit_state_load_i64_by_idx(out, indent, abase_idx);
         let base_ptr = self.fun.next_reg_with_prefix("arbp");
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base_ptr, base_val).ok();
+        writeln!(
+            out,
+            "{}{} = inttoptr i64 {} to ptr",
+            indent, base_ptr, base_val
+        )
+        .ok();
         self.emit_state_store_i64_by_idx(out, indent, aptr_idx, &base_val);
     }
 
@@ -2513,7 +2995,9 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         if self.ctx.needs_arena.is_empty() {
             return;
         }
-        let Some(abase_idx) = self.arena_base_idx else { return; };
+        let Some(abase_idx) = self.arena_base_idx else {
+            return;
+        };
         // 2026-08-04 (Phase 4): embedded freestanding — the static @embedded_heap
         // global lives for the program's lifetime; nothing to free.
         if self.ctx.is_embedded {
@@ -2531,7 +3015,12 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             return;
         }
         let base_ptr = self.fun.next_reg_with_prefix("afp");
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base_ptr, base_val).ok();
+        writeln!(
+            out,
+            "{}{} = inttoptr i64 {} to ptr",
+            indent, base_ptr, base_val
+        )
+        .ok();
         writeln!(out, "{}call void @free(ptr {})", indent, base_ptr).ok();
     }
 
@@ -2560,7 +3049,10 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     /// PyModuleDef, and PyInit_<name>. The struct layouts are read from
     /// the type universe (injected by InjectTypeLayout$ at compile time).
     /// 2026-07-23: Config-driven, zero Rust per-language code.
-    pub(crate) fn push_remark(&mut self, remark: crate::backend::llvm::directive::OptimizationRemark) {
+    pub(crate) fn push_remark(
+        &mut self,
+        remark: crate::backend::llvm::directive::OptimizationRemark,
+    ) {
         if self.ctx.emit_remarks {
             self.remarks.push(remark);
         }
@@ -2584,9 +3076,14 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     /// growth).
     pub(crate) fn check_embedded_restrictions(&mut self, items: &[TopLevel]) {
         let threading_intrinsics: &[&str] = &[
-            "ThreadCreate#", "ThreadJoin#", "ThreadExit#",
-            "MutexLock#", "MutexUnlock#",
-            "CondvarWait#", "CondvarSignal#", "CondvarBroadcast#",
+            "ThreadCreate#",
+            "ThreadJoin#",
+            "ThreadExit#",
+            "MutexLock#",
+            "MutexUnlock#",
+            "CondvarWait#",
+            "CondvarSignal#",
+            "CondvarBroadcast#",
         ];
         for item in items {
             match item {
@@ -2636,7 +3133,12 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             .unwrap_or(false)
     }
 
-    fn check_stmt_embedded(&mut self, stmt: &Statement, ctx_name: &str, threading_intrinsics: &[&str]) {
+    fn check_stmt_embedded(
+        &mut self,
+        stmt: &Statement,
+        ctx_name: &str,
+        threading_intrinsics: &[&str],
+    ) {
         match stmt {
             Statement::Let { name, ty, expr, .. } => {
                 if let Some(t) = ty {
@@ -2671,7 +3173,9 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 }
             }
             Statement::Block(body) | Statement::SyncBlock(body) => {
-                for s in body { self.check_stmt_embedded(s, ctx_name, threading_intrinsics); }
+                for s in body {
+                    self.check_stmt_embedded(s, ctx_name, threading_intrinsics);
+                }
             }
             Statement::Foreach { list, body, .. } => {
                 self.check_expr_embedded(list, ctx_name, threading_intrinsics);
@@ -2760,9 +3264,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
 
     /// 2026-09-14 (machine-entry plan): the declared `bootstrap node`, if any
     /// — resolved from the item scan by name.
-    fn bootstrap_txn_of<'a>(
-        &self, items: &'a [TopLevel],
-    ) -> Option<&'a crate::ast::Transaction> {
+    fn bootstrap_txn_of<'a>(&self, items: &'a [TopLevel]) -> Option<&'a crate::ast::Transaction> {
         let name = self.bootstrap_txn.as_ref()?;
         items.iter().find_map(|i| match i {
             TopLevel::Transaction(t) if t.name == *name => Some(t),
@@ -2927,14 +3429,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // compile error instead of a silent linker failure. Library mode
         // overrides: the shim exports plain txns/defns as ABI symbols, so
         // every callable is live there.
-self.ctx.live_defns = analysis.defn_liveness.live.clone();
+        self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-10-17 (liveness fixpoint): union the roots derived from
         // PREVIOUS rounds' emitted-but-unrooted calls — round N's emission
         // gates see original ∪ derived.
-        self.ctx.live_defns
+        self.ctx
+            .live_defns
             .extend(self.liveness_fixpoint_extra.iter().cloned());
-         self.ctx.emit_all_defns =
-             analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
+        self.ctx.emit_all_defns =
+            analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
         // 2026-10-15 (lifecycle laws): termination-reachability warning.
         // The frontend lowered `hold G { endprogram; }` laws into monitor
         // txns (their endprogram counts), reside laws suppress. Stalling
@@ -2954,9 +3457,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // suppressed the main-tail stdout_flush — a program printing via
         // the buffered lane (buffered stdout) wrote into a buffer that was
         // never flushed (acc computed correctly, no output).
-        self.has_stdout_flush = items.iter().any(|i| {
-            matches!(i, TopLevel::Definition(d) if d.name == "stdout_flush")
-        }) && self.ctx.live_defns.contains("stdout_flush");
+        self.has_stdout_flush = items
+            .iter()
+            .any(|i| matches!(i, TopLevel::Definition(d) if d.name == "stdout_flush"))
+            && self.ctx.live_defns.contains("stdout_flush");
         // 2026-08-31 (plan abv-gpu-by-default): pre-register the accel kernel
         // index BEFORE host emission. The dispatch wrapper is decided at
         // txn-emission time via accel_kernel_idx — with kernel collection at
@@ -2997,7 +3501,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 items,
                 &analysis.accel,
                 &info,
-                self.ctx.type_universe.as_ref().unwrap_or(&crate::type_universe::TypeUniverse::new()),
+                self.ctx
+                    .type_universe
+                    .as_ref()
+                    .unwrap_or(&crate::type_universe::TypeUniverse::new()),
             )
             .resident_ok;
         }
@@ -3056,9 +3563,16 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             Some("escaped") => {
                 let mut names: Vec<&String> = analysis.loop_shapes.keys().collect();
                 names.sort();
-                names.into_iter().max_by_key(|n| {
-                    analysis.loop_shapes.get(*n).map(|s| s.carried_float_count).unwrap_or(0)
-                }).cloned()
+                names
+                    .into_iter()
+                    .max_by_key(|n| {
+                        analysis
+                            .loop_shapes
+                            .get(*n)
+                            .map(|s| s.carried_float_count)
+                            .unwrap_or(0)
+                    })
+                    .cloned()
             }
             _ => {
                 let batch_txns: std::collections::HashSet<String> =
@@ -3083,9 +3597,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         };
         if let Some(cause) = effect_cause {
             let before = plain_lets.len();
-            plain_lets.retain(|n| {
-                crate::analysis::storage_class::declared_storage(items, n).is_some()
-            });
+            plain_lets
+                .retain(|n| crate::analysis::storage_class::declared_storage(items, n).is_some());
             let demoted = before.saturating_sub(plain_lets.len());
             self.warnings.push(format!(
                 "info: effect shape escaped for txn '{}' ({} carried floats, {} FP budget, {} reserved); {} inferred plain field(s) demoted to state",
@@ -3104,15 +3617,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // dispatch info lines).
         let mut demoted: Vec<String> = plain_lets
             .iter()
-            .filter(|n| {
-                crate::analysis::storage_class::declared_storage(items, n).is_none()
-            })
+            .filter(|n| crate::analysis::storage_class::declared_storage(items, n).is_none())
             .cloned()
             .collect();
         demoted.sort();
         for name in &demoted {
-            self.warnings
-                .push(format!("info: '{}' lowered to plain storage — no contract references it", name));
+            self.warnings.push(format!(
+                "info: '{}' lowered to plain storage — no contract references it",
+                name
+            ));
         }
 
         // 2026-08-03: Per-export ABI (needs_state) computed once up front by
@@ -3131,7 +3644,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // every caller, not just the defn itself.
         self.ctx.defn_needs_state =
             crate::analysis::export_abi::compute_defn_needs_state_with_arena(
-                items, &plain_lets, &self.ctx.needs_arena);
+                items,
+                &plain_lets,
+                &self.ctx.needs_arena,
+            );
         self.ctx.defn_needs_plain =
             crate::analysis::export_abi::compute_defn_needs_plain(items, &plain_lets);
         // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the
@@ -3150,8 +3666,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // such a type must itself take `%state` (its specialized body reaches a
         // stateful member), while the same default on a stateless type stays
         // stateless. Consumed at the specialization site (emit_expr.rs).
-        self.ctx.type_stateful_members =
-            crate::analysis::export_abi::type_stateful_members(items);
+        self.ctx.type_stateful_members = crate::analysis::export_abi::type_stateful_members(items);
         // 2026-08-01 (Phase 5): a `keep x;` on a field the scheduler would not
         // auto-free anyway is redundant — surface it as a warning.
         for k in &analysis.global_lifetime.redundant_keeps {
@@ -3162,7 +3677,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         }
 
         analysis.region_analyzer.compose_chains();
-        analysis.region_analyzer.build_budget_plan(self.ctx.optimize_budget);
+        analysis
+            .region_analyzer
+            .build_budget_plan(self.ctx.optimize_budget);
 
         // ── Precomputation check (EmitPureCounterFold) ──────────────────────────────
         //
@@ -3172,13 +3689,17 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // If budget is exceeded but no FFI exists, warn and fall through to
         // runtime loop. If FFI exists, warn that compile-time eval is blocked.
 
-        let precomputed_final_values = if analysis.region_analyzer.is_fully_precomputable(self.ctx.optimize_budget) {
+        let precomputed_final_values = if analysis
+            .region_analyzer
+            .is_fully_precomputable(self.ctx.optimize_budget)
+        {
             analysis.region_analyzer.collect_final_values(&analysis.hir)
         } else if !analysis.region_analyzer.composed_chains.is_empty() {
             // A002 already covers empty-chains case: no precomputable program.
             // Only emit A001 when chains exist but budget/FFI prevents evaluation.
-            let has_ffi = analysis.region_analyzer.composed_chains.iter().any(|cc|
-                crate::analysis::region::has_ffi_or_trigger_stmt_in_chain(&cc.composed_body));
+            let has_ffi = analysis.region_analyzer.composed_chains.iter().any(|cc| {
+                crate::analysis::region::has_ffi_or_trigger_stmt_in_chain(&cc.composed_body)
+            });
             if has_ffi {
                 self.warnings.push("info: program not fully precomputed — FFI calls in transaction body prevent compile-time evaluation".into());
             } else {
@@ -3194,6 +3715,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-07-28: Persist transition graph for !prof computation in emit_toplevel.
         // iter_bounds populated later (at txn processing loop) — txns not in scope yet.
         self.ctx.transition_graph = Some(analysis.transition_graph.clone());
+        // 2026-11-16 (per-worker arena plan, Stage 2a): the gate-validated pin
+        // plan decides whether the reactor emits one tick per worker.
+        self.ctx.thread_plan = analysis.thread_plan.clone();
         self.ctx.web_commit_writes = analysis.web_commit_writes.clone();
         // 2026-08-10: webstack flush buffer sized to the largest write_set —
         // frontend analysis, computed once so the term-site batch emitters and
@@ -3220,8 +3744,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-09-06 (ISR plan): ISR bodies share the program's state through
         // a GLOBAL — they run on the hardware stack, outside main's frame.
         // Main's alloca sites alias the global via emit_state_base.
-        self.ctx.state_is_global = items.iter().any(
-            |i| matches!(i, TopLevel::IsrHandler(_)));
+        self.ctx.state_is_global = items.iter().any(|i| matches!(i, TopLevel::IsrHandler(_)));
 
         if self.ctx.is_embedded {
             self.check_embedded_restrictions(items);
@@ -3255,10 +3778,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // folded VALUE feeds the dim resolution below
                 // (build_field_index) — declaration-ordered, chains compose.
                 if let Some(v) = crate::analysis::gemm_shape::lit(
-                    &crate::analysis::gemm_shape::fold_consts(
-                        &c.expr,
-                        &self.ctx.const_values,
-                    ),
+                    &crate::analysis::gemm_shape::fold_consts(&c.expr, &self.ctx.const_values),
                     &self.ctx.const_values,
                 ) {
                     self.ctx.const_values.insert(c.name.clone(), v);
@@ -3287,7 +3807,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for item in items {
             match item {
                 TopLevel::StaticStruct(s) => {
-                    let mut fields: Vec<(String, Type)> = s.fields.iter()
+                    let mut fields: Vec<(String, Type)> = s
+                        .fields
+                        .iter()
                         .map(|(n, t)| (n.clone(), t.clone()))
                         .collect();
                     // 2026-08-15 (coll plan §3.3): a `coll struct` is fixed
@@ -3299,13 +3821,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                             crate::backend::llvm::coll_scaffold::CollStorage::InlineFixed,
                         );
                     }
-                    self.ctx.struct_types.entry(s.name.clone()).or_insert(fields);
+                    self.ctx
+                        .struct_types
+                        .entry(s.name.clone())
+                        .or_insert(fields);
                 }
                 // 2026-08-26 (Track B): ENUMS are excluded from struct
                 // registration — all-`__variant_*` slots are variant tags,
                 // not fields; enum values live as boxed-image i64 handles.
-                TopLevel::TypeDef(td) if (!td.body.slots.is_empty() || !td.ports_out.is_empty()) && (td.body.slots.is_empty() || !td.body.slots.iter().all(|s| s.name.starts_with("__variant_"))) => {
-                    let mut fields: Vec<(String, Type)> = td.body.slots.iter()
+                TopLevel::TypeDef(td)
+                    if (!td.body.slots.is_empty() || !td.ports_out.is_empty())
+                        && (td.body.slots.is_empty()
+                            || !td
+                                .body
+                                .slots
+                                .iter()
+                                .all(|s| s.name.starts_with("__variant_"))) =>
+                {
+                    let mut fields: Vec<(String, Type)> = td
+                        .body
+                        .slots
+                        .iter()
                         .map(|s| (s.name.clone(), s.ty.clone()))
                         .collect();
                     // 2026-08-15 (coll plan §3.3): a `coll obj` appends two
@@ -3336,7 +3872,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                             .entry(td.name.clone())
                             .or_insert((port_ins, port_outs));
                     }
-                    self.ctx.struct_types.entry(td.name.clone()).or_insert(fields);
+                    self.ctx
+                        .struct_types
+                        .entry(td.name.clone())
+                        .or_insert(fields);
                     // 2026-08-13 (obj value ABI): a slotted `obj`/`type` VALUE
                     // is a boxed i{int_bits} handle (struct literals box, state
                     // slots store the handle, field access inttoprs it), NOT a
@@ -3344,15 +3883,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // defn params, and defn returns all agree on the handle.
                     self.ctx.obj_types.insert(td.name.clone());
                     if !td.type_params.is_empty() {
-                        self.ctx.obj_type_params.entry(td.name.clone())
-                            .or_insert_with(|| td.type_params.iter().map(|p| p.name.clone()).collect());
+                        self.ctx
+                            .obj_type_params
+                            .entry(td.name.clone())
+                            .or_insert_with(|| {
+                                td.type_params.iter().map(|p| p.name.clone()).collect()
+                            });
                     }
                     // 2026-08-07 (object instance pools): only OBJS (types
                     // with members) unpack into instance pools — a List<T> or
                     // other Applied collection with a slot layout must NOT
                     // unpack (it is a plain field).
                     if !td.body.members.is_empty() {
-                        self.ctx.obj_members.entry(td.name.clone()).or_insert_with(|| td.body.members.clone());
+                        self.ctx
+                            .obj_members
+                            .entry(td.name.clone())
+                            .or_insert_with(|| td.body.members.clone());
                     }
                 }
                 _ => {}
@@ -3369,14 +3915,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             &self.ctx.generalized_destination_ownership,
             &enum_layout_planner,
         );
-        self.ctx.defn_object_sret =
-            crate::analysis::object_repr::build_object_representation_plan(
-                &reordered_items,
-                &enum_layout_planner,
-            )
-            .caller_destination_defns
-            .into_iter()
-            .collect();
+        self.ctx.defn_object_sret = crate::analysis::object_repr::build_object_representation_plan(
+            &reordered_items,
+            &enum_layout_planner,
+        )
+        .caller_destination_defns
+        .into_iter()
+        .collect();
         // 2026-10-21 (P2-1 ReturnedSmall): only constructor-shaped, sret-safe
         // enum results take the hidden slot; the joined plan owns the verdict.
         self.ctx.defn_sret = self
@@ -3392,8 +3937,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let (tail_plan, tail_loop) = if crate::backend::hir_emit_enabled() {
             let ast_tail =
                 crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
-            let ast_loop =
-                crate::analysis::tail_recursion::build_tail_loop_plan(&reordered_items);
+            let ast_loop = crate::analysis::tail_recursion::build_tail_loop_plan(&reordered_items);
             let hir_tail = crate::hir::tail_recursion::build_tail_recursion_plan(&analysis.hir);
             let hir_loop = crate::hir::tail_recursion::build_tail_loop_plan(&analysis.hir);
             debug_assert_eq!(hir_tail.defns, ast_tail.defns, "HIR/AST tail-class drift");
@@ -3401,8 +3945,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 let only_hir: Vec<_> = hir_loop.defns.difference(&ast_loop.defns).collect();
                 let only_ast: Vec<_> = ast_loop.defns.difference(&hir_loop.defns).collect();
                 for n in only_hir.iter().chain(only_ast.iter()) {
-                    eprintln!("[tail-loop-dbg] {n}: ast predicates (sig,cleanup,arity_match,#calls) = {:?}",
-                        crate::analysis::tail_recursion::debug_loop_predicates(&reordered_items, n));
+                    eprintln!(
+                        "[tail-loop-dbg] {n}: ast predicates (sig,cleanup,arity_match,#calls) = {:?}",
+                        crate::analysis::tail_recursion::debug_loop_predicates(&reordered_items, n)
+                    );
                 }
             }
             debug_assert_eq!(hir_loop.defns, ast_loop.defns, "HIR/AST tail-loop drift");
@@ -3417,12 +3963,16 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.ctx.tail_recursive = tail_plan
             .defns
             .iter()
-            .filter(|(_, c)| **c == crate::analysis::tail_recursion::TailRecursionClass::TailRecursive)
+            .filter(|(_, c)| {
+                **c == crate::analysis::tail_recursion::TailRecursionClass::TailRecursive
+            })
             .map(|(n, _)| n.clone())
             .collect();
         self.ctx.defn_hoisted_sret.clear();
         for item in &reordered_items {
-            let TopLevel::Definition(d) = item else { continue };
+            let TopLevel::Definition(d) = item else {
+                continue;
+            };
             if !self.ctx.tail_recursive.contains(&d.name) {
                 continue;
             }
@@ -3459,18 +4009,26 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // For now, has_builtin_trg is always false.
         if has_builtin_trg && !self.ctx.field_index_map.contains_key("__trg_epfd") {
             let idx = self.ctx.field_index_map.len();
-            self.ctx.field_index_map.insert("__trg_epfd".to_string(), idx);
+            self.ctx
+                .field_index_map
+                .insert("__trg_epfd".to_string(), idx);
             self.ctx.field_types.push("i32".to_string());
             self.ctx.field_briev_types.push(Type::int());
-            self.ctx.field_initializers.insert("__trg_epfd".to_string(), None);
+            self.ctx
+                .field_initializers
+                .insert("__trg_epfd".to_string(), None);
         }
         // Inject synthetic cycle_count field for watchdog timing
         if !self.ctx.field_index_map.contains_key("cycle_count") {
             let idx = self.ctx.field_index_map.len();
-            self.ctx.field_index_map.insert("cycle_count".to_string(), idx);
+            self.ctx
+                .field_index_map
+                .insert("cycle_count".to_string(), idx);
             self.ctx.field_types.push("i64".to_string());
             self.ctx.field_briev_types.push(Type::int());
-            self.ctx.field_initializers.insert("cycle_count".to_string(), Some(Expr::Decimal(0)));
+            self.ctx
+                .field_initializers
+                .insert("cycle_count".to_string(), Some(Expr::Decimal(0)));
         }
         // 2026-07-27: Arena system fields — injected only when program needs arena.
         // Skipping these saves 24 bytes in %State and eliminates the 64KB malloc
@@ -3478,19 +4036,25 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // code references these fields so they are safely omitted.
         if !self.ctx.needs_arena.is_empty() {
             let aptr = self.ctx.field_index_map.len();
-            self.ctx.field_index_map.insert("__arena_ptr".to_string(), aptr);
+            self.ctx
+                .field_index_map
+                .insert("__arena_ptr".to_string(), aptr);
             self.ctx.field_types.push("i64".to_string());
             self.ctx.field_briev_types.push(Type::int());
             self.arena_ptr_idx = Some(aptr);
 
             let aend = self.ctx.field_index_map.len();
-            self.ctx.field_index_map.insert("__arena_end".to_string(), aend);
+            self.ctx
+                .field_index_map
+                .insert("__arena_end".to_string(), aend);
             self.ctx.field_types.push("i64".to_string());
             self.ctx.field_briev_types.push(Type::int());
             self.arena_end_idx = Some(aend);
 
             let abase = self.ctx.field_index_map.len();
-            self.ctx.field_index_map.insert("__arena_base".to_string(), abase);
+            self.ctx
+                .field_index_map
+                .insert("__arena_base".to_string(), abase);
             self.ctx.field_types.push("i64".to_string());
             self.ctx.field_briev_types.push(Type::int());
             self.arena_base_idx = Some(abase);
@@ -3526,15 +4090,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for item in items {
             match item {
                 TopLevel::Constant(c) => {
-                    self.ctx.constants.insert(c.name.clone(), (c.ty.clone(), c.expr.clone()));
+                    self.ctx
+                        .constants
+                        .insert(c.name.clone(), (c.ty.clone(), c.expr.clone()));
                     // 2026-10-03 (const-expression folding, LLVM parity):
                     // the folded VALUE, declaration-ordered — chains
                     // compose; non-foldable inits contribute nothing.
                     if let Some(v) = crate::analysis::gemm_shape::lit(
-                        &crate::analysis::gemm_shape::fold_consts(
-                            &c.expr,
-                            &self.ctx.const_values,
-                        ),
+                        &crate::analysis::gemm_shape::fold_consts(&c.expr, &self.ctx.const_values),
                         &self.ctx.const_values,
                     ) {
                         self.ctx.const_values.insert(c.name.clone(), v);
@@ -3569,7 +4132,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // the call path needs %state marshaling and the void/i64
                     // prototype for zero-param/void callables too.
                     if !t.is_reactive {
-                        let tys: Vec<Type> = t.parameters.iter().map(|(_, ty)| ty.clone()).collect();
+                        let tys: Vec<Type> =
+                            t.parameters.iter().map(|(_, ty)| ty.clone()).collect();
                         self.ctx.defn_params.insert(t.name.clone(), tys);
                         let ret_tys = if !t.outputs.is_empty() {
                             t.outputs.clone()
@@ -3603,17 +4167,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // non-Deref form to address 0) and register the VALUE-READ
                     // table so body reads lower to volatile loads.
                     let address = match &trg.instance {
-                        Expr::Deref(ptr_expr) => {
-                            crate::ast::LinkRef::Deref(ptr_expr.clone())
-                        }
+                        Expr::Deref(ptr_expr) => crate::ast::LinkRef::Deref(ptr_expr.clone()),
                         Expr::Decimal(n) => crate::ast::LinkRef::Explicit(*n as u64),
                         _ => crate::ast::LinkRef::Explicit(0),
                     };
                     if let crate::ast::LinkRef::Explicit(a) = &address {
                         if *a > 0 {
-                            self.ctx
-                                .trg_addresses
-                                .insert(trg.name.clone(), *a);
+                            self.ctx.trg_addresses.insert(trg.name.clone(), *a);
                         }
                     }
                     let trg_decl = crate::ast::TriggerDeclaration {
@@ -3693,7 +4253,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                             .as_ref()
                             .map(|ot| ot.all_types())
                             .unwrap_or_default();
-                        self.ctx.defn_return_types.insert(func.name.clone(), ret_tys);
+                        self.ctx
+                            .defn_return_types
+                            .insert(func.name.clone(), ret_tys);
                         self.ctx.generic_defns.insert(func.name.clone(), as_generic);
                         self.ctx
                             .generic_defn_type_params
@@ -3704,7 +4266,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     let tys: Vec<Type> = asm_fn.params.iter().map(|(_, t)| t.clone()).collect();
                     self.ctx.defn_params.insert(asm_fn.name.clone(), tys);
                     let ret_tys = vec![asm_fn.ret_type.clone()];
-                    self.ctx.defn_return_types.insert(asm_fn.name.clone(), ret_tys);
+                    self.ctx
+                        .defn_return_types
+                        .insert(asm_fn.name.clone(), ret_tys);
                 }
                 // 2026-09-21: bad fn — register param/ret types for call-site
                 // resolution; the actual assembly is compiled through the bad
@@ -3733,12 +4297,16 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         name: fb.foreign_name.clone(),
                         from: fb.from.clone(),
                         inputs: fb.inputs.clone(),
-                        result_type: crate::ast::ResultType::Projection(fb.success_output.iter().map(|(_, t)| t.clone()).collect()),
+                        result_type: crate::ast::ResultType::Projection(
+                            fb.success_output.iter().map(|(_, t)| t.clone()).collect(),
+                        ),
                         wasm_impl: fb.wasm_impl.clone(),
                         wasm_setup: fb.wasm_setup.clone(),
                         span: fb.span,
                     };
-                    self.ctx.frgn_map.insert(fb.foreign_name.clone(), sig.clone());
+                    self.ctx
+                        .frgn_map
+                        .insert(fb.foreign_name.clone(), sig.clone());
                     // 2026-07-22: Also index by Briev name so call resolution
                     // (Expr::Call uses the Briev name, e.g. "frgn__getenv_briev")
                     // finds the frgn entry. The declare loop emits only for the
@@ -3749,7 +4317,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     }
                 }
                 TopLevel::Obj(s) => {
-                    let fields: Vec<(String, Type)> = s.fields.iter()
+                    let fields: Vec<(String, Type)> = s
+                        .fields
+                        .iter()
                         .map(|f| (f.name.clone(), f.ty.clone()))
                         .collect();
                     // 2026-08-13 (obj value ABI): an `obj` value is a boxed
@@ -3772,7 +4342,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // 2026-07-24: StaticStruct (C-compatible struct) registration.
                 // These use `struct Name { ... }` syntax.
                 TopLevel::StaticStruct(s) => {
-                    let fields: Vec<(String, Type)> = s.fields.iter()
+                    let fields: Vec<(String, Type)> = s
+                        .fields
+                        .iter()
                         .map(|(n, t)| (n.clone(), t.clone()))
                         .collect();
                     self.ctx.struct_types.insert(s.name.clone(), fields.clone());
@@ -3805,36 +4377,58 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // array reads by the [len] header). InlineFixed storage was
                     // registered at the pre-seed pass (mod.rs:2205).
                     if s.coll {
-                        let td_slots: Vec<crate::ast::top::TypeDefSlot> = s.fields
+                        let td_slots: Vec<crate::ast::top::TypeDefSlot> = s
+                            .fields
                             .iter()
                             .map(|(n, ty)| crate::ast::top::TypeDefSlot {
-                                name: n.clone(), ty: ty.clone(), bit_range: None,
+                                name: n.clone(),
+                                ty: ty.clone(),
+                                bit_range: None,
                             })
                             .collect();
-                        if let Some((seq_expr, elem_ty)) = crate::backend::llvm::coll_scaffold::derive_sequence_member(
-                            &td_slots,
-                            &self.ctx.struct_types,
-                        ) {
-                            let storage = self.ctx.coll_storage.get(&s.name)
-                                .copied()
-                                .unwrap_or(crate::backend::llvm::coll_scaffold::CollStorage::InlineFixed);
+                        if let Some((seq_expr, elem_ty)) =
+                            crate::backend::llvm::coll_scaffold::derive_sequence_member(
+                                &td_slots,
+                                &self.ctx.struct_types,
+                            )
+                        {
+                            let storage = self.ctx.coll_storage.get(&s.name).copied().unwrap_or(
+                                crate::backend::llvm::coll_scaffold::CollStorage::InlineFixed,
+                            );
                             let ftd = crate::ast::top::TypeDef {
-                                name: s.name.clone(), type_params: s.type_params.clone(),
-                                parent: None, protocol: None, traits: vec![],
-                                bit_range: None, span: None, coll: true, seq: false,
+                                name: s.name.clone(),
+                                type_params: s.type_params.clone(),
+                                parent: None,
+                                protocol: None,
+                                traits: vec![],
+                                bit_range: None,
+                                span: None,
+                                coll: true,
+                                seq: false,
                                 ports_in: Vec::new(),
                                 ports_out: Vec::new(),
                                 body: crate::ast::top::TypeDefBody {
-                                    slots: td_slots.clone(), pins: Vec::new(), reference: None, metadata: Default::default(),
-                                    projections: vec![], bindings: vec![],
-                                    operators: vec![], op_bindings: vec![],
-                                    constraints: vec![], members: vec![], hold_laws: vec![], modes: vec![], span: None,
+                                    slots: td_slots.clone(),
+                                    pins: Vec::new(),
+                                    reference: None,
+                                    metadata: Default::default(),
+                                    projections: vec![],
+                                    bindings: vec![],
+                                    operators: vec![],
+                                    op_bindings: vec![],
+                                    constraints: vec![],
+                                    members: vec![],
+                                    hold_laws: vec![],
+                                    modes: vec![],
+                                    span: None,
                                 },
                             };
                             let synth = crate::backend::llvm::coll_scaffold::synthesize_members(
                                 &ftd, &seq_expr, elem_ty, storage,
                             );
-                            self.ctx.obj_members.entry(s.name.clone())
+                            self.ctx
+                                .obj_members
+                                .entry(s.name.clone())
                                 .or_insert_with(|| synth.clone());
                         }
                     }
@@ -3845,7 +4439,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                             // precedence authority, shared with tests). Only
                             // register the struct here if the type universe
                             // does not already have it.
-                            let rt = crate::backend::register_types::static_struct_resolved_ty(s, universe);
+                            let rt = crate::backend::register_types::static_struct_resolved_ty(
+                                s, universe,
+                            );
                             universe.types.insert(s.name.clone(), rt);
                         }
                     }
@@ -3861,21 +4457,36 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // zero-payload variants) and wrong by-value layouts.
                 TopLevel::TypeDef(td)
                     if !td.body.slots.is_empty()
-                        && td.body.slots.iter().all(|s| s.name.starts_with("__variant_")) =>
+                        && td
+                            .body
+                            .slots
+                            .iter()
+                            .all(|s| s.name.starts_with("__variant_")) =>
                 {
                     // 2026-10-05 (json.bv match-binding): generic enum params
                     // are needed to substitute a variant's payload type at the
                     // match-binding site (Result<Frame,String> ⇒ T=Frame).
                     if !td.type_params.is_empty() {
-                        self.ctx.obj_type_params.entry(td.name.clone())
-                            .or_insert_with(|| td.type_params.iter().map(|p| p.name.clone()).collect());
+                        self.ctx
+                            .obj_type_params
+                            .entry(td.name.clone())
+                            .or_insert_with(|| {
+                                td.type_params.iter().map(|p| p.name.clone()).collect()
+                            });
                     }
                 }
                 TopLevel::TypeDef(td)
                     if !td.body.slots.is_empty()
-                        && !td.body.slots.iter().all(|s| s.name.starts_with("__variant_")) =>
+                        && !td
+                            .body
+                            .slots
+                            .iter()
+                            .all(|s| s.name.starts_with("__variant_")) =>
                 {
-                    let mut fields: Vec<(String, Type)> = td.body.slots.iter()
+                    let mut fields: Vec<(String, Type)> = td
+                        .body
+                        .slots
+                        .iter()
                         .map(|s| (s.name.clone(), s.ty.clone()))
                         .collect();
                     // 2026-08-15 (coll plan §3.3): a `coll obj` appends the two
@@ -3886,7 +4497,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         fields.push(("len".to_string(), Type::int()));
                     }
                     // 2026-07-24: Register struct type in both struct_types and universe
-                    self.ctx.struct_types.insert(td.name.clone(), fields.clone());
+                    self.ctx
+                        .struct_types
+                        .insert(td.name.clone(), fields.clone());
                     // 2026-08-13 (Phase 5): `atomic` field slots (obj/type body).
                     register_atomic_fields(&mut self.ctx, &td.name, &td.body.metadata);
                     // 2026-08-15 (coll plan): classify the coll's storage from
@@ -3911,13 +4524,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // `foreach`, `Count#`, `<-`) fire for any coll type.
                     let mut coll_members = td.body.members.clone();
                     if td.coll {
-                        if let Some((seq_expr, elem_ty)) = crate::backend::llvm::coll_scaffold::derive_sequence_member(
-                            &td.body.slots,
-                            &self.ctx.struct_types,
-                        ) {
-                            let storage = self.ctx.coll_storage.get(&td.name)
-                                .copied()
-                                .unwrap_or(crate::backend::llvm::coll_scaffold::CollStorage::InlineFixed);
+                        if let Some((seq_expr, elem_ty)) =
+                            crate::backend::llvm::coll_scaffold::derive_sequence_member(
+                                &td.body.slots,
+                                &self.ctx.struct_types,
+                            )
+                        {
+                            let storage = self.ctx.coll_storage.get(&td.name).copied().unwrap_or(
+                                crate::backend::llvm::coll_scaffold::CollStorage::InlineFixed,
+                            );
                             let synth = crate::backend::llvm::coll_scaffold::synthesize_members(
                                 td, &seq_expr, elem_ty, storage,
                             );
@@ -3934,14 +4549,20 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                             }
                         }
                     }
-                    self.ctx.obj_members.entry(td.name.clone())
+                    self.ctx
+                        .obj_members
+                        .entry(td.name.clone())
                         .or_insert_with(|| coll_members.clone());
                     // 2026-08-23 (Phase 5d): ENUM VARIANT CONSTRUCTION
                     // registry — parser enums are TypeDefs whose slots are
                     // __variant_<Name>; declaration order is the tag index.
                     if !td.type_params.is_empty() {
-                        self.ctx.obj_type_params.entry(td.name.clone())
-                            .or_insert_with(|| td.type_params.iter().map(|p| p.name.clone()).collect());
+                        self.ctx
+                            .obj_type_params
+                            .entry(td.name.clone())
+                            .or_insert_with(|| {
+                                td.type_params.iter().map(|p| p.name.clone()).collect()
+                            });
                     }
                     // 2026-08-16 (slice-6 deletion): register the coll's
                     // default op BINDINGS in the backend too — compile.rs
@@ -3953,7 +4574,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // MEMBERS; it must own the corresponding BINDINGS so the
                     // op dispatch and construction stay consistent everywhere.
                     if td.coll {
-                        let mut coll_defs = self.ctx.operator_defs
+                        let mut coll_defs = self
+                            .ctx
+                            .operator_defs
                             .get(&td.name)
                             .cloned()
                             .unwrap_or_default();
@@ -3972,9 +4595,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                                 params: vec![],
                                 pre: None,
                                 suf: None,
-                                impl_args: Some(
-                                    crate::ast::PropertyValue::Identifier(impl_name.to_string()),
-                                ),
+                                impl_args: Some(crate::ast::PropertyValue::Identifier(
+                                    impl_name.to_string(),
+                                )),
                                 impl_name: op.to_string(),
                                 trusted_axiom: false,
                                 span: None,
@@ -4001,55 +4624,57 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         }
                     }
                 }
-                TopLevel::Enum(e) => {
-                }
+                TopLevel::Enum(e) => {}
                 // 2026-07-30: Unwrap Export to register defn/txn/asm_fn params
                 // from exported definitions. Without this, emit_user_call can't
                 // find the parameter types and falls through to the non-defn path
                 // which doesn't insert inttoptr for Ptr args.
-                TopLevel::Export(e) => {
-                    match e.inner.as_ref() {
-                        TopLevel::Definition(d) => {
-                            let tys: Vec<Type> = d.parameters.iter().map(|(_, t)| t.clone()).collect();
-                            self.ctx.defn_params.insert(d.name.clone(), tys);
-                            let ret_tys = if !d.outputs.is_empty() {
-                                d.outputs.clone()
-                            } else if let Some(ref ot) = d.output_type {
-                                ot.all_types()
-                            } else {
-                                vec![]
-                            };
-                            self.ctx.defn_return_types.insert(d.name.clone(), ret_tys);
-                        }
-                        TopLevel::Transaction(t) => {
-                            let tys: Vec<Type> = t.parameters.iter().map(|(_, ty)| ty.clone()).collect();
-                            self.ctx.defn_params.insert(t.name.clone(), tys);
-                            let ret_tys = if !t.outputs.is_empty() {
-                                t.outputs.clone()
-                            } else if let Some(ref ot) = t.output_type {
-                                ot.all_types()
-                            } else {
-                                vec![]
-                            };
-                            self.ctx.defn_return_types.insert(t.name.clone(), ret_tys);
-                        }
-                        TopLevel::AsmFn(af) => {
-                            let tys: Vec<Type> = af.params.iter().map(|(_, t)| t.clone()).collect();
-                            self.ctx.defn_params.insert(af.name.clone(), tys);
-                            self.ctx.defn_return_types.insert(af.name.clone(), vec![af.ret_type.clone()]);
-                        }
-                        TopLevel::BadFn(bf) => {
-                            let tys: Vec<Type> = bf.params.iter().map(|(_, t)| t.clone()).collect();
-                            self.ctx.defn_params.insert(bf.name.clone(), tys);
-                            self.ctx.defn_return_types.insert(bf.name.clone(), vec![bf.ret_type.clone()]);
-                        }
-                        _ => {}
+                TopLevel::Export(e) => match e.inner.as_ref() {
+                    TopLevel::Definition(d) => {
+                        let tys: Vec<Type> = d.parameters.iter().map(|(_, t)| t.clone()).collect();
+                        self.ctx.defn_params.insert(d.name.clone(), tys);
+                        let ret_tys = if !d.outputs.is_empty() {
+                            d.outputs.clone()
+                        } else if let Some(ref ot) = d.output_type {
+                            ot.all_types()
+                        } else {
+                            vec![]
+                        };
+                        self.ctx.defn_return_types.insert(d.name.clone(), ret_tys);
                     }
-                }
+                    TopLevel::Transaction(t) => {
+                        let tys: Vec<Type> =
+                            t.parameters.iter().map(|(_, ty)| ty.clone()).collect();
+                        self.ctx.defn_params.insert(t.name.clone(), tys);
+                        let ret_tys = if !t.outputs.is_empty() {
+                            t.outputs.clone()
+                        } else if let Some(ref ot) = t.output_type {
+                            ot.all_types()
+                        } else {
+                            vec![]
+                        };
+                        self.ctx.defn_return_types.insert(t.name.clone(), ret_tys);
+                    }
+                    TopLevel::AsmFn(af) => {
+                        let tys: Vec<Type> = af.params.iter().map(|(_, t)| t.clone()).collect();
+                        self.ctx.defn_params.insert(af.name.clone(), tys);
+                        self.ctx
+                            .defn_return_types
+                            .insert(af.name.clone(), vec![af.ret_type.clone()]);
+                    }
+                    TopLevel::BadFn(bf) => {
+                        let tys: Vec<Type> = bf.params.iter().map(|(_, t)| t.clone()).collect();
+                        self.ctx.defn_params.insert(bf.name.clone(), tys);
+                        self.ctx
+                            .defn_return_types
+                            .insert(bf.name.clone(), vec![bf.ret_type.clone()]);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
- 
+
         // 2026-10-26: structural `obj`/TypeDef sizes are first cached while
         // their fields are registered in declaration order. A field whose own
         // type is registered later then contributes a provisional size, so the
@@ -4077,16 +4702,20 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Phase 1: Apply adaptive layout — eliminate Never fields, append cache slots.
         // Must run AFTER trigger_names is populated (above) to prevent trigger field elimination.
         {
-            let projection_usage = crate::analysis::transition_graph::compute_projection_usage(items);
-            self.apply_field_modes(items, &analysis.transition_graph.live_fields, &projection_usage);
+            let projection_usage =
+                crate::analysis::transition_graph::compute_projection_usage(items);
+            self.apply_field_modes(
+                items,
+                &analysis.transition_graph.live_fields,
+                &projection_usage,
+            );
         }
 
         // W001: Detect dead cache slots — allocated but no loop context (one-shot program).
         if !self.ctx.cache_slots.is_empty() {
             // Check if ANY transaction has bounded convergence (loop context)
             let has_loop_context = analysis.transition_graph.nodes.iter().any(|n| {
-                n.bounded_pre.is_some()
-                    && n.increments.as_ref().map_or(false, |i| i.delta > 0)
+                n.bounded_pre.is_some() && n.increments.as_ref().map_or(false, |i| i.delta > 0)
             });
             if !has_loop_context {
                 let field_list: Vec<String> = self.ctx.cache_slots.keys().cloned().collect();
@@ -4102,15 +4731,23 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Fold complex float constant expressions (e.g. const m0: Float = 4.0 * pi * pi)
         // into simple Expr::Float(f64) literals so the global emission path
         // produces valid LLVM IR instead of `constant float 0`.
-        let consts_snapshot: Vec<(String, (Type, Expr))> = self.ctx.constants.iter()
-            .map(|(k, v)| (k.clone(), v.clone())).collect();
+        let consts_snapshot: Vec<(String, (Type, Expr))> = self
+            .ctx
+            .constants
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         for (name, (ty, expr)) in consts_snapshot {
             // 2026-07-13: Expr::Float64 removed — all floats use Expr::Float.
             if ty == Type::float() || ty == Type::float64() {
                 // 2026-07-31: Phase 3 (§8.4-D4) — float const resolution via
                 // protocol membership instead of name matching.
-                if let Some(val) = try_eval_cfloat(&expr, &self.ctx.constants, &|t| self.is_protocol_member(t, "Float")) {
-                    self.ctx.constants.insert(name, (ty.clone(), Expr::Float(val)));
+                if let Some(val) = try_eval_cfloat(&expr, &self.ctx.constants, &|t| {
+                    self.is_protocol_member(t, "Float")
+                }) {
+                    self.ctx
+                        .constants
+                        .insert(name, (ty.clone(), Expr::Float(val)));
                 }
             }
         }
@@ -4121,9 +4758,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // (no emit_parallel_reactor). Per the never-faster contract a modifier
         // must never win — if the default parallel path is slower than seq,
         // that is a compiler bug to fix in the default, not a seq win.
-        let has_seq_modifier = txns.iter().any(|(_, t)| {
-            t.modifiers.iter().any(|m| m.name == "seq")
-        });
+        let has_seq_modifier = txns
+            .iter()
+            .any(|(_, t)| t.modifiers.iter().any(|m| m.name == "seq"));
         let dispatch_mode = if has_seq_modifier {
             DispatchMode::Sequential
         } else {
@@ -4150,7 +4787,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let sb = self.compute_state_size_bytes() as u64;
         self.ctx.state_size_bytes = sb;
         self.ctx.state_ptr_param = if sb > 0 {
-            format!("ptr noundef dereferenceable({}) noalias nocapture align 8 %state", sb)
+            format!(
+                "ptr noundef dereferenceable({}) noalias nocapture align 8 %state",
+                sb
+            )
         } else {
             "ptr noundef noalias nocapture align 8 %state".to_string()
         };
@@ -4185,7 +4825,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
 
         // Emit foreign declares inline (frgn_map is populated from the scan above)
         // Skip names that are also linked triggers — they'll be emitted as global variables below.
-        let trigger_linked_symbols: std::collections::HashSet<&str> = self.ctx.triggers.iter()
+        let trigger_linked_symbols: std::collections::HashSet<&str> = self
+            .ctx
+            .triggers
+            .iter()
             .filter_map(|(_, t)| match &t.address {
                 crate::ast::LinkRef::Linked(sym) => Some(sym.as_str()),
                 _ => None,
@@ -4202,16 +4845,23 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // declares these libc symbols with `nounwind` — a frgn import of the
         // same symbol emitted a SECOND declare with attribute set #6, which
         // LLVM rejects as a redefinition (getenv via `frgn getenv(...) from "c"`).
-        declared.extend([
-            "time", "atol", "getenv", "malloc", "free", "strlen", "realloc",
-        ].into_iter());
+        declared.extend(
+            [
+                "time", "atol", "getenv", "malloc", "free", "strlen", "realloc",
+            ]
+            .into_iter(),
+        );
         let mut frgn_sorted: Vec<(&String, &crate::ast::ForeignSignature)> =
             self.ctx.frgn_map.iter().collect();
         frgn_sorted.sort_by_key(|(name, _)| (*name).clone());
         for (name, sig) in frgn_sorted {
-            if trigger_linked_symbols.contains(name.as_str()) { continue; }
+            if trigger_linked_symbols.contains(name.as_str()) {
+                continue;
+            }
             // Dedup: skip if we already emitted a define for this foreign_name
-            if !declared.insert(&sig.name) { continue; }
+            if !declared.insert(&sig.name) {
+                continue;
+            }
             // 2026-09-23 (frgn-elimination round 2): the captured-environ
             // adapter block was DELETED — env.bv now calls the pure-Briev
             // briev_getenv_{briev,int}_impl walkers directly with the
@@ -4228,13 +4878,19 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 let first_ret = sig.result_type.return_type().expect("non-void frgn result");
                 self.frgn_abi_type(&first_ret)
             };
-            let param_tys: Vec<String> = sig.inputs.iter().map(|(_, t)| {
-                // 2026-07-26: Use protocol-driven LLVM type.
-                self.frgn_abi_type(t)
-            }).collect();
+            let param_tys: Vec<String> = sig
+                .inputs
+                .iter()
+                .map(|(_, t)| {
+                    // 2026-07-26: Use protocol-driven LLVM type.
+                    self.frgn_abi_type(t)
+                })
+                .collect();
             write!(out, "declare {} @{}(", ret_ty, sig.name).ok();
             for (pi, pt) in param_tys.iter().enumerate() {
-                if pi > 0 { write!(out, ", ").ok(); }
+                if pi > 0 {
+                    write!(out, ", ").ok();
+                }
                 write!(out, "{}", pt).ok();
             }
             writeln!(out, ") #6").ok();
@@ -4258,15 +4914,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // declare must be skipped or clang errors "invalid redefinition".
         // Signatures match the lane ABI:
         //   String ABI = ptr to [len: i64][bytes]; Int/Bool = i64; Float = float.
-        let defined: std::collections::HashSet<String> = items.iter().filter_map(|it| match it {
-            crate::ast::TopLevel::Definition(d) => Some(d.name.clone()),
-            crate::ast::TopLevel::Export(e) => match e.inner.as_ref() {
+        let defined: std::collections::HashSet<String> = items
+            .iter()
+            .filter_map(|it| match it {
                 crate::ast::TopLevel::Definition(d) => Some(d.name.clone()),
+                crate::ast::TopLevel::Export(e) => match e.inner.as_ref() {
+                    crate::ast::TopLevel::Definition(d) => Some(d.name.clone()),
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
-        }).collect();
-        
+            })
+            .collect();
+
         let mut declare = |out: &mut String, name: &str, ret: &str, args: &str| {
             if !defined.contains(name) {
                 writeln!(out, "declare {} @{}({}) #1", ret, name, args).ok();
@@ -4294,8 +4953,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // impossible (no realloc) — a bump past the end is a compile-time
         // warning + runtime trap to 0, matching a fixed-heap bare-metal model.
         if self.ctx.is_embedded {
-            writeln!(out, "@embedded_heap = private global [{} x i8] zeroinitializer",
-                self.ctx.arena_initial_size).ok();
+            writeln!(
+                out,
+                "@embedded_heap = private global [{} x i8] zeroinitializer",
+                self.ctx.arena_initial_size
+            )
+            .ok();
         }
 
         // 2026-07-08: Phase 3 — briev_rt.c wrapper function declarations
@@ -4327,10 +4990,26 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         writeln!(out, "declare i64 @briev_connect(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_send(i64, i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_recv(i64, i64, i64, i64) #1").ok();
-        writeln!(out, "declare i64 @briev_sendto(i64, i64, i64, i64, i64, i64) #1").ok();
-        writeln!(out, "declare i64 @briev_recvfrom(i64, i64, i64, i64, i64, i64) #1").ok();
-        writeln!(out, "declare i64 @briev_setsockopt(i64, i64, i64, i64, i64) #1").ok();
-        writeln!(out, "declare i64 @briev_getsockopt(i64, i64, i64, i64, i64) #1").ok();
+        writeln!(
+            out,
+            "declare i64 @briev_sendto(i64, i64, i64, i64, i64, i64) #1"
+        )
+        .ok();
+        writeln!(
+            out,
+            "declare i64 @briev_recvfrom(i64, i64, i64, i64, i64, i64) #1"
+        )
+        .ok();
+        writeln!(
+            out,
+            "declare i64 @briev_setsockopt(i64, i64, i64, i64, i64) #1"
+        )
+        .ok();
+        writeln!(
+            out,
+            "declare i64 @briev_getsockopt(i64, i64, i64, i64, i64) #1"
+        )
+        .ok();
         writeln!(out, "declare i64 @briev_shutdown(i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_mkdir(i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_rmdir(i64) #1").ok();
@@ -4343,7 +5022,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         writeln!(out, "declare i64 @briev_chown(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_umask(i64) #1").ok();
         writeln!(out, "declare i64 @briev_access(i64, i64) #1").ok();
-        writeln!(out, "declare i64 @briev_mmap(i64, i64, i64, i64, i64, i64) #1").ok();
+        writeln!(
+            out,
+            "declare i64 @briev_mmap(i64, i64, i64, i64, i64, i64) #1"
+        )
+        .ok();
         writeln!(out, "declare i64 @briev_munmap(i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_mprotect(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_brk(i64) #1").ok();
@@ -4371,30 +5054,25 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         if !defined.contains("exit_prog") {
             writeln!(out, "declare void @__exit(i64) #6").ok();
         }
-        writeln!(out, "declare i64 @briev_futex(i64, i64, i64, i64, i64, i64) #1").ok();
+        writeln!(
+            out,
+            "declare i64 @briev_futex(i64, i64, i64, i64, i64, i64) #1"
+        )
+        .ok();
         writeln!(out, "declare i64 @__ioctl__(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @__isatty__(i64) #1").ok();
-        if !defined.contains("print_str_raw") {
-            writeln!(out, "declare i64 @__print(ptr) #1").ok();
+        self.emit_print_runtime_declares(&mut out, &defined);
+        // 2026-08-13 (dynamic String slice): `s[a:b]` emits a byte-wise
+        // substring (the runtime's briev_str_substr; bounds clamp to [0,len]).
+        // Skipped when a `frgn briev_str_substr` import already declares it
+        // (lib/compiler/reader.bv does) — a duplicate `declare` is an LLVM
+        // redefinition error (surfaced in the main<->layout-keywords merge,
+        // c_driver_needs_state).
+        if !self.ctx.frgn_map.contains_key("briev_str_substr")
+            && !defined.contains("briev_str_substr")
+        {
+            writeln!(out, "declare ptr @briev_str_substr(ptr, i64, i64) #1").ok();
         }
-        // 2026-08-01 (B0): Print# intrinsic runtime symbol. The dead frgn
-        // declaration in lib/std/ffi/io.bv was removed (it declared a wrong
-        // symbol and a { i64, i64 } String type); the intrinsic owns this
-        // call site, so the backend declares the ABI: String = ptr to a
-        // length-prefixed [len][bytes] buffer.
-        if !defined.contains("print_str") {
-            writeln!(out, "declare i64 @__print_str(ptr) #1").ok();
-        }
-         // 2026-08-13 (dynamic String slice): `s[a:b]` emits a byte-wise
-         // substring (the runtime's briev_str_substr; bounds clamp to [0,len]).
-         // Skipped when a `frgn briev_str_substr` import already declares it
-         // (lib/compiler/reader.bv does) — a duplicate `declare` is an LLVM
-         // redefinition error (surfaced in the main<->layout-keywords merge,
-         // c_driver_needs_state).
-         if !self.ctx.frgn_map.contains_key("briev_str_substr")
-             && !defined.contains("briev_str_substr") {
-             writeln!(out, "declare ptr @briev_str_substr(ptr, i64, i64) #1").ok();
-         }
         // 2026-08-01 (B1): content equality for String operands. The compiler
         // emits a call to briev_str_eq(ptr, ptr) instead of `icmp eq ptr`
         // (address comparison) when both operands are String — see
@@ -4440,29 +5118,53 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-08-07 (Phase 7): typed mask select — an Int/Bool vector state
         // field (`[N x i64]`) masked into a new heap List buffer.
         if !defined.contains("briev_mask_select64") {
-            writeln!(out, "declare i64 @briev_mask_select64(ptr, i64, ptr, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_mask_select64(ptr, i64, ptr, i64) #1"
+            )
+            .ok();
         }
         // 2026-08-22 (Phase 6a): i8-mask variants — a Bool[N] state column is
         // [N x i8]; reading it as i64 walked past the column (garbage/segfault).
         if !defined.contains("briev_mask_select64_i8mask") {
-            writeln!(out, "declare i64 @briev_mask_select64_i8mask(ptr, i64, ptr, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_mask_select64_i8mask(ptr, i64, ptr, i64) #1"
+            )
+            .ok();
         }
         // 2026-08-07 (Phase 7): Float (f32) mask select — a `Float[N]` vector
         // state field masked into a new heap List<Float> (i64 bit-pattern
         // slots, matching how heap List<Float> stores floats).
         if !defined.contains("briev_mask_select_f32") {
-            writeln!(out, "declare i64 @briev_mask_select_f32(ptr, i64, ptr, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_mask_select_f32(ptr, i64, ptr, i64) #1"
+            )
+            .ok();
         }
         if !defined.contains("briev_mask_select_f32_i8mask") {
-            writeln!(out, "declare i64 @briev_mask_select_f32_i8mask(ptr, i64, ptr, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_mask_select_f32_i8mask(ptr, i64, ptr, i64) #1"
+            )
+            .ok();
         }
         // 2026-08-22 (Phase 6b): contiguous range slice over a state column —
         // `data[lo:hi]` (and the full-copy forms `data[:]` / `data[...]`).
         if !defined.contains("briev_slice_range64") {
-            writeln!(out, "declare i64 @briev_slice_range64(ptr, i64, i64, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_slice_range64(ptr, i64, i64, i64) #1"
+            )
+            .ok();
         }
         if !defined.contains("briev_slice_range_f32") {
-            writeln!(out, "declare i64 @briev_slice_range_f32(ptr, i64, i64, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_slice_range_f32(ptr, i64, i64, i64) #1"
+            )
+            .ok();
         }
         // 2026-10-09 (T2a): strided range slice over a state column —
         // `data[lo:hi:step]`. Element i is source[lo + i*step]; builds a
@@ -4470,10 +5172,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // gather produces), so downstream `Index`/foreach consumers are
         // unchanged. Unblocks the old strided-slice `panic!`.
         if !defined.contains("briev_slice_strided64") {
-            writeln!(out, "declare i64 @briev_slice_strided64(ptr, i64, i64, i64, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_slice_strided64(ptr, i64, i64, i64, i64) #1"
+            )
+            .ok();
         }
         if !defined.contains("briev_slice_strided_f32") {
-            writeln!(out, "declare i64 @briev_slice_strided_f32(ptr, i64, i64, i64, i64) #1").ok();
+            writeln!(
+                out,
+                "declare i64 @briev_slice_strided_f32(ptr, i64, i64, i64, i64) #1"
+            )
+            .ok();
         }
         // 2026-08-01 (Phase 3): CLI argv capture. The emitted main stores
         // its argc/argv into these globals; the runtime argv helpers
@@ -4514,7 +5224,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Format string constants for benchmark intrinsics (print_int#, print_float#)
 
         // Error message for read_file# — returned as Err's String payload
-        writeln!(out, "@STR_READFILE_ERR = private unnamed_addr constant [15 x i8] c\"file not found\\00\"").ok();
+        writeln!(
+            out,
+            "@STR_READFILE_ERR = private unnamed_addr constant [15 x i8] c\"file not found\\00\""
+        )
+        .ok();
         // Declare libc functions used by direct-libc intrinsics
         // 2026-07-05: dso_local prevents LLVM globalopt from treating
         // @stdout as null (LLVM 18 assumes external globals without
@@ -4522,7 +5236,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // function-attributor deduces fprintf(stdout) has a null pointer
         // argument → UB → entire body is dead → knucleotide prints nothing.
         writeln!(out, "@stdout = external dso_local global ptr").ok();
-
 
         // 2026-07-15: Async dispatch runtime functions
         // 2026-07-15: Removed conflicting POSIX declares (getuid, sched_yield,
@@ -4532,12 +5245,26 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for (name, trg) in &self.ctx.triggers {
             if let crate::ast::LinkRef::Linked(sym) = &trg.address {
                 let store_ty = trg_llvm_storage_ty(&trg.ty, self.ctx.type_universe.as_ref());
-                let align = if store_ty == "i64" { 8 } else if store_ty == "i32" { 4 } else { 1 };
-                writeln!(out, "@{} = external global {}, align {}", sym, store_ty, align).ok();
+                let align = if store_ty == "i64" {
+                    8
+                } else if store_ty == "i32" {
+                    4
+                } else {
+                    1
+                };
+                writeln!(
+                    out,
+                    "@{} = external global {}, align {}",
+                    sym, store_ty, align
+                )
+                .ok();
                 // Warn if a linked trigger symbol is also declared as a frgn function
                 if self.ctx.frgn_map.contains_key(sym.as_str()) {
-                    eprintln!("warning: '{}' is declared as a frgn function but used as a @ link trigger. \
-                               Use a volatile C variable for triggers, or built-in sources like @stdin#.", sym);
+                    eprintln!(
+                        "warning: '{}' is declared as a frgn function but used as a @ link trigger. \
+                               Use a volatile C variable for triggers, or built-in sources like @stdin#.",
+                        sym
+                    );
                 }
                 // Warn on unsupported trigger types
                 // 2026-07-31: Phase 3 (§8.4) — supported-set via protocol
@@ -4547,14 +5274,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     || self.is_protocol_member(&trg.ty, "Int")
                     || self.is_protocol_member(&trg.ty, "UInt");
                 if !supported {
-                    eprintln!("warning:{}:{}: trigger '{}' has type {:?} which the LLVM runtime does not fully support; using i8 storage",
+                    eprintln!(
+                        "warning:{}:{}: trigger '{}' has type {:?} which the LLVM runtime does not fully support; using i8 storage",
                         trg.span.as_ref().map(|s| s.line).unwrap_or(0),
                         trg.span.as_ref().map(|s| s.column).unwrap_or(0),
-                        name, trg.ty);
+                        name,
+                        trg.ty
+                    );
                 }
             }
         }
-        if self.ctx.triggers.iter().any(|(_, t)| matches!(t.address, crate::ast::LinkRef::Linked(_))) {
+        if self
+            .ctx
+            .triggers
+            .iter()
+            .any(|(_, t)| matches!(t.address, crate::ast::LinkRef::Linked(_)))
+        {
             writeln!(out).ok();
         }
 
@@ -4624,7 +5359,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let canonical = alias_map.get(name).cloned().unwrap_or_else(|| name.clone());
             if canonical != *name {
                 let llvm_ty = self.llvm_type(ty);
-                writeln!(out, "@{} = alias {}, {}* @{}", name, llvm_ty, llvm_ty, canonical).ok();
+                writeln!(
+                    out,
+                    "@{} = alias {}, {}* @{}",
+                    name, llvm_ty, llvm_ty, canonical
+                )
+                .ok();
                 continue;
             }
             let llvm_ty = self.llvm_type(ty);
@@ -4635,7 +5375,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match inner.as_ref() {
                     Expr::Float(f) => float_to_llvm_str(-*f, &llvm_ty),
                     Expr::Decimal(n) => format!("-{}", n),
-                    _ => if *ty == Type::float() { "0.0".to_string() } else { "0".to_string() },
+                    _ => {
+                        if *ty == Type::float() {
+                            "0.0".to_string()
+                        } else {
+                            "0".to_string()
+                        }
+                    }
                 },
                 // 2026-10-19 (fix: const String global was `ptr null` → every
                 // read of the const dereferenced null and segfaulted): a
@@ -4651,7 +5397,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // @str.N` is a well-typed aliasing global.
                 Expr::Quoted(s) => {
                     let lit = String::from_utf8_lossy(s).into_owned();
-                    let si = self.ctx.string_constants.iter()
+                    let si = self
+                        .ctx
+                        .string_constants
+                        .iter()
                         .position(|c| *c == lit)
                         .unwrap_or(0);
                     format!("@str.{}", si)
@@ -4662,17 +5411,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     } else {
                         "0".to_string()
                     }
-                },
+                }
             };
             // 2026-09-06 (Phase 8): the section(".name") placement on the
             // global constant (a define attribute on data — where the bytes
             // live). Sorted iteration keeps emission deterministic.
-            let const_section = self.ctx.constant_sections.get(name)
+            let const_section = self
+                .ctx
+                .constant_sections
+                .get(name)
                 .map(|s| format!(" section \"{}\"", s))
                 .unwrap_or_default();
-            writeln!(out, "@{} = constant {} {}{}", name, llvm_ty, val_str, const_section).ok();
+            writeln!(
+                out,
+                "@{} = constant {} {}{}",
+                name, llvm_ty, val_str, const_section
+            )
+            .ok();
         }
-        if !self.ctx.constants.is_empty() { writeln!(out).ok(); }
+        if !self.ctx.constants.is_empty() {
+            writeln!(out).ok();
+        }
 
         // 2026-08-09 (init kind, Phase 2): runtime-seeded invariants — mutable
         // globals, seeded once in the pre-reactor phase (emit_init_state /
@@ -4684,10 +5443,20 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for name in &sorted_inits {
             let init = &self.ctx.inits[name];
             let llvm_ty = protocol_llvm_type(&init.ty, self.ctx.type_universe.as_ref());
-            let zero = if llvm_ty == "float" { "0.0" } else if llvm_ty == "double" { "0.0" } else if llvm_ty == "ptr" { "null" } else { "0" };
+            let zero = if llvm_ty == "float" {
+                "0.0"
+            } else if llvm_ty == "double" {
+                "0.0"
+            } else if llvm_ty == "ptr" {
+                "null"
+            } else {
+                "0"
+            };
             writeln!(out, "@{} = global {} {}", name, llvm_ty, zero).ok();
         }
-        if !self.ctx.inits.is_empty() { writeln!(out).ok(); }
+        if !self.ctx.inits.is_empty() {
+            writeln!(out).ok();
+        }
 
         // 2026-10-17 (plain storage): plain lets are module-scope mutable
         // globals — same lowering shape as the `init` invariants (mutable,
@@ -4705,7 +5474,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for name in &sorted_plain {
             let (ty, init) = &self.ctx.plain_global_types[name];
             let llvm_ty = self.plain_global_llvm_type(ty);
-            let zero = if llvm_ty == "float" { "0.0" } else if llvm_ty == "double" { "0.0" } else if llvm_ty == "ptr" { "null" } else { "0" };
+            let zero = if llvm_ty == "float" {
+                "0.0"
+            } else if llvm_ty == "double" {
+                "0.0"
+            } else if llvm_ty == "ptr" {
+                "null"
+            } else {
+                "0"
+            };
             let literal = match init {
                 Some(Expr::Decimal(n)) => Some(n.to_string()),
                 Some(Expr::Float(f)) => Some(float_to_llvm_str(*f, &llvm_ty)),
@@ -4717,7 +5494,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let val_str = literal.unwrap_or_else(|| zero.to_string());
             writeln!(out, "@{} = global {} {}", name, llvm_ty, val_str).ok();
         }
-        if !self.ctx.plain_global_types.is_empty() { writeln!(out).ok(); }
+        if !self.ctx.plain_global_types.is_empty() {
+            writeln!(out).ok();
+        }
 
         self.declare_state_type(&mut out);
         // 2026-10-21 (plain-context experiment): a separate stack aggregate
@@ -4740,7 +5519,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // allocates it on the stack as an alloca and passes it to all
         // internal functions as a noalias nocapture parameter. This
         // guarantees SROA promotes all fields to scalar registers.
-        writeln!(out, "; %State is allocated on the stack in main() as %state = alloca %State").ok();
+        writeln!(
+            out,
+            "; %State is allocated on the stack in main() as %state = alloca %State"
+        )
+        .ok();
         writeln!(out).ok();
 
         // Emit string constants in C-compatible format: [i64 length][chars\0]
@@ -4751,7 +5534,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             writeln!(out, "@str.{} = private unnamed_addr constant <{{ i64, [{} x i8] }}> <{{ i64 {}, [{} x i8] c\"{}\\00\" }}>, align 8",
                 si, len + 1, len, len + 1, escaped).ok();
         }
-        if !self.ctx.string_constants.is_empty() { writeln!(out).ok(); }
+        if !self.ctx.string_constants.is_empty() {
+            writeln!(out).ok();
+        }
         // 2026-08-06 (Phase 7): raw-bytes Data literals (`#b"..."`) — exact
         // bytes via `\xHH`, no NUL terminator, no lossy re-encoding.
         for (si, bytes) in self.ctx.byte_constants.iter().enumerate() {
@@ -4760,17 +5545,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             writeln!(out, "@bstr.{} = private unnamed_addr constant <{{ i64, [{} x i8] }}> <{{ i64 {}, [{} x i8] [{}] }}>, align 8",
                 si, bytes.len(), bytes.len(), bytes.len(), elems.join(", ")).ok();
         }
-        if !self.ctx.byte_constants.is_empty() { writeln!(out).ok(); }
+        if !self.ctx.byte_constants.is_empty() {
+            writeln!(out).ok();
+        }
 
         // 2026-08-07 (Phase 7): Boolean mask constants for `data[mask]` —
         // i64 slots (0/1), matching the uniform %State slot width of
         // Bool-vector state fields and the runtime helper's ABI.
         for (mi, mask) in self.ctx.mask_constants.iter().enumerate() {
             let elems: Vec<String> = mask.iter().map(|b| format!("i64 {}", *b as i64)).collect();
-            writeln!(out, "@bmask.{} = private unnamed_addr constant [{} x i64] [{}]",
-                mi, mask.len(), elems.join(", ")).ok();
+            writeln!(
+                out,
+                "@bmask.{} = private unnamed_addr constant [{} x i64] [{}]",
+                mi,
+                mask.len(),
+                elems.join(", ")
+            )
+            .ok();
         }
-        if !self.ctx.mask_constants.is_empty() { writeln!(out).ok(); }
+        if !self.ctx.mask_constants.is_empty() {
+            writeln!(out).ok();
+        }
 
         // 2026-08-15 (coll plan §3.3 #4): @ll_empty_list DELETED — a shared
         // sentinel aliases across every `[]` user (a `<-` push on one list
@@ -4791,8 +5586,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-10-22: reserve the complete TBAA prefix AFTER structural type
         // registration and BEFORE function emission. One module allocator
         // replaces fixed !50/!99/!100 reservations, including fixpoint reruns.
-        self.ctx.metadata_counter = self.ctx.type_universe.as_ref()
-            .map_or(5, |universe| universe.types.len()) + 1;
+        self.ctx.metadata_counter = self
+            .ctx
+            .type_universe
+            .as_ref()
+            .map_or(5, |universe| universe.types.len())
+            + 1;
         self.ctx.state_alias_scope_md = reserve_metadata_ids(&mut self.ctx.metadata_counter, 1);
         self.ctx.pending_metadata.clear();
         let mut range_meta: Vec<String> = Vec::new();
@@ -4826,10 +5625,19 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // exports on a clean C ABI. Previously ALL regular defns
                     // were emitted with state (the blanket rule), which forced
                     // every export calling one to carry %state too.
-                    let needs_state = self.ctx.defn_needs_state.get(&d.name).copied().unwrap_or(true);
+                    let needs_state = self
+                        .ctx
+                        .defn_needs_state
+                        .get(&d.name)
+                        .copied()
+                        .unwrap_or(true);
                     self.emit_definition(
                         &mut out,
-                        DefinitionEmitSpec { definition: d, needs_state, hir_body: hir_body_for(&d.name) },
+                        DefinitionEmitSpec {
+                            definition: d,
+                            needs_state,
+                            hir_body: hir_body_for(&d.name),
+                        },
                     );
                     writeln!(out).ok();
                 }
@@ -4839,7 +5647,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         // export ABI analysis (transitive call graph). Pure
                         // exports keep a clean C ABI; exports calling any
                         // Briev defn carry %state.
-                        let needs_state = self.ctx.export_needs_state.get(&d.name).copied()
+                        let needs_state = self
+                            .ctx
+                            .export_needs_state
+                            .get(&d.name)
+                            .copied()
                             .unwrap_or(false);
                         let internal = self.top_level_export_internal_symbol(d);
                         self.definition_symbol_override = internal.clone();
@@ -4853,12 +5665,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         );
                         writeln!(out).ok();
                         if let Some(symbol) = internal {
-                            self.emit_top_level_export_wrapper(
-                                &mut out,
-                                d,
-                                &symbol,
-                                needs_state,
-                            );
+                            self.emit_top_level_export_wrapper(&mut out, d, &symbol, needs_state);
                             writeln!(out).ok();
                         }
                     }
@@ -4953,7 +5760,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 } else {
                     self.emit_transaction(
                         &mut out,
-                        TransactionEmitSpec { txn, hir_body: hir_body_for(&txn.name) },
+                        TransactionEmitSpec {
+                            txn,
+                            hir_body: hir_body_for(&txn.name),
+                        },
                         name,
                         &mut range_meta,
                     );
@@ -4961,7 +5771,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             } else {
                 self.emit_transaction(
                     &mut out,
-                    TransactionEmitSpec { txn, hir_body: hir_body_for(&txn.name) },
+                    TransactionEmitSpec {
+                        txn,
+                        hir_body: hir_body_for(&txn.name),
+                    },
                     name,
                     &mut range_meta,
                 );
@@ -4971,7 +5784,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Precondition functions (skip callable txns — no ptr)
         for (name, txn) in &txns {
             let has_output = txn.output_type.is_some() || !txn.outputs.is_empty();
-            if !txn.is_reactive && (!txn.parameters.is_empty() || has_output) { continue; }
+            if !txn.is_reactive && (!txn.parameters.is_empty() || has_output) {
+                continue;
+            }
             // 2026-10-07 (view-surface liveness): the `pre_*` helper is
             // emitted CODE of the txn — a dead txn's helper is dead too.
             // This loop had no liveness gate while the main emission loop
@@ -4988,7 +5803,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         }
         // Async body functions — simple pre→fire wrapper for worker threads
         for (name, txn) in &txns {
-            if self.async_txn_names.iter().any(|n| n.as_str() == name.as_str()) && !self.is_lightweight_async {
+            if self
+                .async_txn_names
+                .iter()
+                .any(|n| n.as_str() == name.as_str())
+                && !self.is_lightweight_async
+            {
                 // 2026-10-07 (view-surface liveness): same gate as the main
                 // loop — a dead async txn's worker wrapper is dead code;
                 // async roots `wait_for_trigger`, not the txn name, so
@@ -5020,7 +5840,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // external triggers) have their final counter values stored directly
         // as O(1) stores inside enum dispatch case arms. Non-all-internal
         // chains emit a fused composed function.
-        let all_internal_counter: HashMap<String, (usize, i64)> = analysis.region_analyzer.composed_chains
+        let all_internal_counter: HashMap<String, (usize, i64)> = analysis
+            .region_analyzer
+            .composed_chains
             .iter()
             .filter(|cc| cc.all_internal)
             .filter_map(|cc| {
@@ -5029,9 +5851,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 let bound = analysis.region_analyzer.iteration_bound_of(&cc.chain[0])? as i64;
                 let base = format!("{}_fused_txn", cc.chain.join("_"));
                 let fn_name = if let Some(ref tv) = cc.trigger_values {
-                    let suffix: String = tv.iter().map(|(_, v)| v.to_string()).collect::<Vec<_>>().join("_");
+                    let suffix: String = tv
+                        .iter()
+                        .map(|(_, v)| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join("_");
                     format!("{}_trg_{}", base, suffix)
-                } else { base };
+                } else {
+                    base
+                };
                 Some((fn_name, (ci, bound)))
             })
             .collect();
@@ -5042,9 +5870,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for cc in &composed_chains {
             let base = format!("{}_fused_txn", cc.chain.join("_"));
             let fused_name = if let Some(ref tv) = cc.trigger_values {
-                let variant_suffix: String = tv.iter()
+                let variant_suffix: String = tv
+                    .iter()
                     .map(|(_, v)| v.to_string())
-                    .collect::<Vec<_>>().join("_");
+                    .collect::<Vec<_>>()
+                    .join("_");
                 format!("{}_trg_{}", base, variant_suffix)
             } else {
                 base.clone()
@@ -5052,7 +5882,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             composed_fn_map.insert(cc.chain[0].clone(), fused_name.clone());
             if let Some(ref tv) = cc.trigger_values {
                 for (_, val) in tv {
-                    composed_by_trig.entry(cc.chain[0].clone()).or_default().push((*val, fused_name.clone()));
+                    composed_by_trig
+                        .entry(cc.chain[0].clone())
+                        .or_default()
+                        .push((*val, fused_name.clone()));
                 }
             }
             // Skip emitting fused function for all-internal chains — the
@@ -5072,7 +5905,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
 
         // Emit cell channel globals and persistent cell thread functions
         // 2026-07-19: Sorted for deterministic IR.
-        let mut persistent_cells: Vec<crate::ast::CellDef> = self.ctx.cell_defs.values()
+        let mut persistent_cells: Vec<crate::ast::CellDef> = self
+            .ctx
+            .cell_defs
+            .values()
             .filter(|c| c.is_persistent)
             .cloned()
             .collect();
@@ -5118,32 +5954,42 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // equality before the synthetic exit is synthesized from it.
         let program_conv = if crate::backend::hir_emit_enabled() {
             let hir_graph = crate::hir::transition_graph::HirReactorTransitionGraph::build(
-                &analysis.hir, None, &[],
+                &analysis.hir,
+                None,
+                &[],
             );
             let ast = crate::analysis::loop_shape::program_convergence(
-                graph, items, explicit_exit.is_some(),
+                graph,
+                items,
+                explicit_exit.is_some(),
             );
             let h = crate::hir::loop_shape::program_convergence(
-                &analysis.hir, &hir_graph, explicit_exit.is_some(),
+                &analysis.hir,
+                &hir_graph,
+                explicit_exit.is_some(),
             );
             debug_assert_eq!(h, ast, "HIR/AST program-convergence drift");
             h
         } else {
-            crate::analysis::loop_shape::program_convergence(
-                graph, items, explicit_exit.is_some(),
-            )
+            crate::analysis::loop_shape::program_convergence(graph, items, explicit_exit.is_some())
         };
         self.ctx.has_natural_exit = program_conv.has_natural_exit;
         if explicit_exit.is_none() && !program_conv.counter_ge_bounds.is_empty() {
             // 2026-08-08 (two-node reactor fix): the bound is already an Expr
             // (Decimal for literal bounds, Identifier for field/const bounds).
-            let combined = program_conv.counter_ge_bounds.into_iter()
-                .map(|(counter, bound)| Expr::BinaryOp(
-                    crate::ast::BinaryOpKind::Ge,
-                    Box::new(Expr::Identifier(counter)),
-                    Box::new(bound.to_expr()),
-                ))
-                .reduce(|a, b| Expr::BinaryOp(crate::ast::BinaryOpKind::And, Box::new(a), Box::new(b)))
+            let combined = program_conv
+                .counter_ge_bounds
+                .into_iter()
+                .map(|(counter, bound)| {
+                    Expr::BinaryOp(
+                        crate::ast::BinaryOpKind::Ge,
+                        Box::new(Expr::Identifier(counter)),
+                        Box::new(bound.to_expr()),
+                    )
+                })
+                .reduce(|a, b| {
+                    Expr::BinaryOp(crate::ast::BinaryOpKind::And, Box::new(a), Box::new(b))
+                })
                 .unwrap();
             self.ctx.exit_condition = Some(Box::new(combined));
         }
@@ -5217,40 +6063,47 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         // (build_loop_shapes mirrors this gate); a missing shape
                         // falls through to the conservative reactor path.
                         // See docs/plans/2026-07-31-frontend-driven-dispatch.md §6.5.
-                         match analysis.loop_shapes.get(&node.name) {
-                             None => {
-                                 // 2026-08-06 (diagnostics): a scheduled free
-                                 // whose last consumer has no bounded-loop shape
-                                 // is never emitted (the reactive path has no
-                                 // sound free point) — the field leaks.
-                                 if let Some(fields) = analysis
-                                     .global_lifetime
-                                     .free_after
-                                     .get(&node.name)
-                                 {
-                                     for f in fields {
-                                         self.warnings.push(format!(
-                                             "warning: heap state field '{}' is provably \
+                        match analysis.loop_shapes.get(&node.name) {
+                            None => {
+                                // 2026-08-06 (diagnostics): a scheduled free
+                                // whose last consumer has no bounded-loop shape
+                                // is never emitted (the reactive path has no
+                                // sound free point) — the field leaks.
+                                if let Some(fields) =
+                                    analysis.global_lifetime.free_after.get(&node.name)
+                                {
+                                    for f in fields {
+                                        self.warnings.push(format!(
+                                            "warning: heap state field '{}' is provably \
                                               dead after '{}' but that node has no \
                                               bounded-loop shape — the planned free has no \
                                               sound emission point and the field will leak",
-                                             f, node.name
-                                         ));
-                                     }
-                                 }
-                                 false
-                             }
+                                            f, node.name
+                                        ));
+                                    }
+                                }
+                                false
+                            }
                             Some(shape) => {
                                 // 2026-07-31: Swan-song hoist consumed from the
                                 // frontend analysis (swan_song.rs) — the stripped
                                 // body + post-loop hoist pair replaces the backend
                                 // hoist_terminating_guard body re-walk.
-                                let (txn_body, post_hoist) = match analysis.swan_songs.get(&node.name) {
-                                    Some((stripped, hoisted)) => (stripped.clone(), hoisted.clone()),
-                                    None => (reactive_txns[0].1.body.clone(), Vec::new()),
-                                };
+                                let (txn_body, post_hoist) =
+                                    match analysis.swan_songs.get(&node.name) {
+                                        Some((stripped, hoisted)) => {
+                                            (stripped.clone(), hoisted.clone())
+                                        }
+                                        None => (reactive_txns[0].1.body.clone(), Vec::new()),
+                                    };
                                 let folded = self.emit_folded_loop_shape(
-                                    &mut out, &analysis, node, counter_idx, shape, &txn_body, post_hoist,
+                                    &mut out,
+                                    &analysis,
+                                    node,
+                                    counter_idx,
+                                    shape,
+                                    &txn_body,
+                                    post_hoist,
                                     reactive_txns[0].1.contract.watchdog.as_ref(),
                                 );
                                 // 2026-08-06 (diagnostics): the fold was
@@ -5259,10 +6112,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                                 // fall through to the reactive emission, which
                                 // has no sound free point, so the fields leak.
                                 if !folded {
-                                    if let Some(fields) = analysis
-                                        .global_lifetime
-                                        .free_after
-                                        .get(&node.name)
+                                    if let Some(fields) =
+                                        analysis.global_lifetime.free_after.get(&node.name)
                                     {
                                         for f in fields {
                                             self.warnings.push(format!(
@@ -5281,7 +6132,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     }
                 }
             }
-        } else { false };
+        } else {
+            false
+        };
 
         // Emit the trg step() function if the program has trigger declarations.
         // The step() function recomputes dependent variables in topological order
@@ -5302,10 +6155,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // fold happens, so the warning lives here, mode-independent.
         // Library/shared-lib shims legitimately export plain txns as symbols,
         // so those two modes keep silence.
-        if !self.ctx.library_mode
-            && !self.ctx.is_shared_lib
-            && !txns.is_empty()
-        {
+        if !self.ctx.library_mode && !self.ctx.is_shared_lib && !txns.is_empty() {
             Self::warn_undispatched_txns(items, &txns, &self.ctx.live_defns, &mut self.warnings);
         }
 
@@ -5316,18 +6166,25 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 self.warnings.push("info: program fully precomputed — no runtime loop emitted. If this is unexpected, increase --optimize-budget or add frgn calls for observability.".into());
                 self.emit_precomputed_main(&mut out, final_values);
                 true
-            } else { false };
+            } else {
+                false
+            };
 
             if !precomputed {
                 // A004: warn when a runtime loop has zero observability
                 if !txns.is_empty() {
-                    let any_has_ffi = txns.iter().any(|(_, t)|
-                        t.body.iter().any(|s| crate::analysis::transition_graph::statement_contains_ffi(s)));
+                    let any_has_ffi = txns.iter().any(|(_, t)| {
+                        t.body
+                            .iter()
+                            .any(|s| crate::analysis::transition_graph::statement_contains_ffi(s))
+                    });
                     if !any_has_ffi {
                         self.warnings.push(
                             "warning: emitted runtime loop has no observable side effects — \
                              LLVM may eliminate it entirely. Add frgn calls for output, \
-                             or this program may run without producing results.".into());
+                             or this program may run without producing results."
+                                .into(),
+                        );
                     }
                 }
                 // Multi-txn all-pure folding: when NO triggers exist and ALL
@@ -5349,35 +6206,52 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // drives each counter independently.
                 let mut shared_counter: Option<String> = None;
                 let mut shared_bound: Option<String> = None;
+                // 2026-11-16 (per-worker arena plan, Stage 2a): a pinned program
+                // must run one tick per worker, which the single folded loop
+                // cannot express — fall through to the threaded reactor.
                 let mut multi_foldable = enumerable.is_none()
                     && !has_wake_triggers
-                    && !self.async_txn_names.is_empty();
+                    && !self.async_txn_names.is_empty()
+                    && !self.ctx.thread_plan.is_pinned();
                 if multi_foldable {
                     for name in &self.async_txn_names {
                         let node = graph.nodes.iter().find(|n| n.name == *name);
-                        let Some(node) = node else { multi_foldable = false; break };
+                        let Some(node) = node else {
+                            multi_foldable = false;
+                            break;
+                        };
                         // 2026-10-17 (reactive-only dispatch): an `async txn`
                         // callable is invoked, never dispatched — it neither
                         // joins nor vetoes the multi-txn fold.
-                        if !node.is_reactive { continue; }
+                        if !node.is_reactive {
+                            continue;
+                        }
                         let (Some(bp), Some(inc)) = (&node.bounded_pre, &node.increments) else {
-                            multi_foldable = false; break;
+                            multi_foldable = false;
+                            break;
                         };
                         if inc.var != bp.var {
                             // The fold drives a counter with `counter + 1`;
                             // a txn that increments a different field than
                             // it counts can't be folded.
-                            multi_foldable = false; break;
+                            multi_foldable = false;
+                            break;
                         }
                         match &shared_counter {
                             None => shared_counter = Some(bp.var.clone()),
                             Some(c) if *c == bp.var => {}
-                            Some(_) => { multi_foldable = false; break; }
+                            Some(_) => {
+                                multi_foldable = false;
+                                break;
+                            }
                         }
                         match &shared_bound {
                             None => shared_bound = Some(bp.bound_var.clone()),
                             Some(b) if *b == bp.bound_var => {}
-                            Some(_) => { multi_foldable = false; break; }
+                            Some(_) => {
+                                multi_foldable = false;
+                                break;
+                            }
                         }
                     }
                 }
@@ -5387,15 +6261,21 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         if let Some(node) = graph.nodes.iter().find(|n| n.name == *txn_name) {
                             // 2026-10-17 (reactive-only dispatch): callables
                             // never join the fold.
-                            if !node.is_reactive { continue; }
+                            if !node.is_reactive {
+                                continue;
+                            }
                             if let Some(ref bp) = node.bounded_pre {
                                 if let Some(&cidx) = self.ctx.field_index_map.get(&bp.var) {
                                     let tidx = self.ctx.field_index_map.get(&bp.bound_var).copied();
                                     let tcname = if tidx.is_none() {
                                         if self.ctx.constants.contains_key(&bp.bound_var) {
                                             Some(bp.bound_var.clone())
-                                        } else { None }
-                                    } else { None };
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
                                     multi_fold_params.insert(txn_name.clone(), FoldParam {
                                         counter_idx: cidx,
                                         bound_field_idx: tidx,
@@ -5410,38 +6290,62 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 }
                 if !multi_fold_params.is_empty() {
                     // EmitAdaptive: multi-txn pure fold
-                    let txn_list: Vec<&str> = multi_fold_params.keys().map(|s| s.as_str()).collect();
-                    self.warnings.push(format!("info: txns [{}] dispatched via multi-txn pure fold (all-internal, async)", txn_list.join(", ")));
+                    let txn_list: Vec<&str> =
+                        multi_fold_params.keys().map(|s| s.as_str()).collect();
+                    self.warnings.push(format!(
+                        "info: txns [{}] dispatched via multi-txn pure fold (all-internal, async)",
+                        txn_list.join(", ")
+                    ));
                     // 2026-08-08: the fold drives ONE shared counter to ONE
                     // bound (the gate above guarantees every async txn shares
                     // them). Derive the driver from the shared fields so the
                     // loop actually runs to the bound instead of `counter < 1`.
-                    let mf_counter = shared_counter.as_ref()
+                    let mf_counter = shared_counter
+                        .as_ref()
                         .and_then(|c| self.ctx.field_index_map.get(c.as_str()).copied())
                         .unwrap_or(0);
-                    let (mf_bound_field, mf_bound_const, mf_bound_literal) = match shared_bound.as_ref() {
-                        Some(b) if self.ctx.field_index_map.contains_key(b.as_str()) => {
-                            (self.ctx.field_index_map.get(b.as_str()).copied(), None, None)
-                        }
-                        Some(b) => {
-                            // A shared literal bound is recorded as a synthetic
-                            // name in bound_var? No — bp.bound_var is the field/
-                            // const NAME for field/const bounds; a literal bound
-                            // is carried by bp.bound_literal on each node. Recover
-                            // it from the first FoldParam.
-                            (None, Some(b.as_str()), None)
-                        }
-                        None => (None, None, None),
-                    };
-                    let mf_bound_literal = mf_bound_literal.or_else(|| {
-                        multi_fold_params.values().find_map(|p| p.bound_literal)
-                    });
+                    let (mf_bound_field, mf_bound_const, mf_bound_literal) =
+                        match shared_bound.as_ref() {
+                            Some(b) if self.ctx.field_index_map.contains_key(b.as_str()) => (
+                                self.ctx.field_index_map.get(b.as_str()).copied(),
+                                None,
+                                None,
+                            ),
+                            Some(b) => {
+                                // A shared literal bound is recorded as a synthetic
+                                // name in bound_var? No — bp.bound_var is the field/
+                                // const NAME for field/const bounds; a literal bound
+                                // is carried by bp.bound_literal on each node. Recover
+                                // it from the first FoldParam.
+                                (None, Some(b.as_str()), None)
+                            }
+                            None => (None, None, None),
+                        };
+                    let mf_bound_literal = mf_bound_literal
+                        .or_else(|| multi_fold_params.values().find_map(|p| p.bound_literal));
                     self.reject_bootstrap_off_ssa("folded multi-txn dispatch");
-                    self.emit_folded_multi_main(&mut out, &txns, &[], &HashMap::new(), &multi_fold_params,
-                        &HashMap::new(), mf_counter, mf_bound_field, mf_bound_const, mf_bound_literal, None, None, None, false);
+                    self.emit_folded_multi_main(
+                        &mut out,
+                        &txns,
+                        &[],
+                        &HashMap::new(),
+                        &multi_fold_params,
+                        &HashMap::new(),
+                        mf_counter,
+                        mf_bound_field,
+                        mf_bound_const,
+                        mf_bound_literal,
+                        None,
+                        None,
+                        None,
+                        false,
+                    );
                     self.emit_thread_pool_metadata(&mut out);
-                } else if dispatch_mode == DispatchMode::Sequential && !txns.is_empty()
-                    && enumerable.is_none() && !has_wake_triggers
+                } else if dispatch_mode == DispatchMode::Sequential
+                    && !txns.is_empty()
+                    && enumerable.is_none()
+                    && !has_wake_triggers
+                    && !self.ctx.thread_plan.is_pinned()
                 {
                     // EmitAdaptive: SSA register pipeline (or modulo-switch dispatch)
                     // 2026-07-09: Removed bounded_pre + increments requirement —
@@ -5455,228 +6359,286 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     let boot = self.bootstrap_txn_of(items);
                     self.emit_ssa_main(&mut out, &txns, false, boot);
                 } else if let Some(ref enum_sizes) = enumerable {
-                // Enumerable triggers — emit switch-dispatch main
-                // This path handles triggers with small compile-time-known value sets.
-                // We emit a single @main that samples triggers once, then switch
-                // dispatches to per-value folded loops.
-                self.reject_bootstrap_off_ssa("enumerable-trigger switch dispatch");
+                    // Enumerable triggers — emit switch-dispatch main
+                    // This path handles triggers with small compile-time-known value sets.
+                    // We emit a single @main that samples triggers once, then switch
+                    // dispatches to per-value folded loops.
+                    self.reject_bootstrap_off_ssa("enumerable-trigger switch dispatch");
 
-                // Build per-txn folding params for all enum-candidate txns.
-                // Each trigger-gated bounded-counter txn gets its own folded
-                // loop in the case arm.  Multi-txn programs (e.g. async_counters)
-                // need this to converge in O(1) ticks instead of one increment
-                // per tick via reactor_tick.
-                let enum_fold_params: HashMap<String, FoldParam> = {
-                    let mut m = HashMap::new();
-                    for txn_name in &enum_txn_names {
-                        if let Some(node) = graph.nodes.iter().find(|n| n.name == *txn_name) {
-                            if let Some(ref bp) = node.bounded_pre {
-                                if let Some(&cidx) = self.ctx.field_index_map.get(&bp.var) {
-                                    let tidx = self.ctx.field_index_map.get(&bp.bound_var).copied();
-                                    let tcname = if tidx.is_none() {
-                                        if self.ctx.constants.contains_key(&bp.bound_var) {
-                                            Some(bp.bound_var.clone())
-                                        } else { None }
-                                    } else { None };
-                                    let inc = node.increments.as_ref();
-                                    if inc.map_or(false, |i| i.var == bp.var && i.delta > 0) {
-                                        m.insert(txn_name.clone(), FoldParam {
+                    // Build per-txn folding params for all enum-candidate txns.
+                    // Each trigger-gated bounded-counter txn gets its own folded
+                    // loop in the case arm.  Multi-txn programs (e.g. async_counters)
+                    // need this to converge in O(1) ticks instead of one increment
+                    // per tick via reactor_tick.
+                    let enum_fold_params: HashMap<String, FoldParam> = {
+                        let mut m = HashMap::new();
+                        for txn_name in &enum_txn_names {
+                            if let Some(node) = graph.nodes.iter().find(|n| n.name == *txn_name) {
+                                if let Some(ref bp) = node.bounded_pre {
+                                    if let Some(&cidx) = self.ctx.field_index_map.get(&bp.var) {
+                                        let tidx =
+                                            self.ctx.field_index_map.get(&bp.bound_var).copied();
+                                        let tcname = if tidx.is_none() {
+                                            if self.ctx.constants.contains_key(&bp.bound_var) {
+                                                Some(bp.bound_var.clone())
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                        let inc = node.increments.as_ref();
+                                        if inc.map_or(false, |i| i.var == bp.var && i.delta > 0) {
+                                            m.insert(txn_name.clone(), FoldParam {
                                             counter_idx: cidx,
                                             bound_field_idx: tidx,
                                             bound_const_name: tcname,
                                             is_decreasing: bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing,
                                             bound_literal: bp.bound_literal,
                                         });
-                }
-            }
-        }
-    }
-                    }
-                    m
-                };
-                // Companion map: pure-body flag + total value for each foldable txn.
-                // When a txn is pure and its bound is a compile-time constant, the
-                // case arm can store the total directly instead of looping 50M times.
-                let enum_fold_pure: HashMap<String, (bool, Option<i64>)> = {
-                    let mut m = HashMap::new();
-                    for txn_name in &enum_txn_names {
-                        if let Some(node) = graph.nodes.iter().find(|n| n.name == *txn_name) {
-                            let total_val = node.bounded_pre.as_ref().and_then(|bp| {
-                                self.ctx.field_initializers.get(&bp.bound_var)
-                                    .and_then(|e| e.as_ref())
-                                    .and_then(|e| if let Expr::Decimal(n) = e { Some(*n) } else { None })
-                                    .or_else(|| {
-                                        self.ctx.constants.get(&bp.bound_var).and_then(|(_, e)| {
-                                            if let Expr::Decimal(n) = e { Some(*n) } else { None }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        m
+                    };
+                    // Companion map: pure-body flag + total value for each foldable txn.
+                    // When a txn is pure and its bound is a compile-time constant, the
+                    // case arm can store the total directly instead of looping 50M times.
+                    let enum_fold_pure: HashMap<String, (bool, Option<i64>)> = {
+                        let mut m = HashMap::new();
+                        for txn_name in &enum_txn_names {
+                            if let Some(node) = graph.nodes.iter().find(|n| n.name == *txn_name) {
+                                let total_val = node.bounded_pre.as_ref().and_then(|bp| {
+                                    self.ctx
+                                        .field_initializers
+                                        .get(&bp.bound_var)
+                                        .and_then(|e| e.as_ref())
+                                        .and_then(|e| {
+                                            if let Expr::Decimal(n) = e {
+                                                Some(*n)
+                                            } else {
+                                                None
+                                            }
                                         })
-                                    })
-                            });
-                            m.insert(txn_name.clone(), (node.is_pure_body, total_val));
+                                        .or_else(|| {
+                                            self.ctx.constants.get(&bp.bound_var).and_then(
+                                                |(_, e)| {
+                                                    if let Expr::Decimal(n) = e {
+                                                        Some(*n)
+                                                    } else {
+                                                        None
+                                                    }
+                                                },
+                                            )
+                                        })
+                                });
+                                m.insert(txn_name.clone(), (node.is_pure_body, total_val));
+                            }
+                        }
+                        m
+                    };
+                    // Legacy single-txn params for chain composition (unchanged).
+                    // 2026-10-17 (reactive-only dispatch): count reactive
+                    // nodes/txns — callable `txn`s are not reactor steps.
+                    let (enum_ci, enum_ti, enum_tcn): (usize, Option<usize>, Option<String>) =
+                        if reactive_nodes.len() == 1 && reactive_txns.len() == 1 {
+                            if let Some(bp) = reactive_nodes[0].bounded_pre.as_ref() {
+                                if let Some(&cidx) = self.ctx.field_index_map.get(&bp.var) {
+                                    let tidx = self.ctx.field_index_map.get(&bp.bound_var).copied();
+                                    let tcname = if tidx.is_none() {
+                                        if self.ctx.constants.contains_key(&bp.bound_var) {
+                                            Some(bp.bound_var.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    (cidx, tidx, tcname)
+                                } else {
+                                    (0, None, None)
+                                }
+                            } else {
+                                (0, None, None)
+                            }
+                        } else {
+                            (0, None, None)
+                        };
+
+                    // Emit the reactor_tick function (needed for residual fallback path)
+                    match dispatch_mode {
+                        DispatchMode::Parallel => {
+                            self.build_write_masks(items);
+                            self.emit_parallel_reactor(&mut out, &txns, &fusable);
+                        }
+                        DispatchMode::Sequential => {
+                            self.emit_reactor(&mut out, &txns, &fusable);
                         }
                     }
-                    m
-                };
-                // Legacy single-txn params for chain composition (unchanged).
-                // 2026-10-17 (reactive-only dispatch): count reactive
-                // nodes/txns — callable `txn`s are not reactor steps.
-                let (enum_ci, enum_ti, enum_tcn): (usize, Option<usize>, Option<String>) = if reactive_nodes.len() == 1 && reactive_txns.len() == 1 {
-                    if let Some(bp) = reactive_nodes[0].bounded_pre.as_ref() {
-                        if let Some(&cidx) = self.ctx.field_index_map.get(&bp.var) {
-                            let tidx = self.ctx.field_index_map.get(&bp.bound_var).copied();
-                            let tcname = if tidx.is_none() {
-                                if self.ctx.constants.contains_key(&bp.bound_var) {
-                                    Some(bp.bound_var.clone())
-                                } else { None }
-                            } else { None };
-                            (cidx, tidx, tcname)
-                        } else { (0, None, None) }
-                    } else { (0, None, None) }
-                } else { (0, None, None) };
 
-                // Emit the reactor_tick function (needed for residual fallback path)
-                match dispatch_mode {
-                    DispatchMode::Parallel => {
-                        self.build_write_masks(items);
-                        self.emit_parallel_reactor(&mut out, &txns, &fusable);
+                    // Emit enum main with switch dispatch
+                    let enum_tcn_ref = enum_tcn.as_deref();
+                    let composed_fn = txns
+                        .first()
+                        .and_then(|(n, _)| composed_fn_map.get(n))
+                        .map(|s| s.as_str());
+                    let composed_trig_ref: Option<&HashMap<String, Vec<(i64, String)>>> =
+                        if !composed_by_trig.is_empty() {
+                            Some(&composed_by_trig)
+                        } else {
+                            None
+                        };
+                    let all_int_ref: Option<&HashMap<String, (usize, i64)>> =
+                        if all_internal_counter.is_empty() {
+                            None
+                        } else {
+                            Some(&all_internal_counter)
+                        };
+                    // Declare __rt_wait for wake-triggered programs.
+                    // trg owns its runtime — the compiler emits the declare implicitly.
+                    // EmitAdaptive: enum dispatch
+                    self.warnings.push(format!(
+                        "info: program dispatched via enum trigger dispatch ({} trigger keys)",
+                        enum_keys.len()
+                    ));
+                    self.reject_bootstrap_off_ssa("enum trigger dispatch");
+                    if has_wake_triggers {
+                        writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
                     }
-                    DispatchMode::Sequential => {
-                        self.emit_reactor(&mut out, &txns, &fusable);
-                    }
-                }
+                    self.reject_bootstrap_off_ssa("folded enum-txn dispatch");
+                    self.emit_folded_multi_main(
+                        &mut out,
+                        &txns,
+                        enum_sizes,
+                        &enum_keys,
+                        &enum_fold_params,
+                        &enum_fold_pure,
+                        enum_ci,
+                        enum_ti,
+                        enum_tcn_ref,
+                        enum_fold_params.values().find_map(|p| p.bound_literal),
+                        composed_fn,
+                        composed_trig_ref,
+                        all_int_ref,
+                        has_wake_triggers,
+                    );
 
-                // Emit enum main with switch dispatch
-                let enum_tcn_ref = enum_tcn.as_deref();
-                let composed_fn = txns.first()
-                    .and_then(|(n, _)| composed_fn_map.get(n))
-                    .map(|s| s.as_str());
-                let composed_trig_ref: Option<&HashMap<String, Vec<(i64, String)>>> = if !composed_by_trig.is_empty() {
-                    Some(&composed_by_trig)
-                } else { None };
-                let all_int_ref: Option<&HashMap<String, (usize, i64)>> = if all_internal_counter.is_empty() {
-                    None
-                } else {
-                    Some(&all_internal_counter)
-                };
-                // Declare __rt_wait for wake-triggered programs.
-                // trg owns its runtime — the compiler emits the declare implicitly.
-                // EmitAdaptive: enum dispatch
-                self.warnings.push(format!("info: program dispatched via enum trigger dispatch ({} trigger keys)", enum_keys.len()));
-                self.reject_bootstrap_off_ssa("enum trigger dispatch");
-                if has_wake_triggers {
-                    writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
-                }
-                self.reject_bootstrap_off_ssa("folded enum-txn dispatch");
-                self.emit_folded_multi_main(
-                    &mut out,
-                    &txns,
-                    enum_sizes,
-                    &enum_keys,
-                    &enum_fold_params,
-                    &enum_fold_pure,
-                    enum_ci,
-                    enum_ti,
-                    enum_tcn_ref,
-                    enum_fold_params.values().find_map(|p| p.bound_literal),
-                    composed_fn,
-                    composed_trig_ref,
-                    all_int_ref,
-                    has_wake_triggers,
-                );
-
-                if has_wake_triggers {
-                    self.emit_wake_metadata(&mut out);
-                }
-                self.emit_thread_pool_metadata(&mut out);
-            } else if self.ctx.library_mode {
-                self.emit_library_shim(&mut out, &txns);
-            } else if self.ctx.is_shared_lib {
-                // 2026-07-19: Shared library mode — emit export wrappers and
-                // reactive entry points. No main loop, no reactor tick.
-                self.emit_shared_lib_exports(&mut out, items);
-            } else if !txns.is_empty()
-                && self.async_txn_names.is_empty()
-                && self.ctx.mmio_fields.is_empty()
-            {
-                // EmitSequentialSsa: Direct phi-based loop — no async, no MMIO.
-                // Inline all txn bodies directly in main() instead of reactor_tick.
-                // Triggers are sampled inline via lazy emit_trg_load, wake path uses
-                // __rt_wait between ticks. LLVM promotes %State fields to phi nodes.
-                if has_wake_triggers {
-                    writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
-                }
-                self.warnings.push(
-                    "info: program dispatched via direct SSA loop".into()
-                );
-                let boot = self.bootstrap_txn_of(items);
-                self.fun.txn_counter = 0;
-                self.fun.within_counter = 0;
-                self.emit_ssa_main(&mut out, &txns, has_wake_triggers, boot);
-            } else if !txns.is_empty() {
-                // reactor loop fallback — only reached for async dispatch or MMIO
-                // (all other programs go through EmitSequentialSsa direct SSA loop above)
-                self.reject_bootstrap_off_ssa("reactor loop");
-                self.warnings.push(format!("info: program dispatched via reactor loop ({})", match dispatch_mode {
-                    DispatchMode::Parallel => "parallel thread pool",
-                    DispatchMode::Sequential => "sequential tick loop",
-                }));
-                match dispatch_mode {
-                    DispatchMode::Parallel => {
-                        self.build_write_masks(items);
-                        self.emit_parallel_reactor(&mut out, &txns, &fusable);
+                    if has_wake_triggers {
+                        self.emit_wake_metadata(&mut out);
                     }
-                    DispatchMode::Sequential => {
-                        self.emit_reactor(&mut out, &txns, &fusable);
+                    self.emit_thread_pool_metadata(&mut out);
+                } else if self.ctx.library_mode {
+                    self.emit_library_shim(&mut out, &txns);
+                } else if self.ctx.is_shared_lib {
+                    // 2026-07-19: Shared library mode — emit export wrappers and
+                    // reactive entry points. No main loop, no reactor tick.
+                    self.emit_shared_lib_exports(&mut out, items);
+                } else if !txns.is_empty() && self.ctx.thread_plan.is_pinned() {
+                    // 2026-11-16 (per-worker arena plan, Stage 2a): explicit
+                    // workers. A pinned program cannot use the direct SSA loop
+                    // (it inlines every node into @main, which has no worker
+                    // identity), so it takes the reactor path with one tick per
+                    // worker and the runtime's thread pool.
+                    self.reject_bootstrap_off_ssa("threaded reactor loop");
+                    self.emit_threaded_dispatch(
+                        &mut out,
+                        &txns,
+                        &fusable,
+                        has_wake_triggers,
+                    );
+                } else if !txns.is_empty()
+                    && self.async_txn_names.is_empty()
+                    && self.ctx.mmio_fields.is_empty()
+                {
+                    // EmitSequentialSsa: Direct phi-based loop — no async, no MMIO.
+                    // Inline all txn bodies directly in main() instead of reactor_tick.
+                    // Triggers are sampled inline via lazy emit_trg_load, wake path uses
+                    // __rt_wait between ticks. LLVM promotes %State fields to phi nodes.
+                    if has_wake_triggers {
+                        writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
                     }
-                }
-                // Main
-                if has_wake_triggers {
-                    writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
-                }
-                self.fun.txn_counter = 0;
-                self.fun.within_counter = 0;
-                // 2026-10-17 (readiness gate 1): async nodes' watchdog specs
-                // for the phase gate (emit_async_phase needs &mut self, so
-                // the contracts ride in ctx).
-                self.ctx.async_phase_watchdogs = txns
-                    .iter()
-                    .filter(|(n, t)| t.is_reactive && self.async_txn_names.contains(n))
-                    .map(|(n, t)| (n.clone(), t.contract.watchdog.clone()))
-                    .collect();
-                if !self.ctx.no_main {
-                    self.emit_main(&mut out, has_wake_triggers);
-                }
-                // Wake trigger metadata
-                if has_wake_triggers {
-                    self.emit_wake_metadata(&mut out);
-                }
-                self.emit_thread_pool_metadata(&mut out);
-            } else if self.bootstrap_txn.is_some() {
-                // 2026-09-14 (machine-entry plan): a bootstrap with no
-                // reactor nodes is the pure-kernel shape — every transition
-                // is machine-serviced. The SSA main still applies: authored
-                // body at the head, dispatch loop parks in wfi (vectored-
-                // only frontier — the trap wakes the core).
-                let boot = self.bootstrap_txn_of(items);
-                self.fun.txn_counter = 0;
-                self.fun.within_counter = 0;
-                self.warnings.push(
+                    self.warnings
+                        .push("info: program dispatched via direct SSA loop".into());
+                    let boot = self.bootstrap_txn_of(items);
+                    self.fun.txn_counter = 0;
+                    self.fun.within_counter = 0;
+                    self.emit_ssa_main(&mut out, &txns, has_wake_triggers, boot);
+                } else if !txns.is_empty() {
+                    // reactor loop fallback — only reached for async dispatch or MMIO
+                    // (all other programs go through EmitSequentialSsa direct SSA loop above)
+                    self.reject_bootstrap_off_ssa("reactor loop");
+                    self.warnings.push(format!(
+                        "info: program dispatched via reactor loop ({})",
+                        match dispatch_mode {
+                            DispatchMode::Parallel => "parallel thread pool",
+                            DispatchMode::Sequential => "sequential tick loop",
+                        }
+                    ));
+                    match dispatch_mode {
+                        DispatchMode::Parallel => {
+                            self.build_write_masks(items);
+                            self.emit_parallel_reactor(&mut out, &txns, &fusable);
+                        }
+                        DispatchMode::Sequential => {
+                            self.emit_reactor(&mut out, &txns, &fusable);
+                        }
+                    }
+                    // Main
+                    if has_wake_triggers {
+                        writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
+                    }
+                    self.fun.txn_counter = 0;
+                    self.fun.within_counter = 0;
+                    // 2026-10-17 (readiness gate 1): async nodes' watchdog specs
+                    // for the phase gate (emit_async_phase needs &mut self, so
+                    // the contracts ride in ctx).
+                    self.ctx.async_phase_watchdogs = txns
+                        .iter()
+                        .filter(|(n, t)| t.is_reactive && self.async_txn_names.contains(n))
+                        .map(|(n, t)| (n.clone(), t.contract.watchdog.clone()))
+                        .collect();
+                    if !self.ctx.no_main {
+                        self.emit_main(&mut out, has_wake_triggers);
+                    }
+                    // Wake trigger metadata
+                    if has_wake_triggers {
+                        self.emit_wake_metadata(&mut out);
+                    }
+                    self.emit_thread_pool_metadata(&mut out);
+                } else if self.bootstrap_txn.is_some() {
+                    // 2026-09-14 (machine-entry plan): a bootstrap with no
+                    // reactor nodes is the pure-kernel shape — every transition
+                    // is machine-serviced. The SSA main still applies: authored
+                    // body at the head, dispatch loop parks in wfi (vectored-
+                    // only frontier — the trap wakes the core).
+                    let boot = self.bootstrap_txn_of(items);
+                    self.fun.txn_counter = 0;
+                    self.fun.within_counter = 0;
+                    self.warnings.push(
                     "info: pure-kernel program — reactor parks in wfi; all transitions are machine-serviced".into(),
                 );
-                self.emit_ssa_main(&mut out, &txns, false, boot);
-            } else {
-        writeln!(out, "define void @reactor_tick({}) local_unnamed_addr #2 {{", self.ctx.state_ptr_param).ok();
-        self.ctx.has_reactor_tick = true;
-                writeln!(out, "  entry:").ok();
-                writeln!(out, "  ret void").ok();
-                writeln!(out, "}}").ok();
-                writeln!(out).ok();
-                // Main
-                self.fun.txn_counter = 0;
-                self.fun.within_counter = 0;
-                if !self.ctx.no_main {
-                    self.emit_main(&mut out, false);
+                    self.emit_ssa_main(&mut out, &txns, false, boot);
+                } else {
+                    writeln!(
+                        out,
+                        "define void @reactor_tick({}) local_unnamed_addr #2 {{",
+                        self.ctx.state_ptr_param
+                    )
+                    .ok();
+                    self.ctx.has_reactor_tick = true;
+                    writeln!(out, "  entry:").ok();
+                    writeln!(out, "  ret void").ok();
+                    writeln!(out, "}}").ok();
+                    writeln!(out).ok();
+                    // Main
+                    self.fun.txn_counter = 0;
+                    self.fun.within_counter = 0;
+                    if !self.ctx.no_main {
+                        self.emit_main(&mut out, false);
+                    }
                 }
-            }
             }
         }
 
@@ -5685,9 +6647,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // emission. Drained in a loop — a specialization's own body may call
         // another generic, enqueuing more. The emitted-set dedups, so this
         // terminates (a finite set of (defn, concrete-args) instantiations).
-        while let Some((mangled, base, subst)) =
-            self.ctx.pending_defn_specializations.pop()
-        {
+        while let Some((mangled, base, subst)) = self.ctx.pending_defn_specializations.pop() {
             self.emit_specialized_definition(&mut out, &mangled, &base, &subst);
             writeln!(out).ok();
         }
@@ -5708,15 +6668,16 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // live_fields is body/contract-driven and knows nothing about
                 // web bindings, so filter them out of the "dead" diagnostics
                 // (the store is NOT eliminated; the message would be a lie).
-                let dead_fields: Vec<&String> = node.write_set.iter()
+                let dead_fields: Vec<&String> = node
+                    .write_set
+                    .iter()
                     .filter(|f| !graph.live_fields.contains(*f))
                     .filter(|f| !self.ctx.view_bound_fields.contains(*f))
                     .collect();
 
                 if !dead_fields.is_empty() {
-                    let dead_list: Vec<String> = dead_fields.iter()
-                        .map(|f| format!("'{}'", f))
-                        .collect();
+                    let dead_list: Vec<String> =
+                        dead_fields.iter().map(|f| format!("'{}'", f)).collect();
                     if node.is_effectively_pure {
                         // Folded txn — these stores are genuinely eliminated
                         self.warnings.push(format!(
@@ -5740,22 +6701,38 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 if node.is_effectively_pure {
                     let inc = node.increments.as_ref().unwrap();
                     let bp = node.bounded_pre.as_ref().unwrap();
-                    let total_str = self.ctx.constants.get(&bp.bound_var)
-                        .and_then(|(_, e)| if let Expr::Decimal(n) = e { Some(n.to_string()) } else { None })
-                        .or_else(|| self.ctx.field_initializers.get(&bp.bound_var)
-                            .and_then(|e| e.as_ref())
-                            .and_then(|e| if let Expr::Decimal(n) = e { Some(n.to_string()) } else { None }));
+                    let total_str = self
+                        .ctx
+                        .constants
+                        .get(&bp.bound_var)
+                        .and_then(|(_, e)| {
+                            if let Expr::Decimal(n) = e {
+                                Some(n.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| {
+                            self.ctx
+                                .field_initializers
+                                .get(&bp.bound_var)
+                                .and_then(|e| e.as_ref())
+                                .and_then(|e| {
+                                    if let Expr::Decimal(n) = e {
+                                        Some(n.to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                        });
                     let iterations_msg = match &total_str {
                         Some(s) => format!(" — {} iterations replaced by single store", s),
                         None => String::new(),
                     };
-                    let dead_list: Vec<String> = dead_fields.iter()
-                        .map(|f| format!("'{}'", f))
-                        .collect();
-                    let mut msg = format!(
-                        "info: txn '{}' folded to O(1){}",
-                        node.name, iterations_msg,
-                    );
+                    let dead_list: Vec<String> =
+                        dead_fields.iter().map(|f| format!("'{}'", f)).collect();
+                    let mut msg =
+                        format!("info: txn '{}' folded to O(1){}", node.name, iterations_msg,);
                     msg.push_str(&format!(
                         "\n  info: counter '{}' retains its store (the only live write)",
                         inc.var,
@@ -5808,11 +6785,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // A future optimization could emit vector <4 x float> divisions and use
         // SLP vectorization to pack scalar ops into vector vrcpps calls.
         writeln!(out, "attributes #0 = {{").ok();
-        writeln!(out, "    mustprogress nofree norecurse nosync nounwind memory(readwrite)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree norecurse nosync nounwind memory(readwrite)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
-        writeln!(out, "attributes #1 = {{ nocallback nofree nosync nounwind willreturn memory(readwrite) }}").ok();
-        writeln!(out, "attributes #2 = {{ mustprogress nofree norecurse nosync nounwind memory(readwrite) }}").ok();
-        writeln!(out, "attributes #3 = {{ nofree norecurse nosync nounwind memory(readwrite) }}").ok();
+        writeln!(
+            out,
+            "attributes #1 = {{ nocallback nofree nosync nounwind willreturn memory(readwrite) }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "attributes #2 = {{ mustprogress nofree norecurse nosync nounwind memory(readwrite) }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "attributes #3 = {{ nofree norecurse nosync nounwind memory(readwrite) }}"
+        )
+        .ok();
         // 2026-07-27: SLP hazard attribute variants #4/#5 removed — manual SLP
         // vector emission is disabled (counter.rs), so there's no conflict with
         // LLVM's auto-vectorizer. All functions use #0 or #3 without disable-slp.
@@ -5829,7 +6822,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-07-04: #7 = memory(read) for @pre_* functions.
         // LLVM 18+ uses lowercase access kinds: memory(read) not memory(readonly).
         writeln!(out, "attributes #7 = {{").ok();
-        writeln!(out, "    mustprogress nofree norecurse nosync nounwind willreturn memory(read)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree norecurse nosync nounwind willreturn memory(read)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-07-04: #8 = argmemonly variant of #0 for definitions/callable txns.
         // Briev functions only access memory through pointer arguments (%state).
@@ -5838,7 +6835,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // redundant loads across call boundaries.
         // Not used for reactive txns (they may read @link trigger globals).
         writeln!(out, "attributes #8 = {{").ok();
-        writeln!(out, "    mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-07-27: #9 = memory(readwrite) for @main.
         // Main calls FFI functions (__print_int, __print_float, __print_str) that
@@ -5850,14 +6851,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // collision with clang-generated bitcode attributes (#0-#8)
         // during LTO merging (llvm-link renumbers but keeps #9).
         writeln!(out, "attributes #9 = {{").ok();
-        writeln!(out, "    nofree norecurse nosync nounwind memory(readwrite)").ok();
+        writeln!(
+            out,
+            "    nofree norecurse nosync nounwind memory(readwrite)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-07-04: #10 = argmem:read + willreturn for @pre_* functions.
         // Precondition functions only read state through %state and never
         // access trigger globals. Combines the benefits of #7 (memory(read))
         // and #8 (memory(argmem: readwrite)).
         writeln!(out, "attributes #10 = {{").ok();
-        writeln!(out, "    mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: read)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: read)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-07-27: #11 = argmem:readwrite for reactive txns after cold-path
         // outlining. When FFI-containing guard blocks are outlined into separate
@@ -5865,13 +6874,21 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Unlike #8, does NOT include willreturn — reactive txns may loop forever
         // if their convergence condition is never met (though all benchmarks converge).
         writeln!(out, "attributes #11 = {{").ok();
-        writeln!(out, "    mustprogress nofree norecurse nosync nounwind memory(argmem: readwrite)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree norecurse nosync nounwind memory(argmem: readwrite)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-07-27: #12 = argmem:readwrite for reactor_tick when all txns are
         // FFI-free after outlining. Includes willreturn because the reactor loop
         // always converges (all txns converge).
         writeln!(out, "attributes #12 = {{").ok();
-        writeln!(out, "    mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-09-09 (Family C, briev-native runtime): #13 = full
         // memory(readwrite) for definitions whose body derefs RAW ADDRESSES
@@ -5884,7 +6901,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // miscompiled every string iteration. High-numbered per the #9 LTO
         // convention.
         writeln!(out, "attributes #13 = {{").ok();
-        writeln!(out, "    mustprogress nofree nosync nounwind willreturn memory(readwrite)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree nosync nounwind willreturn memory(readwrite)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-09-23 (term_guard_value -O3 collapse): #14 = noreturn for
         // __exit — its SysCall#(231 exit_group) never returns, but #13's
@@ -5893,7 +6914,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // main (empty output, exit 232). noreturn tells LLVM the call never
         // returns; the reachable-unreachable terminator is then consistent.
         writeln!(out, "attributes #14 = {{").ok();
-        writeln!(out, "    mustprogress nofree nosync nounwind noreturn memory(readwrite)").ok();
+        writeln!(
+            out,
+            "    mustprogress nofree nosync nounwind noreturn memory(readwrite)"
+        )
+        .ok();
         writeln!(out, "}}").ok();
         // 2026-10-25: may-trap/halt defns. No willreturn: an unused call is observable.
         // 2026-11-04: emit this group as IR (the old escaped-newline comment
@@ -5929,7 +6954,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             writeln!(out, "!2 = !{{!\"Bool\", !0}}").ok();
             writeln!(out, "!3 = !{{!\"Char\", !0}}").ok();
             writeln!(out, "!4 = !{{!\"String\", !0}}").ok();
-                writeln!(out, "!5 = !{{!\"Float\", !0}}").ok();
+            writeln!(out, "!5 = !{{!\"Float\", !0}}").ok();
         }
         // 2026-07-04: StateAliasScope — a distinct !{} node used by !noalias
         // metadata on Ptr<T> volatile load/store instructions.  This scope
@@ -5939,30 +6964,51 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-10-22: allocate this node after the TBAA prefix at module
         // entry; ranges and loops use the same monotonic allocator. A fixed
         // ID cannot remain disjoint from an unbounded type universe.
-        writeln!(out, "!{} = distinct !{{}} ; StateAliasScope", self.ctx.state_alias_scope_md).ok();
+        writeln!(
+            out,
+            "!{} = distinct !{{}} ; StateAliasScope",
+            self.ctx.state_alias_scope_md
+        )
+        .ok();
 
         // Build optimization report if requested
         if self.ctx.optimize_report {
-            self.report_lines.push("=== Optimization Report ===".to_string());
-            self.report_lines.push(format!("Optimize budget: {}", self.ctx.optimize_budget));
+            self.report_lines
+                .push("=== Optimization Report ===".to_string());
+            self.report_lines
+                .push(format!("Optimize budget: {}", self.ctx.optimize_budget));
             let enum_count = enumerable.as_ref().map(|e| e.len()).unwrap_or(0);
-            self.report_lines.push(format!("Triggers found: {} (enumerable: {})", self.ctx.trigger_names.len(), enum_count));
+            self.report_lines.push(format!(
+                "Triggers found: {} (enumerable: {})",
+                self.ctx.trigger_names.len(),
+                enum_count
+            ));
             if let Some(ref sizes) = enumerable {
                 let mut total_combos: u64 = 1;
                 self.report_lines.push("".to_string());
-                self.report_lines.push("Trigger variable value sets:".to_string());
+                self.report_lines
+                    .push("Trigger variable value sets:".to_string());
                 for (tn, sz) in sizes {
                     let s = sz.unwrap_or(0);
                     self.report_lines.push(format!("  {}: {} values", tn, s));
                     total_combos = total_combos.saturating_mul(s);
                 }
-                self.report_lines.push(format!("Total combinations: {}", total_combos));
+                self.report_lines
+                    .push(format!("Total combinations: {}", total_combos));
                 if total_combos <= self.ctx.optimize_budget {
-                    self.report_lines.push(format!("  ✅ Within budget ({} ≤ {})", total_combos, self.ctx.optimize_budget));
-                    self.report_lines.push("  → Switch-dispatch enumeration enabled".to_string());
+                    self.report_lines.push(format!(
+                        "  ✅ Within budget ({} ≤ {})",
+                        total_combos, self.ctx.optimize_budget
+                    ));
+                    self.report_lines
+                        .push("  → Switch-dispatch enumeration enabled".to_string());
                 } else {
-                    self.report_lines.push(format!("  ❌ Exceeds budget ({} > {})", total_combos, self.ctx.optimize_budget));
-                    self.report_lines.push("  → Standard reactor path used".to_string());
+                    self.report_lines.push(format!(
+                        "  ❌ Exceeds budget ({} > {})",
+                        total_combos, self.ctx.optimize_budget
+                    ));
+                    self.report_lines
+                        .push("  → Standard reactor path used".to_string());
                 }
 
                 // Size estimation when --optimize-size is set
@@ -5971,56 +7017,92 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     self.report_lines.push("Size estimation:".to_string());
                     let bytes_per_combo: u64 = 80; // approximate bytes per switch case + folded loop
                     let base_estimate: u64 = 5000;
-                    let enum_estimate = base_estimate + total_combos.saturating_mul(bytes_per_combo);
-                    self.report_lines.push(format!("  Base binary (standard reactor): ~{} KB", base_estimate / 1024));
-                    self.report_lines.push(format!("  With {} enumerated combos: ~{} KB", total_combos, enum_estimate / 1024));
+                    let enum_estimate =
+                        base_estimate + total_combos.saturating_mul(bytes_per_combo);
+                    self.report_lines.push(format!(
+                        "  Base binary (standard reactor): ~{} KB",
+                        base_estimate / 1024
+                    ));
+                    self.report_lines.push(format!(
+                        "  With {} enumerated combos: ~{} KB",
+                        total_combos,
+                        enum_estimate / 1024
+                    ));
                     if enum_estimate <= byte_limit {
-                        self.report_lines.push(format!("  ✅ Enumeration fits within {} KB limit", byte_limit / 1024));
-                        self.report_lines.push(format!("  Recommended budget: {}", total_combos));
+                        self.report_lines.push(format!(
+                            "  ✅ Enumeration fits within {} KB limit",
+                            byte_limit / 1024
+                        ));
+                        self.report_lines
+                            .push(format!("  Recommended budget: {}", total_combos));
                     } else {
-                        self.report_lines.push(format!("  ❌ Enumeration exceeds {} KB limit", byte_limit / 1024));
+                        self.report_lines.push(format!(
+                            "  ❌ Enumeration exceeds {} KB limit",
+                            byte_limit / 1024
+                        ));
                         let max_fit: u64 = if bytes_per_combo > 0 {
                             (byte_limit.saturating_sub(base_estimate)) / bytes_per_combo
-                        } else { 0 };
-                        self.report_lines.push(format!("  Max combos within limit: {}", max_fit));
-                        self.report_lines.push(format!("  Recommended budget: {} (partial enumeration)", max_fit));
+                        } else {
+                            0
+                        };
+                        self.report_lines
+                            .push(format!("  Max combos within limit: {}", max_fit));
+                        self.report_lines.push(format!(
+                            "  Recommended budget: {} (partial enumeration)",
+                            max_fit
+                        ));
                     }
                 }
             }
             if let Some(ref graph) = Some(&analysis.transition_graph) {
                 self.report_lines.push("".to_string());
                 self.report_lines.push("Transaction graph:".to_string());
-                self.report_lines.push(format!("  Nodes: {}", graph.nodes.len()));
-                self.report_lines.push(format!("  Has triggers: {}", graph.has_triggers));
+                self.report_lines
+                    .push(format!("  Nodes: {}", graph.nodes.len()));
+                self.report_lines
+                    .push(format!("  Has triggers: {}", graph.has_triggers));
                 if let Some(node) = graph.nodes.first() {
                     if let Some(ref bp) = node.bounded_pre {
-                        self.report_lines.push(format!("  Bounded pre: {} < {}", bp.var, bp.bound_var));
+                        self.report_lines
+                            .push(format!("  Bounded pre: {} < {}", bp.var, bp.bound_var));
                     }
-                    self.report_lines.push(format!("  Is reactive: {}", node.is_reactive));
-                    self.report_lines.push(format!("  Pure body: {}", node.is_pure_body));
+                    self.report_lines
+                        .push(format!("  Is reactive: {}", node.is_reactive));
+                    self.report_lines
+                        .push(format!("  Pure body: {}", node.is_pure_body));
                     if let Some(ref inc) = node.increments {
-                        self.report_lines.push(format!("  Increment: {} += {}", inc.var, inc.delta));
+                        self.report_lines
+                            .push(format!("  Increment: {} += {}", inc.var, inc.delta));
                     }
                 }
             }
             let chains = &analysis.region_analyzer.linear_chains;
             if !chains.is_empty() {
                 self.report_lines.push("".to_string());
-                self.report_lines.push("Linear transaction chains detected:".to_string());
+                self.report_lines
+                    .push("Linear transaction chains detected:".to_string());
                 for (i, chain) in chains.iter().enumerate() {
-                    let chain_str: String = chain.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" -> ");
-                    self.report_lines.push(format!("  Chain {}: {}", i + 1, chain_str));
+                    let chain_str: String = chain
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    self.report_lines
+                        .push(format!("  Chain {}: {}", i + 1, chain_str));
                 }
             }
             let scores = &analysis.region_analyzer.region_scores;
             if !scores.is_empty() {
                 self.report_lines.push("".to_string());
-                self.report_lines.push("Optimization priority ranking:".to_string());
+                self.report_lines
+                    .push("Optimization priority ranking:".to_string());
                 for (rank, score) in scores.iter().enumerate() {
                     let class_str = format!("{:?}", score.complexity);
                     let gpu = if score.gpu_eligible { " GPU" } else { "" };
                     let chain_tag = if score.chain_composed { " Chain" } else { "" };
-                    let score_str = if score.optimization_score.is_infinite() || score.optimization_score <= 0.0 {
+                    let score_str = if score.optimization_score.is_infinite()
+                        || score.optimization_score <= 0.0
+                    {
                         "—".to_string()
                     } else {
                         format!("{:.1}", score.optimization_score)
@@ -6032,23 +7114,43 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     let txn_list = score.txn_names.join(",");
                     self.report_lines.push(format!(
                         "  #{:<3} R{:<4} {:<20} {:<9} {:<7} {:<8} {:<8} {:<8} {}{}",
-                        rank + 1, score.region_id, txn_list, class_str,
-                        score.body_weight, score.iteration_count, vs_size, score_str,
-                        chain_tag, gpu
+                        rank + 1,
+                        score.region_id,
+                        txn_list,
+                        class_str,
+                        score.body_weight,
+                        score.iteration_count,
+                        vs_size,
+                        score_str,
+                        chain_tag,
+                        gpu
                     ));
                 }
             }
             if let Some(ref plan) = analysis.region_analyzer.budget_plan {
                 self.report_lines.push("".to_string());
-                self.report_lines.push(format!("Budget plan (budget={}):", plan.total_budget));
+                self.report_lines
+                    .push(format!("Budget plan (budget={}):", plan.total_budget));
                 let spent: u64 = plan.total_budget - plan.residual_budget;
-                self.report_lines.push(format!("  Allocated: {} regions, spent {}/{}", plan.allocated.len(), spent, plan.total_budget));
+                self.report_lines.push(format!(
+                    "  Allocated: {} regions, spent {}/{}",
+                    plan.allocated.len(),
+                    spent,
+                    plan.total_budget
+                ));
                 for (rid, cls, cost, score) in &plan.allocated {
-                    self.report_lines.push(format!("    R{}: {:?}, cost={}, score={:.1}", rid, cls, cost, score));
+                    self.report_lines.push(format!(
+                        "    R{}: {:?}, cost={}, score={:.1}",
+                        rid, cls, cost, score
+                    ));
                 }
-                self.report_lines.push(format!("  Residual: {} budget units", plan.residual_budget));
+                self.report_lines
+                    .push(format!("  Residual: {} budget units", plan.residual_budget));
                 if !plan.skipped.is_empty() {
-                    self.report_lines.push(format!("  Skipped: {} regions (unbounded or exceeds budget)", plan.skipped.len()));
+                    self.report_lines.push(format!(
+                        "  Skipped: {} regions (unbounded or exceeds budget)",
+                        plan.skipped.len()
+                    ));
                     for (rid, cls, _) in &plan.skipped {
                         self.report_lines.push(format!("    R{}: {:?}", rid, cls));
                     }
@@ -6058,35 +7160,68 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 self.report_lines.push("".to_string());
                 self.report_lines.push("Composed chains:".to_string());
                 for cc in &composed_chains {
-                    let chain_str: String = cc.chain.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" → ");
+                    let chain_str: String = cc
+                        .chain
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" → ");
                     let triggers = if cc.root_triggers.is_empty() {
                         "none".to_string()
                     } else {
                         cc.root_triggers.join(", ")
                     };
                     let tv_str = match &cc.trigger_values {
-                        Some(tv) => tv.iter().map(|(n, v)| format!("{}={}", n, v)).collect::<Vec<_>>().join(", "),
-                        None => if cc.root_triggers.is_empty() { "—".to_string() } else { "unbranched".to_string() },
+                        Some(tv) => tv
+                            .iter()
+                            .map(|(n, v)| format!("{}={}", n, v))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        None => {
+                            if cc.root_triggers.is_empty() {
+                                "—".to_string()
+                            } else {
+                                "unbranched".to_string()
+                            }
+                        }
                     };
                     let internal = if cc.all_internal { " all-internal" } else { "" };
                     self.report_lines.push(format!(
                         "  {} (link vars: {}, triggers: {}, values: [{}], fused weight: {}{})",
-                        chain_str, cc.link_vars.join(","), triggers, tv_str, cc.fused_weight, internal
+                        chain_str,
+                        cc.link_vars.join(","),
+                        triggers,
+                        tv_str,
+                        cc.fused_weight,
+                        internal
                     ));
                 }
             }
             if precomputed_final_values.is_some() {
                 self.report_lines.push("".to_string());
-                self.report_lines.push("Precomputed (compile-time evaluation):".to_string());
-                self.report_lines.push("  All state values determined at compile time — O(1) runtime.".to_string());
+                self.report_lines
+                    .push("Precomputed (compile-time evaluation):".to_string());
+                self.report_lines.push(
+                    "  All state values determined at compile time — O(1) runtime.".to_string(),
+                );
                 if let Some(ref fv) = precomputed_final_values {
-                    self.report_lines.push(format!("  {} chains precomputed.", fv.len()));
+                    self.report_lines
+                        .push(format!("  {} chains precomputed.", fv.len()));
                     for (chain, bindings) in fv {
-                        let chain_str: String = chain.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" → ");
-                        let vars: Vec<String> = bindings.iter()
+                        let chain_str: String = chain
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" → ");
+                        let vars: Vec<String> = bindings
+                            .iter()
                             .map(|(k, v)| format!("{}={}", k, v))
                             .collect();
-                        self.report_lines.push(format!("    {} → final state: [{}]", chain_str, vars.join(", ")));
+                        self.report_lines.push(format!(
+                            "    {} → final state: [{}]",
+                            chain_str,
+                            vars.join(", ")
+                        ));
                     }
                 }
             }
@@ -6138,7 +7273,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // Generation counter — incremented after each txn commit
             writeln!(out, "@__web_generation = global i32 0").ok();
             // Export generation counter (WASM global export)
-            writeln!(out, "@__web_generation_export = hidden global ptr @__web_generation").ok();
+            writeln!(
+                out,
+                "@__web_generation_export = hidden global ptr @__web_generation"
+            )
+            .ok();
             // 2026-08-10: real flush buffer — the JS shim's _applyFlush reads
             // count × 12-byte records { field_handle, value_ptr, value_len }
             // starting at the pointer __web_flush_state receives. Sized to the
@@ -6174,18 +7313,25 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             for (i, briev_ty) in self.ctx.field_briev_types.iter().enumerate() {
                 let ty = self.ctx.field_types[i].clone();
                 let size = web_llvm_byte_size(&ty);
-                if size == 0 { continue; } // skip non-word rows (unresolved)
+                if size == 0 {
+                    continue;
+                } // skip non-word rows (unresolved)
                 let cat = match self.ctx.type_universe.as_ref() {
                     Some(u) => crate::type_universe::protocol_category(u, briev_ty),
                     None => None,
                 };
-                let tag: u32 = match crate::glue::web_generator::TypeTag::from_protocol_category(cat.as_deref()) {
+                let tag: u32 = match crate::glue::web_generator::TypeTag::from_protocol_category(
+                    cat.as_deref(),
+                ) {
                     crate::glue::web_generator::TypeTag::Int => 0,
                     crate::glue::web_generator::TypeTag::Float => 1,
                     crate::glue::web_generator::TypeTag::Bool => 2,
                     crate::glue::web_generator::TypeTag::String => 3,
                 };
-                rows.push_str(&format!("i32 {}, i32 {}, i32 {}, i32 {}, ", i as u32, offset, size, tag));
+                rows.push_str(&format!(
+                    "i32 {}, i32 {}, i32 {}, i32 {}, ",
+                    i as u32, offset, size, tag
+                ));
                 types_ll.push(format!("i32, i32, i32, i32"));
                 flush_rows.push((i as u32, offset as u32, size as u32));
                 offset += size;
@@ -6196,22 +7342,46 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // fits both a per-txn batch AND the initial full-state flush that
             // __web_boot emits after init_state.
             let max_entries = self.ctx.web_max_entries.max(field_count).max(1);
-            writeln!(out, "@__web_flush_buf = private global [{} x {{ i32, i32, i32 }}] zeroinitializer", max_entries).ok();
+            writeln!(
+                out,
+                "@__web_flush_buf = private global [{} x {{ i32, i32, i32 }}] zeroinitializer",
+                max_entries
+            )
+            .ok();
             // The LLVM struct TYPE is plain i32 fields; the INITIALIZER body
             // carries the values (including link-time-resolved ptrtoint of the
             // generation counter and flush buffer). A ptrtoint in the type
             // position is invalid LLVM.
-            let layout_ty = format!("i32, i32, i32, i32{}",
-                if types_ll.is_empty() { String::new() } else { format!(", {}", types_ll.join(", ")) });
+            let layout_ty = format!(
+                "i32, i32, i32, i32{}",
+                if types_ll.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}", types_ll.join(", "))
+                }
+            );
             // Body: field_count, generation_off, flush_off, max_entries, then rows.
-            let mut body = format!("i32 {}, i32 ptrtoint (ptr @__web_generation to i32), i32 ptrtoint (ptr @__web_flush_buf to i32), i32 {}", field_count, max_entries);
+            let mut body = format!(
+                "i32 {}, i32 ptrtoint (ptr @__web_generation to i32), i32 ptrtoint (ptr @__web_flush_buf to i32), i32 {}",
+                field_count, max_entries
+            );
             if !rows.is_empty() {
                 body.push_str(", ");
                 body.push_str(rows.trim_end_matches(", "));
             }
-            writeln!(out, "@__web_layout = private constant {{ {} }} {{ {} }}", layout_ty, body).ok();
+            writeln!(
+                out,
+                "@__web_layout = private constant {{ {} }} {{ {} }}",
+                layout_ty, body
+            )
+            .ok();
             writeln!(out, "define i32 @state_layout() {{").ok();
-            writeln!(out, "  ret i32 ptrtoint ({{ {} }}* @__web_layout to i32)", layout_ty).ok();
+            writeln!(
+                out,
+                "  ret i32 ptrtoint ({{ {} }}* @__web_layout to i32)",
+                layout_ty
+            )
+            .ok();
             writeln!(out, "}}").ok();
             // 2026-08-12 (Iterable protocol, slice 4): the web runtime's state
             // passing was never wired — the shim called txn exports with no
@@ -6244,7 +7414,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 writeln!(out, "  %boot_r{} = getelementptr inbounds [{} x {{ i32, i32, i32 }}], ptr @__web_flush_buf, i32 0, i32 {}, i32 0", i, max_entries, i).ok();
                 writeln!(out, "  store i32 {}, ptr %boot_r{}", handle, i).ok();
                 writeln!(out, "  %boot_vp{} = getelementptr inbounds [{} x {{ i32, i32, i32 }}], ptr @__web_flush_buf, i32 0, i32 {}, i32 1", i, max_entries, i).ok();
-                writeln!(out, "  %boot_vpi{} = ptrtoint ptr %boot_vptr{} to i32", i, i).ok();
+                writeln!(
+                    out,
+                    "  %boot_vpi{} = ptrtoint ptr %boot_vptr{} to i32",
+                    i, i
+                )
+                .ok();
                 writeln!(out, "  store i32 %boot_vpi{}, ptr %boot_vp{}", i, i).ok();
                 writeln!(out, "  %boot_len{} = getelementptr inbounds [{} x {{ i32, i32, i32 }}], ptr @__web_flush_buf, i32 0, i32 {}, i32 2", i, max_entries, i).ok();
                 writeln!(out, "  store i32 {}, ptr %boot_len{}", size, i).ok();
@@ -6292,10 +7467,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // produced a dangling `@main` reference (clang "use of undefined
         // value '@main'", export_add.so). Shared builds skip both branches.
         // To undo: drop the `!self.ctx.is_shared_lib` conjuncts below.
-        if self.bootstrap_bad.is_none() && self.ctx.target_triple.contains("linux")
-            && out.lines().any(|l| {
-                l.contains("call ") && Self::kept_runtime_symbol(l)
-            })
+        if self.bootstrap_bad.is_none()
+            && self.ctx.target_triple.contains("linux")
+            && out
+                .lines()
+                .any(|l| l.contains("call ") && Self::kept_runtime_symbol(l))
         {
             // Not libc-free: emit the environ global + the getenv adapters
             // reading it ONLY when a _start captured it — skipped here, the
@@ -6313,7 +7489,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // @llvm.used pins main + the environ global against LTO
             // internalization — the _start asm references them by name, and
             // LTO renaming would dangle those references.
-            writeln!(out, "@llvm.used = appending global [2 x ptr] [ptr @main, ptr @__briev_environ]").ok();
+            writeln!(
+                out,
+                "@llvm.used = appending global [2 x ptr] [ptr @main, ptr @__briev_environ]"
+            )
+            .ok();
             if triple.starts_with("x86_64") {
                 // 2026-11-14 (BUGS.md argc dropped at owned _start): main's
                 // signature is main(i32 %argc, ptr %argv). The asm read argc
@@ -6357,7 +7537,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // START OF RAM (0x80000000), NOT the ELF e_entry — the
                 // linker script's `*(.text.start)` line must land this
                 // function first in the image.
-                writeln!(out, "define void @_start() naked noinline section \".text.start\" {{").ok();
+                writeln!(
+                    out,
+                    "define void @_start() naked noinline section \".text.start\" {{"
+                )
+                .ok();
                 writeln!(out, "entry:").ok();
                 writeln!(out, "  call void asm sideeffect \"la sp, _stack_top; la t0, _bss_start; la t1, _bss_end; bgeu t0, t1, 2f; 1: sd zero, 0(t0); addi t0, t0, 8; bltu t0, t1, 1b; 2: jal zero, main; 1: wfi; j 1b\", \"~{{t0}},~{{t1}},~{{memory}}\" ()").ok();
                 writeln!(out, "  unreachable").ok();
@@ -6365,9 +7549,17 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             } else if triple.starts_with("thumb") || triple.starts_with("arm") {
                 // ARM Cortex-M: the vector table already sets SP and calls
                 // Reset_Handler. We just need to call main and halt.
-                writeln!(out, "define void @_start() naked noinline section \".text.start\" {{").ok();
+                writeln!(
+                    out,
+                    "define void @_start() naked noinline section \".text.start\" {{"
+                )
+                .ok();
                 writeln!(out, "entry:").ok();
-                writeln!(out, "  call void asm sideeffect \"bl main; 1: wfi; b 1b\", \"~{{memory}}\" ()").ok();
+                writeln!(
+                    out,
+                    "  call void asm sideeffect \"bl main; 1: wfi; b 1b\", \"~{{memory}}\" ()"
+                )
+                .ok();
                 writeln!(out, "  unreachable").ok();
                 writeln!(out, "}}").ok();
             }
@@ -6383,7 +7575,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // real call. Sorted for deterministic diagnostics (HashMap order
         // must not pick the reported name).
         if !self.ctx.emit_all_defns {
-            let mut missed: Vec<&String> = self.ctx.defn_params.keys()
+            let mut missed: Vec<&String> = self
+                .ctx
+                .defn_params
+                .keys()
                 // "main" is the backend-generated entry itself (`define @main`)
                 // — always present in the IR, never a gate casualty.
                 .filter(|n| *n != "main")
@@ -6424,7 +7619,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 let extra_roots: std::collections::HashSet<String> =
                     missed.iter().map(|n| (*n).clone()).collect();
                 let closure = crate::analysis::defn_liveness::DefnLiveness::build_with_roots(
-                    items, &extra_roots,
+                    items,
+                    &extra_roots,
                 );
                 self.liveness_fixpoint_extra
                     .extend(closure.live.iter().cloned());
@@ -6448,13 +7644,30 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // stack); hosted targets without the field skip the check.
         self.check_frame_limits(&out);
 
-        if self.bootstrap_bad.is_none() && !self.ctx.is_embedded && !self.ctx.library_mode && !self.ctx.is_shared_lib && self.ctx.needs_arena.is_empty() && self.ctx.int_bits == 64 && self.ctx.target_triple.starts_with("x86_64") && self.ctx.target_triple.contains("linux") {
-            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation: {:?}", analysis.reclamation); }
+        if self.bootstrap_bad.is_none()
+            && !self.ctx.is_embedded
+            && !self.ctx.library_mode
+            && !self.ctx.is_shared_lib
+            && self.ctx.needs_arena.is_empty()
+            && self.ctx.int_bits == 64
+            && self.ctx.target_triple.starts_with("x86_64")
+            && self.ctx.target_triple.contains("linux")
+        {
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                eprintln!("reclamation: {:?}", analysis.reclamation);
+            }
             // A configured encoding callback may return borrowed storage or retain its input.
             // Only consume default-provider proofs when the final registry agrees.
-            let overridden = self.ctx.casting_graph.as_ref().is_some_and(|graph|
-                analysis.reclamation.default_encoding_targets.iter().any(|key| graph.get_cast_from_bit(key).is_some()));
-            if !overridden { return reclamation::lower(out, &analysis.reclamation); }
+            let overridden = self.ctx.casting_graph.as_ref().is_some_and(|graph| {
+                analysis
+                    .reclamation
+                    .default_encoding_targets
+                    .iter()
+                    .any(|key| graph.get_cast_from_bit(key).is_some())
+            });
+            if !overridden {
+                return reclamation::lower(out, &analysis.reclamation);
+            }
         }
         out
     }
@@ -6485,15 +7698,23 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             .sum();
         let mut breaches: Vec<(String, u64)> = Vec::new();
         for block in out.split("define ") {
-            let Some(name_end) = block.find('(') else { continue };
-            let name = block[..name_end].rsplit('@').next().unwrap_or("?").to_string();
+            let Some(name_end) = block.find('(') else {
+                continue;
+            };
+            let name = block[..name_end]
+                .rsplit('@')
+                .next()
+                .unwrap_or("?")
+                .to_string();
             let body_end = block.find("\n}").unwrap_or(block.len());
             let mut total = 0u64;
             for line in block[..body_end].lines() {
                 let Some(rest) = line.trim().strip_suffix(", align 8") else {
                     continue;
                 };
-                let Some(ty) = rest.strip_prefix("%").and_then(|r| r.split("= alloca ").nth(1))
+                let Some(ty) = rest
+                    .strip_prefix("%")
+                    .and_then(|r| r.split("= alloca ").nth(1))
                 else {
                     continue;
                 };
@@ -6526,6 +7747,33 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         }
     }
 
+    /// Declare printer fallbacks only when no Briev or foreign provider owns them.
+    fn emit_print_runtime_declares(
+        &self,
+        out: &mut String,
+        defined: &std::collections::HashSet<String>,
+    ) {
+        // 2026-08-01 (B0): Print# intrinsic runtime symbol. The dead frgn
+        // declaration in lib/std/ffi/io.bv was removed (it declared a wrong
+        // symbol and a { i64, i64 } String type); the intrinsic owns this
+        // call site, so the backend declares the ABI: String = ptr to a
+        // length-prefixed [len][bytes] buffer.
+        // Float64 printing retains the C runtime's double-argument ABI.
+        for (helper, symbol, argument) in [
+            ("print_str_raw", "__print", "ptr"),
+            ("print_str", "__print_str", "ptr"),
+            ("print_float64", "__print_float64", "double"),
+        ] {
+            if defined.contains(helper)
+                || defined.contains(symbol)
+                || self.ctx.frgn_map.contains_key(symbol)
+            {
+                continue;
+            }
+            writeln!(out, "declare i64 @{symbol}({argument}) #1").ok();
+        }
+    }
+
     /// 2026-09-10 (Family F): does this call line target a symbol that is
     /// still implemented in briev_rt.c or by libc? Used by the owned-_start
     /// gate — a program touching any of these keeps the crt path.
@@ -6533,21 +7781,48 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         const KEPT: &[&str] = &[
             // briev_rt.c kept families
             "briev_free_briev_str",
-            "briev_bits_to_str", "briev_str_band", "briev_str_bor",
-            "briev_str_bxor", "briev_str_bnot", "briev_symbol_available",
-            "briev_syscall", "briev_sysconf", "ShellCmd", "__briev_setenv",
+            "briev_bits_to_str",
+            "briev_str_band",
+            "briev_str_bor",
+            "briev_str_bxor",
+            "briev_str_bnot",
+            "briev_symbol_available",
+            "briev_syscall",
+            "briev_sysconf",
+            "ShellCmd",
+            "__briev_setenv",
             "__print_float64",
-            "briev_host_print_int", "briev_host_fail", "briev_host_table_set",
+            "briev_host_print_int",
+            "briev_host_fail",
+            "briev_host_table_set",
             "briev_host_arity_of",
             // __getenv_int/__getenv_briev are NOT here: they are adapter-
             // served (the backend emits C-ABI defines over the captured
             // environ). Same for the argv_* family (retired with cli.bv).
             // libc
-            "malloc", "free", "realloc", "calloc", "getenv", "printf",
-            "briev_getenv_int_impl", "briev_getenv_briev_impl",
-            "fprintf", "strlen", "strdup", "sysconf", "dlsym", "popen",
-            "signal", "atexit", "clock_gettime", "setenv", "syscall",
-            "pclose", "fputs", "putchar", "exit",
+            "malloc",
+            "free",
+            "realloc",
+            "calloc",
+            "getenv",
+            "printf",
+            "briev_getenv_int_impl",
+            "briev_getenv_briev_impl",
+            "fprintf",
+            "strlen",
+            "strdup",
+            "sysconf",
+            "dlsym",
+            "popen",
+            "signal",
+            "atexit",
+            "clock_gettime",
+            "setenv",
+            "syscall",
+            "pclose",
+            "fputs",
+            "putchar",
+            "exit",
         ];
         KEPT.iter().any(|s| line.contains(&format!("@{s}(")))
     }
@@ -6570,9 +7845,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         };
         let fields: Vec<_> = slots
             .iter()
-            .filter(|(_, ty)| {
-                crate::glue::web_generator::web_view_field_tag(ty).is_some()
-            })
+            .filter(|(_, ty)| crate::glue::web_generator::web_view_field_tag(ty).is_some())
             .cloned()
             .collect();
         if fields.len() > 127 {
@@ -6600,14 +7873,24 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
             "float" => {
                 let bits = self.fun.gen_reg();
-                writeln!(out, "{}{} = bitcast float {} to i32", indent, bits, reg.name).ok();
+                writeln!(
+                    out,
+                    "{}{} = bitcast float {} to i32",
+                    indent, bits, reg.name
+                )
+                .ok();
                 writeln!(out, "{}{} = zext i32 {} to i64", indent, r, bits).ok();
             }
             "double" => {
                 writeln!(out, "{}{} = bitcast double {} to i64", indent, r, reg.name).ok();
             }
             _ => {
-                writeln!(out, "{}{} = sext {} {} to i64", indent, r, llvm_ty, reg.name).ok();
+                writeln!(
+                    out,
+                    "{}{} = sext {} {} to i64",
+                    indent, r, llvm_ty, reg.name
+                )
+                .ok();
             }
         }
         r
@@ -6638,15 +7921,24 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let mut names: Vec<String> = self.ctx.collection_iterables.iter().cloned().collect();
         names.sort_unstable();
         for field in &names {
-            let Some(&idx) = self.ctx.field_index_map.get(field) else { continue };
-            let briev_ty = self.ctx.field_briev_types.get(idx).cloned().unwrap_or(crate::ast::Type::int());
+            let Some(&idx) = self.ctx.field_index_map.get(field) else {
+                continue;
+            };
+            let briev_ty = self
+                .ctx
+                .field_briev_types
+                .get(idx)
+                .cloned()
+                .unwrap_or(crate::ast::Type::int());
             let base = match &briev_ty {
                 crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
                 _ => continue,
             };
             let members = self.ctx.obj_members.get(&base).cloned().unwrap_or_default();
             let has = |op: &str| {
-                members.iter().any(|m| matches!(m, TopLevel::TypeDefOperator(d) if d.name == op))
+                members
+                    .iter()
+                    .any(|m| matches!(m, TopLevel::TypeDefOperator(d) if d.name == op))
             };
             if !(has("Count") && has("At")) {
                 continue;
@@ -6659,7 +7951,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.stateless_body = true;
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
-            let count = self.emit_method_call(out, &count_tmp, emit_expr::ExprView::Ast(&crate::ast::Expr::Identifier(field.clone())), "Count", emit_expr::ArgsView::Ast(&[]), "  ");
+            let count = self.emit_method_call(
+                out,
+                &count_tmp,
+                emit_expr::ExprView::Ast(&crate::ast::Expr::Identifier(field.clone())),
+                "Count",
+                emit_expr::ArgsView::Ast(&[]),
+                "  ",
+            );
             // The Int width on wasm32 is i32; the At index + loop counter are
             // Int, so use i32 (the count register may be i32 already or i64 —
             // adapt).
@@ -6686,12 +7985,25 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             writeln!(out, "blbl:").ok();
             // word = field.At(c)
             let cur_tmp = "__view_cur".to_string();
-            self.fun.let_bindings.insert(cur_tmp.clone(), "%c".to_string());
-            self.fun.let_binding_types.insert(cur_tmp.clone(), crate::ast::Type::int());
-            self.fun.let_original_types.insert(cur_tmp.clone(), crate::ast::Type::int());
+            self.fun
+                .let_bindings
+                .insert(cur_tmp.clone(), "%c".to_string());
+            self.fun
+                .let_binding_types
+                .insert(cur_tmp.clone(), crate::ast::Type::int());
+            self.fun
+                .let_original_types
+                .insert(cur_tmp.clone(), crate::ast::Type::int());
             let arg = crate::ast::Expr::Identifier(cur_tmp);
             let at_tmp = self.fun.gen_reg();
-            let word = self.emit_method_call(out, &at_tmp, emit_expr::ExprView::Ast(&crate::ast::Expr::Identifier(field.clone())), "At", emit_expr::ArgsView::Ast(&[arg]), "  ");
+            let word = self.emit_method_call(
+                out,
+                &at_tmp,
+                emit_expr::ExprView::Ast(&crate::ast::Expr::Identifier(field.clone())),
+                "At",
+                emit_expr::ArgsView::Ast(&[arg]),
+                "  ",
+            );
             if row_size == 0 {
                 // Scalar/string element collection: one snapshot word per item.
                 let word64 = self.view_projection_word(out, "  ", &word);
@@ -6703,9 +8015,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // Struct/obj element: bind the boxed element handle and project
                 // the primitive fields row-major into the snapshot.
                 let item_tmp = "__view_item".to_string();
-                self.fun.let_bindings.insert(item_tmp.clone(), word.name.clone());
-                self.fun.let_binding_types.insert(item_tmp.clone(), word.ty.clone());
-                self.fun.let_original_types.insert(item_tmp.clone(), word.ty.clone());
+                self.fun
+                    .let_bindings
+                    .insert(item_tmp.clone(), word.name.clone());
+                self.fun
+                    .let_binding_types
+                    .insert(item_tmp.clone(), word.ty.clone());
+                self.fun
+                    .let_original_types
+                    .insert(item_tmp.clone(), word.ty.clone());
                 for (col, (fname, _)) in item_fields.iter().enumerate() {
                     let field_expr = crate::ast::Expr::Field(
                         Box::new(crate::ast::Expr::Identifier(item_tmp.clone())),
@@ -6720,7 +8038,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     writeln!(out, "  {} = mul i32 %c, {}", row, row_size).ok();
                     writeln!(out, "  {} = add i32 {}, {}", idx, row, col + 1).ok();
                     writeln!(out, "  {} = sext i32 {} to i64", wid, idx).ok();
-                    writeln!(out, "  {} = getelementptr i64, ptr %view_data, i64 {}", slot, wid).ok();
+                    writeln!(
+                        out,
+                        "  {} = getelementptr i64, ptr %view_data, i64 {}",
+                        slot, wid
+                    )
+                    .ok();
                     writeln!(out, "  store i64 {}, ptr {}", word64, slot).ok();
                 }
             }
@@ -6741,14 +8064,26 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
 
     fn emit_view_buffer(out: &mut String, count: &str, words_per_item: usize) {
         writeln!(out, "  %view_valid = icmp sge i32 {count}, 0").ok();
-        writeln!(out, "  br i1 %view_valid, label %view_reserve, label %view_invalid").ok();
-        writeln!(out, "view_invalid:\n  call void @llvm.trap()\n  unreachable\nview_reserve:").ok();
+        writeln!(
+            out,
+            "  br i1 %view_valid, label %view_reserve, label %view_invalid"
+        )
+        .ok();
+        writeln!(
+            out,
+            "view_invalid:\n  call void @llvm.trap()\n  unreachable\nview_reserve:"
+        )
+        .ok();
         writeln!(out, "  %view_count = zext i32 {count} to i64").ok();
         writeln!(out, "  %view_rows = mul i64 %view_count, {words_per_item}").ok();
         writeln!(out, "  %view_slots = add i64 %view_rows, 1").ok();
         writeln!(out, "  %view_bytes = mul i64 %view_slots, 8").ok();
         writeln!(out, "  %view_old = load ptr, ptr @__web_view_buf").ok();
-        writeln!(out, "  %view_data = call ptr @realloc(ptr %view_old, i64 %view_bytes)").ok();
+        writeln!(
+            out,
+            "  %view_data = call ptr @realloc(ptr %view_old, i64 %view_bytes)"
+        )
+        .ok();
         writeln!(out, "  store ptr %view_data, ptr @__web_view_buf").ok();
     }
 
@@ -6791,7 +8126,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         }
         for (j, v) in c.free_vars.iter().enumerate() {
             let slot = self.fun.gen_reg();
-            writeln!(out, "  {} = getelementptr i64, ptr %env, i64 {}", slot, 1 + j).ok();
+            writeln!(
+                out,
+                "  {} = getelementptr i64, ptr %env, i64 {}",
+                slot,
+                1 + j
+            )
+            .ok();
             let cap = self.fun.gen_reg();
             writeln!(out, "  {} = load i64, ptr {}", cap, slot).ok();
             self.fun.let_bindings.insert(v.clone(), cap.clone());
@@ -6983,7 +8324,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     ) {
         // 2026-09-07: reset cur_block for the fresh function.
         self.fun.cur_block = None;
-        writeln!(out, "define void @txn_{}({}) local_unnamed_addr #0 noinline {{", name, self.ctx.state_ptr_param).ok();
+        writeln!(
+            out,
+            "define void @txn_{}({}) local_unnamed_addr #0 noinline {{",
+            name, self.ctx.state_ptr_param
+        )
+        .ok();
         writeln!(out, "  entry:").ok();
         self.fun.txn_name = name.to_string();
         self.fun.item_post = Some(txn.contract.post_condition.clone());
@@ -7006,11 +8352,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.fun.phi_field_regs.clear();
         self.fun.backedge_field_regs.clear();
         self.ctx.global_free_after = analysis.global_lifetime.free_after.clone();
-        let write_set: std::collections::HashSet<String> =
-            analysis.transition_graph.nodes.iter()
-                .find(|n| n.name == *name)
-                .map(|n| n.write_set.clone())
-                .unwrap_or_default();
+        let write_set: std::collections::HashSet<String> = analysis
+            .transition_graph
+            .nodes
+            .iter()
+            .find(|n| n.name == *name)
+            .map(|n| n.write_set.clone())
+            .unwrap_or_default();
         self.emit_countable_loop_wrapped(
             out,
             name,
@@ -7056,7 +8404,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         !expr_has_unsafe_counter_ref(pre, counter, &bp.bound_var, bp.bound_literal)
     }
 
-    fn emit_folded_loop_shape(        &mut self,
+    fn emit_folded_loop_shape(
+        &mut self,
         out: &mut String,
         analysis: &crate::backend::AnalysisResults,
         node: &crate::analysis::transition_graph::ReactorNode,
@@ -7087,8 +8436,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
             eprintln!(
                 "diag: txn='{}' local={:?} post_hoist_groups={} floats={} temp_mediated={} aggregates={} vector_groups={:?}",
-                node.name, shape.local_fields, post_hoist.len(), shape.carried_float_count,
-                shape.temp_mediated_float_count, shape.carried_aggregate_count, shape.vector_groups
+                node.name,
+                shape.local_fields,
+                post_hoist.len(),
+                shape.carried_float_count,
+                shape.temp_mediated_float_count,
+                shape.carried_aggregate_count,
+                shape.vector_groups
             );
         }
         // 2026-07-31: Bound resolution maps the structured Bound to the backend's
@@ -7106,9 +8460,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
             crate::analysis::loop_shape::Bound::Const(name)
             | crate::analysis::loop_shape::Bound::Init(name) => (None, Some(name.as_str())),
-            crate::analysis::loop_shape::Bound::Literal(_) | crate::analysis::loop_shape::Bound::Unknown(_) => {
-                (None, None)
-            }
+            crate::analysis::loop_shape::Bound::Literal(_)
+            | crate::analysis::loop_shape::Bound::Unknown(_) => (None, None),
         };
         // 2026-07-31: Only fold when the bound resolves to something the emitters
         // can load. Reproduces the old
@@ -7125,12 +8478,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // The hoisted bindings are prepended to the body so LLVM's LICM
         // can hoist them to the preheader. See analysis/licm.rs.
         let state_fields: HashSet<String> = self.ctx.field_index_map.keys().cloned().collect();
-        let (hoisted_reordered, body_stmts) = crate::analysis::licm::hoist_loop_invariants(
-            txn_body, &node.write_set, &state_fields,
-        );
+        let (hoisted_reordered, body_stmts) =
+            crate::analysis::licm::hoist_loop_invariants(txn_body, &node.write_set, &state_fields);
         // Prepend hoisted bindings to body (they appear at loop entry).
-        let body_stmts: Vec<Statement> = hoisted_reordered.into_iter()
-            .chain(body_stmts).collect();
+        let body_stmts: Vec<Statement> = hoisted_reordered.into_iter().chain(body_stmts).collect();
 
         // ── EmitPureCounterFold ─────────────────────────────────────
         // Pure body + constant bound → O(1) counter-only store, no loop.
@@ -7145,14 +8496,29 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // Phase 1b strictly behavior-preserving ("pure fold stays as-is",
             // plan §6.2).
             let total_val = match &shape.bound {
-                crate::analysis::loop_shape::Bound::Field(name) => self.ctx.field_initializers
+                crate::analysis::loop_shape::Bound::Field(name) => self
+                    .ctx
+                    .field_initializers
                     .get(name.as_str())
                     .and_then(|e| e.as_ref())
-                    .and_then(|e| if let Expr::Decimal(n) = e { Some(*n) } else { None }),
-                crate::analysis::loop_shape::Bound::Const(name) => self.ctx.constants
-                    .get(name.as_str())
-                    .and_then(|(_, e)| if let Expr::Decimal(n) = e { Some(*n) } else { None }),
-                crate::analysis::loop_shape::Bound::Literal(_) | crate::analysis::loop_shape::Bound::Unknown(_) => None,
+                    .and_then(|e| {
+                        if let Expr::Decimal(n) = e {
+                            Some(*n)
+                        } else {
+                            None
+                        }
+                    }),
+                crate::analysis::loop_shape::Bound::Const(name) => {
+                    self.ctx.constants.get(name.as_str()).and_then(|(_, e)| {
+                        if let Expr::Decimal(n) = e {
+                            Some(*n)
+                        } else {
+                            None
+                        }
+                    })
+                }
+                crate::analysis::loop_shape::Bound::Literal(_)
+                | crate::analysis::loop_shape::Bound::Unknown(_) => None,
                 // 2026-08-09 (init kind, Phase 3): an init's value is only
                 // known at runtime — the O(1) pure-counter fold (a compile-time
                 // store count) cannot fire; the seeded-bound loop path runs.
@@ -7160,7 +8526,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             };
             if let Some(tv) = total_val {
                 // 2026-07-14: Wrap in define i32 @main() so emitted IR is valid.
-                self.warnings.push(format!("info: txn '{}' dispatched via pure counter fold ({} iterations, O(1) store)", node.name, tv));
+                self.warnings.push(format!(
+                    "info: txn '{}' dispatched via pure counter fold ({} iterations, O(1) store)",
+                    node.name, tv
+                ));
                 self.emit_main_header(out, "#9", true);
                 self.emit_state_base(out);
                 self.emit_inline_init_stores(out, "%state");
@@ -7196,7 +8565,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // conditional blocks LLVM's mis-vectorization of cross-indexed matrix
         // bodies (which is why the batch's pure inner loop regressed fmn).
         // A/B vs the batch + version-DAG is recorded in the plan's §10.
-        let is_decreasing_vd = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
+        let is_decreasing_vd =
+            bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
         // BRIEV_DIAG_LOOP_ENGINE=version|perfield forces the alternate loop
         // shapes for the E2 materialization experiment. Unset = production
         // dispatch (countdown first).
@@ -7235,14 +8605,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     }
                     self.warnings.push(format!(
                         "info: txn '{}' dispatched via countdown loop (N={}, {} fields)",
-                        node.name, batch.batch_size, node.write_set.len()
+                        node.name,
+                        batch.batch_size,
+                        node.write_set.len()
                     ));
                     self.emit_countable_countdown_main(
-                        out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal,
-                        &node.write_set, &bp.var, batch,
+                        out,
+                        &node.name,
+                        counter_idx,
+                        total_idx,
+                        total_const_name,
+                        bp.bound_literal,
+                        &node.write_set,
+                        &bp.var,
+                        batch,
                         watchdog,
-                        analysis.global_lifetime.free_after.get(&node.name)
-                            .map(|v| v.as_slice()).unwrap_or(&[]),
+                        analysis
+                            .global_lifetime
+                            .free_after
+                            .get(&node.name)
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]),
                     );
                     return true;
                 }
@@ -7255,11 +8638,23 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.fun.pending_post_hoist = post_hoist.clone();
         if forced_engine.as_deref() != Some("perfield")
             && self.emit_version_dag_main(
-                out, counter_idx, total_idx, total_const_name, bp.bound_literal,
-                &body_stmts, &node.write_set, is_decreasing_vd, Some(&bp.var),
-                analysis.global_lifetime.free_after.get(&node.name)
-                    .map(|v| v.as_slice()).unwrap_or(&[]),
-                &node.name, watchdog,
+                out,
+                counter_idx,
+                total_idx,
+                total_const_name,
+                bp.bound_literal,
+                &body_stmts,
+                &node.write_set,
+                is_decreasing_vd,
+                Some(&bp.var),
+                analysis
+                    .global_lifetime
+                    .free_after
+                    .get(&node.name)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]),
+                &node.name,
+                watchdog,
             )
         {
             return true;
@@ -7276,9 +8671,23 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let total_fields = self.ctx.field_index_map.len();
             self.fun.pending_post_hoist = post_hoist.clone();
 
-            self.warnings.push(format!("info: txn '{}' dispatched via inline SSA ({} fields)", node.name, total_fields));
+            self.warnings.push(format!(
+                "info: txn '{}' dispatched via inline SSA ({} fields)",
+                node.name, total_fields
+            ));
 
-            self.emit_folded_main(out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal, false, Some(&body_stmts), Some(&bp.var), watchdog);
+            self.emit_folded_main(
+                out,
+                &node.name,
+                counter_idx,
+                total_idx,
+                total_const_name,
+                bp.bound_literal,
+                false,
+                Some(&body_stmts),
+                Some(&bp.var),
+                watchdog,
+            );
             return true;
         }
 
@@ -7294,15 +8703,33 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let write_count = node.write_set.len();
         if !vg.is_empty() && carried_len > regs {
             let field_count: usize = vg.iter().map(|g| g.width).sum();
-            self.warnings.push(format!("info: txn '{}' dispatched via vector phi ({}/{} fields in {} groups)", node.name, field_count, total_fields, vg.len()));
+            self.warnings.push(format!(
+                "info: txn '{}' dispatched via vector phi ({}/{} fields in {} groups)",
+                node.name,
+                field_count,
+                total_fields,
+                vg.len()
+            ));
         } else {
-            self.warnings.push(format!("info: txn '{}' dispatched via per-field phi ({}/{} fields written)", node.name, write_count, total_fields));
+            self.warnings.push(format!(
+                "info: txn '{}' dispatched via per-field phi ({}/{} fields written)",
+                node.name, write_count, total_fields
+            ));
         }
         self.fun.pending_post_hoist = post_hoist;
-        let is_decreasing = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
+        let is_decreasing =
+            bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
         self.emit_countable_main(
-            out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal,
-            &inner_body, &node.write_set, is_decreasing, Some(&bp.var),
+            out,
+            &node.name,
+            counter_idx,
+            total_idx,
+            total_const_name,
+            bp.bound_literal,
+            &inner_body,
+            &node.write_set,
+            is_decreasing,
+            Some(&bp.var),
             watchdog,
         );
         true
@@ -7331,14 +8758,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
             let element_ty = match g.fields.first() {
                 Some(first) => {
-                    let Some(&idx) = self.ctx.field_index_map.get(first.as_str()) else { continue; };
-                    self.ctx.field_types.get(idx).cloned().unwrap_or_else(|| "i64".to_string())
+                    let Some(&idx) = self.ctx.field_index_map.get(first.as_str()) else {
+                        continue;
+                    };
+                    self.ctx
+                        .field_types
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string())
                 }
                 None => continue,
             };
             // All fields must have the same LLVM type.
             if !g.fields.iter().all(|f| {
-                self.ctx.field_index_map.get(f.as_str())
+                self.ctx
+                    .field_index_map
+                    .get(f.as_str())
                     .and_then(|idx| self.ctx.field_types.get(*idx))
                     .map_or(false, |t| t == &element_ty)
             }) {
@@ -7388,12 +8823,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     fn is_ptr_expr(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Field(_, target) => target == "Ptr",
-            Expr::Identifier(name) => {
-                self.fun.let_binding_types.get(name)
-                    .map(|t| matches!(t, Type::Applied(n, _) if n == "Ptr")
-                        || matches!(t, Type::LayoutPtr(_)))
-                    .unwrap_or(false)
-            }
+            Expr::Identifier(name) => self
+                .fun
+                .let_binding_types
+                .get(name)
+                .map(|t| {
+                    matches!(t, Type::Applied(n, _) if n == "Ptr")
+                        || matches!(t, Type::LayoutPtr(_))
+                })
+                .unwrap_or(false),
             _ => false,
         }
     }
@@ -7476,10 +8914,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     /// 2026-10-09 (dyn derive-don't-fix, Phase A): trait → required-slot order
     /// (declaration order, matching the interpreter). Extracted to keep
     /// register_dyn_thunks flat (Praetor cognitive ≤ 15).
-    fn collect_trait_slots(
-        items: &[TopLevel],
-    ) -> std::collections::HashMap<String, Vec<String>> {
-        let mut traits: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    fn collect_trait_slots(items: &[TopLevel]) -> std::collections::HashMap<String, Vec<String>> {
+        let mut traits: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         for item in items {
             if let TopLevel::Trait(t) = item {
                 let slots: Vec<String> = t.functions.iter().map(|d| d.name.clone()).collect();
@@ -7501,7 +8938,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         traits: &std::collections::HashMap<String, Vec<String>>,
         provided: &std::collections::HashMap<String, std::collections::HashSet<String>>,
     ) -> std::collections::HashMap<String, Vec<String>> {
-        let mut pairs: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut pairs: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         let mut trait_names: Vec<String> = traits.keys().cloned().collect();
         trait_names.sort();
         for trait_name in &trait_names {
@@ -7514,7 +8952,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             for concrete in &concrete_names {
                 let have = provided.get(concrete).cloned().unwrap_or_default();
                 if slots.iter().all(|s| have.contains(s)) {
-                    pairs.entry(trait_name.clone()).or_default().push(concrete.clone());
+                    pairs
+                        .entry(trait_name.clone())
+                        .or_default()
+                        .push(concrete.clone());
                 }
             }
         }
@@ -7526,8 +8967,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     /// of truth for trait conformance (an impl block that provides a trait's
     /// required slots proves the type implements the trait). Extracted from
     /// register_dyn_thunks to keep that function flat (Praetor cognitive ≤ 15).
-    fn collect_provided_methods(items: &[TopLevel]) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-        let mut provided: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    fn collect_provided_methods(
+        items: &[TopLevel],
+    ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+        let mut provided: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
         for item in items {
             match item {
                 TopLevel::TypeDef(td) => {
@@ -7535,7 +8979,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 }
                 TopLevel::Impl(imp) => {
                     for d in &imp.functions {
-                        provided.entry(imp.target.clone()).or_default().insert(d.name.clone());
+                        provided
+                            .entry(imp.target.clone())
+                            .or_default()
+                            .insert(d.name.clone());
                     }
                 }
                 _ => {}
@@ -7566,7 +9013,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             if slots.is_empty() {
                 continue;
             }
-            let mut concretes: Vec<String> = self.ctx
+            let mut concretes: Vec<String> = self
+                .ctx
                 .dyn_concrete_pairs
                 .get(trait_name)
                 .cloned()
@@ -7602,7 +9050,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     /// the Self receiver bound to the concrete heap image (`inttoptr` of the
     /// first param). Reuses the statement emitter (the way emit_task_segment_fn
     /// does), so no separate body emitter is needed.
-    fn emit_dyn_thunk_fn(&mut self, out: &mut String, trait_name: &str, concrete: &str, slot: &str) {
+    fn emit_dyn_thunk_fn(
+        &mut self,
+        out: &mut String,
+        trait_name: &str,
+        concrete: &str,
+        slot: &str,
+    ) {
         // Find the impl `defn` body: an ImplDef for `concrete` whose fn is `slot`.
         let impl_body = self.find_impl_body(concrete, slot);
         let impl_def = match impl_body {
@@ -7672,8 +9126,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let mut arg_idx = 0usize;
         for (i, (pname, pty)) in impl_def.parameters.iter().enumerate() {
             if i == 0 && self_is_first {
-                self.fun.let_bindings.insert(pname.clone(), self_reg.clone());
-                self.fun.let_binding_types.insert(pname.clone(), pty.clone());
+                self.fun
+                    .let_bindings
+                    .insert(pname.clone(), self_reg.clone());
+                self.fun
+                    .let_binding_types
+                    .insert(pname.clone(), pty.clone());
                 continue;
             }
             let raw = format!("%targ{}", arg_idx);
@@ -7685,7 +9143,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 raw
             };
             self.fun.let_bindings.insert(pname.clone(), reg.clone());
-            self.fun.let_binding_types.insert(pname.clone(), pty.clone());
+            self.fun
+                .let_binding_types
+                .insert(pname.clone(), pty.clone());
             arg_idx += 1;
         }
         // Run the impl body against the fresh scope; capture the term value.
@@ -7706,7 +9166,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     break;
                 }
                 other => {
-                    let reg = crate::backend::llvm::emit_stmt::emit_statement(self, out, other, "  ");
+                    let reg =
+                        crate::backend::llvm::emit_stmt::emit_statement(self, out, other, "  ");
                     if self.llvm_type(&reg.ty) == "i64" {
                         last_val = Some(reg.name.clone());
                     } else {
@@ -7771,7 +9232,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             std::collections::HashMap::new();
         for item in items {
             if let TopLevel::Statement(stmt) = item {
-                if let crate::ast::Statement::Let { name, ty: Some(ty), expr, .. } = stmt.as_ref() {
+                if let crate::ast::Statement::Let {
+                    name,
+                    ty: Some(ty),
+                    expr,
+                    ..
+                } = stmt.as_ref()
+                {
                     if self.ctx.plain_lets.contains(name) {
                         continue;
                     }
@@ -7799,34 +9266,40 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for item in items {
             if let TopLevel::StateDecl(s) = item {
                 // 2026-07-14: Preserve prepopulated MMIO addresses from with_mmio_addresses()
-                let addr = if self.ctx.mmio_prepopulated && self.ctx.mmio_fields.contains_key(&s.name) {
-                    *self.ctx.mmio_fields.get(&s.name).unwrap()
-                } else {
-                    0u64
-                };
+                let addr =
+                    if self.ctx.mmio_prepopulated && self.ctx.mmio_fields.contains_key(&s.name) {
+                        *self.ctx.mmio_fields.get(&s.name).unwrap()
+                    } else {
+                        0u64
+                    };
                 self.ctx.mmio_fields.insert(s.name.clone(), addr);
                 self.ctx.mmio_initializers.insert(s.name.clone(), None);
                 if self.ctx.mmio_prepopulated && self.ctx.mmio_fields.contains_key(&s.name) {
-                    if self.ctx.schema_alias_names.is_empty() || self.ctx.schema_alias_names.contains(&s.name) {
+                    if self.ctx.schema_alias_names.is_empty()
+                        || self.ctx.schema_alias_names.contains(&s.name)
+                    {
                         self.ctx.mmio_initializers.insert(s.name.clone(), None);
                     } else {
                         // Not in any imported schema — remove from mmio_fields to prevent
                         // accidental MMIO routing in reads/writes.
                         self.ctx.mmio_fields.remove(&s.name);
-                        self.ctx.field_index_map
+                        self.ctx
+                            .field_index_map
                             .insert(s.name.clone(), self.ctx.field_types.len());
                         self.push_field_type(&s.ty);
                         self.ctx.field_initializers.insert(s.name.clone(), None);
                     }
                 } else {
-                    self.ctx.field_index_map
+                    self.ctx
+                        .field_index_map
                         .insert(s.name.clone(), self.ctx.field_types.len());
                     self.push_field_type(&s.ty);
                     self.ctx.field_initializers.insert(s.name.clone(), None);
                 }
             } else if let TopLevel::Trigger(trg) = item {
                 // 2026-07-14: Trigger.ty removed - use string as default type.
-                self.ctx.field_index_map
+                self.ctx
+                    .field_index_map
                     .insert(trg.name.clone(), self.ctx.field_types.len());
                 self.push_field_type(&Type::string());
                 self.ctx.field_initializers.insert(trg.name.clone(), None);
@@ -7834,7 +9307,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 // Trigger bindings (trg name: Type @ Console!) get a state slot
                 // like regular triggers, so emit_expr can load their value.
                 let trig_ty = ty.clone().unwrap_or(crate::ast::Type::string());
-                self.ctx.field_index_map
+                self.ctx
+                    .field_index_map
                     .insert(name.clone(), self.ctx.field_types.len());
                 self.push_field_type(&trig_ty);
                 self.ctx.field_initializers.insert(name.clone(), None);
@@ -7855,7 +9329,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         let field_ty = ty.clone().unwrap_or(crate::ast::Type::int());
                         let unpack_candidate = match &field_ty {
                             Type::Applied(base, _) | Type::Custom(base)
-                                if self.ctx.obj_members.contains_key(base) => true,
+                                if self.ctx.obj_members.contains_key(base) =>
+                            {
+                                true
+                            }
                             _ => false,
                         };
                         if unpack_candidate {
@@ -7894,22 +9371,41 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                                 && !self.is_heap_coll(base)
                                 && !matches!(expr, Some(Expr::List(_)) | Some(Expr::Tuple(_))) =>
                         {
-                            let params = self.ctx.obj_type_params.get(base).cloned().unwrap_or_default();
+                            let params = self
+                                .ctx
+                                .obj_type_params
+                                .get(base)
+                                .cloned()
+                                .unwrap_or_default();
                             let subst: std::collections::HashMap<String, Type> =
                                 params.into_iter().zip(args.iter().cloned()).collect();
                             Some(
-                                self.ctx.struct_types.get(base).unwrap().iter()
+                                self.ctx
+                                    .struct_types
+                                    .get(base)
+                                    .unwrap()
+                                    .iter()
                                     .map(|(mname, mty)| {
-                                        (mname.clone(), crate::typechecker::substitute_type(mty, &subst))
+                                        (
+                                            mname.clone(),
+                                            crate::typechecker::substitute_type(mty, &subst),
+                                        )
                                     })
                                     .collect(),
                             )
                         }
                         // 2026-08-07: a non-generic obj (`let c: Counter = 0`)
                         // — no const args to substitute.
-                        Type::Custom(base) if self.ctx.obj_members.contains_key(base) && !self.is_heap_coll(base) => {
+                        Type::Custom(base)
+                            if self.ctx.obj_members.contains_key(base)
+                                && !self.is_heap_coll(base) =>
+                        {
                             Some(
-                                self.ctx.struct_types.get(base).unwrap().iter()
+                                self.ctx
+                                    .struct_types
+                                    .get(base)
+                                    .unwrap()
+                                    .iter()
                                     .map(|(mname, mty)| (mname.clone(), mty.clone()))
                                     .collect(),
                             )
@@ -7932,8 +9428,10 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                         // handle + GEP the offset. The static top-level instance
                         // keeps its unpacked slots; spawned handles allocate.
                         if let Some(_storage) = self.ctx.spawn_storage.get(&base) {
-                            let mut offsets: std::collections::HashMap<String, (u64, crate::ast::Type)> =
-                                std::collections::HashMap::new();
+                            let mut offsets: std::collections::HashMap<
+                                String,
+                                (u64, crate::ast::Type),
+                            > = std::collections::HashMap::new();
                             let mut off = 0u64;
                             for (mname, mty) in &slots {
                                 offsets.insert(mname.clone(), (off, mty.clone()));
@@ -7957,13 +9455,18 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                             _ => base.clone(),
                         };
                         if let Some(init_expr) = expr {
-                            self.ctx.obj_instance_inits.insert(name.clone(), (mono_key, init_expr.clone()));
+                            self.ctx
+                                .obj_instance_inits
+                                .insert(name.clone(), (mono_key, init_expr.clone()));
                         }
                     } else {
-                        self.ctx.field_index_map
+                        self.ctx
+                            .field_index_map
                             .insert(name.clone(), self.ctx.field_types.len());
                         self.push_field_type(&field_ty);
-                        self.ctx.field_initializers.insert(name.clone(), expr.clone());
+                        self.ctx
+                            .field_initializers
+                            .insert(name.clone(), expr.clone());
                     }
                 }
             } else if let TopLevel::Cell(c) = item {
@@ -7990,7 +9493,9 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                         cs_imap.insert(prefixed.clone(), cs_tys.len());
                         cs_tys.push(self.llvm_type(field_ty).to_string());
                         // Also register in %State for cell_persistent_ticks access
-                        self.ctx.field_index_map.insert(prefixed.clone(), self.ctx.field_types.len());
+                        self.ctx
+                            .field_index_map
+                            .insert(prefixed.clone(), self.ctx.field_types.len());
                         self.push_field_type(field_ty);
                         self.ctx.field_initializers.insert(prefixed, None);
                     }
@@ -7999,7 +9504,9 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                         cs_imap.insert(prefixed.clone(), cs_tys.len());
                         cs_tys.push(self.llvm_type(param_ty).to_string());
                         // Also register in %State
-                        self.ctx.field_index_map.insert(prefixed.clone(), self.ctx.field_types.len());
+                        self.ctx
+                            .field_index_map
+                            .insert(prefixed.clone(), self.ctx.field_types.len());
                         self.push_field_type(param_ty);
                         self.ctx.field_initializers.insert(prefixed, None);
                     }
@@ -8009,11 +9516,15 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                         let prefixed = format!("cell${}${}", c.name, trg.name);
                         cs_imap.insert(prefixed.clone(), cs_tys.len());
                         cs_tys.push(self.llvm_type(&Type::string()).to_string());
-                        self.ctx.field_index_map.insert(prefixed.clone(), self.ctx.field_types.len());
+                        self.ctx
+                            .field_index_map
+                            .insert(prefixed.clone(), self.ctx.field_types.len());
                         self.push_field_type(&Type::string());
                         self.ctx.field_initializers.insert(prefixed, None);
                     }
-                    self.ctx.cell_state_types.insert(c.name.clone(), (cs_imap, cs_tys));
+                    self.ctx
+                        .cell_state_types
+                        .insert(c.name.clone(), (cs_imap, cs_tys));
                     // 2026-07-14: reactor_speed removed from Transaction. Thread speed not available.
                     let has_thread_speed = false;
                     if has_thread_speed {
@@ -8023,13 +9534,17 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                     // Non-persistent (sync) cell: add to %State as prefixed slots
                     for (field_name, field_ty) in &c.fields {
                         let prefixed = format!("cell${}${}", c.name, field_name);
-                        self.ctx.field_index_map.insert(prefixed.clone(), self.ctx.field_types.len());
+                        self.ctx
+                            .field_index_map
+                            .insert(prefixed.clone(), self.ctx.field_types.len());
                         self.push_field_type(field_ty);
                         self.ctx.field_initializers.insert(prefixed, None);
                     }
                     for (param_name, param_ty) in &c.parameters {
                         let prefixed = format!("cell${}${}", c.name, param_name);
-                        self.ctx.field_index_map.insert(prefixed.clone(), self.ctx.field_types.len());
+                        self.ctx
+                            .field_index_map
+                            .insert(prefixed.clone(), self.ctx.field_types.len());
                         self.push_field_type(param_ty);
                         self.ctx.field_initializers.insert(prefixed, None);
                     }
@@ -8041,12 +9556,17 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
     // ── Chimera tracking (Phase 3) ──────────────────────────
     /// Check if a register holds a chimera value.
     pub(crate) fn is_chimera(&self, reg_name: &str) -> bool {
-        self.fun.chimera_map.get(reg_name).map_or(false, |c| c.is_chimera)
+        self.fun
+            .chimera_map
+            .get(reg_name)
+            .map_or(false, |c| c.is_chimera)
     }
 
     /// Get the backing type of a chimera value, if any.
     pub(crate) fn chimera_backing(&self, reg_name: &str) -> Option<&str> {
-        self.fun.chimera_map.get(reg_name)
+        self.fun
+            .chimera_map
+            .get(reg_name)
             .filter(|c| c.is_chimera)
             .map(|c| c.backing_type.as_str())
     }
@@ -8057,7 +9577,13 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
             c.is_chimera = true;
             c.backing_type = backing_type.to_string();
         } else {
-            self.fun.chimera_map.insert(reg_name.to_string(), ChimeraInfo { is_chimera: true, backing_type: backing_type.to_string() });
+            self.fun.chimera_map.insert(
+                reg_name.to_string(),
+                ChimeraInfo {
+                    is_chimera: true,
+                    backing_type: backing_type.to_string(),
+                },
+            );
         }
     }
 
@@ -8126,16 +9652,22 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
             let Some(fields) = self.ctx.struct_types.get(name) else {
                 continue;
             };
-            let Some(bytes) = self.ctx.type_universe.as_ref()
+            let Some(bytes) = self
+                .ctx
+                .type_universe
+                .as_ref()
                 .and_then(|u| u.types.get(name))
                 .map(|rt| rt.bytes)
             else {
                 continue;
             };
-            let end = fields.iter().map(|(field, ty)| {
-                self.lookup_field_offset(name, field)
-                    + self.field_storage_size(ty)
-            }).max().unwrap_or(0);
+            let end = fields
+                .iter()
+                .map(|(field, ty)| {
+                    self.lookup_field_offset(name, field) + self.field_storage_size(ty)
+                })
+                .max()
+                .unwrap_or(0);
             debug_assert!(
                 bytes >= end,
                 "structural layout {name}: size {bytes} < field end {end}"
@@ -8144,7 +9676,11 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
     }
 
     pub(crate) fn compute_state_size_bytes(&self) -> i64 {
-        self.ctx.field_types.iter().map(|t| llvm_type_byte_size(t)).sum()
+        self.ctx
+            .field_types
+            .iter()
+            .map(|t| llvm_type_byte_size(t))
+            .sum()
     }
 
     // ── Adaptive Layout — apply field modes ──────────────────
@@ -8156,34 +9692,48 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
     /// region analysis (which determines which txns fire under which
     /// conditions). Running dead-field elimination earlier would conservatively
     /// keep all fields, missing elimination opportunities.
-    pub(crate) fn apply_field_modes(&mut self, items: &[TopLevel],
+    pub(crate) fn apply_field_modes(
+        &mut self,
+        items: &[TopLevel],
         live_fields: &std::collections::HashSet<String>,
-        projection_usage: &std::collections::HashMap<String, std::collections::HashSet<String>>)
-    {
-        let all_state_fields: std::collections::HashSet<String> = self.ctx.field_index_map.keys().cloned().collect();
+        projection_usage: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    ) {
+        let all_state_fields: std::collections::HashSet<String> =
+            self.ctx.field_index_map.keys().cloned().collect();
         let referenced_fields = crate::analysis::transition_graph::compute_referenced_fields(items);
         // Union with live_fields to prevent elimination of precondition-only,
         // postcondition-only, or exit-condition-only fields. live_fields includes
         // fields referenced in contracts and #!exit expressions.
-        let referenced_fields: std::collections::HashSet<String> = referenced_fields.union(live_fields).cloned().collect();
+        let referenced_fields: std::collections::HashSet<String> =
+            referenced_fields.union(live_fields).cloned().collect();
         self.ctx.field_modes = crate::analysis::transition_graph::assign_field_modes(
-            &all_state_fields, &referenced_fields, projection_usage);
+            &all_state_fields,
+            &referenced_fields,
+            projection_usage,
+        );
         // Triggers must never be eliminated — they're accessed by the event loop,
         // not by txn body identifiers.
         for name in &self.ctx.trigger_names {
-            self.ctx.field_modes.insert(name.clone(), crate::analysis::FieldMode::Always);
+            self.ctx
+                .field_modes
+                .insert(name.clone(), crate::analysis::FieldMode::Always);
         }
         // Cell fields and parameters must never be eliminated — they're accessed
         // by Expr::CellCall codegen with cellular$name prefixed names.
         for name in self.ctx.field_index_map.keys() {
             if name.starts_with("cell$") {
-                self.ctx.field_modes.insert(name.clone(), crate::analysis::FieldMode::Always);
+                self.ctx
+                    .field_modes
+                    .insert(name.clone(), crate::analysis::FieldMode::Always);
             }
         }
         // Synthetic cycle_count field must never be eliminated — it's maintained
         // by the tick loop, not by txn body code.
         if let Some(idx) = self.ctx.field_index_map.get("cycle_count") {
-            self.ctx.field_modes.insert("cycle_count".to_string(), crate::analysis::FieldMode::Always);
+            self.ctx.field_modes.insert(
+                "cycle_count".to_string(),
+                crate::analysis::FieldMode::Always,
+            );
         }
         // 2026-08-11 (view wiring): fields referenced by web view bindings are
         // consumed by the DOM — observable, hence live (observability-as-liveness).
@@ -8192,14 +9742,18 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         // the shim's binding table maps these names to handles.
         for name in &self.ctx.view_bound_fields {
             if self.ctx.field_index_map.contains_key(name) {
-                self.ctx.field_modes.insert(name.clone(), crate::analysis::FieldMode::Always);
+                self.ctx
+                    .field_modes
+                    .insert(name.clone(), crate::analysis::FieldMode::Always);
             }
         }
         // 2026-07-19: Arena system fields must never be eliminated — they're
         // accessed by emit_arena_alloc via %State field indices, not by identifiers.
         for arena_name in &["__arena_ptr", "__arena_end", "__arena_base"] {
             if let Some(idx) = self.ctx.field_index_map.get(*arena_name) {
-                self.ctx.field_modes.insert(arena_name.to_string(), crate::analysis::FieldMode::Always);
+                self.ctx
+                    .field_modes
+                    .insert(arena_name.to_string(), crate::analysis::FieldMode::Always);
             }
         }
         self.ctx.cache_slots.clear();
@@ -8226,15 +9780,21 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
             let mode = if self.ctx.instance_slots.contains(name) {
                 crate::analysis::FieldMode::Always
             } else {
-                self.ctx.field_modes.get(name).copied().unwrap_or(crate::analysis::FieldMode::Always)
+                self.ctx
+                    .field_modes
+                    .get(name)
+                    .copied()
+                    .unwrap_or(crate::analysis::FieldMode::Always)
             };
             match mode {
                 crate::analysis::FieldMode::Never => {
                     // Eliminate this field from %State entirely
                 }
-                crate::analysis::FieldMode::Always | crate::analysis::FieldMode::LazyCached { .. } => {
+                crate::analysis::FieldMode::Always
+                | crate::analysis::FieldMode::LazyCached { .. } => {
                     let new_idx = self.ctx.field_types.len();
-                    let orig_type_idx = old_pairs.iter()
+                    let orig_type_idx = old_pairs
+                        .iter()
                         .find(|(n, _)| n == name)
                         .map(|(_, i)| *i)
                         .unwrap_or(0);
@@ -8242,7 +9802,10 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                     self.ctx.field_types.push(old_types[orig_type_idx].clone());
                     // 2026-06-29: Preserve the original Briev type alongside LLVM type
                     self.ctx.field_briev_types.push(
-                        old_briev_types.get(orig_type_idx).cloned().unwrap_or(Type::int())
+                        old_briev_types
+                            .get(orig_type_idx)
+                            .cloned()
+                            .unwrap_or(Type::int()),
                     );
                 }
             }
@@ -8264,7 +9827,7 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                     for target_name in targets {
                         let cache_idx = self.ctx.field_types.len();
                         self.ctx.field_types.push("i64".to_string());
-            self.ctx.field_briev_types.push(Type::int());
+                        self.ctx.field_briev_types.push(Type::int());
                         let valid_idx = self.ctx.field_types.len();
                         self.ctx.field_types.push("i8".to_string());
                         self.ctx.field_briev_types.push(Type::bool_());
@@ -8275,10 +9838,10 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                 if target_map.is_empty() {
                     let cache_idx = self.ctx.field_types.len();
                     self.ctx.field_types.push("i64".to_string());
-            self.ctx.field_briev_types.push(Type::int());
+                    self.ctx.field_briev_types.push(Type::int());
                     let valid_idx = self.ctx.field_types.len();
                     self.ctx.field_types.push("i8".to_string());
-                        self.ctx.field_briev_types.push(Type::bool_());
+                    self.ctx.field_briev_types.push(Type::bool_());
                     target_map.insert("_".to_string(), (cache_idx, valid_idx));
                 }
                 self.ctx.cache_slots.insert(name.clone(), target_map);
@@ -8291,7 +9854,10 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         // base the frontend spawn analysis knows about, so `spawn Obj()`
         // doesn't panic on a missing pool and the member bodies resolve their
         // columns instead of a nonexistent `@member` global.
-        let pool_bases: Vec<String> = self.ctx.spawn_pools.keys()
+        let pool_bases: Vec<String> = self
+            .ctx
+            .spawn_pools
+            .keys()
             .chain(self.ctx.dependent_pools.keys())
             .chain(self.ctx.spawn_storage.keys())
             .cloned()
@@ -8313,9 +9879,8 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
             if self.is_heap_coll(base) {
                 continue;
             }
-            let slots: Vec<(String, Type)> = self.ctx.struct_types.get(base)
-                .cloned()
-                .unwrap_or_default();
+            let slots: Vec<(String, Type)> =
+                self.ctx.struct_types.get(base).cloned().unwrap_or_default();
             if slots.is_empty() {
                 continue;
             }
@@ -8346,7 +9911,9 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         // mount props — overrides the None the StateDecl registration inserted.
         for (slot, init) in &self.ctx.component_initializers {
             if self.ctx.field_index_map.contains_key(slot) {
-                self.ctx.field_initializers.insert(slot.clone(), Some(init.clone()));
+                self.ctx
+                    .field_initializers
+                    .insert(slot.clone(), Some(init.clone()));
             }
         }
 
@@ -8356,7 +9923,6 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         for (i, name) in plain_names.into_iter().enumerate() {
             self.ctx.plain_index_map.insert(name.clone(), i);
         }
-
     }
 
     /// 2026-08-07 (object instance pools): register a base's allocator counter
@@ -8393,9 +9959,8 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
     /// column (per-firing), so a local op-surface collection boxes.
     fn is_op_surface_coll(&self, base: &str) -> bool {
         self.ctx.operator_defs.get(base).map_or(false, |defs| {
-            defs.iter().any(|d| {
-                d.op == "InsertAt" || d.op == "Count" || d.op == "Init" || d.op == "Iter"
-            })
+            defs.iter()
+                .any(|d| d.op == "InsertAt" || d.op == "Count" || d.op == "Init" || d.op == "Iter")
         })
     }
 
@@ -8428,11 +9993,16 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
     /// the base entry alone returns 0 for every generic coll.
     fn coll_fixed_length(&self, ty: &crate::ast::Type) -> i64 {
         let key = match ty {
-            crate::ast::Type::Applied(n, args) if self.ctx.obj_type_params.contains_key(n.as_str()) => {
+            crate::ast::Type::Applied(n, args)
+                if self.ctx.obj_type_params.contains_key(n.as_str()) =>
+            {
                 format!(
                     "{}<{}>",
                     n,
-                    args.iter().map(|t| format!("{}", t)).collect::<Vec<_>>().join(", ")
+                    args.iter()
+                        .map(|t| format!("{}", t))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             }
             crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
@@ -8452,10 +10022,17 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
     fn register_pool_columns(&mut self, base: &str, slots: &[(String, Type)]) {
         let counter_name = format!("__spawn_next_{}", base);
         if !self.ctx.field_index_map.contains_key(&counter_name) {
-            self.ctx.field_index_map
+            self.ctx
+                .field_index_map
                 .insert(counter_name.clone(), self.ctx.field_types.len());
             self.push_field_type(&Type::int());
-            let first_spawn_row = self.ctx.static_instance_counts.get(base).copied().unwrap_or(0).max(1);
+            let first_spawn_row = self
+                .ctx
+                .static_instance_counts
+                .get(base)
+                .copied()
+                .unwrap_or(0)
+                .max(1);
             self.ctx.field_initializers.insert(
                 counter_name.clone(),
                 Some(Expr::Decimal(first_spawn_row as i64)),
@@ -8465,7 +10042,12 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         // 2026-10-20 (obj-globals): rows 0..N-1 are the top-level instances;
         // spawn allocation continues from N. Capacity covers both (at least
         // one row so the spawn counter's start row exists).
-        let statics = self.ctx.static_instance_counts.get(base).copied().unwrap_or(0);
+        let statics = self
+            .ctx
+            .static_instance_counts
+            .get(base)
+            .copied()
+            .unwrap_or(0);
         let spawns = self.ctx.spawn_pools.get(base).copied().unwrap_or(0);
         let capacity = statics.max(1) + spawns;
         let is_dependent = self.ctx.dependent_pools.contains_key(base);
@@ -8507,7 +10089,8 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                     vec![crate::ast::Dimension::Anonymous(capacity)],
                 ),
             };
-            self.ctx.field_index_map
+            self.ctx
+                .field_index_map
                 .insert(slot_name.clone(), self.ctx.field_types.len());
             self.push_field_type(&column);
             self.ctx.field_initializers.insert(slot_name.clone(), None);
@@ -8531,7 +10114,9 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
     fn scan_trg_stmt(&mut self, stmt: &Statement) {
         if let Statement::TrgBinding { instance, .. } = stmt {
             if let Expr::Call(callee, args, _) = instance {
-                if !self.ctx.cell_defs.contains_key(callee) { return; }
+                if !self.ctx.cell_defs.contains_key(callee) {
+                    return;
+                }
                 let cell = &self.ctx.cell_defs[callee];
                 for (i, arg) in args.iter().enumerate() {
                     if let Expr::Field(inner, port_name) = arg {
@@ -8609,8 +10194,11 @@ fn collect_written_fields_inner(body: &[Statement], out: &mut std::collections::
                     insert_write_root(recv, out);
                 }
             }
-            Statement::Guarded(_, body) | Statement::Block(body)
-            | Statement::Defer(body) | Statement::Mutex(body) | Statement::SyncBlock(body) => {
+            Statement::Guarded(_, body)
+            | Statement::Block(body)
+            | Statement::Defer(body)
+            | Statement::Mutex(body)
+            | Statement::SyncBlock(body) => {
                 collect_written_fields_inner(body, out);
             }
             Statement::Foreach { body, .. } => collect_written_fields_inner(body, out),
@@ -8657,7 +10245,12 @@ fn contains_beginprogram_conjunct(e: &Expr) -> bool {
 /// `i > bound`, `i != bound`, a bare `i` use, or a boundary comparison against
 /// a value that isn't THIS node's bound. A boundary `i == bound` / `i >= bound`
 /// (either operand order) against the node's own bound is safe.
-fn expr_has_unsafe_counter_ref(e: &Expr, counter: &str, bound_var: &str, bound_lit: Option<i64>) -> bool {
+fn expr_has_unsafe_counter_ref(
+    e: &Expr,
+    counter: &str,
+    bound_var: &str,
+    bound_lit: Option<i64>,
+) -> bool {
     match e {
         Expr::Identifier(n) => n == counter,
         Expr::BinaryOp(kind, l, r) => {
@@ -8695,9 +10288,15 @@ fn counter_compare_is_unsafe(
 ) -> bool {
     let other = if counter_on_left { r } else { l };
     let boundary_kind = if counter_on_left {
-        matches!(kind, crate::ast::BinaryOpKind::Eq | crate::ast::BinaryOpKind::Ge)
+        matches!(
+            kind,
+            crate::ast::BinaryOpKind::Eq | crate::ast::BinaryOpKind::Ge
+        )
     } else {
-        matches!(kind, crate::ast::BinaryOpKind::Eq | crate::ast::BinaryOpKind::Le)
+        matches!(
+            kind,
+            crate::ast::BinaryOpKind::Eq | crate::ast::BinaryOpKind::Le
+        )
     };
     if !boundary_kind {
         return true;
@@ -8738,7 +10337,9 @@ fn walk_expr_children(e: &Expr, f: &mut dyn FnMut(&Expr)) {
                 f(el);
             }
         }
-        Expr::Slice { array, start, end, .. } => {
+        Expr::Slice {
+            array, start, end, ..
+        } => {
             f(array);
             if let Some(s) = start {
                 f(s);

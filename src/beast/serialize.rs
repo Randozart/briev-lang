@@ -2,10 +2,10 @@
 // 2026-07-14: Walk Vec<TopLevel> + TypeUniverse → .beast S-expression text.
 // Every function is max 2 levels. Extract helpers for deeper logic.
 
-use std::fmt::Write;
+use super::sexpr::{Atom, SExpr, to_string};
 use crate::ast::*;
 use crate::type_universe::{ResolvedType, TypeUniverse};
-use super::sexpr::{to_string, Atom, SExpr};
+use std::fmt::Write;
 
 /// Serialize a compiled program to BEAST S-expression text.
 pub fn to_beast(items: &[TopLevel], universe: &TypeUniverse) -> String {
@@ -106,8 +106,12 @@ fn emit_definition(d: &Definition) -> SExpr {
 
 fn emit_transaction(t: &Transaction) -> SExpr {
     let mut children: Vec<SExpr> = vec![atom("txn"), atom(&t.name)];
-    if t.is_reactive { children.push(atom(":reactive")); }
-    if t.is_async { children.push(atom(":async")); }
+    if t.is_reactive {
+        children.push(atom(":reactive"));
+    }
+    if t.is_async {
+        children.push(atom(":async"));
+    }
     children.push(emit_params(&t.parameters));
     children.push(emit_contract(&t.contract));
     for (k, v) in &t.metadata {
@@ -142,7 +146,12 @@ fn emit_trigger(t: &Trigger) -> SExpr {
 }
 
 fn emit_constant(c: &Constant) -> SExpr {
-    list(&[atom("constant"), atom(&c.name), emit_type(&c.ty), emit_expr(&c.expr)])
+    list(&[
+        atom("constant"),
+        atom(&c.name),
+        emit_type(&c.ty),
+        emit_expr(&c.expr),
+    ])
 }
 
 fn emit_typedef(t: &TypeDef) -> SExpr {
@@ -163,11 +172,7 @@ fn emit_typedef(t: &TypeDef) -> SExpr {
     if !t.body.pins.is_empty() {
         let mut pins: Vec<SExpr> = vec![atom("pins")];
         for p in &t.body.pins {
-            let mut entry = vec![
-                atom("pin"),
-                atom(&p.name),
-                atom(&p.number.to_string()),
-            ];
+            let mut entry = vec![atom("pin"), atom(&p.name), atom(&p.number.to_string())];
             // 2026-09-21 (E12): class ascription serialized only when
             // present — pre-E12 byte streams stay byte-identical (the
             // reader defaults to None when the 4th atom is absent).
@@ -199,9 +204,7 @@ fn emit_typedef(t: &TypeDef) -> SExpr {
 
 fn emit_statement(s: &Statement) -> SExpr {
     match s {
-        Statement::Assign(lhs, rhs) => {
-            list(&[atom("assign"), emit_expr(lhs), emit_expr(rhs)])
-        }
+        Statement::Assign(lhs, rhs) => list(&[atom("assign"), emit_expr(lhs), emit_expr(rhs)]),
         Statement::Let { name, expr, .. } => {
             let mut children = vec![atom("let"), atom(name)];
             if let Some(e) = expr {
@@ -209,34 +212,35 @@ fn emit_statement(s: &Statement) -> SExpr {
             }
             SExpr::List(children)
         }
-        Statement::Term(e) => {
-            match e {
-                Some(e) => list(&[atom("term"), emit_expr(e)]),
-                None => list(&[atom("term")]),
-            }
-        }
+        Statement::Term(e) => match e {
+            Some(e) => list(&[atom("term"), emit_expr(e)]),
+            None => list(&[atom("term")]),
+        },
         // 2026-10-16 (tails): a defn-body tail round-trips as the
         // value-term form — both are unconditional value returns; the AST
         // shape differs, the semantics do not.
         Statement::Tail(e) => list(&[atom("term"), emit_expr(e)]),
-        Statement::EndProgram(e) => {
-            match e {
-                Some(e) => list(&[atom("term!"), emit_expr(e)]),
-                None => list(&[atom("term!")]),
-            }
-        }
+        Statement::EndProgram(e) => match e {
+            Some(e) => list(&[atom("term!"), emit_expr(e)]),
+            None => list(&[atom("term!")]),
+        },
         // 2026-08-22 (Phase 8): yield; round-trips through beast snapshots.
         Statement::Yield => list(&[atom("yield")]),
-        Statement::Expression(e) => list(&[atom("expr"), emit_expr(e)]),        Statement::Guarded(cond, body) => {
+        Statement::Expression(e) => list(&[atom("expr"), emit_expr(e)]),
+        Statement::Guarded(cond, body) => {
             let mut children = vec![atom("guarded"), emit_expr(cond)];
             children.push(list(&[atom("body")]));
-            for s in body { children.push(emit_statement(s)); }
+            for s in body {
+                children.push(emit_statement(s));
+            }
             SExpr::List(children)
         }
         Statement::Gate(cond) => list(&[atom("gate"), emit_expr(cond)]),
         Statement::Block(body) => {
             let mut children = vec![atom("block")];
-            for s in body { children.push(emit_statement(s)); }
+            for s in body {
+                children.push(emit_statement(s));
+            }
             SExpr::List(children)
         }
         Statement::MetadataAssignment(key, val) => {
@@ -258,18 +262,21 @@ fn emit_expr(e: &Expr) -> SExpr {
         Expr::Identifier(name) => list(&[atom("ident"), atom(name)]),
         Expr::Call(name, args, _) => {
             let mut children = vec![atom("call"), atom(name)];
-            for a in args { children.push(emit_expr(a)); }
+            for a in args {
+                children.push(emit_expr(a));
+            }
             SExpr::List(children)
         }
-        Expr::BinaryOp(kind, l, r) => {
-            list(&[atom("binop"), atom(&format!("{:?}", kind)), emit_expr(l), emit_expr(r)])
-        }
+        Expr::BinaryOp(kind, l, r) => list(&[
+            atom("binop"),
+            atom(&format!("{:?}", kind)),
+            emit_expr(l),
+            emit_expr(r),
+        ]),
         Expr::UnaryOp(kind, inner) => {
             list(&[atom("unop"), atom(&format!("{:?}", kind)), emit_expr(inner)])
         }
-        Expr::Field(obj, name) => {
-            list(&[atom("field"), emit_expr(obj), atom(name)])
-        }
+        Expr::Field(obj, name) => list(&[atom("field"), emit_expr(obj), atom(name)]),
         Expr::Reflect(recv, target, kind) => {
             let kind_atom = match kind {
                 ReflectKind::Runtime => "reflect_runtime",
@@ -279,43 +286,50 @@ fn emit_expr(e: &Expr) -> SExpr {
         }
         Expr::MethodCall(recv, name, args, _) => {
             let mut children = vec![atom("method"), emit_expr(recv), atom(name)];
-            for a in args { children.push(emit_expr(a)); }
+            for a in args {
+                children.push(emit_expr(a));
+            }
             SExpr::List(children)
         }
-        Expr::PluginIntercept { name, args, type_args: _, receiver } => {
+        Expr::PluginIntercept {
+            name,
+            args,
+            type_args: _,
+            receiver,
+        } => {
             let mut children = vec![atom("plugin"), atom(name)];
             match receiver {
                 Some(r) => children.push(emit_expr(r)),
                 None => children.push(list(&[atom("none")])),
             }
-            for a in args { children.push(emit_expr(a)); }
+            for a in args {
+                children.push(emit_expr(a));
+            }
             SExpr::List(children)
         }
-        Expr::Index(obj, idx) => {
-            list(&[atom("index"), emit_expr(obj), emit_expr(idx)])
-        }
+        Expr::Index(obj, idx) => list(&[atom("index"), emit_expr(obj), emit_expr(idx)]),
         Expr::Tuple(items) => {
             let mut children = vec![atom("tuple")];
-            for item in items { children.push(emit_expr(item)); }
+            for item in items {
+                children.push(emit_expr(item));
+            }
             SExpr::List(children)
         }
         Expr::List(items) => {
             let mut children = vec![atom("list")];
-            for item in items { children.push(emit_expr(item)); }
+            for item in items {
+                children.push(emit_expr(item));
+            }
             SExpr::List(children)
         }
-        Expr::Cast(expr, ty) => {
-            list(&[atom("cast"), emit_expr(expr), emit_type(ty)])
-        }
-        Expr::Deref(inner) => {
-            list(&[atom("deref"), emit_expr(inner)])
-        }
-        Expr::AddrOf(inner) => {
-            list(&[atom("addrof"), emit_expr(inner)])
-        }
+        Expr::Cast(expr, ty) => list(&[atom("cast"), emit_expr(expr), emit_type(ty)]),
+        Expr::Deref(inner) => list(&[atom("deref"), emit_expr(inner)]),
+        Expr::AddrOf(inner) => list(&[atom("addrof"), emit_expr(inner)]),
         Expr::If(cond, t, f) => {
             let mut children = vec![atom("if"), emit_expr(cond), emit_expr(t)];
-            if let Some(fe) = f { children.push(emit_expr(fe)); }
+            if let Some(fe) = f {
+                children.push(emit_expr(fe));
+            }
             SExpr::List(children)
         }
         _ => atom(&format!("{:?}", e)),
@@ -351,7 +365,9 @@ fn pv_to_sexpr(pv: &PropertyValue) -> SExpr {
         PropertyValue::Bool(b) => SExpr::Atom(Atom::Bool(*b)),
         PropertyValue::List(items) => {
             let mut children = vec![atom("list")];
-            for item in items { children.push(pv_to_sexpr(item)); }
+            for item in items {
+                children.push(pv_to_sexpr(item));
+            }
             SExpr::List(children)
         }
         // 2026-09-23 (quantities plan): tagged form `(quantity <si>
@@ -386,11 +402,11 @@ mod tests {
 
     #[test]
     fn test_roundtrip_simple() {
-        let items = vec![
-            TopLevel::StateDecl(StateDecl {
-                name: "counter".into(), ty: Type::int(), span: None,
-            }),
-        ];
+        let items = vec![TopLevel::StateDecl(StateDecl {
+            name: "counter".into(),
+            ty: Type::int(),
+            span: None,
+        })];
         let universe = TypeUniverse::new();
         let ir = to_beast(&items, &universe);
         let (restored, _) = from_beast(&ir).unwrap();
@@ -420,14 +436,33 @@ mod tests {
             seq: false,
             body: TypeDefBody {
                 reference: None,
-                slots: vec![TypeDefSlot { name: "r".into(), ty: Type::int(), bit_range: None }],
+                slots: vec![TypeDefSlot {
+                    name: "r".into(),
+                    ty: Type::int(),
+                    bit_range: None,
+                }],
                 pins: vec![
-                    crate::ast::top::PinDecl { name: "a".into(), number: 1, class_ref: None, unit: None, span: None },
-                    crate::ast::top::PinDecl { name: "b".into(), number: 7, class_ref: Some("Power".into()), unit: None, span: None },
+                    crate::ast::top::PinDecl {
+                        name: "a".into(),
+                        number: 1,
+                        class_ref: None,
+                        unit: None,
+                        span: None,
+                    },
+                    crate::ast::top::PinDecl {
+                        name: "b".into(),
+                        number: 7,
+                        class_ref: Some("Power".into()),
+                        unit: None,
+                        span: None,
+                    },
                 ],
                 metadata: {
                     let mut m = std::collections::HashMap::new();
-                    m.insert("reference".to_string(), crate::ast::PropertyValue::String("R".to_string()));
+                    m.insert(
+                        "reference".to_string(),
+                        crate::ast::PropertyValue::String("R".to_string()),
+                    );
                     m
                 },
                 projections: vec![],
@@ -512,7 +547,11 @@ mod tests {
             seq: false,
             body: TypeDefBody {
                 reference: None,
-                slots: vec![TypeDefSlot { name: "state".into(), ty: Type::int(), bit_range: None }],
+                slots: vec![TypeDefSlot {
+                    name: "state".into(),
+                    ty: Type::int(),
+                    bit_range: None,
+                }],
                 pins: vec![],
                 metadata: std::collections::HashMap::new(),
                 projections: vec![],
@@ -533,7 +572,12 @@ mod tests {
         match (&items[0], &restored[0]) {
             (TopLevel::TypeDef(a), TopLevel::TypeDef(b)) => {
                 assert_eq!(a.body.members.len(), 1);
-                assert_eq!(b.body.members.len(), 1, "member must round-trip; got: {}", ir);
+                assert_eq!(
+                    b.body.members.len(),
+                    1,
+                    "member must round-trip; got: {}",
+                    ir
+                );
                 match &b.body.members[0] {
                     TopLevel::Definition(d) => assert_eq!(d.name, "reset"),
                     other => panic!("expected Definition member, got {:?}", other),
@@ -565,24 +609,22 @@ mod tests {
             post_authority: false,
             span: None,
         };
-        let items = vec![
-            TopLevel::Definition(Definition {
-                variadic_param: None,
-                name: "main".into(),
-                type_params: vec![],
-                parameters: vec![],
-                output_type: None,
-                outputs: vec![Type::int()],
-                contract,
-                body: vec![],
-                metadata: std::collections::HashMap::new(),
-                derivation: None,
-                modifiers: vec![],
-                annotations: vec![],
-                span: None,
-                doc: None,
-            }),
-        ];
+        let items = vec![TopLevel::Definition(Definition {
+            variadic_param: None,
+            name: "main".into(),
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![Type::int()],
+            contract,
+            body: vec![],
+            metadata: std::collections::HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            annotations: vec![],
+            span: None,
+            doc: None,
+        })];
         let universe = TypeUniverse::new();
         let ir = to_beast(&items, &universe);
         assert!(
@@ -618,7 +660,8 @@ mod tests {
             Box::new(Expr::Identifier("c".into())),
             "pick".into(),
             vec![Expr::Decimal(1)],
-            None);
+            None,
+        );
         let s = to_string(&emit_expr(&method));
         let tokens = crate::beast::sexpr::tokenize(&s).unwrap();
         let parsed = crate::beast::sexpr::parse(&tokens).unwrap();
@@ -642,23 +685,21 @@ mod tests {
     fn test_roundtrip_init() {
         // 2026-08-09: init decl with a bounded value set round-trips through
         // BEAST preserving name, bound, type, and seeding expr.
-        let items = vec![
-            TopLevel::Init(crate::ast::InitDecl {
-                name: "BufSize".into(),
-                bound: Some(crate::ast::BoundSpec::Choice(vec![
-                    crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(64)),
-                    crate::ast::BoundSpec::Range(
-                        crate::ast::BoundTerm::Lit(128),
-                        crate::ast::BoundTerm::Ref("LO".into()),
-                    ),
-                ])),
-                ty: Type::int(),
-                value: Some(Expr::Identifier("compute".into())),
-                body: vec![],
-                span: None,
-                doc: None,
-            }),
-        ];
+        let items = vec![TopLevel::Init(crate::ast::InitDecl {
+            name: "BufSize".into(),
+            bound: Some(crate::ast::BoundSpec::Choice(vec![
+                crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(64)),
+                crate::ast::BoundSpec::Range(
+                    crate::ast::BoundTerm::Lit(128),
+                    crate::ast::BoundTerm::Ref("LO".into()),
+                ),
+            ])),
+            ty: Type::int(),
+            value: Some(Expr::Identifier("compute".into())),
+            body: vec![],
+            span: None,
+            doc: None,
+        })];
         let universe = TypeUniverse::new();
         let ir = to_beast(&items, &universe);
         let (restored, _) = from_beast(&ir).unwrap();

@@ -2,12 +2,12 @@
 //! H3a unified HIR fact projection. One build entry point feeds every ported
 //! analysis; individual fact families remain independently testable.
 
-use super::constructors::{build_constructor_facts, HirConstructorFacts};
-use super::ownership::{build_value_facts, HirValueFacts};
+use super::constructors::{HirConstructorFacts, build_constructor_facts};
+use super::ownership::{HirValueFacts, build_value_facts};
 use super::program::HirProgram;
-use super::sinks::{build_sink_facts, HirSinkFacts};
-use super::tail_calls::{build_tail_call_facts, HirTailCallFacts};
-use super::type_facts::{build_type_facts, HirTypeFacts};
+use super::sinks::{HirSinkFacts, build_sink_facts};
+use super::tail_calls::{HirTailCallFacts, build_tail_call_facts};
+use super::type_facts::{HirTypeFacts, build_type_facts};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HirFacts {

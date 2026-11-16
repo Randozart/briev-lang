@@ -10,12 +10,12 @@
 // 2026-08-01 (Phase 2): Contract.is_entry removed (the [#] entry marker is
 // replaced by the entry!/args! macros in Phase 3).
 
-mod display;
-mod canonical;
-mod expr;
-pub mod top;
 pub mod bad;
 pub mod bld;
+mod canonical;
+mod display;
+mod expr;
+pub mod top;
 mod types;
 pub mod visit;
 pub mod visit_mut;

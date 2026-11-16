@@ -9,8 +9,8 @@ use crate::ast::TopLevel;
 use crate::backend::llvm::types;
 use crate::lexer::Token;
 use crate::parser;
-use crate::typechecker;
 use crate::type_universe::TypeUniverse;
+use crate::typechecker;
 
 /// Run the library mode pipeline: compile a .bv to .a
 pub fn run_library_mode(args: &[String]) -> Result<(), String> {
@@ -23,12 +23,12 @@ pub fn run_library_mode(args: &[String]) -> Result<(), String> {
     let llvm_ir = generate_with_exports(&items, file_path)?;
 
     // Write IR to temp file
-    let stem = Path::new(file_path).file_stem()
+    let stem = Path::new(file_path)
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
     let ll_path = format!("{}.ll", stem);
-    std::fs::write(&ll_path, &llvm_ir)
-        .map_err(|e| format!("cannot write '{}': {}", ll_path, e))?;
+    std::fs::write(&ll_path, &llvm_ir).map_err(|e| format!("cannot write '{}': {}", ll_path, e))?;
 
     // Step 2: llc -> .o
     let o_path = format!("{}.o", stem);
@@ -62,7 +62,10 @@ pub fn run_library_mode(args: &[String]) -> Result<(), String> {
 
 /// Parse, type-check, and resolve imports for a Briev source file.
 /// 2026-07-22: Resolves imports so the full LLVM backend has all definitions.
-pub fn parse_and_check(file_path: &str, source: &str) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
+pub fn parse_and_check(
+    file_path: &str,
+    source: &str,
+) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
     use crate::import_resolver::ImportResolver;
     use logos::Logos;
 
@@ -82,12 +85,14 @@ pub fn parse_and_check(file_path: &str, source: &str) -> Result<(Vec<TopLevel>, 
     }
 
     let mut p = parser::Parser::new(tokens, source);
-    let mut items = p.parse_program()
+    let mut items = p
+        .parse_program()
         .map_err(|e| format!("parse error: {}", e))?;
 
     // 2026-07-22: Resolve imports so internal definitions are available
     let mut resolver = ImportResolver::new();
-    items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))
+    items = resolver
+        .resolve_imports(items, &std::path::PathBuf::from(file_path))
         .map_err(|e| format!("import resolution error: {}", e))?;
 
     // 2026-11-04: library checking needs the same declaration metadata as
@@ -95,11 +100,10 @@ pub fn parse_and_check(file_path: &str, source: &str) -> Result<(Vec<TopLevel>, 
     // emitter targets x86_64 below. Retire when both use one frontend entry.
     let mut universe = TypeUniverse::new();
     crate::backend::register_types::register_typedefs(&items, &mut universe, 64)?;
-    typechecker::check_program(&mut items, &universe)
-        .map_err(|errors| {
-            let msgs: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();
-            format!("type errors:\n  {}", msgs.join("\n  "))
-        })?;
+    typechecker::check_program(&mut items, &universe).map_err(|errors| {
+        let msgs: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();
+        format!("type errors:\n  {}", msgs.join("\n  "))
+    })?;
 
     Ok((items, universe))
 }
@@ -131,16 +135,27 @@ pub fn generate_with_exports(items: &[TopLevel], _file_path: &str) -> Result<Str
 /// Emit a definition as a regular LLVM function.
 fn emit_definition(defn: &crate::ast::Definition, out: &mut String) -> Result<(), String> {
     use std::fmt::Write;
-    let params: Vec<String> = defn.parameters.iter()
+    let params: Vec<String> = defn
+        .parameters
+        .iter()
         .map(|(name, ty)| format!("{} %{}", types::lower_type(ty, None), name))
         .collect();
-    let ret_ty = defn.output_type.as_ref()
+    let ret_ty = defn
+        .output_type
+        .as_ref()
         .map(|ot| match ot {
             crate::ast::OutputType::Single(ty) => types::lower_type(ty, None),
             _ => "i64".into(),
         })
         .unwrap_or_else(|| "void".into());
-    writeln!(out, "define {} @{}({}) {{", ret_ty, defn.name, params.join(", ")).unwrap();
+    writeln!(
+        out,
+        "define {} @{}({}) {{",
+        ret_ty,
+        defn.name,
+        params.join(", ")
+    )
+    .unwrap();
     if ret_ty == "ptr" {
         writeln!(out, "  ret ptr null").unwrap();
     } else {
@@ -161,20 +176,32 @@ fn emit_export_wrapper(defn: &crate::ast::Definition, out: &mut String) -> Resul
     // collision with the export wrapper name. The definition is emitted
     // with this suffix so the wrapper can call it directly.
     let internal_name = format!("{}$internal", defn.name);
-    let params: Vec<String> = defn.parameters.iter()
+    let params: Vec<String> = defn
+        .parameters
+        .iter()
         .map(|(name, ty)| format!("{} %{}", types::lower_type(ty, None), name))
         .collect();
-    let ret_ty = defn.output_type.as_ref()
+    let ret_ty = defn
+        .output_type
+        .as_ref()
         .map(|ot| match ot {
             crate::ast::OutputType::Single(ty) => types::lower_type(ty, None),
             _ => "i64".into(),
         })
         .unwrap_or_else(|| "void".into());
     // Emit the internal function with original body (caller emits the body)
-    writeln!(out, "define internal {} @{}(ptr noalias nocapture align 8 %state{}) local_unnamed_addr #0 {{", 
-        ret_ty, internal_name, 
-        if params.is_empty() { String::new() } else { format!(", {}", params.join(", ")) }
-    ).unwrap();
+    writeln!(
+        out,
+        "define internal {} @{}(ptr noalias nocapture align 8 %state{}) local_unnamed_addr #0 {{",
+        ret_ty,
+        internal_name,
+        if params.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", params.join(", "))
+        }
+    )
+    .unwrap();
     if ret_ty == "ptr" {
         writeln!(out, "  ret ptr null").unwrap(); // stub body
     } else {
@@ -182,16 +209,33 @@ fn emit_export_wrapper(defn: &crate::ast::Definition, out: &mut String) -> Resul
     }
     writeln!(out, "}}").unwrap();
     // Emit the outer wrapper with C-compatible signature (no %state)
-    writeln!(out, "define {} @{}({}) #0 {{", ret_ty, export_name, params.join(", ")).unwrap();
+    writeln!(
+        out,
+        "define {} @{}({}) #0 {{",
+        ret_ty,
+        export_name,
+        params.join(", ")
+    )
+    .unwrap();
     // Allocate a dummy %State and call the internal function
     writeln!(out, "  %state = alloca i8, i64 8, align 8").unwrap();
-    let call_args: Vec<String> = defn.parameters.iter()
+    let call_args: Vec<String> = defn
+        .parameters
+        .iter()
         .map(|(name, ty)| format!("{} %{}", types::lower_type(ty, None), name))
         .collect();
-    writeln!(out, "  %result = call {} @{}(ptr %state{})", 
-        ret_ty, internal_name,
-        if call_args.is_empty() { String::new() } else { format!(", {}", call_args.join(", ")) }
-    ).unwrap();
+    writeln!(
+        out,
+        "  %result = call {} @{}(ptr %state{})",
+        ret_ty,
+        internal_name,
+        if call_args.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", call_args.join(", "))
+        }
+    )
+    .unwrap();
     if ret_ty == "ptr" {
         writeln!(out, "  ret ptr %result").unwrap();
     } else {
@@ -223,7 +267,8 @@ mod tests {
                 serving = true;
             };
         "#;
-        let (items, _) = parse_and_check("chain_test.bv", src).expect("chain must parse and typecheck");
+        let (items, _) =
+            parse_and_check("chain_test.bv", src).expect("chain must parse and typecheck");
         // 3 steps → 3 reactive nodes, named init_1 .. init_3.
         let steps: Vec<&crate::ast::TopLevel> = items
             .iter()

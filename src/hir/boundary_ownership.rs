@@ -11,8 +11,8 @@ use super::expr::{HirExpr, HirExprKind};
 use super::program::{HirCallable, HirCallableKind, HirOutput, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
 use crate::analysis::boundary_ownership::{
-    fold_ownership, meet_option, seed_from_protocol, BoundaryEntry, BoundaryOwnership,
-    BoundaryOwnershipResult, Direction,
+    BoundaryEntry, BoundaryOwnership, BoundaryOwnershipResult, Direction, fold_ownership,
+    meet_option, seed_from_protocol,
 };
 use crate::ast::Type;
 use crate::type_universe::TypeUniverse;
@@ -49,13 +49,27 @@ pub fn compute_boundary_ownership(
             .params
             .iter()
             .map(|(_, t)| {
-                seed_from_protocol(t, &convention, Direction::Param, universe, &declared_protocols)
+                seed_from_protocol(
+                    t,
+                    &convention,
+                    Direction::Param,
+                    universe,
+                    &declared_protocols,
+                )
             })
             .collect();
         let ret = f.ret.as_ref().map(|t| {
-            seed_from_protocol(t, &convention, Direction::Return, universe, &declared_protocols)
+            seed_from_protocol(
+                t,
+                &convention,
+                Direction::Return,
+                universe,
+                &declared_protocols,
+            )
         });
-        result.frgns.insert(f.name.clone(), BoundaryEntry { params, ret });
+        result
+            .frgns
+            .insert(f.name.clone(), BoundaryEntry { params, ret });
     }
 
     let mut ctx = FlowCtx {
@@ -189,8 +203,7 @@ impl<'a> FlowCtx<'a> {
             HirExprKind::Cast { inner, .. } => self.expr_ownership(inner),
             HirExprKind::MethodCall { receiver, args, .. } => {
                 let r = self.expr_ownership(receiver);
-                let args_own =
-                    fold_ownership(args.iter().filter_map(|a| self.expr_ownership(a)));
+                let args_own = fold_ownership(args.iter().filter_map(|a| self.expr_ownership(a)));
                 meet_option(r, args_own)
             }
             HirExprKind::Reflect { receiver, .. } => self.expr_ownership(receiver),
@@ -199,7 +212,9 @@ impl<'a> FlowCtx<'a> {
                 let i = self.expr_ownership(idx);
                 meet_option(a, i)
             }
-            HirExprKind::Slice { array, start, end, .. } => {
+            HirExprKind::Slice {
+                array, start, end, ..
+            } => {
                 let mut acc = self.expr_ownership(array);
                 for e in [start.as_ref(), end.as_ref()] {
                     if let Some(e) = e {

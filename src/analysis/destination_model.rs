@@ -17,7 +17,8 @@ use crate::analysis::destination_ownership::{
 };
 use crate::analysis::tail_carrier::build_recursive_carriers;
 use crate::ast::{EnumVariant, TopLevel, Type};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::casting::graph::CastingGraph;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Stable callable identity. The namespace keeps definition/transaction/member
 /// owners distinguishable while Briev call resolution remains name-based.
@@ -1815,14 +1816,83 @@ fn build_boundaries(
     legacy: &DestinationOwnershipPlan,
     shapes: &BTreeMap<CallableId, CallableTypeShapes>,
 ) -> BTreeMap<DestinationId, BoundaryPlan> {
-    let exports = export_boundaries(legacy, shapes);
-    let imports = foreign_boundaries(items);
+    // 2026-11-15 (FFI zero-copy audit): declared boundary types resolve via
+    // their protocol so the String category can be classified ZeroCopy /
+    // Copy. Shared AST derivation (no universe needed at this stage); computed
+    // once and shared by both the export and import boundary passes.
+    let type_protocols = crate::casting::graph::derive_type_protocols(items);
+    let exports = export_boundaries(legacy, shapes, &type_protocols);
+    let imports = foreign_boundaries(items, &type_protocols);
     exports.into_iter().chain(imports).collect()
+}
+
+/// Classify the representation conversion at an FFI boundary for one typed
+/// value (2026-11-15, FFI zero-copy audit). The declared boundary type's
+/// protocol variant decides the delta the casting graph emits:
+///   - `C_String` variant + Result role = `str_to_c` — a pointer offset
+///     (`handle + 8`), i.e. zero-copy: the String's `[len][bytes][NUL]`
+///     allocation invariant means the data region IS a C string.
+///   - `C_String` variant + Parameter role = `cstr_to_briev` — an `Alloc#`
+///     + `Copy#`, i.e. one mandatory copy (the C string has no length
+///     prefix; the Briev String must own its buffer).
+/// Returns `Some(conversion)` only for the String category with a declared
+/// C-string variant; `None` means "no type-specific delta — keep the caller's
+/// existing classification." Only the String category is classified; the
+/// rest is left to the codegen coercion fallbacks.
+///
+/// Provenance: 2026-11-15, FFI zero-copy audit
+/// (docs/plans/2026-11-15-llvm-predictability-and-ffi-zero-copy.md).
+/// Undone by: delete this fn + the two call sites in export/foreign
+/// boundaries (reverts the model to the blanket classification it had before).
+fn boundary_conversion(
+    ty: &Option<Type>,
+    role: BoundaryRole,
+    type_protocols: &HashMap<String, String>,
+) -> Option<BoundaryConversion> {
+    let Some(ty) = ty else { return None };
+    let Some(name) = ty.universe_key() else {
+        return None;
+    };
+    let Some((category, variant)) = type_protocols
+        .get(name)
+        .and_then(|p| CastingGraph::parse_protocol_base(p))
+    else {
+        return None;
+    };
+    match category.as_str() {
+        // String-category: classify C_String vs UTF8/base variants.
+        "String" => Some(classify_string_variant(&variant, role)),
+        // List-category: the `coll obj` boxed handle maps to C (ptr, len).
+        // Data pointer is offset +0, length is offset +16 — zero-copy for
+        // the data buffer (the boxed handle itself is passed by value as
+        // an Int, so no copy of the list contents is needed).
+        "List" => Some(BoundaryConversion::CopyAtBoundary),
+        _ => None,
+    }
+}
+
+/// Classify a String-category boundary value by its variant + role.
+///   - C_String variant + Result role   = `str_to_c` (String → C): zero-copy
+///   - C_String variant + Parameter role = C-string arriving (→ cstr_to_briev): copy
+///   - UTF8/base variant                 = passes as the String block: no delta
+fn classify_string_variant(variant: &str, role: BoundaryRole) -> BoundaryConversion {
+    if variant != "C_String" {
+        return BoundaryConversion::None;
+    }
+    match role {
+        // A C-string result is a Briev String handed out as a C pointer —
+        // the zero-copy `str_to_c` delta.
+        BoundaryRole::Result => BoundaryConversion::ZeroCopyWithLifetimeProof,
+        // A C-string parameter is a C string arriving — the mandatory
+        // `cstr_to_briev` copy (the C string has no length prefix).
+        BoundaryRole::Parameter => BoundaryConversion::CopyAtBoundary,
+    }
 }
 
 fn export_boundaries(
     legacy: &DestinationOwnershipPlan,
     shapes: &BTreeMap<CallableId, CallableTypeShapes>,
+    type_protocols: &HashMap<String, String>,
 ) -> BTreeMap<DestinationId, BoundaryPlan> {
     legacy
         .callables
@@ -1848,9 +1918,16 @@ fn export_boundaries(
                 shape.result.as_ref(),
                 result_class,
             );
+            // 2026-11-15 (FFI zero-copy audit): classify the String-category
+            // C-string delta (C_String result = zero-copy str_to_c;
+            // C_String param = the mandatory cstr_to_briev copy). Non-String
+            // values keep the blanket `None` the export ABI already assigned.
             for value in &mut values {
                 value.external_class = GeneralDestinationClass::ScalarValue;
                 value.conversion = BoundaryConversion::None;
+                if let Some(conv) = boundary_conversion(&value.ty, value.role, type_protocols) {
+                    value.conversion = conv;
+                }
             }
             let boundary = DestinationId {
                 owner: summary.name.clone(),
@@ -1876,7 +1953,10 @@ fn export_boundaries(
         .collect()
 }
 
-fn foreign_boundaries(items: &[TopLevel]) -> BTreeMap<DestinationId, BoundaryPlan> {
+fn foreign_boundaries(
+    items: &[TopLevel],
+    type_protocols: &HashMap<String, String>,
+) -> BTreeMap<DestinationId, BoundaryPlan> {
     items
         .iter()
         .filter_map(|item| match item {
@@ -1889,13 +1969,24 @@ fn foreign_boundaries(items: &[TopLevel]) -> BTreeMap<DestinationId, BoundaryPla
                 .iter()
                 .enumerate()
                 .map(|(index, (_, ty))| {
-                    boundary_value(
+                    let mut value = boundary_value(
                         BoundaryRole::Parameter,
                         format!("p{index}"),
                         Some(ty.clone()),
                         OwnershipClass::Unknown,
                         GeneralDestinationClass::ScalarValue,
-                    )
+                    );
+                    // 2026-11-15 (FFI zero-copy audit): the C-string param
+                    // delta is `cstr_to_briev` (mandatory copy); other types
+                    // keep the blanket `WidthConvert` from `boundary_value`.
+                    if let Some(conv) = boundary_conversion(
+                        &Some(ty.clone()),
+                        BoundaryRole::Parameter,
+                        &type_protocols,
+                    ) {
+                        value.conversion = conv;
+                    }
+                    value
                 })
                 .collect();
             values.extend(binding.success_output.iter().map(|(name, ty)| {
@@ -1909,6 +2000,13 @@ fn foreign_boundaries(items: &[TopLevel]) -> BTreeMap<DestinationId, BoundaryPla
                 // The declared FFI result type IS the ABI contract; no
                 // implicit representation change happens at this boundary.
                 value.conversion = BoundaryConversion::None;
+                // 2026-11-15 (FFI zero-copy audit): the C-string result delta
+                // is `str_to_c` (zero-copy); other result types keep `None`.
+                if let Some(conv) =
+                    boundary_conversion(&Some(ty.clone()), BoundaryRole::Result, &type_protocols)
+                {
+                    value.conversion = conv;
+                }
                 value
             }));
             let internal_class = values
@@ -2262,9 +2360,10 @@ mod tests {
         assert_eq!(parameter.obligation, ParamObligation::Value);
         assert!(parameter.ty.is_some());
         assert!(plan.values.contains_key(&parameter.value));
-        assert!(plan
-            .values
-            .contains_key(callable.result.value.as_ref().expect("result value")));
+        assert!(
+            plan.values
+                .contains_key(callable.result.value.as_ref().expect("result value"))
+        );
     }
 
     #[test]
@@ -2299,13 +2398,15 @@ defn total(n: Int) -> Int {
 };
 "#,
         );
-        assert!(legacy
-            .callables_by_owner
-            .values()
-            .flat_map(|facts| facts.values.values())
-            .any(|fact| fact
-                .sinks
-                .contains_key(&crate::analysis::destination_ownership::SinkKind::LoopCarrier)));
+        assert!(
+            legacy
+                .callables_by_owner
+                .values()
+                .flat_map(|facts| facts.values.values())
+                .any(|fact| fact
+                    .sinks
+                    .contains_key(&crate::analysis::destination_ownership::SinkKind::LoopCarrier))
+        );
         assert!(!plan.loops.is_empty());
         let loop_plan = plan.loops.values().next().expect("loop plan");
         assert!(!loop_plan.carrier_values.is_empty());
@@ -2333,12 +2434,14 @@ defn run(n: Int) -> P {
 "#,
         );
         let loop_plan = plan.loops.values().next().expect("aggregate carrier");
-        assert!(loop_plan
-            .carrier_values
-            .iter()
-            .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
-                && carrier.requires_backedge_copy
-                && matches!(carrier.proof, ProofStatus::Proven { .. })));
+        assert!(
+            loop_plan
+                .carrier_values
+                .iter()
+                .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
+                    && carrier.requires_backedge_copy
+                    && matches!(carrier.proof, ProofStatus::Proven { .. }))
+        );
         let obligations = plan.foreach_carrier_obligations("defn:run");
         assert!(obligations.values().all(|obligation| {
             obligation.class == GeneralDestinationClass::Boxed
@@ -2432,6 +2535,57 @@ frgn two(s: String) from "libc";
             GeneralDestinationClass::ScalarValue
         );
         assert_eq!(boundary.values[1].conversion, BoundaryConversion::None);
+    }
+
+    /// 2026-11-15 (FFI zero-copy audit): a `CStr`-typed FFI boundary classifies
+    /// the String-category C-string delta — `CStr` result = zero-copy
+    /// `str_to_c` (`ZeroCopyWithLifetimeProof`), `CStr` param = mandatory
+    /// `cstr_to_briev` copy (`CopyAtBoundary`). Non-String types stay `None`.
+    #[test]
+    fn cstr_boundary_classifies_zero_copy_and_copy() {
+        let (_, plan) = analyze_items(
+            r#"type CStr: String<C_String> { };
+frgn to_c(s: CStr) -> CStr from "libc";"#,
+        );
+        let boundary = plan
+            .boundaries
+            .values()
+            .find(|b| b.kind == BoundaryKind::ForeignCall)
+            .expect("foreign boundary");
+        let param = &boundary.values[0];
+        let result = &boundary.values[1];
+        assert_eq!(param.role, BoundaryRole::Parameter);
+        assert_eq!(result.role, BoundaryRole::Result);
+        // C-string arriving: mandatory `cstr_to_briev` copy.
+        assert_eq!(
+            param.conversion,
+            BoundaryConversion::CopyAtBoundary,
+            "CStr param must classify CopyAtBoundary"
+        );
+        // C-string handed out: zero-copy `str_to_c` pointer offset.
+        assert_eq!(
+            result.conversion,
+            BoundaryConversion::ZeroCopyWithLifetimeProof,
+            "CStr result must classify ZeroCopyWithLifetimeProof"
+        );
+    }
+
+    /// 2026-11-15 (FFI zero-copy audit): a bare `String` (UTF8 base, not a
+    /// C-string variant) crossing an FFI boundary has no representation delta —
+    /// the classification stays `None`, matching the blanket ABI contract.
+    #[test]
+    fn bare_string_boundary_has_no_conversion_delta() {
+        let (_, plan) = analyze_items(r#"frgn strlen(s: String) -> Int from "libc";"#);
+        let boundary = plan
+            .boundaries
+            .values()
+            .find(|b| b.kind == BoundaryKind::ForeignCall)
+            .expect("foreign boundary");
+        let param = &boundary.values[0];
+        let result = &boundary.values[1];
+        // Bare `String` is the UTF8 base — no C-string delta.
+        assert_eq!(param.conversion, BoundaryConversion::WidthConvert);
+        assert_eq!(result.conversion, BoundaryConversion::None);
     }
 
     #[test]
@@ -2618,10 +2772,12 @@ defn make(x: Int) -> (P, Int) {
             .expect("tuple child object");
         assert!(child.requires_materialization);
         assert!(child.escapes.contains(&EscapeKind::TupleLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2641,10 +2797,12 @@ defn make(x: Int) -> List<P> {
             .expect("collection child object");
         assert!(child.requires_materialization);
         assert!(child.escapes.contains(&EscapeKind::CollectionLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2667,10 +2825,12 @@ defn address(x: Int) -> Int {
             })
             .expect("addressed object");
         assert!(escaped.requires_materialization);
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:address")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:address")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2696,10 +2856,12 @@ defn make(n: Int) -> Parent {
             })
             .expect("loop-assigned field child");
         assert!(child.requires_materialization);
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("Child")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("Child"))
+        );
     }
 
     #[test]
@@ -2720,10 +2882,12 @@ defn make(x: Int) -> Parent {
             .expect("child object");
         assert!(child.requires_materialization);
         assert!(child.escapes.contains(&EscapeKind::ObjectLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:make")
-            .is_some_and(|types| types.contains("Child")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:make")
+                .is_some_and(|types| types.contains("Child"))
+        );
     }
 
     #[test]
@@ -2754,10 +2918,12 @@ defn assign(w: Wrap) -> Void {
             "a nested field store must own the constructed object"
         );
         assert!(inner.escapes.contains(&EscapeKind::ObjectLifetime));
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:assign")
-            .is_some_and(|types| types.contains("Inner")));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:assign")
+                .is_some_and(|types| types.contains("Inner"))
+        );
     }
 
     #[test]
@@ -2771,10 +2937,12 @@ defn read(x: Int) -> Int {
 };
 "#,
         );
-        assert!(local
-            .stack_object_types_by_owner()
-            .get("defn:read")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            local
+                .stack_object_types_by_owner()
+                .get("defn:read")
+                .is_some_and(|types| types.contains("P"))
+        );
 
         let (_, escaping) = analyze_items(
             r#"
@@ -2786,10 +2954,12 @@ defn caller(x: Int) -> Int {
 };
 "#,
         );
-        assert!(!escaping
-            .stack_object_types_by_owner()
-            .get("defn:caller")
-            .is_some_and(|types| types.contains("P")));
+        assert!(
+            !escaping
+                .stack_object_types_by_owner()
+                .get("defn:caller")
+                .is_some_and(|types| types.contains("P"))
+        );
     }
 
     #[test]
@@ -2807,18 +2977,21 @@ defn run(v: Int) -> Int {
 };
 "#,
         );
-        assert!(plan
-            .sinks
-            .values()
-            .any(|sink| sink.kind == DestinationSinkKind::State && sink.requires_copy));
-        assert!(plan
-            .sinks
-            .values()
-            .any(|sink| sink.kind == DestinationSinkKind::ObjectField));
-        assert!(plan
-            .sinks
-            .values()
-            .any(|sink| sink.kind == DestinationSinkKind::Collection));
+        assert!(
+            plan.sinks
+                .values()
+                .any(|sink| sink.kind == DestinationSinkKind::State && sink.requires_copy)
+        );
+        assert!(
+            plan.sinks
+                .values()
+                .any(|sink| sink.kind == DestinationSinkKind::ObjectField)
+        );
+        assert!(
+            plan.sinks
+                .values()
+                .any(|sink| sink.kind == DestinationSinkKind::Collection)
+        );
         let tuple = plan.tuples.values().next().expect("tuple construction");
         assert_eq!(tuple.element_count, 2);
         assert_eq!(tuple.class, GeneralDestinationClass::PackedMemory);
@@ -2840,14 +3013,17 @@ defn run(n: Int) -> Int {
 };
 "#,
         );
-        assert!(!plan
-            .stack_object_types_by_owner()
-            .get("defn:run")
-            .is_some_and(|types| types.contains("P")));
-        assert!(plan
-            .object_values
-            .values()
-            .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime)));
+        assert!(
+            !plan
+                .stack_object_types_by_owner()
+                .get("defn:run")
+                .is_some_and(|types| types.contains("P"))
+        );
+        assert!(
+            plan.object_values
+                .values()
+                .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime))
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 // functions for each backend. Replaces hardcoded key→attribute matching.
 // Flat code: max 2 nesting levels.
 
-use crate::dbriev::v2::{parse_document_quoted, DataEntry, DataField, DataValue};
+use crate::dbriev::v2::{DataEntry, DataField, DataValue, parse_document_quoted};
 use std::collections::HashMap;
 
 /// A metadata field definition from the vocabulary.
@@ -112,7 +112,13 @@ impl MetadataRegistry {
             }
         }
 
-        MetadataRegistry { fields, mappings, llvm_idx, webstack_idx, circt_idx }
+        MetadataRegistry {
+            fields,
+            mappings,
+            llvm_idx,
+            webstack_idx,
+            circt_idx,
+        }
     }
 
     /// Look up a metadata field definition by name.
@@ -138,7 +144,10 @@ impl MetadataRegistry {
     /// Owner domain of a registered key (`None` when the key is unknown or
     /// internal/unowned). 2026-11-08 (attr plan): `attr<owner>` validation.
     pub fn owner_of(&self, key: &str) -> Option<&str> {
-        self.fields.get(key).map(|f| f.owner.as_str()).filter(|o| !o.is_empty())
+        self.fields
+            .get(key)
+            .map(|f| f.owner.as_str())
+            .filter(|o| !o.is_empty())
     }
 
     /// Does the vocabulary register any key under this owner domain?
@@ -227,10 +236,7 @@ pub fn apply_llvm_function_metadata(
 }
 
 /// Emit fast-math flags string for LLVM float operations.
-pub fn emit_fast_math_flags(
-    metadata: &[(&str, &str)],
-    registry: &MetadataRegistry,
-) -> String {
+pub fn emit_fast_math_flags(metadata: &[(&str, &str)], registry: &MetadataRegistry) -> String {
     let mut flags = String::new();
     for (key, value) in metadata {
         if key == &"overflow" {
@@ -283,8 +289,16 @@ mod tests {
     #[test]
     fn test_registry_loads() {
         let reg = test_registry();
-        assert!(reg.field_count() >= 10, "expected >=10 field defs, got {}", reg.field_count());
-        assert!(reg.mapping_count() >= 10, "expected >=10 mappings, got {}", reg.mapping_count());
+        assert!(
+            reg.field_count() >= 10,
+            "expected >=10 field defs, got {}",
+            reg.field_count()
+        );
+        assert!(
+            reg.mapping_count() >= 10,
+            "expected >=10 mappings, got {}",
+            reg.mapping_count()
+        );
     }
 
     #[test]

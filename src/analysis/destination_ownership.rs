@@ -1143,10 +1143,12 @@ defn call_mystery() -> Int {
             ),
             "unknown call result must use a conservative destination class"
         );
-        assert!(owner
-            .diagnostics
-            .iter()
-            .any(|d| d.code == DestinationDiagnosticCode::UnknownCallResult));
+        assert!(
+            owner
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DestinationDiagnosticCode::UnknownCallResult)
+        );
     }
 
     #[test]
@@ -1164,10 +1166,12 @@ defn save(value: Int) { saved = value; };
             .find(|fact| fact.source_name.as_deref() == Some("value"))
             .expect("parameter value");
         assert!(value_fact.escapes.contains(&EscapeKind::StateLifetime));
-        assert!(value_fact
-            .sinks
-            .get(&SinkKind::StateStore)
-            .is_some_and(|sites| sites.iter().any(|site| site.contains("/stmt/"))));
+        assert!(
+            value_fact
+                .sinks
+                .get(&SinkKind::StateStore)
+                .is_some_and(|sites| sites.iter().any(|site| site.contains("/stmt/")))
+        );
         assert!(
             value_fact
                 .copy_points

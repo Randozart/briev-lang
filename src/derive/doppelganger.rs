@@ -3,8 +3,8 @@
 // full-source writer, build system integration).
 // Flat code: each function max 2 levels of nesting.
 
-use crate::derive::engine::SynthesizedProgram;
 use crate::ast::{DerivationBlock, Expr};
+use crate::derive::engine::SynthesizedProgram;
 use std::path::{Path, PathBuf};
 
 /// 2026-07-28: Phase E.0 — Doppelganger file management.
@@ -64,8 +64,10 @@ impl Doppelganger {
             match expr {
                 Expr::If(cond, then, else_) => {
                     let pad = "    ".repeat(indent);
-                    out.push_str(&format!("{}when {} {{\n{}        term {};\n{}}};\n",
-                        pad, cond, pad, then, pad));
+                    out.push_str(&format!(
+                        "{}when {} {{\n{}        term {};\n{}}};\n",
+                        pad, cond, pad, then, pad
+                    ));
                     if let Some(e) = else_ {
                         decompose_ite(e, out, indent);
                     }
@@ -114,8 +116,12 @@ pub fn write_doppelganger(
         if !prog.helpers.is_empty() {
             let mut helpers_str = String::from("\n");
             for h in &prog.helpers {
-                if h.use_count == 0 { continue; }
-                let params: Vec<String> = h.params.iter()
+                if h.use_count == 0 {
+                    continue;
+                }
+                let params: Vec<String> = h
+                    .params
+                    .iter()
                     .zip(h.param_types.iter())
                     .map(|(n, t)| format!("{}: {}", n, t))
                     .collect();
@@ -152,7 +158,8 @@ pub fn write_doppelganger(
         bytes = new;
     }
 
-    std::fs::write(output_path, &bytes).map_err(|e| format!("cannot write '{}': {}", output_path.display(), e))?;
+    std::fs::write(output_path, &bytes)
+        .map_err(|e| format!("cannot write '{}': {}", output_path.display(), e))?;
     Ok(())
 }
 
@@ -163,10 +170,17 @@ mod tests {
     use crate::errors::Span;
     use std::path::Path;
 
-    fn dummy_span() -> Span { Span::dummy() }
+    fn dummy_span() -> Span {
+        Span::dummy()
+    }
 
     fn make_prog(body: Vec<Expr>, cost: u64) -> SynthesizedProgram {
-        SynthesizedProgram { body, cost, depth: 0, helpers: vec![] }
+        SynthesizedProgram {
+            body,
+            cost,
+            depth: 0,
+            helpers: vec![],
+        }
     }
 
     #[test]
@@ -233,7 +247,10 @@ mod tests {
         assert!(output_path.exists(), "doppelganger file should exist");
         let content = std::fs::read_to_string(&output_path).unwrap();
         assert!(content.contains("x + y"), "should contain synthesized body");
-        assert!(content.contains(":="), "should still contain derivation block");
+        assert!(
+            content.contains(":="),
+            "should still contain derivation block"
+        );
 
         // Cleanup
         let _ = std::fs::remove_file(&source_path);

@@ -41,7 +41,11 @@ fn extract_initial_state(items: &[crate::ast::TopLevel]) -> HashMap<String, Stri
                 crate::ast::Type::Custom(t) if t == "Int16" || t == "UInt16" => "0".to_string(),
                 crate::ast::Type::Custom(t) if t == "Int32" || t == "UInt32" => "0".to_string(),
                 crate::ast::Type::Custom(t) if t == "Int64" || t == "UInt64" => "0".to_string(),
-                crate::ast::Type::Custom(t) if t == "Ptr" || t == "Element" || t == "CanvasContext" => "null".to_string(),
+                crate::ast::Type::Custom(t)
+                    if t == "Ptr" || t == "Element" || t == "CanvasContext" =>
+                {
+                    "null".to_string()
+                }
                 crate::ast::Type::Applied(base, _) if base == "List" => "[]".to_string(),
                 _ => "null".to_string(),
             };
@@ -117,7 +121,10 @@ pub fn render_ssr(
          </html>\n"
     );
 
-    SsrOutput { full_html, state_json }
+    SsrOutput {
+        full_html,
+        state_json,
+    }
 }
 
 #[cfg(test)]
@@ -133,44 +140,42 @@ mod tests {
 
     #[test]
     fn test_extract_initial_state_int() {
-        let items = vec![
-            TopLevel::StateDecl(StateDecl {
-                name: "count".to_string(),
-                ty: Type::int(),
-                span: None,
-            }),
-        ];
+        let items = vec![TopLevel::StateDecl(StateDecl {
+            name: "count".to_string(),
+            ty: Type::int(),
+            span: None,
+        })];
         let state = extract_initial_state(&items);
         assert_eq!(state.get("count").map(|s| s.as_str()), Some("0"));
     }
 
     #[test]
     fn test_extract_initial_state_string() {
-        let items = vec![
-            TopLevel::StateDecl(StateDecl {
-                name: "name".to_string(),
-                ty: Type::string(),
-                span: None,
-            }),
-        ];
+        let items = vec![TopLevel::StateDecl(StateDecl {
+            name: "name".to_string(),
+            ty: Type::string(),
+            span: None,
+        })];
         let state = extract_initial_state(&items);
         assert_eq!(state.get("name").map(|s| s.as_str()), Some("\"\""));
     }
 
     #[test]
     fn test_render_ssr_contains_state() {
-        let items = vec![
-            TopLevel::StateDecl(StateDecl {
-                name: "x".to_string(),
-                ty: Type::int(),
-                span: None,
-            }),
-        ];
+        let items = vec![TopLevel::StateDecl(StateDecl {
+            name: "x".to_string(),
+            ty: Type::int(),
+            span: None,
+        })];
         let result = render_ssr("<div>Hello</div>", &items, None, "app", false);
-        assert!(result.full_html.contains("ssr-data"),
-            "SSR HTML should contain ssr-data script tag");
-        assert!(result.full_html.contains(r#""x":"0""#) || result.full_html.contains("\"x\":\"0\""),
-            "SSR state should include x=0");
+        assert!(
+            result.full_html.contains("ssr-data"),
+            "SSR HTML should contain ssr-data script tag"
+        );
+        assert!(
+            result.full_html.contains(r#""x":"0""#) || result.full_html.contains("\"x\":\"0\""),
+            "SSR state should include x=0"
+        );
     }
 
     #[test]
@@ -179,26 +184,51 @@ mod tests {
         // `<stem>.mjs` / `<stem>.css` siblings, never the old hardcoded
         // dom-shim.mjs / app.css (which the emitter never wrote).
         let result = render_ssr("<div></div>", &[], None, "app", false);
-        assert!(result.full_html.contains("app.mjs"), "must use the emitted shim");
-        assert!(result.full_html.contains("app.css"), "must link the emitted css");
-        assert!(!result.full_html.contains("dom-shim.mjs"), "no dead dom-shim name");
-        assert!(!result.full_html.contains("dev-shim.mjs"), "no dead dev-shim name");
+        assert!(
+            result.full_html.contains("app.mjs"),
+            "must use the emitted shim"
+        );
+        assert!(
+            result.full_html.contains("app.css"),
+            "must link the emitted css"
+        );
+        assert!(
+            !result.full_html.contains("dom-shim.mjs"),
+            "no dead dom-shim name"
+        );
+        assert!(
+            !result.full_html.contains("dev-shim.mjs"),
+            "no dead dev-shim name"
+        );
     }
 
     #[test]
     fn test_render_ssr_takes_stem_from_a_path() {
         // A full-path wasm_name must reduce to the basename (relative siblings).
         let result = render_ssr("<div></div>", &[], None, "/tmp/out/app", false);
-        assert!(result.full_html.contains("fetch('app.wasm')"),
-            "fetch must be relative to the basename: {}", result.full_html);
-        assert!(!result.full_html.contains("/tmp/out/app.wasm"),
-            "must not embed an absolute path");
+        assert!(
+            result.full_html.contains("fetch('app.wasm')"),
+            "fetch must be relative to the basename: {}",
+            result.full_html
+        );
+        assert!(
+            !result.full_html.contains("/tmp/out/app.wasm"),
+            "must not embed an absolute path"
+        );
     }
 
     #[test]
     fn test_render_ssr_inlines_css_when_provided() {
-        let result = render_ssr("<div></div>", &[], Some("body { color: red; }"), "app", false);
-        assert!(result.full_html.contains("<style>"),
-            "should inline CSS in <style> tag");
+        let result = render_ssr(
+            "<div></div>",
+            &[],
+            Some("body { color: red; }"),
+            "app",
+            false,
+        );
+        assert!(
+            result.full_html.contains("<style>"),
+            "should inline CSS in <style> tag"
+        );
     }
 }

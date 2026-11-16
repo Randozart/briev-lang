@@ -859,13 +859,6 @@ fn param_return_round(
     out
 }
 
-/// The parameter a callable hands back unchanged, if it has one.
-///
-/// 2026-11-16: self tail calls are neutral for the identity question. A
-/// tail-recursive parser (`term f(r, next)`) returns whatever its base case
-/// returns, and the base case pins the parameter; the recursive arm is
-/// validated separately (it must thread the SAME parameter), instead of
-/// disqualifying the summary outright.
 /// The parameters a callable may hand back unchanged, in order.
 ///
 /// 2026-11-16: the result is a SET, not one index. A selector such as
@@ -2623,8 +2616,12 @@ defn use() -> Int {
         );
         insert_releases(&mut program, &HashMap::new());
         let events = memcheck_owned(&program, &HashMap::new());
-        assert!(events.iter().any(|e| e.name == "s" && matches!(e.kind, OwnedEventKind::Release { list: false })));
-        assert!(events.iter().any(|e| e.name == "xs" && matches!(e.kind, OwnedEventKind::Release { list: true })));
+        assert!(events
+            .iter()
+            .any(|e| e.name == "s" && matches!(e.kind, OwnedEventKind::Release { list: false })));
+        assert!(events
+            .iter()
+            .any(|e| e.name == "xs" && matches!(e.kind, OwnedEventKind::Release { list: true })));
     }
 
     #[test]

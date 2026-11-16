@@ -4,7 +4,7 @@
 //! with `UPDATE_SNAPSHOTS=1 cargo test --test hir_snapshots`.
 
 use briev_compiler::casting::graph::CastingGraph;
-use briev_compiler::hir::{lower_program, render_callable, render_program, HirProgram};
+use briev_compiler::hir::{HirProgram, lower_program, render_callable, render_program};
 use briev_compiler::type_universe::TypeUniverse;
 use std::path::{Path, PathBuf};
 
@@ -79,7 +79,9 @@ fn root() -> PathBuf {
 }
 
 fn check(kind: &str, name: &str, text: &str) {
-    let path = root().join("tests/snapshots/hir").join(format!("{kind}__{name}.snap"));
+    let path = root()
+        .join("tests/snapshots/hir")
+        .join(format!("{kind}__{name}.snap"));
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).expect("snapshot dir");
         std::fs::write(&path, text).expect("write snapshot");
@@ -102,14 +104,22 @@ fn lowered_program_snapshots() {
     for (name, src) in FIXTURES {
         let program = lower_program(&parse(src));
         let text = render_program(&program);
-        assert_eq!(text, render_program(&program), "{name}: render is not stable");
+        assert_eq!(
+            text,
+            render_program(&program),
+            "{name}: render is not stable"
+        );
         previous.push(text.clone());
         check("lower", name, &text);
     }
     let mut sorted = previous.clone();
     sorted.sort();
     sorted.dedup();
-    assert_eq!(sorted.len(), previous.len(), "fixtures collapsed to identical snapshots");
+    assert_eq!(
+        sorted.len(),
+        previous.len(),
+        "fixtures collapsed to identical snapshots"
+    );
 }
 
 #[test]
@@ -148,6 +158,10 @@ fn specialized_callable_snapshot() {
 
 #[test]
 fn snapshot_directory_is_under_tests() {
-    assert!(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/hir").is_dir()
-        || std::env::var_os("UPDATE_SNAPSHOTS").is_some());
+    assert!(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/snapshots/hir")
+            .is_dir()
+            || std::env::var_os("UPDATE_SNAPSHOTS").is_some()
+    );
 }

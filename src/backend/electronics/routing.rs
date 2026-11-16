@@ -188,7 +188,11 @@ fn obstacles_of(
             continue;
         };
         let (fw, fh) = fp.outline;
-        let (w, h) = if part.rot.rem_euclid(180.0) == 90.0 { (fh, fw) } else { (fw, fh) };
+        let (w, h) = if part.rot.rem_euclid(180.0) == 90.0 {
+            (fh, fw)
+        } else {
+            (fw, fh)
+        };
         out.push(Obstacle {
             name: name.clone(),
             x1: part.x - w / 2.0,

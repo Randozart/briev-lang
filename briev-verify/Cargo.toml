@@ -5,6 +5,14 @@ edition = "2024"
 license = "Apache-2.0 WITH LLVM-exception"
 description = "Briev's body prover: symbolic execution and SMT discharge over the Briev AST"
 
+[features]
+# Enable Z3 escalation profiling: run with
+#   cargo test --features z3-profile -p briev-verify 2>&1 | grep "Z3 profile"
+z3-profile = []
+
 [dependencies]
 # The structured `--verify-report` payload.
 serde_json = "1.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

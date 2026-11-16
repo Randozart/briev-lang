@@ -24,16 +24,20 @@ fn contract_satisfiability_rejects_jointly_inconsistent_bounds() {
             Box::new(Expr::Decimal(0)),
         )),
     );
-    assert!(proof_engine::prove_contract(
-        &condition, &Expr::Bool(true), &[("x".into(), Type::int())], false,
-    ).is_err());
+    assert!(
+        proof_engine::prove_contract(
+            &condition,
+            &Expr::Bool(true),
+            &[("x".into(), Type::int())],
+            false,
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn test_frgn_binding_parses() {
-    let program = parse_program(
-        r#"frgn read_file(path: String) -> Int from "libc.so.6";"#,
-    );
+    let program = parse_program(r#"frgn read_file(path: String) -> Int from "libc.so.6";"#);
     let has_frgn = program
         .iter()
         .any(|tl| matches!(tl, TopLevel::ForeignBinding(_)));
@@ -49,7 +53,12 @@ fn test_frgn_contract_precondition_satisfiable() {
     );
     let post = Expr::Bool(true);
 
-    let result = proof_engine::prove_contract(&pre, &post, &[("len".into(), Type::Custom("Int".into()))], false);
+    let result = proof_engine::prove_contract(
+        &pre,
+        &post,
+        &[("len".into(), Type::Custom("Int".into()))],
+        false,
+    );
     assert!(result.is_ok(), "precondition should be satisfiable");
 }
 
@@ -62,7 +71,12 @@ fn test_frgn_contract_postcondition_satisfiable() {
         Box::new(Expr::Decimal(0)),
     );
 
-    let result = proof_engine::prove_contract(&pre, &post, &[("result".into(), Type::Custom("Int".into()))], false);
+    let result = proof_engine::prove_contract(
+        &pre,
+        &post,
+        &[("result".into(), Type::Custom("Int".into()))],
+        false,
+    );
     assert!(result.is_ok(), "postcondition should be satisfiable");
 }
 
@@ -97,7 +111,10 @@ fn test_frgn_contract_tautology_rejected() {
     let post = Expr::Bool(true);
 
     let result = proof_engine::prove_contract(&pre, &post, &[], true);
-    assert!(result.is_err(), "[true][true] explicit contract must be rejected as tautology");
+    assert!(
+        result.is_err(),
+        "[true][true] explicit contract must be rejected as tautology"
+    );
 }
 
 #[test]
@@ -106,7 +123,10 @@ fn test_frgn_contract_tautology_allowed_when_implicit() {
     let post = Expr::Bool(true);
 
     let result = proof_engine::prove_contract(&pre, &post, &[], false);
-    assert!(result.is_ok(), "implicit no-contract should not be flagged as tautology");
+    assert!(
+        result.is_ok(),
+        "implicit no-contract should not be flagged as tautology"
+    );
 }
 
 #[test]
@@ -116,7 +136,10 @@ fn test_frgn_contract_self_comparison_vacuous() {
         Box::new(Expr::Identifier("x".into())),
         Box::new(Expr::Identifier("x".into())),
     );
-    assert!(proof_engine::is_vacuously_true(&eq), "x == x is vacuously true");
+    assert!(
+        proof_engine::is_vacuously_true(&eq),
+        "x == x is vacuously true"
+    );
 }
 
 #[test]
@@ -126,7 +149,10 @@ fn test_frgn_contract_real_not_vacuous() {
         Box::new(Expr::Identifier("x".into())),
         Box::new(Expr::Identifier("y".into())),
     );
-    assert!(!proof_engine::is_vacuously_true(&neq), "x > y is not vacuously true");
+    assert!(
+        !proof_engine::is_vacuously_true(&neq),
+        "x > y is not vacuously true"
+    );
 }
 
 #[test]
@@ -193,7 +219,10 @@ fn test_extract_bound_from_postcondition() {
         Box::new(Expr::Identifier("done".into())),
         Box::new(Expr::Decimal(256)),
     );
-    assert_eq!(proof_engine::extract_bound_from_postcondition(&post), Some(256));
+    assert_eq!(
+        proof_engine::extract_bound_from_postcondition(&post),
+        Some(256)
+    );
 }
 
 #[test]
@@ -204,17 +233,17 @@ fn test_expr_cost_literal() {
 
 #[test]
 fn test_expr_cost_intrinsic_call() {
-    let expr = Expr::Call(
-        "Sqrt#".into(),
-        vec![Expr::Decimal(4)],
-        None,
-    );
+    let expr = Expr::Call("Sqrt#".into(), vec![Expr::Decimal(4)], None);
     assert_eq!(proof_engine::expr_cost(&expr), 6);
 }
 
 #[test]
 fn test_count_calls_intrinsic() {
-    let expr = Expr::Call("AddI64#".into(), vec![Expr::Decimal(1), Expr::Decimal(2)], None);
+    let expr = Expr::Call(
+        "AddI64#".into(),
+        vec![Expr::Decimal(1), Expr::Decimal(2)],
+        None,
+    );
     let mut intrinsics = 0;
     let mut includes_io = false;
     proof_engine::count_calls(&expr, &mut intrinsics, &mut includes_io);
@@ -246,7 +275,16 @@ fn test_detect_tautology_not_flagged_when_implicit() {
 
 #[test]
 fn test_check_satisfiable_basic() {
-    assert!(proof_engine::check_satisfiable(&Expr::Bool(true), &Expr::Bool(true)));
-    assert!(!proof_engine::check_satisfiable(&Expr::Bool(true), &Expr::Bool(false)));
-    assert!(!proof_engine::check_satisfiable(&Expr::Decimal(1), &Expr::Decimal(2)));
+    assert!(proof_engine::check_satisfiable(
+        &Expr::Bool(true),
+        &Expr::Bool(true)
+    ));
+    assert!(!proof_engine::check_satisfiable(
+        &Expr::Bool(true),
+        &Expr::Bool(false)
+    ));
+    assert!(!proof_engine::check_satisfiable(
+        &Expr::Decimal(1),
+        &Expr::Decimal(2)
+    ));
 }

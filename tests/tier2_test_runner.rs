@@ -83,5 +83,8 @@ node main [done == false][done == true] {
     assert!(stdout.contains("expected: \"2\\n\""), "{stdout}");
     assert!(stdout.contains("got:      \"3\\n\""), "{stdout}");
     assert!(stdout.contains("0/2 passed"), "{stdout}");
-    assert!(!out.status.success(), "golden mismatch → non-zero runner exit");
+    assert!(
+        !out.status.success(),
+        "golden mismatch → non-zero runner exit"
+    );
 }

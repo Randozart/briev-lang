@@ -1,0 +1,36 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-16 (thread-lane E1): a pinned program whose async nodes are NOT
+// "lightweight".
+//
+// `src/backend/llvm/strategy.rs` only marks async programs lightweight when
+// every async node has a *pure* body with a non-constant `bounded_pre` counter
+// bound. These nodes are guarded by boolean flags, so the program is
+// deliberately NOT lightweight — the shape that used to take the async-phase
+// arm in `emit_main`.
+//
+// That arm runs `@async_body_<name>` on the main thread and never touches the
+// worker barriers, so with a pin present it left every worker parked on
+// `release` while its nodes silently never fired. The threaded arm must win.
+//
+// The two nodes touch disjoint state and only one of them observes (prints),
+// which is what the thread gate requires of a cross-worker pair.
+
+import "std/io.bv";
+
+let armed_a: Bool = false;
+let armed_b: Bool = false;
+
+// Worker 0: pure state, no observation.
+async on thread 0 node arm_a [!armed_a][armed_a] {
+    armed_a = true;
+    term;
+};
+
+// Worker 1: the single observable sink, and the program's exit.
+async on thread 1 node arm_b [!armed_b][armed_b] {
+    armed_b = true;
+    Print#(42);
+    endprogram;
+};

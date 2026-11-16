@@ -6,8 +6,8 @@
 // Produces clean document types (not native Briev values).
 // Conversion to native Value happens at import time.
 
-use std::collections::HashMap;
 use serde::Serialize;
+use std::collections::HashMap;
 
 // ============================================================================
 // Types
@@ -175,14 +175,18 @@ impl Parser {
                         self.skip_ws();
                         let _enc = self.parse_bare_ident();
                         self.skip_ws();
-                        if self.peek_char() == Some(';') { self.advance(); }
+                        if self.peek_char() == Some(';') {
+                            self.advance();
+                        }
                     } else if self.starts_with_ignore_case("version") {
                         // Consume and skip — handled by consumer
                         self.consume_keyword_ignore_case("version")?;
                         self.skip_ws();
                         let _ver = self.parse_bare_ident();
                         self.skip_ws();
-                        if self.peek_char() == Some(';') { self.advance(); }
+                        if self.peek_char() == Some(';') {
+                            self.advance();
+                        }
                     } else {
                         // > followed by something else — treat as positional entry marker
                         // This happens in .dbv mode where > marks a positional entry
@@ -208,7 +212,11 @@ impl Parser {
                 }
                 // as Schema { ... } — grouped data
                 'a' | 'A' if self.starts_with_ignore_case("as") => {
-                    let offset = if self.track_offsets { Some(self.pos) } else { None };
+                    let offset = if self.track_offsets {
+                        Some(self.pos)
+                    } else {
+                        None
+                    };
                     let group = self.parse_grouped_data()?;
                     if let Some(off) = offset {
                         for entry in &group.entries {
@@ -233,7 +241,8 @@ impl Parser {
                     let result = self.try_parse_standalone_entry();
                     match result {
                         Ok(Some(entry)) => {
-                            if let (true, Some(ref key)) = (self.track_offsets, entry.key.as_ref()) {
+                            if let (true, Some(ref key)) = (self.track_offsets, entry.key.as_ref())
+                            {
                                 doc.key_offsets
                                     .entry(key.to_string())
                                     .or_default()
@@ -410,7 +419,11 @@ impl Parser {
             fields.push(self.parse_field_def()?);
         }
 
-        doc.schemas.push(SchemaDef { name: name.clone(), key_field, fields });
+        doc.schemas.push(SchemaDef {
+            name: name.clone(),
+            key_field,
+            fields,
+        });
         // 2026-08-09 (Phase 13): an inline `schema Name { }` establishes the
         // current schema for the data groups that follow (`> people` after it).
         // Without this, a `> people` category after an inline schema had
@@ -454,7 +467,11 @@ impl Parser {
                 }
             }
             let trimmed = expr.trim().to_string();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
         } else {
             None
         };
@@ -673,7 +690,9 @@ impl Parser {
         // This happens for entries inside `as` block that are neither `>` nor `key:`
         // Should not normally happen, but handle gracefully
         let identifier_as_value = self.parse_bare_token();
-        let mut fields = vec![DataField::Positional(DataValue::String(identifier_as_value))];
+        let mut fields = vec![DataField::Positional(DataValue::String(
+            identifier_as_value,
+        ))];
         fields.extend(self.parse_field_list()?);
         Ok(DataEntry {
             key: None,
@@ -698,7 +717,9 @@ impl Parser {
             let fields = self.parse_named_fields_map()?;
             // Consume trailing ; after } if present
             self.skip_ws();
-            if self.peek_char() == Some(';') { self.advance(); }
+            if self.peek_char() == Some(';') {
+                self.advance();
+            }
             return Ok(Some(DataEntry {
                 key: None,
                 schema_name: None,
@@ -737,7 +758,9 @@ impl Parser {
                 let fields = self.parse_field_list()?;
                 self.expect_char('}')?;
                 self.skip_ws();
-                if self.peek_char() == Some(';') { self.advance(); }
+                if self.peek_char() == Some(';') {
+                    self.advance();
+                }
                 return Ok(Some(DataEntry {
                     key: Some(key),
                     schema_name: Some(sname),
@@ -764,7 +787,9 @@ impl Parser {
                     let fields = self.parse_field_list()?;
                     self.expect_char('}')?;
                     self.skip_ws();
-                    if self.peek_char() == Some(';') { self.advance(); }
+                    if self.peek_char() == Some(';') {
+                        self.advance();
+                    }
                     return Ok(Some(DataEntry {
                         key: Some(key),
                         schema_name: Some(sname),
@@ -783,7 +808,9 @@ impl Parser {
                     let fields = self.parse_field_list()?;
                     self.expect_char('}')?;
                     self.skip_ws();
-                    if self.peek_char() == Some(';') { self.advance(); }
+                    if self.peek_char() == Some(';') {
+                        self.advance();
+                    }
                     return Ok(Some(DataEntry {
                         key: Some(key),
                         schema_name: Some(sname),
@@ -833,10 +860,7 @@ impl Parser {
             if self.peek_char() == Some(';') {
                 self.advance();
                 self.skip_ws_and_comments();
-                if self.peek_char() == Some('}')
-                    || self.peek_char() == Some('>')
-                    || self.is_eof()
-                {
+                if self.peek_char() == Some('}') || self.peek_char() == Some('>') || self.is_eof() {
                     break;
                 }
             } else if self.peek_char() == Some('}') || self.is_eof() {
@@ -889,10 +913,7 @@ impl Parser {
             if self.peek_char() == Some(';') {
                 self.advance();
                 self.skip_ws_and_comments();
-                if self.peek_char() == Some('}')
-                    || self.peek_char() == Some('>')
-                    || self.is_eof()
-                {
+                if self.peek_char() == Some('}') || self.peek_char() == Some('>') || self.is_eof() {
                     break;
                 }
                 // After ;, re-check for ident: boundary (loop top handles it)
@@ -922,7 +943,11 @@ impl Parser {
                 break;
             }
             self.skip_ws_and_comments();
-            if self.is_eof() || self.peek_char() == Some('\n') || self.peek_char() == Some('>') || self.peek_char() == Some('}') {
+            if self.is_eof()
+                || self.peek_char() == Some('\n')
+                || self.peek_char() == Some('>')
+                || self.peek_char() == Some('}')
+            {
                 break;
             }
             if !fields.is_empty() {
@@ -1012,7 +1037,10 @@ impl Parser {
 
         // `}` at value start is an error (should have been handled by caller)
         if self.peek_char() == Some('}') {
-            return Err(format!("Unexpected '}}' at position {} — unmatched closing brace", self.pos));
+            return Err(format!(
+                "Unexpected '}}' at position {} — unmatched closing brace",
+                self.pos
+            ));
         }
 
         // Numeric: digits, ., -
@@ -1026,8 +1054,8 @@ impl Parser {
                 if !num_str.is_empty() && num_str != "-" {
                     let next = self.peek_char();
                     let is_terminated = match next {
-                        None | Some(';') | Some('}') | Some(' ') | Some('\t')
-                        | Some('\n') | Some('\r') => true,
+                        None | Some(';') | Some('}') | Some(' ') | Some('\t') | Some('\n')
+                        | Some('\r') => true,
                         Some('>') => self.is_start_of_line(),
                         _ => false,
                     };
@@ -1205,12 +1233,7 @@ impl Parser {
             }
             match self.try_parse_named_field() {
                 Some(f) => fields.push(f),
-                None => {
-                    return Err(format!(
-                        "Expected named field at position {}",
-                        self.pos
-                    ))
-                }
+                None => return Err(format!("Expected named field at position {}", self.pos)),
             }
         }
         Ok(fields)
@@ -1268,7 +1291,10 @@ impl Parser {
         if after >= self.input.len() {
             return true;
         }
-        !self.input[after..].chars().next().map_or(false, |c| c.is_alphanumeric() || c == '_')
+        !self.input[after..]
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_alphanumeric() || c == '_')
     }
 
     /// Try to parse an identifier without consuming on failure.
@@ -1291,7 +1317,10 @@ impl Parser {
     fn is_alphanum_after(&self, offset: usize) -> bool {
         let check_pos = self.pos + offset;
         if check_pos < self.input.len() {
-            self.input[check_pos..].chars().next().map_or(false, |c| c.is_alphanumeric() || c == '_')
+            self.input[check_pos..]
+                .chars()
+                .next()
+                .map_or(false, |c| c.is_alphanumeric() || c == '_')
         } else {
             false
         }
@@ -1352,7 +1381,9 @@ impl Parser {
     }
 
     fn starts_with_ignore_case(&self, s: &str) -> bool {
-        self.input[self.pos..].to_lowercase().starts_with(&s.to_lowercase())
+        self.input[self.pos..]
+            .to_lowercase()
+            .starts_with(&s.to_lowercase())
     }
 
     fn consume_keyword_ignore_case(&mut self, kw: &str) -> Result<(), String> {
@@ -1375,12 +1406,11 @@ impl Parser {
             Some(c) if c == expected => Ok(()),
             Some(c) => Err(format!(
                 "Expected '{}' but found '{}' at position {}",
-                expected, c, self.pos - 1
+                expected,
+                c,
+                self.pos - 1
             )),
-            None => Err(format!(
-                "Expected '{}' but reached end of input",
-                expected
-            )),
+            None => Err(format!("Expected '{}' but reached end of input", expected)),
         }
     }
 
@@ -1448,10 +1478,7 @@ schema Item {
         assert_eq!(schema.fields[1].name, "desc");
         assert_eq!(schema.fields[2].name, "hp");
         assert_eq!(schema.fields[2].ty, FieldType::Int);
-        assert_eq!(
-            schema.fields[2].constraint.as_deref(),
-            Some(">= 0")
-        );
+        assert_eq!(schema.fields[2].constraint.as_deref(), Some(">= 0"));
 
         assert_eq!(schema.fields[3].name, "takeable");
         assert_eq!(schema.fields[3].ty, FieldType::Bool);
@@ -1530,7 +1557,10 @@ as MetaField {
         assert_eq!(doc.data_groups.len(), 1);
         assert_eq!(doc.data_groups[0].schema_name.as_deref(), Some("MetaField"));
         assert_eq!(doc.data_groups[0].entries.len(), 1);
-        assert_eq!(doc.data_groups[0].entries[0].key.as_deref(), Some("overflow"));
+        assert_eq!(
+            doc.data_groups[0].entries[0].key.as_deref(),
+            Some("overflow")
+        );
     }
 
     #[test]
@@ -1659,7 +1689,10 @@ as _ {
                 assert_eq!(m.len(), 2);
                 assert!(m.contains_key("dom_state"));
                 assert!(m.contains_key("timestamp"));
-                assert_eq!(m.get("dom_state"), Some(&DataValue::String("...".to_string())));
+                assert_eq!(
+                    m.get("dom_state"),
+                    Some(&DataValue::String("...".to_string()))
+                );
                 assert_eq!(m.get("timestamp"), Some(&DataValue::Int(1234567890)));
             }
             _ => panic!("expected a map with named fields"),
@@ -1793,11 +1826,13 @@ Bob; 25;
 
     #[test]
     fn test_unterminated_bracket() {
-        let result = parse_document(r#"
+        let result = parse_document(
+            r#"
 schema Bad {
     [ != "" id: String;
 }
-"#);
+"#,
+        );
         assert!(result.is_err());
     }
 
@@ -2156,11 +2191,7 @@ schema Register {
         let doc = parse_document(dbvl).unwrap();
 
         // 3 data lines → 3 groups, one entry each.
-        let groups: Vec<&DataEntry> = doc
-            .data_groups
-            .iter()
-            .map(|g| &g.entries[0])
-            .collect();
+        let groups: Vec<&DataEntry> = doc.data_groups.iter().map(|g| &g.entries[0]).collect();
         assert_eq!(groups.len(), 3);
 
         // >schema Name from "path" tags groups with the file stem ("map") —
@@ -2189,14 +2220,11 @@ schema Register {
     #[test]
     fn board_registers_dbvl_keyed_lines() {
         // registers.dbvl: flat keyed lines, one register per entry.
-        let dbvl = ">schema Register from \"map.dbv\"\nUART0_DR: 0x00; 9; rw;\nUART0_SR: 0x01; 9; ro;\n";
+        let dbvl =
+            ">schema Register from \"map.dbv\"\nUART0_DR: 0x00; 9; rw;\nUART0_SR: 0x01; 9; ro;\n";
         let doc = parse_document(dbvl).unwrap();
 
-        let entries: Vec<&DataEntry> = doc
-            .data_groups
-            .iter()
-            .map(|g| &g.entries[0])
-            .collect();
+        let entries: Vec<&DataEntry> = doc.data_groups.iter().map(|g| &g.entries[0]).collect();
         assert_eq!(entries.len(), 2);
 
         let dr = entries[0];

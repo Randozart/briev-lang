@@ -68,7 +68,10 @@ pub enum HirStmtKind {
     /// Not source syntax — the HIR/AST body seam consumes no AST statement
     /// for it and emission expands to `Free#(name)` (Str) or
     /// `coll_destroy(name)` (List).
-    ReleaseOwned { storage: StorageKind, name: String },
+    ReleaseOwned {
+        storage: StorageKind,
+        name: String,
+    },
     /// 2026-11-12 (owned-storage pass): temp-transfer for a fresh return
     /// expression that borrows owned locals. Expands to
     /// `let name = expr; <releases>; term name;` so the operands free after
@@ -96,6 +99,12 @@ pub enum HirStmtKind {
         clobbers: Vec<String>,
         span: Option<crate::errors::Span>,
     },
+    /// An inline `$defn` in a body (2026-11-15 HIR-fidelity: was
+    /// `Other("inline-defn")`). Carries the defn name; the full `Definition`
+    /// is NOT stored (it lacks `PartialEq`, and the AST's manual `PartialEq`
+    /// treats `InlineDefn` as non-round-trippable) — `to_ast` returns `None`
+    /// for it, same as `Other`, so the body seam falls back to AST.
+    InlineDefn(String),
     Other(&'static str),
 }
 

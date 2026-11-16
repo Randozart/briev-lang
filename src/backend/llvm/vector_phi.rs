@@ -69,16 +69,25 @@ pub(crate) fn emit_vector_header(
         let mut prev_ins = String::new();
 
         for (lane_idx, field_name) in g.fields.iter().enumerate() {
-            let init_val = init_regs.get(field_name.as_str())
+            let init_val = init_regs
+                .get(field_name.as_str())
                 .cloned()
                 .unwrap_or_else(|| "0".to_string());
             let ins_reg = fun.next_reg_with_prefix(&format!("iv_{}", g.name));
             if lane_idx == 0 {
-                writeln!(out, "{}{} = insertelement {} undef, {} {}, i32 0",
-                    indent, ins_reg, vec_ty, g.element_ty, init_val).ok();
+                writeln!(
+                    out,
+                    "{}{} = insertelement {} undef, {} {}, i32 0",
+                    indent, ins_reg, vec_ty, g.element_ty, init_val
+                )
+                .ok();
             } else {
-                writeln!(out, "{}{} = insertelement {} {}, {} {}, i32 {}",
-                    indent, ins_reg, vec_ty, prev_ins, g.element_ty, init_val, lane_idx).ok();
+                writeln!(
+                    out,
+                    "{}{} = insertelement {} {}, {} {}, i32 {}",
+                    indent, ins_reg, vec_ty, prev_ins, g.element_ty, init_val, lane_idx
+                )
+                .ok();
             }
             prev_ins = ins_reg;
             field_to_lane.insert(field_name.clone(), lane_idx as u32);
@@ -90,10 +99,14 @@ pub(crate) fn emit_vector_header(
         // can return the same name for different groups (e.g., "p"), causing type
         // clashes when both backedges use %be_{name}. next_reg_with_prefix guarantees uniqueness.
         let be_reg = fun.next_reg_with_prefix(&format!("be_{}", g.name));
-        writeln!(out, "{}{} = phi {} [ {}, %entry ], [ {}, {} ]",
-            indent, phi_reg_name, vec_ty, prev_ins, be_reg, latch_label).ok();
- 
-         g.phi_reg = phi_reg_name.clone();
+        writeln!(
+            out,
+            "{}{} = phi {} [ {}, %entry ], [ {}, {} ]",
+            indent, phi_reg_name, vec_ty, prev_ins, be_reg, latch_label
+        )
+        .ok();
+
+        g.phi_reg = phi_reg_name.clone();
         g.backedge_reg = be_reg;
 
         for field_name in &g.fields {
@@ -122,11 +135,17 @@ pub(crate) fn emit_extractelement(
 ) -> Option<String> {
     let phi_reg = field_to_phi.get(field_name)?;
     let lane_idx = field_to_lane.get(field_name)?;
-    let g = groups.iter().find(|g| g.fields.contains(&field_name.to_string()))?;
+    let g = groups
+        .iter()
+        .find(|g| g.fields.contains(&field_name.to_string()))?;
     let vec_ty = format!("<{} x {}>", g.width, g.element_ty);
     let lane_reg = fun.next_reg_with_prefix(&format!("ex_{}", field_name));
-    writeln!(out, "{}{} = extractelement {} {}, i32 {}",
-        indent, lane_reg, vec_ty, phi_reg, lane_idx).ok();
+    writeln!(
+        out,
+        "{}{} = extractelement {} {}, i32 {}",
+        indent, lane_reg, vec_ty, phi_reg, lane_idx
+    )
+    .ok();
     Some(lane_reg)
 }
 
@@ -142,7 +161,10 @@ pub(crate) fn record_field_update(
     groups: &[VectorPhiGroup],
     field_to_lane: &HashMap<String, u32>,
 ) {
-    let Some(g) = groups.iter().find(|g| g.fields.contains(&field_name.to_string())) else {
+    let Some(g) = groups
+        .iter()
+        .find(|g| g.fields.contains(&field_name.to_string()))
+    else {
         return;
     };
     let Some(&lane_idx) = field_to_lane.get(field_name) else {
@@ -177,12 +199,20 @@ pub(crate) fn emit_vector_backedge(
                 None => continue,
             };
             let ins_reg = fun.next_reg_with_prefix(&format!("up_{}", g.name));
-            writeln!(out, "{}{} = insertelement {} {}, {} {}, i32 {}",
-                indent, ins_reg, vec_ty, prev, g.element_ty, value_reg, lane_idx).ok();
+            writeln!(
+                out,
+                "{}{} = insertelement {} {}, {} {}, i32 {}",
+                indent, ins_reg, vec_ty, prev, g.element_ty, value_reg, lane_idx
+            )
+            .ok();
             prev = ins_reg;
         }
 
-        writeln!(out, "{}{} = bitcast {} {} to {}",
-            indent, g.backedge_reg, vec_ty, prev, vec_ty).ok();
+        writeln!(
+            out,
+            "{}{} = bitcast {} {} to {}",
+            indent, g.backedge_reg, vec_ty, prev, vec_ty
+        )
+        .ok();
     }
 }

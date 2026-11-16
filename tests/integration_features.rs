@@ -82,7 +82,10 @@ fn test_feature_b_contract_simple() {
         &[],
         defn.contract.explicit,
     );
-    assert!(result.is_ok(), "Contract should verify for always-true function");
+    assert!(
+        result.is_ok(),
+        "Contract should verify for always-true function"
+    );
 }
 
 #[test]

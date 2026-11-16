@@ -2290,10 +2290,12 @@ mod tests {
             }
         }
         let analysis_bad = analyze(&bad);
-        assert!(!analysis_bad
-            .accel
-            .get("scale")
-            .map_or(false, |e| e.shape.eligible));
+        assert!(
+            !analysis_bad
+                .accel
+                .get("scale")
+                .map_or(false, |e| e.shape.eligible)
+        );
         let err = compile_spirv(&bad, "main", &analysis_bad, &test_universe(), 64)
             .err()
             .expect("ineligible body must not become a kernel");
@@ -2845,6 +2847,7 @@ async node fill [i < N][i == N] {
             web_page_key: None,
             verify_bodies: false,
             verify_report: None,
+            safe_mode: false,
         };
         let (mut items, mut universe) =
             crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");
@@ -2905,7 +2908,8 @@ async node fill [i < N][i == N] {
             .split_whitespace()
             .count();
         assert_eq!(
-            ssbo_members, layout.fields.len(),
+            ssbo_members,
+            layout.fields.len(),
             "emitted SSBO must match the image-excluding layout:\n{}",
             asm
         );
@@ -3243,6 +3247,7 @@ async node gemm [i < M * N][i == M * N] {
             web_page_key: None,
             verify_bodies: false,
             verify_report: None,
+            safe_mode: false,
         };
         let (mut items, mut universe) =
             crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");

@@ -9,10 +9,10 @@
 //! control-flow results, spawn/await, the `endprogram` quirk, determinism,
 //! and the empty program.
 
-use super::{analyze as hir_analyze, parity_dump, HirDestinationOwnershipPlan};
+use super::{HirDestinationOwnershipPlan, analyze as hir_analyze, parity_dump};
 use crate::analysis::destination_ownership::{
-    self as ast, analyze as ast_analyze, DestinationClass, DestinationDiagnosticCode, EscapeKind,
-    SinkKind, ValueOrigin,
+    self as ast, DestinationClass, DestinationDiagnosticCode, EscapeKind, SinkKind, ValueOrigin,
+    analyze as ast_analyze,
 };
 use crate::ast::TopLevel;
 use std::collections::BTreeMap;
@@ -84,7 +84,11 @@ fn aliases_share_semantic_value() {
     let param_fact = facts.values.get(&param).expect("param fact");
     // Both the alias binding and the return read the SAME value: three uses
     // (initializer read, let transfer, term read).
-    assert!(param_fact.uses >= 2, "alias must count uses, got {}", param_fact.uses);
+    assert!(
+        param_fact.uses >= 2,
+        "alias must count uses, got {}",
+        param_fact.uses
+    );
     let alias_fact = facts
         .values
         .values()
@@ -159,7 +163,9 @@ defn collect(buf: Int, i: Int) -> Int {
     let list = facts
         .values
         .values()
-        .find(|fact| fact.class == DestinationClass::Boxed && fact.origins.contains(&ValueOrigin::Composite))
+        .find(|fact| {
+            fact.class == DestinationClass::Boxed && fact.origins.contains(&ValueOrigin::Composite)
+        })
         .expect("list value");
     assert!(
         facts
@@ -181,7 +187,9 @@ defn collect(buf: Int, i: Int) -> Int {
             .sinks
             .get(&SinkKind::CollectionInsert)
             .is_some_and(|sites| {
-                sites.iter().any(|site| site.contains("/stmt/") || site.contains("/collection"))
+                sites
+                    .iter()
+                    .any(|site| site.contains("/stmt/") || site.contains("/collection"))
             }),
         "index-target arrow assign records a collection insert"
     );
@@ -218,10 +226,12 @@ defn call_mystery() -> Int {
         ),
         "unknown call result must use a conservative destination class"
     );
-    assert!(owner
-        .diagnostics
-        .iter()
-        .any(|d| d.code == DestinationDiagnosticCode::UnknownCallResult));
+    assert!(
+        owner
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DestinationDiagnosticCode::UnknownCallResult)
+    );
 }
 
 #[test]
@@ -274,10 +284,12 @@ defn save(value: Int) { saved = value; };
         .find(|fact| fact.source_name.as_deref() == Some("value"))
         .expect("parameter value");
     assert!(value_fact.escapes.contains(&EscapeKind::StateLifetime));
-    assert!(value_fact
-        .sinks
-        .get(&SinkKind::StateStore)
-        .is_some_and(|sites| sites.iter().any(|site| site.contains("/stmt/"))));
+    assert!(
+        value_fact
+            .sinks
+            .get(&SinkKind::StateStore)
+            .is_some_and(|sites| sites.iter().any(|site| site.contains("/stmt/")))
+    );
     assert!(
         value_fact
             .copy_points
@@ -297,10 +309,7 @@ export defn pub_add(l: Int, r: Int) -> Int { term l; };
 defn recur(n: Int) -> Int { term recur(n); };
 "#;
     let (_dump, plan) = assert_parity(src);
-    let member = plan
-        .callables
-        .get("Counter::bump")
-        .expect("member summary");
+    let member = plan.callables.get("Counter::bump").expect("member summary");
     assert_eq!(member.name, "Counter::bump");
     let export = plan.callables.get("pub_add").expect("export summary");
     assert!(export.exported);
@@ -317,11 +326,12 @@ defn recur(n: Int) -> Int { term recur(n); };
             .any(|fact| fact.sinks.contains_key(&SinkKind::ExportReturn)),
         "exported bodies sink with export-return"
     );
-    assert!(plan
-        .diagnostics
-        .iter()
-        .all(|d| d.code != DestinationDiagnosticCode::UnknownCallResult
-            || export_facts.owner == d.owner));
+    assert!(
+        plan.diagnostics
+            .iter()
+            .all(|d| d.code != DestinationDiagnosticCode::UnknownCallResult
+                || export_facts.owner == d.owner)
+    );
 }
 
 #[test]
@@ -419,5 +429,3 @@ defn caller(v: Int) -> Int { term helper(v); };
     let second_hir = dump_hir(&hir_analyze(&crate::hir::lower_program(&items)));
     assert_eq!(first, second_hir);
 }
-
-

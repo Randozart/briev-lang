@@ -32,6 +32,8 @@
 use crate::ast::{BinaryOpKind, Expr, Statement, UnaryOpKind};
 use std::collections::HashMap;
 
+pub(crate) mod snapshot;
+
 /// Symbolic representation of a value
 /// Represents what a variable could be given current state
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +41,8 @@ pub enum SymbolicValue {
     /// Literal constant (5, true, "hello", etc.)
     Literal(i64, String), // (value, type_hint: "int", "bool", "float", etc.)
 
-    /// Reference to another variable
+    /// Immutable entry atom captured when this value was evaluated. Never
+    /// resolve it again through the mutable assignment map.
     Identifier(String),
 
     /// Prior state value (before execution)
@@ -72,6 +75,39 @@ impl SymbolicValue {
     pub fn is_definitely_false(&self) -> bool {
         matches!(self, SymbolicValue::Literal(0, _))
     }
+
+    /// Try to evaluate this symbolic value to a concrete integer literal.
+    ///
+    /// Returns `Some(i64)` when the value is or simplifies to a concrete integer,
+    /// allowing `rel_verdict` to decide `Binary <op> Literal` comparisons
+    /// structurally without routing to Z3. Handles the common nested case
+    /// `(x+0)+1` directly by binding inner literals and folding immediately.
+    pub fn try_to_literal(&self) -> Option<i64> {
+        match self {
+            SymbolicValue::Literal(n, _) => Some(*n),
+            SymbolicValue::Binary(op, l, r) => {
+                // Fast path: both operands are concrete literals.
+                if let (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) = (&**l, &**r) {
+                    return fold_integer(op, *a, *b);
+                }
+                // Nested path: (x ± c1) ± c2  →  evaluate inner first, then fold outer.
+                // Covers expressions like `(a+0)+1` where the inner result is still a Binary.
+                if let Some(ref a) = l.try_to_literal() {
+                    if let SymbolicValue::Literal(b, _) = &**r {
+                        return fold_integer(op, *a, *b);
+                    }
+                }
+                if let Some(ref b) = r.try_to_literal() {
+                    if let SymbolicValue::Literal(a, _) = &**l {
+                        return fold_integer(op, *a, *b);
+                    }
+                }
+                // Fallback: let simplify_binary handle any other algebraic identity.
+                simplify_binary(op, l, r)?.try_to_literal()
+            }
+            _ => None,
+        }
+    }
 }
 
 /// State during symbolic execution of a path
@@ -82,6 +118,12 @@ pub struct SymbolicState {
 
     /// Constraints (guards) from this path
     pub path_constraints: Vec<Expr>,
+
+    /// Field assignments: (base-identifier, field-name) -> symbolic value.
+    /// Populated when the body assigns to `x.field = expr`.  Allows
+    /// `eval_symbolic(x.field)` to resolve the stored value structurally
+    /// rather than routing to Z3 for field-projection postconditions.
+    field_assignments: HashMap<(String, String), SymbolicValue>,
 }
 
 impl SymbolicState {
@@ -90,6 +132,7 @@ impl SymbolicState {
         SymbolicState {
             assignments: HashMap::new(),
             path_constraints: vec![precondition.clone()],
+            field_assignments: HashMap::new(),
         }
     }
 
@@ -98,28 +141,58 @@ impl SymbolicState {
         SymbolicState {
             assignments: HashMap::new(),
             path_constraints: Vec::new(),
+            field_assignments: HashMap::new(),
         }
     }
 
     /// Record an assignment
     pub fn assign(&mut self, target: &str, value_expr: &Expr) {
         let symbolic_val = eval_symbolic(value_expr, self);
+        self.invalidate_fields_for(target);
         self.assignments.insert(target.to_string(), symbolic_val);
     }
 
     /// Add a guard constraint (from [condition] guard block)
     pub fn add_constraint(&mut self, condition: &Expr, taken: bool) {
-        if taken {
-            self.path_constraints.push(condition.clone());
+        let Some(fact) = snapshot::expression(condition, &self.assignments) else {
+            // Unknown values cannot supply facts; omitting one only weakens a VC.
+            return;
+        };
+        let fact = if taken {
+            fact
         } else {
-            self.path_constraints
-                .push(Expr::UnaryOp(UnaryOpKind::Not, Box::new(condition.clone())));
-        }
+            Expr::UnaryOp(UnaryOpKind::Not, Box::new(fact))
+        };
+        self.path_constraints.push(fact);
     }
 
     /// Get the symbolic value for a variable, or None if unknown
     pub fn get_value(&self, name: &str) -> Option<SymbolicValue> {
         self.assignments.get(name).cloned()
+    }
+
+    /// Record an assignment to a struct field (x.field = expr).
+    pub fn assign_field(&mut self, base: &str, field: &str, value_expr: &Expr) {
+        let sym_val = eval_symbolic(value_expr, self);
+        self.field_assignments
+            .insert((base.to_string(), field.to_string()), sym_val);
+    }
+
+    /// Get the symbolic value for a field, or None if not tracked.
+    pub fn get_field(&self, base: &str, field: &str) -> Option<SymbolicValue> {
+        self.field_assignments
+            .get(&(base.to_string(), field.to_string()))
+            .cloned()
+    }
+
+    /// Drop all field entries whose base identifier was reassigned.
+    ///
+    /// Reassigning `x` (e.g. `x = y`) changes which object `x` points to, so any
+    /// earlier `x.f = …` value is no longer valid for the new `x`.  Clearing the
+    /// entries keeps the field map sound: a stale read falls back to `Unknown` and
+    /// escalates to Z3 rather than silently using a wrong value.
+    pub fn invalidate_fields_for(&mut self, base: &str) {
+        self.field_assignments.retain(|(b, _), _| b != base);
     }
 }
 
@@ -129,7 +202,9 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
     match expr {
         // Literal values
         Expr::Char(c) => SymbolicValue::Literal(*c as i64, "int".to_string()),
-        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => SymbolicValue::Literal(*n, "int".to_string()),
+        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => {
+            SymbolicValue::Literal(*n, "int".to_string())
+        }
         Expr::Float(_) | Expr::UnitLiteral { .. } => SymbolicValue::Unknown,
         Expr::Bool(b) => SymbolicValue::bool_literal(*b),
         Expr::BeginProgram => SymbolicValue::bool_literal(true),
@@ -144,6 +219,17 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
             } else {
                 SymbolicValue::Identifier(name.clone())
             }
+        }
+
+        // A tracked field belongs to its current lexical variable. Following
+        // the base's saved entry atom would read another variable's older field.
+        Expr::Field(base, field) => {
+            if let Expr::Identifier(name) = base.as_ref() {
+                return state
+                    .get_field(name, field)
+                    .unwrap_or(SymbolicValue::Unknown);
+            }
+            SymbolicValue::Unknown
         }
 
         // Binary operations
@@ -249,7 +335,6 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         // Compound and complex expressions
         Expr::List(_)
         | Expr::Index(_, _)
-        | Expr::Field(_, _)
         | Expr::Tuple(_)
         | Expr::If(_, _, _)
         | Expr::Match(_, _)
@@ -270,8 +355,10 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Cast(_, _) | Expr::IsType(_, _) | Expr::Within(_, _) => SymbolicValue::Unknown,
 
         // Derivation and metadata
-        Expr::DerivationBlock(_) | Expr::StructLiteral { .. }
-        | Expr::Field(_, _) | Expr::Reflect(_, _, _) | Expr::MethodCall(..)
+        Expr::DerivationBlock(_)
+        | Expr::StructLiteral { .. }
+        | Expr::Reflect(_, _, _)
+        | Expr::MethodCall(..)
         | Expr::FormattingAnnotation(_) => SymbolicValue::Unknown,
 
         // Pointer dereference
@@ -282,31 +369,25 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Consume(inner) => eval_symbolic(inner, state),
         // 2026-07-19: Plugin-intercept calls — unknown at symbolic eval
         Expr::PluginIntercept { .. } => SymbolicValue::Unknown,
-        Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Slice { .. } => { SymbolicValue::Unknown },
-        Expr::Range { .. } => { SymbolicValue::Unknown },
-        Expr::Spawn { .. } => { SymbolicValue::Unknown },
-
+        Expr::Exists(_) => {
+            unreachable!("fn? only in stage eval")
+        }
+        Expr::Slice { .. } => SymbolicValue::Unknown,
+        Expr::Range { .. } => SymbolicValue::Unknown,
+        Expr::Spawn { .. } => SymbolicValue::Unknown,
     }
 }
 
 /// Try to simplify a binary operation on symbolic values
-fn simplify_binary(op: &str, left: &SymbolicValue, right: &SymbolicValue) -> Option<SymbolicValue> {
+pub(crate) fn simplify_binary(
+    op: &str,
+    left: &SymbolicValue,
+    right: &SymbolicValue,
+) -> Option<SymbolicValue> {
+    if let (SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) = (left, right) {
+        return fold_integer(op, *a, *b).map(SymbolicValue::int_literal);
+    }
     match (op, left, right) {
-        // Arithmetic on literals
-        ("+", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => {
-            Some(SymbolicValue::int_literal(a + b))
-        }
-        ("-", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => {
-            Some(SymbolicValue::int_literal(a - b))
-        }
-        ("*", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) => {
-            Some(SymbolicValue::int_literal(a * b))
-        }
-        ("/", SymbolicValue::Literal(a, _), SymbolicValue::Literal(b, _)) if *b != 0 => {
-            Some(SymbolicValue::int_literal(a / b))
-        }
-
         // Identity and absorption rules for addition
         ("+", SymbolicValue::Literal(0, _), x) => Some(x.clone()),
         ("+", x, SymbolicValue::Literal(0, _)) => Some(x.clone()),
@@ -315,22 +396,18 @@ fn simplify_binary(op: &str, left: &SymbolicValue, right: &SymbolicValue) -> Opt
         // x−x → 0. These make add/sub CastTo/CastFrom pairs provably
         // 1-to-1 (the P1.5 delta-collapse), which previously required z3
         // (absent from PATH → always failed).
-        ("-", SymbolicValue::Binary(op, inner, r2), r1) if op == "+" => {
-            match (r1, r2.as_ref()) {
-                (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
-                    Some((**inner).clone())
-                }
-                _ => None,
+        ("-", SymbolicValue::Binary(op, inner, r2), r1) if op == "+" => match (r1, r2.as_ref()) {
+            (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
+                Some((**inner).clone())
             }
-        }
-        ("+", SymbolicValue::Binary(op, inner, r2), r1) if op == "-" => {
-            match (r1, r2.as_ref()) {
-                (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
-                    Some((**inner).clone())
-                }
-                _ => None,
+            _ => None,
+        },
+        ("+", SymbolicValue::Binary(op, inner, r2), r1) if op == "-" => match (r1, r2.as_ref()) {
+            (SymbolicValue::Literal(c1, _), SymbolicValue::Literal(c2, _)) if c1 == c2 => {
+                Some((**inner).clone())
             }
-        }
+            _ => None,
+        },
         ("-", l, r) if symbolic_equals(l, r) => Some(SymbolicValue::int_literal(0)),
 
         // Identity and absorption rules for multiplication
@@ -341,6 +418,66 @@ fn simplify_binary(op: &str, left: &SymbolicValue, right: &SymbolicValue) -> Opt
 
         // Can't simplify further
         _ => None,
+    }
+}
+
+/// Match interpreter/SMT wrapping arithmetic without host-profile overflow panics.
+/// Exceptional division stays symbolic: native division is not a total operation.
+fn fold_integer(op: &str, a: i64, b: i64) -> Option<i64> {
+    match op {
+        "+" => Some(a.wrapping_add(b)),
+        "-" => Some(a.wrapping_sub(b)),
+        "*" => Some(a.wrapping_mul(b)),
+        "/" => a.checked_div(b),
+        // Contract bounds are routinely written as shifts (`1 << 24`). Only an
+        // in-range shift folds: an out-of-range one has no agreed word value,
+        // so it stays symbolic rather than inventing a constant.
+        "<<" => u32::try_from(b)
+            .ok()
+            .filter(|shift| *shift < 64)
+            .and_then(|shift| a.checked_shl(shift)),
+        ">>" => u32::try_from(b)
+            .ok()
+            .filter(|shift| *shift < 64)
+            .and_then(|shift| a.checked_shr(shift)),
+        _ => None,
+    }
+}
+
+#[cfg(kani)]
+mod arithmetic_proofs {
+    use super::fold_integer;
+
+    /// The production folds equal exact widened arithmetic reduced to 64 bits.
+    #[kani::proof]
+    fn integer_add_sub_folds_are_modular() {
+        let a: i64 = kani::any();
+        let b: i64 = kani::any();
+        let wide_a = i128::from(a);
+        let wide_b = i128::from(b);
+        assert_eq!(fold_integer("+", a, b), Some((wide_a + wide_b) as i64));
+        assert_eq!(fold_integer("-", a, b), Some((wide_a - wide_b) as i64));
+        kani::cover!(a == i64::MAX && b == 1);
+        kani::cover!(a == i64::MIN && b == -1);
+    }
+
+    /// Multiplication has its own solver budget; a timeout is not a proof.
+    #[kani::proof]
+    fn integer_mul_fold_is_modular() {
+        let a: i64 = kani::any();
+        let b: i64 = kani::any();
+        assert_eq!(
+            fold_integer("*", a, b),
+            Some((i128::from(a) * i128::from(b)) as i64)
+        );
+    }
+
+    /// Exceptional native divisions must never become invented literal results.
+    #[kani::proof]
+    fn exceptional_division_is_not_folded() {
+        let a: i64 = kani::any();
+        assert_eq!(fold_integer("/", a, 0), None);
+        assert_eq!(fold_integer("/", i64::MIN, -1), None);
     }
 }
 
@@ -462,7 +599,10 @@ pub fn enumerate_paths(body: &[Statement]) -> Vec<SymbolicState> {
                     new_paths.push(false_state);
                 }
 
-                Statement::Term(..) | Statement::EndProgram(..) | Statement::Rollback(_) | Statement::Tail(_) => {
+                Statement::Term(..)
+                | Statement::EndProgram(..)
+                | Statement::Rollback(_)
+                | Statement::Tail(_) => {
                     new_paths.push(state);
                 }
 
@@ -522,9 +662,7 @@ pub fn eval_symbolic_expr(
         }
     }
     match expr {
-        Expr::Identifier(name) => {
-            inputs.get(name).cloned().unwrap_or(SymbolicValue::Unknown)
-        }
+        Expr::Identifier(name) => inputs.get(name).cloned().unwrap_or(SymbolicValue::Unknown),
         Expr::Field(_, _) => SymbolicValue::Unknown,
         Expr::BinaryOp(kind, l, r) => {
             let lv = eval_symbolic_expr(l, inputs);
@@ -533,14 +671,12 @@ pub fn eval_symbolic_expr(
             if let Some(simplified) = simplify_binary(sym, &lv, &rv) {
                 simplified
             } else {
-                SymbolicValue::Binary(
-                    sym.to_string(),
-                    Box::new(lv),
-                    Box::new(rv),
-                )
+                SymbolicValue::Binary(sym.to_string(), Box::new(lv), Box::new(rv))
             }
         }
-        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => SymbolicValue::Literal(*n, "i64".to_string()),
+        Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => {
+            SymbolicValue::Literal(*n, "i64".to_string())
+        }
         _ => SymbolicValue::Unknown,
     }
 }

@@ -346,7 +346,11 @@ impl LspServer {
 
         let tokens = {
             use logos::Logos;
-            crate::lexer::Token::lexer(source.as_str()).filter_map(|t| t.ok()).zip(0..).map(|(t, i)| (t, i..i+1)).collect::<Vec<_>>()
+            crate::lexer::Token::lexer(source.as_str())
+                .filter_map(|t| t.ok())
+                .zip(0..)
+                .map(|(t, i)| (t, i..i + 1))
+                .collect::<Vec<_>>()
         };
         let mut parser = parser::Parser::new(tokens, &source);
         let mut program = match parser.parse_program() {
@@ -472,21 +476,26 @@ impl LspServer {
                 (format!("Invalid type: {}", type_name), *span)
             }
             SyntaxError::StagedFeature { feature, span } => (
-                format!("Staged feature '{}' is normative but not yet implemented", feature),
+                format!(
+                    "Staged feature '{}' is normative but not yet implemented",
+                    feature
+                ),
                 *span,
             ),
             SyntaxError::ReservedKeyword { keyword, span } => (
-                format!("'{}' is a reserved keyword and cannot be used as an identifier", keyword),
+                format!(
+                    "'{}' is a reserved keyword and cannot be used as an identifier",
+                    keyword
+                ),
                 *span,
             ),
             SyntaxError::BacktrackLimit { span } => (
                 "Input is too deeply nested to parse (backtracking limit reached)".to_string(),
                 *span,
             ),
-            SyntaxError::ParseErrors(_) => (
-                "multiple parse errors".to_string(),
-                Span::new(0, 0, 0, 0),
-            ),
+            SyntaxError::ParseErrors(_) => {
+                ("multiple parse errors".to_string(), Span::new(0, 0, 0, 0))
+            }
         };
 
         serde_json::json!({
@@ -542,17 +551,37 @@ impl LspServer {
     fn proof_error_to_json(&self, err: &crate::errors::ProofError) -> Value {
         use crate::errors::ProofError;
         let (span, msg) = match err {
-            ProofError::UnreachableState { span, reason, .. } => (*span, format!("unreachable state: {}", reason)),
-            ProofError::PostconditionUnsatisfiable { span, reason, .. } => (*span, format!("postcondition unsatisfiable: {}", reason)),
-            ProofError::NoAcceptingPath { span, reason, .. } => (*span, format!("no accepting path: {}", reason)),
-            ProofError::MutualExclusionViolation { span, .. } => (*span, "mutual exclusion violation".to_string()),
+            ProofError::UnreachableState { span, reason, .. } => {
+                (*span, format!("unreachable state: {}", reason))
+            }
+            ProofError::PostconditionUnsatisfiable { span, reason, .. } => {
+                (*span, format!("postcondition unsatisfiable: {}", reason))
+            }
+            ProofError::NoAcceptingPath { span, reason, .. } => {
+                (*span, format!("no accepting path: {}", reason))
+            }
+            ProofError::MutualExclusionViolation { span, .. } => {
+                (*span, "mutual exclusion violation".to_string())
+            }
             ProofError::UnhandledOutcome { span, .. } => (*span, "unhandled outcome".to_string()),
-            ProofError::TrueAssertionFailure { span, reason, .. } => (*span, format!("true assertion failure: {}", reason)),
-            ProofError::CircularDependency { span, .. } => (*span, "circular dependency".to_string()),
-            ProofError::ImpossiblePrecondition { span, condition, .. } => (*span, format!("impossible precondition: {}", condition)),
-            ProofError::PostconditionMutationViolation { span, explanation, .. } => (*span, format!("postcondition mutation: {}", explanation)),
-            ProofError::TrivialPrecondition { span, .. } => (*span, "trivial precondition".to_string()),
-            ProofError::TrivialPostcondition { span, .. } => (*span, "trivial postcondition".to_string()),
+            ProofError::TrueAssertionFailure { span, reason, .. } => {
+                (*span, format!("true assertion failure: {}", reason))
+            }
+            ProofError::CircularDependency { span, .. } => {
+                (*span, "circular dependency".to_string())
+            }
+            ProofError::ImpossiblePrecondition {
+                span, condition, ..
+            } => (*span, format!("impossible precondition: {}", condition)),
+            ProofError::PostconditionMutationViolation {
+                span, explanation, ..
+            } => (*span, format!("postcondition mutation: {}", explanation)),
+            ProofError::TrivialPrecondition { span, .. } => {
+                (*span, "trivial precondition".to_string())
+            }
+            ProofError::TrivialPostcondition { span, .. } => {
+                (*span, "trivial postcondition".to_string())
+            }
         };
         let range = serde_json::json!({
             "start": { "line": span.line.saturating_sub(1), "character": span.column.saturating_sub(1) },
@@ -572,17 +601,17 @@ impl LspServer {
         // vocab (`src/vocab.rs`), not a hand-maintained list. The lexer, LSP,
         // highlighter, and formatter must agree on the vocabulary.
         let vocab = crate::vocab::LanguageVocab::canonical();
-        let mut keywords: Vec<String> = vocab
-            .canonical_keywords()
-            .map(|k| k.name.clone())
-            .collect();
+        let mut keywords: Vec<String> =
+            vocab.canonical_keywords().map(|k| k.name.clone()).collect();
         keywords.extend(vocab.intrinsics.iter().cloned());
         // Bootstrap type names and operand hashwords are offered as bare
         // completions (the lexer tokenizes them as identifiers/hashwords).
         keywords.extend(
-            ["Int", "Float", "Bool", "String", "Char", "Void", "Ptr", "Bits"]
-                .iter()
-                .map(|s| s.to_string()),
+            [
+                "Int", "Float", "Bool", "String", "Char", "Void", "Ptr", "Bits",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
         );
         keywords.sort();
         keywords.dedup();
@@ -695,37 +724,43 @@ impl LspServer {
 
     /// Build a symbol table from a program for a given URI
     fn build_symbol_table(&self, program: &[TopLevel], uri: &str) -> Vec<SymbolEntry> {
-        program.iter().filter_map(|item| {
-            let name = item_name(item);
-            let span = item_span(item)?;
-            let kind: u32 = match item {
-                TopLevel::Transaction(_) => 6,    // Method
-                TopLevel::StateDecl(_) => 13,      // Variable
-                TopLevel::Trigger(_) => 25,        // Event
-                TopLevel::Obj(_) => 23,         // Struct
-                TopLevel::Enum(_) => 10,           // Module
-                TopLevel::ForeignBinding(_) => 24, // Operator
-                TopLevel::Definition(_) => 12,     // Function
-                TopLevel::Constant(_) => 14,       // Constant
-                TopLevel::Signature(_) => 12,      // Function
-                TopLevel::Init(_) => 14,            // Constant (runtime-seeded)
-                _ => return None,
-            };
-            let name_len = name.len();
-            Some(SymbolEntry {
-                name,
-                kind,
-                uri: uri.to_string(),
-                line: span.line,
-                column: span.column,
-                name_len,
+        program
+            .iter()
+            .filter_map(|item| {
+                let name = item_name(item);
+                let span = item_span(item)?;
+                let kind: u32 = match item {
+                    TopLevel::Transaction(_) => 6,     // Method
+                    TopLevel::StateDecl(_) => 13,      // Variable
+                    TopLevel::Trigger(_) => 25,        // Event
+                    TopLevel::Obj(_) => 23,            // Struct
+                    TopLevel::Enum(_) => 10,           // Module
+                    TopLevel::ForeignBinding(_) => 24, // Operator
+                    TopLevel::Definition(_) => 12,     // Function
+                    TopLevel::Constant(_) => 14,       // Constant
+                    TopLevel::Signature(_) => 12,      // Function
+                    TopLevel::Init(_) => 14,           // Constant (runtime-seeded)
+                    _ => return None,
+                };
+                let name_len = name.len();
+                Some(SymbolEntry {
+                    name,
+                    kind,
+                    uri: uri.to_string(),
+                    line: span.line,
+                    column: span.column,
+                    name_len,
+                })
             })
-        }).collect()
+            .collect()
     }
 
     /// Handle textDocument/documentSymbol request
     fn handle_document_symbol(&self, id: lsp_server::RequestId, params: Value) {
-        let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+        let uri = params["textDocument"]["uri"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         let docs = self.documents.lock().unwrap();
         let result: Vec<Value> = if let Some(doc) = docs.docs.get(&uri) {
             if let Some(program) = &doc.program {

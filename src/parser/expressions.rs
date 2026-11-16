@@ -32,7 +32,6 @@ fn unit_suffix_token(tok: &Token) -> Option<String> {
     }
 }
 
-
 impl<'a> Parser<'a> {
     /// Entry point: parse an expression at any precedence level.
     pub fn parse_expression(&mut self) -> Result<Expr, SyntaxError> {
@@ -186,11 +185,19 @@ impl<'a> Parser<'a> {
             } else if self.eat(&Token::TildePlus) {
                 // 2026-08-01 (Phase 3): `a ~+ b` — add, then consume b.
                 let rhs = self.parse_factor()?;
-                expr = Expr::BinaryOp(BinaryOpKind::Add, Box::new(expr), Box::new(Expr::Consume(Box::new(rhs))));
+                expr = Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(expr),
+                    Box::new(Expr::Consume(Box::new(rhs))),
+                );
             } else if self.eat(&Token::TildeMinus) {
                 // 2026-08-01 (Phase 3): `a ~- b` — subtract, then consume b.
                 let rhs = self.parse_factor()?;
-                expr = Expr::BinaryOp(BinaryOpKind::Sub, Box::new(expr), Box::new(Expr::Consume(Box::new(rhs))));
+                expr = Expr::BinaryOp(
+                    BinaryOpKind::Sub,
+                    Box::new(expr),
+                    Box::new(Expr::Consume(Box::new(rhs))),
+                );
             } else {
                 break;
             }
@@ -214,12 +221,20 @@ impl<'a> Parser<'a> {
             } else if self.eat(&Token::TildeStar) {
                 // 2026-08-01 (Phase 3): `a ~* b` — multiply, then consume b.
                 let rhs = self.parse_unary()?;
-                expr = Expr::BinaryOp(BinaryOpKind::Mul, Box::new(expr), Box::new(Expr::Consume(Box::new(rhs))));
+                expr = Expr::BinaryOp(
+                    BinaryOpKind::Mul,
+                    Box::new(expr),
+                    Box::new(Expr::Consume(Box::new(rhs))),
+                );
             } else if self.eat(&Token::TildeSlash) {
                 // 2026-08-01 (Phase 3): `a ~/ b` — divide, then consume b.
                 // (TildeSlash was the dead term-until token; now consumptive /.)
                 let rhs = self.parse_unary()?;
-                expr = Expr::BinaryOp(BinaryOpKind::Div, Box::new(expr), Box::new(Expr::Consume(Box::new(rhs))));
+                expr = Expr::BinaryOp(
+                    BinaryOpKind::Div,
+                    Box::new(expr),
+                    Box::new(Expr::Consume(Box::new(rhs))),
+                );
             } else {
                 break;
             }
@@ -292,7 +307,10 @@ impl<'a> Parser<'a> {
         while probe < self.tokens.len() {
             match &self.tokens[probe].0 {
                 Token::RBracket => break,
-                Token::Ellipsis => { sees_ellipsis = true; break; }
+                Token::Ellipsis => {
+                    sees_ellipsis = true;
+                    break;
+                }
                 _ => probe += 1,
             }
         }
@@ -314,14 +332,20 @@ impl<'a> Parser<'a> {
         }
         let type_name = match self.peek() {
             Some(Token::Identifier(n)) if self.known_types.contains(n) => n.clone(),
-            _ => { self.pos = save; return Ok(None); }
+            _ => {
+                self.pos = save;
+                return Ok(None);
+            }
         };
         self.advance();
         if !self.eat(&Token::RParen) {
             self.pos = save;
             return Ok(None);
         }
-        Ok(Some(Expr::Cast(Box::new(recv.clone()), Type::Custom(type_name))))
+        Ok(Some(Expr::Cast(
+            Box::new(recv.clone()),
+            Type::Custom(type_name),
+        )))
     }
 
     /// 2026-11-08 (chaining plan): optional `it` receiver placement.
@@ -376,10 +400,18 @@ impl<'a> Parser<'a> {
             // `a..=b` (inclusive), consumed by `foreach` (SPEC §11.4).
             if self.eat(&Token::DotDot) {
                 let end = self.parse_postfix(true)?;
-                expr = Expr::Range { start: Box::new(expr), end: Box::new(end), inclusive: false };
+                expr = Expr::Range {
+                    start: Box::new(expr),
+                    end: Box::new(end),
+                    inclusive: false,
+                };
             } else if self.eat(&Token::DotDotEq) {
                 let end = self.parse_postfix(true)?;
-                expr = Expr::Range { start: Box::new(expr), end: Box::new(end), inclusive: true };
+                expr = Expr::Range {
+                    start: Box::new(expr),
+                    end: Box::new(end),
+                    inclusive: true,
+                };
             } else if self.eat(&Token::LParen) {
                 // Call: f(args)
                 let mut args = Vec::new();
@@ -427,10 +459,12 @@ impl<'a> Parser<'a> {
                                 span: self.make_span(span),
                             });
                         }
-                        None => return Err(crate::errors::SyntaxError::UnexpectedEOF {
-                            expected: "an integer field name after '.'".into(),
-                            span: crate::errors::Span::dummy(),
-                        }),
+                        None => {
+                            return Err(crate::errors::SyntaxError::UnexpectedEOF {
+                                expected: "an integer field name after '.'".into(),
+                                span: crate::errors::Span::dummy(),
+                            });
+                        }
                     }
                 } else {
                     self.expect_identifier()?
@@ -448,46 +482,49 @@ impl<'a> Parser<'a> {
                 // Caveat (shared with the removed `::` form): a *variable*
                 // whose name matches a declared type is indistinguishable
                 // here — the parser cannot see bindings.
-                 if let Expr::Identifier(base) = &expr {
+                if let Expr::Identifier(base) = &expr {
                     // A `$` navigation-call suffix takes precedence over enum
                     // construction — it is not a variant access.
-                    if self.known_types.contains(base)
-                        && !name.ends_with('$')
-                    {
-                         let enum_name = base.clone();
-                         let qualified = format!("{}::{}", enum_name, name);
-                         if self.eat(&Token::LParen) {
-                             let mut args = Vec::new();
-                             if !self.check(&Token::RParen) {
-                                 loop {
-                                     args.push(self.parse_expression()?);
-                                     if !self.eat(&Token::Comma) {
-                                         break;
-                                     }
-                                 }
-                             }
-                             self.expect(Token::RParen)?;
-                             expr = Expr::Call(qualified, args, None);
-                         } else {
-                             expr = Expr::Call(qualified, Vec::new(), None);
-                         }
-                         continue;
-                     }
-                 }
-                 // 2026-07-21: Navigation chain call: a.first$(args).
-                 // 2026-09-16: Unified under MethodCall — receiver is first-class.
-                 if name.ends_with('$') && self.check(&Token::LParen) {
+                    if self.known_types.contains(base) && !name.ends_with('$') {
+                        let enum_name = base.clone();
+                        let qualified = format!("{}::{}", enum_name, name);
+                        if self.eat(&Token::LParen) {
+                            let mut args = Vec::new();
+                            if !self.check(&Token::RParen) {
+                                loop {
+                                    args.push(self.parse_expression()?);
+                                    if !self.eat(&Token::Comma) {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.expect(Token::RParen)?;
+                            expr = Expr::Call(qualified, args, None);
+                        } else {
+                            expr = Expr::Call(qualified, Vec::new(), None);
+                        }
+                        continue;
+                    }
+                }
+                // 2026-07-21: Navigation chain call: a.first$(args).
+                // 2026-09-16: Unified under MethodCall — receiver is first-class.
+                if name.ends_with('$') && self.check(&Token::LParen) {
                     let recv = expr;
                     self.expect(Token::LParen)?;
                     let mut args = Vec::new();
                     if !self.check(&Token::RParen) {
                         loop {
                             args.push(self.parse_expression()?);
-                            if !self.eat(&Token::Comma) { break; }
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
                         }
                     }
                     self.expect(Token::RParen)?;
-                    if args.iter().any(|a| matches!(a, Expr::Identifier(n) if n == "it")) {
+                    if args
+                        .iter()
+                        .any(|a| matches!(a, Expr::Identifier(n) if n == "it"))
+                    {
                         return self.error_at_current(
                             "`it` is not valid on `$` navigation calls — it places the \
                              dot receiver in a runtime argument list",
@@ -499,17 +536,23 @@ impl<'a> Parser<'a> {
                     // The receiver is the expression built so far.
                     self.advance(); // consume !
                     if !self.eat(&Token::LParen) {
-                        return self.error_at_current("expected '(' after '!' for plugin-intercept call");
+                        return self
+                            .error_at_current("expected '(' after '!' for plugin-intercept call");
                     }
                     let mut p_args = Vec::new();
                     if !self.check(&Token::RParen) {
                         loop {
                             p_args.push(self.parse_expression()?);
-                            if !self.eat(&Token::Comma) { break; }
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
                         }
                     }
                     self.expect(Token::RParen)?;
-                    if p_args.iter().any(|a| matches!(a, Expr::Identifier(n) if n == "it")) {
+                    if p_args
+                        .iter()
+                        .any(|a| matches!(a, Expr::Identifier(n) if n == "it"))
+                    {
                         return self.error_at_current(
                             "`it` is not valid on `!` plugin calls — plugin dispatch \
                              threads the receiver explicitly",
@@ -528,7 +571,9 @@ impl<'a> Parser<'a> {
                     if !self.check(&Token::RParen) {
                         loop {
                             args.push(self.parse_expression()?);
-                            if !self.eat(&Token::Comma) { break; }
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
                         }
                     }
                     self.expect(Token::RParen)?;
@@ -564,7 +609,12 @@ impl<'a> Parser<'a> {
                         return self.reject_multidim();
                     }
                     self.expect(Token::RBracket)?;
-                    expr = Expr::Slice { array: Box::new(expr), start: None, end: None, stride: None };
+                    expr = Expr::Slice {
+                        array: Box::new(expr),
+                        start: None,
+                        end: None,
+                        stride: None,
+                    };
                     continue;
                 }
                 // 2026-08-07 (Phase 7): NAMED selectors — `arr[name => sel]`
@@ -594,13 +644,22 @@ impl<'a> Parser<'a> {
                     let stride = if self.eat(&Token::Colon) {
                         if !self.check(&Token::RBracket) {
                             Some(Box::new(self.parse_expression()?))
-                        } else { None }
-                    } else { None };
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     if self.eat(&Token::Comma) {
                         return self.reject_multidim();
                     }
                     self.expect(Token::RBracket)?;
-                    expr = Expr::Slice { array: Box::new(expr), start: None, end, stride };
+                    expr = Expr::Slice {
+                        array: Box::new(expr),
+                        start: None,
+                        end,
+                        stride,
+                    };
                 } else {
                     // Index or slice with start
                     let first = self.parse_expression()?;
@@ -614,13 +673,22 @@ impl<'a> Parser<'a> {
                         let stride = if self.eat(&Token::Colon) {
                             if !self.check(&Token::RBracket) {
                                 Some(Box::new(self.parse_expression()?))
-                            } else { None }
-                        } else { None };
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
                         if self.eat(&Token::Comma) {
                             return self.reject_multidim();
                         }
                         self.expect(Token::RBracket)?;
-                        expr = Expr::Slice { array: Box::new(expr), start: Some(Box::new(first)), end, stride };
+                        expr = Expr::Slice {
+                            array: Box::new(expr),
+                            start: Some(Box::new(first)),
+                            end,
+                            stride,
+                        };
                     } else {
                         // Index: arr[idx] or the 2D/3D sugar arr[i, j, ...]
                         // (2026-09-17, plan 2026-09-17-row-2d-index-desugar).
@@ -650,11 +718,15 @@ impl<'a> Parser<'a> {
                 // 2026-07-19: Plugin-intercept: name!(args)
                 // ! after an expression is the plugin-intercept marker.
                 if !self.eat(&Token::LParen) {
-                    return self.error_at_current("expected '(' after '!' for plugin-intercept call");
+                    return self
+                        .error_at_current("expected '(' after '!' for plugin-intercept call");
                 }
                 let p_name = match &expr {
                     Expr::Identifier(n) => n.clone(),
-                    _ => return self.error_at_current("only named functions can be plugin-intercepted"),
+                    _ => {
+                        return self
+                            .error_at_current("only named functions can be plugin-intercepted");
+                    }
                 };
                 let mut p_args = Vec::new();
                 if !self.check(&Token::RParen) {
@@ -687,10 +759,14 @@ impl<'a> Parser<'a> {
     fn peek_suffix(&mut self, end_pos: usize) -> Option<String> {
         // self.pos is already past the literal token (advance() incremented it).
         let next_idx = self.pos;
-        if next_idx >= self.tokens.len() { return None; }
+        if next_idx >= self.tokens.len() {
+            return None;
+        }
         let (next_tok, next_span) = &self.tokens[next_idx];
         // Check adjacency: next token starts right where current ends
-        if next_span.start != end_pos { return None; }
+        if next_span.start != end_pos {
+            return None;
+        }
         // A unit-suffix candidate is a plain identifier (Volt, ms-as-id, ns,
         // s, mm, cm, m, min) OR a duration KEYWORD token. `ms` is the one
         // duration unit with a dedicated keyword (Token::Ms) rather than a
@@ -720,16 +796,24 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(Token::RParen)?;
-        Ok(Expr::Spawn { type_name, args, storage })
+        Ok(Expr::Spawn {
+            type_name,
+            args,
+            storage,
+        })
     }
 
     fn parse_primary(&mut self) -> Result<Expr, SyntaxError> {
-        match self.advance() {            // ── Literals ────────────────────────────────────────────
+        match self.advance() {
+            // ── Literals ────────────────────────────────────────────
             Some((Token::Integer(n), span)) => {
                 // 2026-07-27: Check for adjacent suffix identifier (e.g., 42km, 0xFFh)
                 if let Some(suf) = self.peek_suffix(span.end) {
                     if is_unit_suffix(&suf) {
-                        Ok(Expr::UnitLiteral { value: n as f64, unit: suf })
+                        Ok(Expr::UnitLiteral {
+                            value: n as f64,
+                            unit: suf,
+                        })
                     } else {
                         Ok(Expr::TaggedLiteral(n, suf))
                     }
@@ -741,7 +825,10 @@ impl<'a> Parser<'a> {
                 // 2026-07-27: Check for adjacent suffix identifier (e.g., 3.14f, 3.3V)
                 if let Some(suf) = self.peek_suffix(span.end) {
                     if is_unit_suffix(&suf) {
-                        Ok(Expr::UnitLiteral { value: f, unit: suf })
+                        Ok(Expr::UnitLiteral {
+                            value: f,
+                            unit: suf,
+                        })
                     } else {
                         Ok(Expr::TaggedLiteral(f as i64, suf))
                     }
@@ -780,7 +867,8 @@ impl<'a> Parser<'a> {
             // register word). `advance()` already consumed the `spawn` token,
             // so parse_spawn_body starts at the type name.
             Some((Token::Spawn, _)) => self.parse_spawn_body(SpawnStorage::Pooled),
-            Some((Token::Identifier(name), span)) => {                // 2026-08-05 (Phase 3): adjacent prefix-discriminator literals
+            Some((Token::Identifier(name), span)) => {
+                // 2026-08-05 (Phase 3): adjacent prefix-discriminator literals
                 // (`sql"SELECT"`) are removed; domain literals use explicit
                 // macro calls such as `sql!("SELECT")` (SPEC §16.2).
                 // 2026-08-09 (Phase 5): contextual storage-class keywords
@@ -802,7 +890,9 @@ impl<'a> Parser<'a> {
                 // `when`/`foreach` block bodies.
                 // 2026-07-26: Must also verify content after { looks like a struct
                 // field (identifier: expr) to avoid consuming guard/block braces.
-                if self.peek() == Some(&Token::LBrace) && name.starts_with(|c: char| c.is_uppercase()) {
+                if self.peek() == Some(&Token::LBrace)
+                    && name.starts_with(|c: char| c.is_uppercase())
+                {
                     if self.lookahead_is_struct_literal() {
                         return self.parse_struct_literal(name);
                     }
@@ -1108,7 +1198,8 @@ impl<'a> Parser<'a> {
     /// not qualify before — the parser's known-type set never contains
     /// spliced names). The dot was already consumed by the caller.
     fn parse_qualified_dot_pattern(
-        &mut self, base: String,
+        &mut self,
+        base: String,
     ) -> Result<crate::ast::Pattern, SyntaxError> {
         self.pos += 1; // consume '.'
         let variant = self.expect_identifier()?;
@@ -1260,7 +1351,11 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(Token::RBrace)?;
-        Ok(Expr::StructLiteral { type_name, fields, specs })
+        Ok(Expr::StructLiteral {
+            type_name,
+            fields,
+            specs,
+        })
     }
 
     /// Parse one `spec Name: quantity;` entry in a component literal —
@@ -1398,7 +1493,9 @@ impl<'a> Parser<'a> {
     fn lookahead_is_struct_literal(&self) -> bool {
         // Look at the token after the current position (which is {)
         let after_brace = self.pos + 1;
-        if after_brace >= self.tokens.len() { return false; }
+        if after_brace >= self.tokens.len() {
+            return false;
+        }
         let next_tok = &self.tokens[after_brace].0;
         // 2026-09-11 (Part C): `T { }` — an EMPTY struct literal (pins-only
         // component constructions, zero-value placeholders). An identifier
@@ -1406,13 +1503,19 @@ impl<'a> Parser<'a> {
         // blocks never attach directly to identifiers in Briev.
         // 2026-09-24 (component laws): `T { spec Name: …; }` is a component
         // literal with structured physics, never a block.
-        if matches!(next_tok, Token::RBrace | Token::Spec) { return true; }
+        if matches!(next_tok, Token::RBrace | Token::Spec) {
+            return true;
+        }
         let next_is_ident = matches!(next_tok, Token::Identifier(_));
-        if !next_is_ident { return false; }
+        if !next_is_ident {
+            return false;
+        }
         // Check the token after the identifier — must be ':' or ',' for a
         // struct field (comma = bare shorthand); otherwise it's a block body.
         let after_ident = after_brace + 1;
-        if after_ident >= self.tokens.len() { return false; }
+        if after_ident >= self.tokens.len() {
+            return false;
+        }
         matches!(&self.tokens[after_ident].0, Token::Colon | Token::Comma)
     }
 
@@ -1513,10 +1616,14 @@ mod tests {
         match expr {
             Expr::Match(_, arms) => {
                 assert_eq!(arms.len(), 3);
-                assert!(matches!(arms[0].pattern, crate::ast::Pattern::RangeInclusive(..)),
-                    "first arm must be inclusive");
-                assert!(matches!(arms[1].pattern, crate::ast::Pattern::Range(..)),
-                    "second arm must stay half-open");
+                assert!(
+                    matches!(arms[0].pattern, crate::ast::Pattern::RangeInclusive(..)),
+                    "first arm must be inclusive"
+                );
+                assert!(
+                    matches!(arms[1].pattern, crate::ast::Pattern::Range(..)),
+                    "second arm must stay half-open"
+                );
             }
             other => panic!("expected match, got {other:?}"),
         }
@@ -1527,11 +1634,27 @@ mod tests {
         // 2026-08-07 (Phase 7): `a..b` / `a..=b` are iterable range
         // EXPRESSIONS (distinct from range patterns) — consumed by foreach.
         let expr = parse_expr("0..=5").unwrap();
-        assert!(matches!(expr, Expr::Range { inclusive: true, .. }),
-            "0..=5 must parse as an inclusive range, got {expr:?}");
+        assert!(
+            matches!(
+                expr,
+                Expr::Range {
+                    inclusive: true,
+                    ..
+                }
+            ),
+            "0..=5 must parse as an inclusive range, got {expr:?}"
+        );
         let expr = parse_expr("0..5").unwrap();
-        assert!(matches!(expr, Expr::Range { inclusive: false, .. }),
-            "0..5 must parse as a half-open range, got {expr:?}");
+        assert!(
+            matches!(
+                expr,
+                Expr::Range {
+                    inclusive: false,
+                    ..
+                }
+            ),
+            "0..5 must parse as a half-open range, got {expr:?}"
+        );
         if let Expr::Range { start, end, .. } = expr {
             assert!(matches!(*start, Expr::Decimal(0)));
             assert!(matches!(*end, Expr::Decimal(5)));
@@ -1546,10 +1669,16 @@ mod tests {
         // dimension arrives with named dims (const generics, §16.6).
         let named = parse_expr("v[width => 1:3]").unwrap();
         let plain = parse_expr("v[1:3]").unwrap();
-        assert_eq!(named, plain, "a named slice selector must equal the plain slice");
+        assert_eq!(
+            named, plain,
+            "a named slice selector must equal the plain slice"
+        );
         let named = parse_expr("v[time => 4]").unwrap();
         let plain = parse_expr("v[4]").unwrap();
-        assert_eq!(named, plain, "a named index selector must equal the plain index");
+        assert_eq!(
+            named, plain,
+            "a named index selector must equal the plain index"
+        );
     }
 
     #[test]
@@ -1739,13 +1868,18 @@ mod tests {
         // produce the identical AST.
         let comma = parse_expr("match n { _ when n < 0 => -1, 0 => 0 }").unwrap();
         let semi = parse_expr("match n { _ when n < 0 => -1; 0 => 0; }").unwrap();
-        assert_eq!(comma, semi, "`,` and `;` arm separators must parse identically");
+        assert_eq!(
+            comma, semi,
+            "`,` and `;` arm separators must parse identically"
+        );
     }
 
     #[test]
     fn match_expr_single_arm_without_trailing_separator() {
         let e = parse_expr("match n { 0 => 0 }").unwrap();
-        let Expr::Match(_, arms) = e else { panic!("expected Expr::Match") };
+        let Expr::Match(_, arms) = e else {
+            panic!("expected Expr::Match")
+        };
         assert_eq!(arms.len(), 1);
     }
 
@@ -1779,7 +1913,11 @@ mod tests {
     fn box_spawn_parses_with_box_storage() {
         let expr = parse_expr("box spawn Counter(5)").unwrap();
         match expr {
-            Expr::Spawn { type_name, args, storage } => {
+            Expr::Spawn {
+                type_name,
+                args,
+                storage,
+            } => {
                 assert_eq!(type_name, "Counter");
                 assert_eq!(args.len(), 1);
                 assert_eq!(storage, crate::ast::SpawnStorage::Box);
@@ -1792,7 +1930,11 @@ mod tests {
     fn spill_spawn_parses_with_spill_storage() {
         let expr = parse_expr("spill spawn Counter()").unwrap();
         match expr {
-            Expr::Spawn { type_name, args, storage } => {
+            Expr::Spawn {
+                type_name,
+                args,
+                storage,
+            } => {
                 assert_eq!(type_name, "Counter");
                 assert!(args.is_empty());
                 assert_eq!(storage, crate::ast::SpawnStorage::Spill);
@@ -1827,7 +1969,9 @@ mod tests {
     fn spill_identifier_in_call_position_stays_identifier() {
         // `let box = 5; box` — `box` used as a variable name is untouched.
         let expr = parse_expr("box + 1").unwrap();
-        assert!(matches!(expr, Expr::BinaryOp(_, l, _) if matches!(l.as_ref(), Expr::Identifier(n) if n == "box")));
+        assert!(
+            matches!(expr, Expr::BinaryOp(_, l, _) if matches!(l.as_ref(), Expr::Identifier(n) if n == "box"))
+        );
     }
 
     // ── 2026-08-09 (Phase 10): await task ────────────────────────────
@@ -1835,7 +1979,9 @@ mod tests {
     #[test]
     fn await_parses_as_unary() {
         let expr = parse_expr("await t").unwrap();
-        assert!(matches!(expr, Expr::Await(inner) if matches!(inner.as_ref(), Expr::Identifier(n) if n == "t")));
+        assert!(
+            matches!(expr, Expr::Await(inner) if matches!(inner.as_ref(), Expr::Identifier(n) if n == "t"))
+        );
     }
 
     #[test]
@@ -1844,7 +1990,11 @@ mod tests {
         // parser produces the same Spawn form (the typechecker classifies it).
         let expr = parse_expr("spawn compute(21)").unwrap();
         match expr {
-            Expr::Spawn { type_name, args, storage } => {
+            Expr::Spawn {
+                type_name,
+                args,
+                storage,
+            } => {
                 assert_eq!(type_name, "compute");
                 assert_eq!(args.len(), 1);
                 assert_eq!(storage, crate::ast::SpawnStorage::Pooled);
@@ -1873,7 +2023,12 @@ mod tests {
         // `a.b().serialize!(x)` — a full chain ending in a plugin call.
         let expr = parse_expr("a.b().serialize!(x)").unwrap();
         match expr {
-            Expr::PluginIntercept { name, args, receiver, .. } => {
+            Expr::PluginIntercept {
+                name,
+                args,
+                receiver,
+                ..
+            } => {
                 assert_eq!(name, "serialize");
                 assert_eq!(args.len(), 1);
                 let recv = receiver.expect("must carry receiver");
@@ -1928,8 +2083,11 @@ mod tests {
         let expr = parse_expr("f(x >> y)").unwrap();
         match expr {
             Expr::Call(_, args, _) => {
-                assert!(matches!(&args[0], Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
-                    "x >> y must stay a shift, got {:?}", args[0]);
+                assert!(
+                    matches!(&args[0], Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
+                    "x >> y must stay a shift, got {:?}",
+                    args[0]
+                );
             }
             other => panic!("expected call, got {other:?}"),
         }
@@ -2063,9 +2221,11 @@ mod tests {
     /// units (s/ns/us/min) lex as contextual identifiers and already worked.
     #[test]
     fn keyword_duration_unit_parses_as_quantity() {
-        for (src, want_value, want_unit) in
-            [("10ms", 10.0, "ms"), ("3.3Volt", 3.3, "Volt"), ("5s", 5.0, "s")]
-        {
+        for (src, want_value, want_unit) in [
+            ("10ms", 10.0, "ms"),
+            ("3.3Volt", 3.3, "Volt"),
+            ("5s", 5.0, "s"),
+        ] {
             match parse_expr(src).unwrap() {
                 Expr::UnitLiteral { value, unit } => {
                     assert_eq!(unit, want_unit, "unit of `{src}`");

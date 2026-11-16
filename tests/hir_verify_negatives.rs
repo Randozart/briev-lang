@@ -5,7 +5,7 @@
 use briev_compiler::casting::graph::CastingGraph;
 use briev_compiler::hir::expr::{HirExpr, HirExprKind};
 use briev_compiler::hir::stmt::{HirStmt, HirStmtKind};
-use briev_compiler::hir::{lower_program, verify, verify_law_markers, verify_typed, HirProgram};
+use briev_compiler::hir::{HirProgram, lower_program, verify, verify_law_markers, verify_typed};
 use briev_compiler::type_universe::TypeUniverse;
 
 fn lower(src: &str) -> HirProgram {
@@ -117,8 +117,8 @@ fn identifier_type_disagreement_is_rejected() {
     });
     let universe = TypeUniverse::new();
     let graph = CastingGraph::new();
-    let err = verify_typed(&program, &universe, &graph)
-        .expect_err("identifier type drift must fail");
+    let err =
+        verify_typed(&program, &universe, &graph).expect_err("identifier type drift must fail");
     assert!(err.contains("annotated"), "{err}");
 }
 
@@ -133,8 +133,7 @@ fn unresolved_cast_path_is_rejected() {
     });
     let universe = TypeUniverse::new();
     let graph = CastingGraph::new();
-    let err = verify_typed(&program, &universe, &graph)
-        .expect_err("missing cast path must fail");
+    let err = verify_typed(&program, &universe, &graph).expect_err("missing cast path must fail");
     assert!(err.contains("resolved `via`"), "{err}");
 }
 

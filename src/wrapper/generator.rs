@@ -27,7 +27,7 @@ use super::js_analyzer::js_func_to_frgn_sig;
 use super::python_analyzer::py_func_to_frgn_sig;
 use super::rust_analyzer::rust_func_to_frgn_sig;
 use super::wasm_analyzer::wasm_func_to_frgn_sig;
-use super::{c_type_to_briev, AnalysisResult, AnalyzedFunction};
+use super::{AnalysisResult, AnalyzedFunction, c_type_to_briev};
 use std::fs;
 use std::path::Path;
 
@@ -236,7 +236,11 @@ pub fn generate_bindings_dbv(result: &AnalysisResult) -> String {
 
         output.push_str(&format!(
             "register 0x{:02X} as \"{}\" {{\n",
-            result.functions.iter().position(|f| f.name == func.name).unwrap_or(0),
+            result
+                .functions
+                .iter()
+                .position(|f| f.name == func.name)
+                .unwrap_or(0),
             func.name
         ));
         output.push_str(&format!(
@@ -244,7 +248,10 @@ pub fn generate_bindings_dbv(result: &AnalysisResult) -> String {
             params_str.join(", "),
             return_briev
         ));
-        output.push_str(&format!("    location: \"{}::{}\";\n", result.library_name, func.name));
+        output.push_str(&format!(
+            "    location: \"{}::{}\";\n",
+            result.library_name, func.name
+        ));
         output.push_str(&format!("    target: {};\n", detect_target(&result.mapper)));
         if let Some(desc) = func.comments.first() {
             output.push_str(&format!("    description: \"{}\";\n", desc));
@@ -287,9 +294,18 @@ pub fn generate_memory_spec(result: &AnalysisResult) -> String {
     let lib = &result.library_name;
     let mut spec = Map::new();
     let mut channel = Map::new();
-    channel.insert("address".to_string(), serde_json::Value::String(format!("/dev/shm/metro_{}", lib)));
-    channel.insert("payload_offset".to_string(), serde_json::Value::Number(serde_json::Number::from(32)));
-    channel.insert("capacity".to_string(), serde_json::Value::Number(serde_json::Number::from(4096)));
+    channel.insert(
+        "address".to_string(),
+        serde_json::Value::String(format!("/dev/shm/metro_{}", lib)),
+    );
+    channel.insert(
+        "payload_offset".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(32)),
+    );
+    channel.insert(
+        "capacity".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(4096)),
+    );
 
     let mut input_fields: Vec<Map<String, serde_json::Value>> = Vec::new();
     let mut output_fields: Vec<Map<String, serde_json::Value>> = Vec::new();
@@ -300,28 +316,58 @@ pub fn generate_memory_spec(result: &AnalysisResult) -> String {
             let mut field = Map::new();
             field.insert("name".to_string(), serde_json::Value::String(pname.clone()));
             field.insert("type".to_string(), serde_json::Value::String(ptype.clone()));
-            field.insert("offset".to_string(), serde_json::Value::Number(serde_json::Number::from(input_offset)));
+            field.insert(
+                "offset".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(input_offset)),
+            );
             let size = type_size(ptype);
-            field.insert("size".to_string(), serde_json::Value::Number(serde_json::Number::from(size)));
+            field.insert(
+                "size".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(size)),
+            );
             input_fields.push(field);
             input_offset += size;
         }
         let mut field = Map::new();
-        field.insert("name".to_string(), serde_json::Value::String(format!("{}_result", func.name)));
-        field.insert("type".to_string(), serde_json::Value::String(func.return_type.clone()));
-        field.insert("offset".to_string(), serde_json::Value::Number(serde_json::Number::from(input_offset)));
+        field.insert(
+            "name".to_string(),
+            serde_json::Value::String(format!("{}_result", func.name)),
+        );
+        field.insert(
+            "type".to_string(),
+            serde_json::Value::String(func.return_type.clone()),
+        );
+        field.insert(
+            "offset".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(input_offset)),
+        );
         let size = type_size(&func.return_type);
-        field.insert("size".to_string(), serde_json::Value::Number(serde_json::Number::from(size)));
+        field.insert(
+            "size".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(size)),
+        );
         output_fields.push(field);
         input_offset += size;
     }
 
-    channel.insert("input_fields".to_string(), serde_json::Value::Array(
-        input_fields.into_iter().map(|m| serde_json::Value::Object(m)).collect()
-    ));
-    channel.insert("output_fields".to_string(), serde_json::Value::Array(
-        output_fields.into_iter().map(|m| serde_json::Value::Object(m)).collect()
-    ));
+    channel.insert(
+        "input_fields".to_string(),
+        serde_json::Value::Array(
+            input_fields
+                .into_iter()
+                .map(|m| serde_json::Value::Object(m))
+                .collect(),
+        ),
+    );
+    channel.insert(
+        "output_fields".to_string(),
+        serde_json::Value::Array(
+            output_fields
+                .into_iter()
+                .map(|m| serde_json::Value::Object(m))
+                .collect(),
+        ),
+    );
 
     spec.insert("channel".to_string(), serde_json::Value::Object(channel));
     serde_json::to_string_pretty(&spec).unwrap_or_default()
@@ -381,11 +427,7 @@ pub fn generate_bridge_bv(result: &AnalysisResult) -> String {
         } else {
             c_type_to_briev(&func.return_type)
         };
-        let params_names: Vec<String> = func
-            .parameters
-            .iter()
-            .map(|(n, _)| n.clone())
-            .collect();
+        let params_names: Vec<String> = func.parameters.iter().map(|(n, _)| n.clone()).collect();
         let args_list = if params_names.is_empty() {
             "[]".to_string()
         } else {
@@ -453,10 +495,14 @@ pub fn write_bind_files(
     let bridge_path = output_dir.join("bridge.bv");
 
     if dbv_path.exists() && !force {
-        return Err(format!("bindings.dbv already exists (use --force to overwrite)"));
+        return Err(format!(
+            "bindings.dbv already exists (use --force to overwrite)"
+        ));
     }
     if bridge_path.exists() && !force {
-        return Err(format!("bridge.bv already exists (use --force to overwrite)"));
+        return Err(format!(
+            "bridge.bv already exists (use --force to overwrite)"
+        ));
     }
 
     let dbv_content = generate_bindings_dbv(result);

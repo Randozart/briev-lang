@@ -5,10 +5,10 @@
 // Reuses the Pattern enum from src/beast/pattern.rs for parsing.
 // Max 2 levels. Flat dispatch with early returns.
 
-use std::collections::HashMap;
+use super::selection::{NodeRef, Selection, node_tag, stmt_tag, top_level_name, top_level_tag};
 use crate::ast::{Expr, Statement, TopLevel};
 use crate::beast::pattern::{self, Pattern};
-use super::selection::{NodeRef, Selection, node_tag, top_level_tag, stmt_tag, top_level_name};
+use std::collections::HashMap;
 
 /// A binding map from ?variable names to their matched AST values.
 /// Values are stored as NodeRefs pointing into the live AST.
@@ -19,7 +19,9 @@ pub struct LiveBindings {
 
 impl LiveBindings {
     pub fn new() -> Self {
-        LiveBindings { vars: HashMap::new() }
+        LiveBindings {
+            vars: HashMap::new(),
+        }
     }
 
     /// Get the first value bound to a variable.
@@ -70,7 +72,10 @@ pub fn collect_matches_recursive(pattern: &Pattern, items: &[TopLevel]) -> Vec<L
     for (i, item) in items.iter().enumerate() {
         let node = NodeRef::TopLevel(i);
         if let Some(bindings) = match_top_level(pattern, item, i) {
-            results.push(LiveMatch { bindings, matched_node: node.clone() });
+            results.push(LiveMatch {
+                bindings,
+                matched_node: node.clone(),
+            });
         }
         collect_stmt_matches_in_body(pattern, item, i, &mut results);
     }
@@ -83,11 +88,16 @@ fn collect_stmt_matches_in_body(
     item_idx: usize,
     results: &mut Vec<LiveMatch>,
 ) {
-    let Some(body) = get_toplevel_body(item) else { return };
+    let Some(body) = get_toplevel_body(item) else {
+        return;
+    };
     for (j, stmt) in body.iter().enumerate() {
         let stmt_node = NodeRef::Stmt(vec![], j);
         if let Some(bindings) = match_stmt(pattern, stmt) {
-            results.push(LiveMatch { bindings, matched_node: stmt_node });
+            results.push(LiveMatch {
+                bindings,
+                matched_node: stmt_node,
+            });
         }
     }
 }
@@ -123,7 +133,9 @@ fn match_toplevel_recursive(
             // Check tag
             if let Some(expected_tag) = tag {
                 let actual_tag = top_level_tag(item).ok_or(())?;
-                if actual_tag != expected_tag { return Err(()); }
+                if actual_tag != expected_tag {
+                    return Err(());
+                }
             }
             // Match tag-implied children from the struct fields
             match_toplevel_children(children, item, bindings)
@@ -147,7 +159,9 @@ fn match_stmt_recursive(
         Pattern::List { tag, children } => {
             if let Some(expected_tag) = tag {
                 let actual_tag = stmt_tag(stmt);
-                if actual_tag != expected_tag { return Err(()); }
+                if actual_tag != expected_tag {
+                    return Err(());
+                }
             }
             match_stmt_children(children, stmt, bindings)
         }
@@ -166,7 +180,9 @@ fn match_toplevel_children(
         _ => return Ok(()),
     };
     for (i, child) in children.iter().enumerate() {
-        if i >= fields.len() { break; }
+        if i >= fields.len() {
+            break;
+        }
         match_field_pattern(child, fields[i], bindings)?;
     }
     Ok(())
@@ -204,7 +220,11 @@ fn match_field_pattern(
             Ok(())
         }
         Pattern::Atom(expected) => {
-            if field_value == expected { Ok(()) } else { Err(()) }
+            if field_value == expected {
+                Ok(())
+            } else {
+                Err(())
+            }
         }
         _ => Err(()),
     }
@@ -244,9 +264,7 @@ mod tests {
                 output_type: None,
                 outputs: vec![Type::Custom("Int".into())],
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
-                body: vec![
-                    Statement::Term(Some(Expr::Decimal(0))),
-                ],
+                body: vec![Statement::Term(Some(Expr::Decimal(0)))],
                 metadata: std::collections::HashMap::new(),
                 derivation: None,
                 modifiers: vec![],

@@ -16,9 +16,9 @@ use std::process::Command;
 
 use briev_compiler::ast::StageKind;
 use briev_compiler::backend::llvm::LlvmBackend;
-use briev_compiler::plugin::loader::extract_inline_stage_blocks;
 use briev_compiler::plugin::PluginManager;
-use briev_compiler::target::{get_extension, BackendKind};
+use briev_compiler::plugin::loader::extract_inline_stage_blocks;
+use briev_compiler::target::{BackendKind, get_extension};
 use briev_compiler::type_universe::TypeUniverse;
 
 /// Re-export the LLVM backend's TrgUnresolvedAction for CLI flag parsing.
@@ -26,15 +26,15 @@ use briev_compiler::type_universe::TypeUniverse;
 pub use briev_compiler::backend::llvm::TrgUnresolvedAction;
 // 2026-08-23 (Phase 10): frontend pipeline moved into the LIB so the sweep
 // and library consumers run the real path.
-use briev_compiler::pipeline::{
-    build_plugin_manager, check_types, compile_view, effective_view_html,
-    evaluate_pending_comptime, lex_for_path, load_target_config, parse_with_warnings,
-    preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs, view_external_roots,
-    view_root_signals, CompiledView, ViewMountSpecs,
-};
 pub use briev_compiler::pipeline::{
-    check_data_source, check_source, compile_to_typed, BeastFilter, BeastPosition, BeastStage,
-    BuildOptions,
+    BeastFilter, BeastPosition, BeastStage, BuildOptions, check_data_source, check_source,
+    compile_to_typed,
+};
+use briev_compiler::pipeline::{
+    CompiledView, ViewMountSpecs, build_plugin_manager, check_types, compile_view,
+    effective_view_html, evaluate_pending_comptime, lex_for_path, load_target_config,
+    parse_with_warnings, preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs,
+    view_external_roots, view_root_signals,
 };
 
 /// Pipeline stage at which to emit a BEAST snapshot or IR snapshot.
@@ -133,7 +133,7 @@ pub fn copy_extern_companions(
 /// silenceable (D29). To undo: delete this fn and its call in compile_source.
 fn enforce_module_config(items: &mut Vec<briev_compiler::ast::TopLevel>) -> Result<(), String> {
     use briev_compiler::ast::TopLevel;
-    use briev_compiler::config_tuning::{apply_module_config, IrrPolicy};
+    use briev_compiler::config_tuning::{IrrPolicy, apply_module_config};
     let Some(pos) = items
         .iter()
         .position(|i| matches!(i, TopLevel::ModuleConfig(_)))
@@ -846,7 +846,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             ),
             Err(stale) => eprintln!("warning: --verify-bodies: {stale}"),
         }
-        let report = briev_compiler::analysis::verify_bodies::verify_bodies(&items);
+        let proof_bits = match opts.backend {
+            BackendKind::Llvm => {
+                configure_llvm_target(opts, LlvmBackend::new().with_int_bits(opts.int_bits))
+                    .ctx
+                    .int_bits
+            }
+            // Other backends do not yet have a refinement to this word model.
+            _ => 0,
+        };
+        let report = briev_compiler::analysis::verify_bodies::verify_bodies_in_universe(
+            &items, &universe, proof_bits,
+        );
         // Advisory: supported bodies the prover could not decide. Never a
         // failure — only concrete counterexamples fail the build.
         for line in &report.unproven {
@@ -915,6 +926,29 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // arena fields in %State and all arena init/fini calls are skipped — saving
     // 64KB malloc and 24 bytes of %State for benchmarks with no Alloc# calls.
     let needs_arena = briev_compiler::analysis::allocation::analyze_arena_need(&mut items);
+
+    // ── Thread gate (2026-11-15, thread-assignment plan) ──────────────────
+    // `on thread <N>` binds a node to a reactor worker, and different workers
+    // really do run concurrently. The gate therefore reasons about what each
+    // pinned node does *through its callees* (`analyze_resource_effects`), not
+    // just what its own body spells out: the stdlib print lane mutates
+    // `stdout_fill`, which no node body mentions. It runs here, after the
+    // effect summary and arena need exist, so there is exactly one definition
+    // of both.
+    let resources =
+        briev_compiler::analysis::resource_effects::analyze_resource_effects(&items, &needs_arena);
+    let thread_gate = briev_compiler::analysis::thread_plan::run_thread_gate(&items, &resources);
+    if !thread_gate.errors.is_empty() {
+        return Err(format!(
+            "thread gate:\n  {}",
+            thread_gate.errors.join("\n  ")
+        ));
+    }
+    for warning in &thread_gate.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let thread_plan = thread_gate.plan;
+
     emit_beast_snapshot(
         file_path,
         BeastStage::Alloc,
@@ -980,7 +1014,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // there too (the freestanding path drops it, but don't even compile it).
     let skip_briev_rt = briev_compiler::conformance::is_bare(std::path::Path::new(file_path))
         || has_bootstrap_entry(&items);
-    let mut extra_objects = collect_extra_objects(&items, &resolver, skip_briev_rt)?;
+    let mut extra_objects =
+        collect_extra_objects(&items, &resolver, skip_briev_rt, opts.safe_mode)?;
 
     // ── Frgn dispatch resolution ──────────────────────────────────────
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
@@ -1171,6 +1206,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         opts,
         alloc_strategies,
         needs_arena,
+        thread_plan,
         resolved_frgns,
         enable_module_init,
         &mut web_layout,
@@ -1348,6 +1384,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                         shared: opts.shared,
                         bad_objects: &bad_fn_objects,
                         bootstrap_entry: bootstrap_entry.as_deref(),
+                        safe_mode: opts.safe_mode,
                     },
                 )?;
             }
@@ -1913,6 +1950,34 @@ fn append_ptx_companions(
     }
 }
 
+/// Apply the target configuration once for code generation and proof-domain
+/// selection, so a triple/layout override cannot retain a 64-bit proof model.
+fn configure_llvm_target(opts: &BuildOptions, mut b: LlvmBackend) -> LlvmBackend {
+    let ext = get_extension(&opts.file_path);
+    let target_config = load_target_config(opts);
+    if let Some(entry) = target_config.lookup(&ext) {
+        if let Some(ref triple) = entry.target_triple {
+            b = b.with_target_triple(triple);
+        }
+        if let Some(ref dl) = entry.data_layout {
+            b = b.with_data_layout(dl);
+        }
+        // 2026-09-13 (rv64 capability kernel): linker script from target profile.
+        if entry.linker_script.is_some() {
+            b = b.with_linker_script(entry.linker_script.clone());
+        }
+    }
+    // 2026-09-13 (rv64 capability kernel): CLI overrides for triple
+    // and linker script take precedence over dbvl settings.
+    if let Some(ref triple) = opts.triple_override {
+        b = b.with_target_triple(triple);
+    }
+    if opts.linker_script_override.is_some() {
+        b = b.with_linker_script(opts.linker_script_override.clone());
+    }
+    b
+}
+
 fn codegen(
     items: &[briev_compiler::ast::TopLevel],
     universe: &mut TypeUniverse,
@@ -1923,6 +1988,11 @@ fn codegen(
         briev_compiler::backend::llvm::AllocStrategy,
     >,
     needs_arena: std::collections::HashSet<String>,
+    // 2026-11-16 (per-worker arena plan, Part D.1): the gate-validated
+    // `on thread <N>` plan. Produced by compile_source (which owns the
+    // interprocedural effect summary) and installed on the analysis results
+    // here so the backend reads one authoritative plan.
+    thread_plan: briev_compiler::analysis::thread_plan::ThreadPlan,
     resolved_frgns: std::collections::HashMap<
         String,
         briev_compiler::analysis::frgn_dispatch::ResolvedFrgn,
@@ -2095,6 +2165,11 @@ fn codegen(
         Some(&*universe),
         effective_accel_mode,
     );
+    // 2026-11-16 (per-worker arena plan, Part D.1): install the gate-validated
+    // plan. `analyze_program` runs the same collection without the effect
+    // summary (the refusal is compile_source's job), so the authoritative plan
+    // must win over its plan-only pass.
+    analysis.thread_plan = thread_plan;
 
     // ── Capability validation (Plan 0.2, 2026-08-23) ───────────────────
     // Backends with a partial surface declare it (backend::*::CAPABILITIES);
@@ -2180,7 +2255,6 @@ fn codegen(
                 // across backends — see the block above the dispatch.
                 .with_analysis(analysis);
             // Apply target config if available
-            let ext = get_extension(&opts.file_path);
             // 2026-08-04 (Phase 4): a bare target (.b.bv) activates the
             // restricted embedded mode (check_embedded_restrictions, term! ->
             // wfi) — the freestanding bare-metal path.
@@ -2192,27 +2266,7 @@ fn codegen(
             if let Some(ref mech) = effective_isr_mechanism {
                 b = b.with_isr_mechanism(Some(mech.clone()));
             }
-            let target_config = load_target_config(opts);
-            if let Some(entry) = target_config.lookup(&ext) {
-                if let Some(ref triple) = entry.target_triple {
-                    b = b.with_target_triple(triple);
-                }
-                if let Some(ref dl) = entry.data_layout {
-                    b = b.with_data_layout(dl);
-                }
-                // 2026-09-13 (rv64 capability kernel): linker script from target profile.
-                if entry.linker_script.is_some() {
-                    b = b.with_linker_script(entry.linker_script.clone());
-                }
-            }
-            // 2026-09-13 (rv64 capability kernel): CLI overrides for triple
-            // and linker script take precedence over dbvl settings.
-            if let Some(ref triple) = opts.triple_override {
-                b = b.with_target_triple(triple);
-            }
-            if opts.linker_script_override.is_some() {
-                b = b.with_linker_script(opts.linker_script_override.clone());
-            }
+            b = configure_llvm_target(opts, b);
             // Register proto declarations on the casting graph
             if let Some(ref mut graph) = b.ctx.casting_graph {
                 for item in items.iter() {
@@ -2866,7 +2920,7 @@ fn emit_beast_snapshot(
         other => {
             return Err(format!(
                 "internal: AST snapshot requested for IR stage {other:?}"
-            ))
+            ));
         }
     };
     let data = briev_compiler::beast::to_beast(items, universe);
@@ -2898,7 +2952,7 @@ fn emit_ir_snapshot(
         other => {
             return Err(format!(
                 "internal: IR snapshot requested for AST stage {other:?}"
-            ))
+            ));
         }
     };
     let path = format!(
@@ -3087,6 +3141,7 @@ fn collect_extra_objects(
     items: &[briev_compiler::ast::TopLevel],
     resolver: &briev_compiler::import_resolver::ImportResolver,
     skip_briev_rt: bool,
+    safe_mode: bool,
 ) -> Result<Vec<PathBuf>, String> {
     let cache_dir = get_ffi_cache_dir();
     let mut objects = Vec::new();
@@ -3122,7 +3177,7 @@ fn collect_extra_objects(
         match ext.as_deref() {
             Some("c") | Some("cpp") | Some("cc") | Some("cxx") | Some("m") => {
                 let src = resolved_path();
-                let obj = compile_source_to_object(&src, &cache_dir)?;
+                let obj = compile_source_to_object(&src, &cache_dir, safe_mode)?;
                 objects.push(obj);
             }
             Some("so") | Some("dylib") | Some("a") | Some("o") => {
@@ -3146,14 +3201,24 @@ fn get_ffi_cache_dir() -> PathBuf {
 
 /// 2026-07-16: P4 — Compile a C/C++ source to a .o object file.
 /// Content-hash cached at ~/.cache/briev-compiler/ffi/<hash>.o.
-fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<PathBuf, String> {
+fn compile_source_to_object(
+    source_path: &Path,
+    cache_dir: &Path,
+    safe_mode: bool,
+) -> Result<PathBuf, String> {
     let content = std::fs::read(source_path)
         .map_err(|e| format!("cannot read '{}': {}", source_path.display(), e))?;
     // 2026-07-26: Include compiler flags in the cache key so flag changes
     // (e.g. -flto) produce fresh cache entries instead of reusing stale ones.
+    // 2026-11-15 (issue #9): safe_mode is part of the key too — -O0 objects
+    // must not be cached under the -O3 hash.
     let mut hasher = blake3::Hasher::new();
     hasher.update(&content);
-    hasher.update(b":flto:fPIC");
+    if safe_mode {
+        hasher.update(b":safe:O0");
+    } else {
+        hasher.update(b":flto:fPIC");
+    }
     let hash = hasher.finalize();
     let cache_path = cache_dir.join(format!("{}.o", hash.to_hex()));
     if cache_path.exists() {
@@ -3171,11 +3236,26 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
                 "unknown source extension '{}' for '{}'",
                 ext,
                 source_path.display()
-            ))
+            ));
         }
     };
-    let status = Command::new("clang")
-        .args([
+    // 2026-11-15 (issue #9): --safe selects conservative flags for the
+    // frgn C compilation — -O0, no -flto, no -ffast-math, -march=x86-64
+    // (the generic x86-64 baseline; 'generic' is not a valid target CPU).
+    let flags: Vec<&str> = if safe_mode {
+        vec![
+            "-O0",
+            "-march=x86-64",
+            "-fPIC",
+            "-x",
+            lang_flag,
+            "-c",
+            source_path.to_str().unwrap(),
+            "-o",
+            cache_path.to_str().unwrap(),
+        ]
+    } else {
+        vec![
             "-O3",
             "-flto",
             "-march=native",
@@ -3187,7 +3267,10 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
             source_path.to_str().unwrap(),
             "-o",
             cache_path.to_str().unwrap(),
-        ])
+        ]
+    };
+    let status = Command::new("clang")
+        .args(&flags)
         .status()
         .map_err(|e| format!("failed to invoke clang (is it installed?): {}", e))?;
     if !status.success() {
@@ -3212,6 +3295,8 @@ struct LinkInputs<'a> {
     shared: bool,
     bad_objects: &'a [PathBuf],
     bootstrap_entry: Option<&'a str>,
+    /// 2026-11-15 (issue #9): conservative compile profile (--safe).
+    safe_mode: bool,
 }
 
 /// 2026-10-27: reject invalid emitted IR before clang/llc. This turns
@@ -3244,6 +3329,7 @@ fn compile_ll_to_binary(
         shared,
         bad_objects,
         bootstrap_entry,
+        safe_mode,
     } = inputs;
     verify_emitted_ir(ll_path)?;
     let ll_text = std::fs::read_to_string(ll_path)
@@ -3270,8 +3356,21 @@ fn compile_ll_to_binary(
     // stdlib (e.g., `frgn __print_int from "lib/runtime/briev_rt.c"`) are compiled
     // by collect_extra_objects and passed via extra_objects. This removes the
     // duplicate symbol error that occurred when briev_rt.c was compiled twice.
+    // 2026-11-15 (issue #9): --safe selects a conservative profile —
+    // -O0, no -flto, no -ffast-math, -march=generic. For triaging
+    // large-IR instability without optimizer interference.
     if shared {
-        cmd.args(["-O3", "-flto", "-shared", "-fPIC", ll_path]);
+        if safe_mode {
+            cmd.args(["-O0", "-shared", "-fPIC", ll_path]);
+        } else {
+            cmd.args(["-O3", "-flto", "-shared", "-fPIC", ll_path]);
+        }
+    } else if safe_mode {
+        // 2026-11-15: -march=x86-64 is the GENERIC x86-64 baseline (no
+        // native CPU features) — the conservative counterpart to
+        // -march=native. 'generic' is not a valid clang target CPU.
+        cmd.arg("-O0");
+        cmd.args(["-march=x86-64", ll_path]);
     } else {
         cmd.arg("-O3");
         // 2026-09-13: skip -march=native for cross-compilation targets
@@ -3325,7 +3424,7 @@ fn compile_ll_to_binary(
             .any(|o| o.to_string_lossy().contains("briev_rt"));
         if needs_runtime && !has_runtime {
             let cache_dir = get_ffi_cache_dir();
-            let obj = compile_source_to_object(&runtime_c, &cache_dir)?;
+            let obj = compile_source_to_object(&runtime_c, &cache_dir, safe_mode)?;
             cmd.arg(obj.as_os_str());
         }
         for obj in extra_objects {
@@ -3708,8 +3807,8 @@ mod tests {
     /// error naming both symbol and path.
     #[test]
     fn test_extern_missing_source_is_hard_error() {
-        use briev_compiler::ast::top::*;
         use briev_compiler::ast::TopLevel;
+        use briev_compiler::ast::top::*;
         let cell = TopLevel::Cell(CellDef {
             name: "Ghost".into(),
             type_params: vec![],
@@ -3882,6 +3981,7 @@ node go [done == false][done == true] {
             web_page_key: None,
             verify_bodies: false,
             verify_report: None,
+            safe_mode: false,
         }
     }
 
@@ -4197,12 +4297,12 @@ node go [done == false][done == true] {
         with_temp_file(content, |path| {
             let cache_dir = get_ffi_cache_dir();
             // First compilation
-            let result1 = compile_source_to_object(path, &cache_dir);
+            let result1 = compile_source_to_object(path, &cache_dir, false);
             assert!(result1.is_ok(), "first compile failed: {:?}", result1);
             let obj1 = result1.unwrap();
             assert!(obj1.exists(), "object file not created");
             // Same source → same hash → returns cached path (identical)
-            let result2 = compile_source_to_object(path, &cache_dir);
+            let result2 = compile_source_to_object(path, &cache_dir, false);
             assert!(result2.is_ok(), "second compile failed: {:?}", result2);
             let obj2 = result2.unwrap();
             assert_eq!(obj1, obj2, "cached path should match");
@@ -4219,7 +4319,7 @@ node go [done == false][done == true] {
     fn test_compile_source_to_object_bad_ext() {
         let path = Path::new("/tmp/test_bad_ext.xyz");
         std::fs::write(path, "hello").ok();
-        let result = compile_source_to_object(path, &get_ffi_cache_dir());
+        let result = compile_source_to_object(path, &get_ffi_cache_dir(), false);
         assert!(
             result.is_err(),
             "expected compile error for unknown extension"

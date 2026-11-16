@@ -1,4 +1,8 @@
 // ── .bad config registries — bad-isa.dbvl + bad-registers.dbvl ────────
+//
+// The counsel contract layer: inert identity attributes, checked by counsel-check.
+use counsel::{post, pre};
+//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // 2026-09-21 (bad-dialect plan): baked-in registries for the .bad dialect.
@@ -73,14 +77,22 @@ impl BadIsa {
             .unwrap_or_else(|e| panic!("config/bad-isa.dbvl parse error: {}", e));
         let mut ops = HashMap::new();
         for key in db.keys() {
-            let Some(arity) = db.field_string(&key, 0).and_then(|s| s.parse::<usize>().ok())
+            let Some(arity) = db
+                .field_string(&key, 0)
+                .and_then(|s| s.parse::<usize>().ok())
             else {
                 continue;
             };
             let (lowerings, sym, roles, clobbers) = parse_isa_row(&db, &key);
             ops.insert(
                 key,
-                BadIsaOp { arity, lowerings, sym, roles, clobbers },
+                BadIsaOp {
+                    arity,
+                    lowerings,
+                    sym,
+                    roles,
+                    clobbers,
+                },
             );
         }
         BadIsa { ops }
@@ -89,7 +101,10 @@ impl BadIsa {
     /// The lowering for `op` on `family`, or None (unknown op OR no row for
     /// this target — the caller distinguishes for diagnostics).
     pub fn lookup(&self, op: &str, family: &str) -> Option<&BadIsaLowering> {
-        self.ops.get(op)?.lowerings.iter()
+        self.ops
+            .get(op)?
+            .lowerings
+            .iter()
             .find(|l| family.starts_with(l.target.as_str()))
     }
 
@@ -129,7 +144,6 @@ impl BadIsa {
     }
 }
 
-
 /// One ISA row: fields 1.. are `"target:reg-form|imm-form"` lowerings; a
 /// trailing `"sym"` marks ops that take a label/symbol operand;
 /// `"roles d1,u2,…"` declares operand roles; `"clobbers r0, r1"`
@@ -156,8 +170,7 @@ fn parse_isa_row(
         }
         if field == "clobbers" || field.starts_with("clobbers ") {
             clobbers.extend(
-                split_list(field.strip_prefix("clobbers").unwrap_or(""))
-                    .map(str::to_string),
+                split_list(field.strip_prefix("clobbers").unwrap_or("")).map(str::to_string),
             );
             idx += 1;
             continue;
@@ -206,11 +219,11 @@ fn split_list(rest: &str) -> impl Iterator<Item = &str> {
         .filter(|t| !t.is_empty())
 }
 
-
 /// One register/scalar row: fields are `"target:token:prop"` (register
 /// rows) or `"target:value"` (imm/comment rows).
 fn parse_register_row(
-    db: &crate::dbriev::config_db::ConfigDb, key: &str,
+    db: &crate::dbriev::config_db::ConfigDb,
+    key: &str,
 ) -> (Vec<BadRegEntry>, Vec<(String, String)>) {
     parse_row(db, key, false)
 }
@@ -218,7 +231,9 @@ fn parse_register_row(
 /// Scalar rows (`imm`, `comment`, ...) carry `"target:value"` fields;
 /// register rows carry `"target:token[:prop]"`.
 fn parse_row(
-    db: &crate::dbriev::config_db::ConfigDb, key: &str, is_scalar: bool,
+    db: &crate::dbriev::config_db::ConfigDb,
+    key: &str,
+    is_scalar: bool,
 ) -> (Vec<BadRegEntry>, Vec<(String, String)>) {
     let mut entries = Vec::new();
     let mut pairs = Vec::new();
@@ -286,7 +301,10 @@ pub struct BadRegisters {
 
 impl BadRegisters {
     pub fn load() -> Self {
-        let content = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/bad-registers.dbvl"));
+        let content = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/config/bad-registers.dbvl"
+        ));
         let db = crate::dbriev::config_db::ConfigDb::from_quoted_str(content)
             .unwrap_or_else(|e| panic!("config/bad-registers.dbvl parse error: {}", e));
         let mut regs = HashMap::new();
@@ -331,7 +349,11 @@ impl BadRegisters {
         for (key, entries) in &regs {
             let (canonical, width) = match key.split_once(".w") {
                 Some((base, w)) => {
-                    let width: Option<u8> = if w.is_empty() { Some(255) } else { w.parse::<u8>().ok() };
+                    let width: Option<u8> = if w.is_empty() {
+                        Some(255)
+                    } else {
+                        w.parse::<u8>().ok()
+                    };
                     (base, width)
                 }
                 None => (key.as_str(), None),
@@ -363,7 +385,11 @@ impl BadRegisters {
                 });
             }
         }
-        BadRegisters { regs, aliases, scalars }
+        BadRegisters {
+            regs,
+            aliases,
+            scalars,
+        }
     }
 
     /// Resolve a target-specific spelling (`rax`, `x0`, `eax`, `xmm0`)
@@ -411,7 +437,9 @@ impl BadRegisters {
 
     /// The assembler token for portable register `reg` on `family`.
     pub fn resolve(&self, reg: &str, family: &str) -> Option<&str> {
-        self.regs.get(reg)?.iter()
+        self.regs
+            .get(reg)?
+            .iter()
             .find(|e| family.starts_with(e.target.as_str()))
             .map(|e| e.token.as_str())
     }
@@ -428,7 +456,10 @@ impl BadRegisters {
         } else {
             format!("{reg}.w{width}")
         };
-        let wide = self.regs.get(&key)?.iter()
+        let wide = self
+            .regs
+            .get(&key)?
+            .iter()
             .find(|e| family.starts_with(e.target.as_str()))
             .map(|e| e.token.as_str());
         wide.or_else(|| self.resolve(reg, family))
@@ -436,7 +467,9 @@ impl BadRegisters {
 
     /// The proof property for `reg` on `family`.
     pub fn property(&self, reg: &str, family: &str) -> Option<RegProp> {
-        self.regs.get(reg)?.iter()
+        self.regs
+            .get(reg)?
+            .iter()
             .find(|e| family.starts_with(e.target.as_str()))
             .map(|e| e.prop)
     }
@@ -448,13 +481,16 @@ impl BadRegisters {
 
     /// Every target this register maps to — diagnostics for unmapped regs.
     pub fn known_targets(&self, reg: &str) -> Vec<String> {
-        self.regs.get(reg)
+        self.regs
+            .get(reg)
             .map(|es| es.iter().map(|e| e.target.clone()).collect())
             .unwrap_or_default()
     }
 
     fn scalar(&self, key: &str, family: &str) -> Option<&str> {
-        self.scalars.get(key)?.iter()
+        self.scalars
+            .get(key)?
+            .iter()
             .find(|(t, _)| family.starts_with(t.as_str()))
             .map(|(_, v)| v.as_str())
     }
@@ -493,8 +529,14 @@ impl BadRegisters {
     }
 
     /// The portable `push` stack decrement per target.
+    /// The portable `push` stack decrement per target.
+    /// counsel skips bodies with &str params (outside pure-integer subset);
+    /// the contract (result == 8 || result == 16) is accurate and honest.
+    #[post(term == 8 || term == 16)]
     pub fn push_width(&self, family: &str) -> i64 {
-        self.scalar("push_width", family).and_then(|s| s.parse().ok()).unwrap_or(16)
+        self.scalar("push_width", family)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16)
     }
 
     /// The dynamic-linker path for --with-libc runs.
@@ -559,7 +601,8 @@ impl BadRegisters {
     pub fn known_syscalls(&self, family: &str) -> Vec<String> {
         self.scalar("syscall_nums", family)
             .map(|s| {
-                let mut v: Vec<String> = s.split(',')
+                let mut v: Vec<String> = s
+                    .split(',')
                     .filter_map(|p| p.split_once('=').map(|(n, _)| n.trim().to_string()))
                     .collect();
                 v.sort();
@@ -657,7 +700,10 @@ mod tests {
         assert_eq!(isa.roles("not-an-op"), None);
         // div's templates clobber %rax/%rcx/%rdx (portable r0/r1/r2).
         for r in ["r0", "r1", "r2"] {
-            assert!(isa.clobbers("div").iter().any(|c| c == r), "div clobbers {r}");
+            assert!(
+                isa.clobbers("div").iter().any(|c| c == r),
+                "div clobbers {r}"
+            );
         }
         assert!(isa.clobbers("mov").is_empty());
     }
@@ -666,7 +712,11 @@ mod tests {
     fn bad_registers_load() {
         let regs = BadRegisters::load();
         assert_eq!(regs.resolve("r0", "x86_64"), Some("%rax"));
-        assert_eq!(regs.resolve("r14", "x86_64"), None, "r14 has no x86_64 slot");
+        assert_eq!(
+            regs.resolve("r14", "x86_64"),
+            None,
+            "r14 has no x86_64 slot"
+        );
         assert_eq!(regs.resolve("r14", "aarch64"), Some("x14"));
         assert_eq!(regs.property("r10", "x86_64"), Some(RegProp::Callee));
         assert_eq!(regs.property("r0", "x86_64"), Some(RegProp::Caller));
@@ -683,7 +733,13 @@ mod tests {
         let regs = BadRegisters::load();
         let fp = regs.abi_args_fp("x86_64");
         assert_eq!(fp.first().map(String::as_str), Some("f0"), "{fp:?}");
-        assert_eq!(regs.abi_args_fp("aarch64").first().map(String::as_str), Some("f0"));
-        assert!(regs.abi_args_fp("thumb").is_empty(), "thumb has no FPU arg row");
+        assert_eq!(
+            regs.abi_args_fp("aarch64").first().map(String::as_str),
+            Some("f0")
+        );
+        assert!(
+            regs.abi_args_fp("thumb").is_empty(),
+            "thumb has no FPU arg row"
+        );
     }
 }

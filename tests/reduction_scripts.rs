@@ -38,8 +38,16 @@ fn predicates_distinguish_crash_from_diagnostic() {
     let dir = tempfile::tempdir().unwrap();
     let bad = dir.path().join("bad.bv");
     std::fs::write(&bad, "defn f() -> Int { term missing; };\n").unwrap();
-    assert_eq!(predicate("diagnostic", &bad), 0, "compile error is diagnostic-interesting");
-    assert_eq!(predicate("ice", &bad), 1, "a normal diagnostic is not an ICE");
+    assert_eq!(
+        predicate("diagnostic", &bad),
+        0,
+        "compile error is diagnostic-interesting"
+    );
+    assert_eq!(
+        predicate("ice", &bad),
+        1,
+        "a normal diagnostic is not an ICE"
+    );
 
     let good = dir.path().join("good.bv");
     std::fs::write(
@@ -49,5 +57,9 @@ fn predicates_distinguish_crash_from_diagnostic() {
     .unwrap();
     assert_eq!(predicate("ice", &good), 1);
     assert_eq!(predicate("diagnostic", &good), 1);
-    assert_eq!(predicate("opt", &good), 1, "no divergence on a clean program");
+    assert_eq!(
+        predicate("opt", &good),
+        1,
+        "no divergence on a clean program"
+    );
 }

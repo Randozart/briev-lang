@@ -70,18 +70,22 @@ pub fn get_operator_intrinsic(universe: &TypeUniverse, rune: &str, ty: &Type) ->
 /// the category (the typechecker, via its type_protocols record) can consult
 /// it directly.
 pub fn protocol_binding(category: &str, op_name: &str) -> Option<OpBinding> {
+    // Modular arithmetic and bitwise operations have the same bit-pattern
+    // semantics for signed/unsigned receivers. UInt owns these bindings; it
+    // must not borrow an Int binding merely because the RHS is a numeral.
+    // Signed-sensitive operations are not aliased to UInt here.
     match (category, op_name) {
-        ("Int", "Add") => Some(OpBinding::Intrinsic("AddI64#".into())),
-        ("Int", "Sub") => Some(OpBinding::Intrinsic("SubI64#".into())),
-        ("Int", "Mul") => Some(OpBinding::Intrinsic("MulI64#".into())),
+        ("Int" | "UInt", "Add") => Some(OpBinding::Intrinsic("AddI64#".into())),
+        ("Int" | "UInt", "Sub") => Some(OpBinding::Intrinsic("SubI64#".into())),
+        ("Int" | "UInt", "Mul") => Some(OpBinding::Intrinsic("MulI64#".into())),
         ("Int", "Div") => Some(OpBinding::Intrinsic("DivI64#".into())),
         ("Int", "Rem") => Some(OpBinding::Intrinsic("RemI64#".into())),
-        ("Int", "BitAnd") => Some(OpBinding::Intrinsic("BitAndI64#".into())),
-        ("Int", "BitOr") => Some(OpBinding::Intrinsic("BitOrI64#".into())),
-        ("Int", "BitXor") => Some(OpBinding::Intrinsic("BitXorI64#".into())),
-        ("Int", "Shl") => Some(OpBinding::Intrinsic("ShlI64#".into())),
+        ("Int" | "UInt", "BitAnd") => Some(OpBinding::Intrinsic("BitAndI64#".into())),
+        ("Int" | "UInt", "BitOr") => Some(OpBinding::Intrinsic("BitOrI64#".into())),
+        ("Int" | "UInt", "BitXor") => Some(OpBinding::Intrinsic("BitXorI64#".into())),
+        ("Int" | "UInt", "Shl") => Some(OpBinding::Intrinsic("ShlI64#".into())),
         ("Int", "Shr") => Some(OpBinding::Intrinsic("ShrI64#".into())),
-        ("Int", "Eq") => Some(OpBinding::Intrinsic("EqI64#".into())),
+        ("Int" | "UInt", "Eq") => Some(OpBinding::Intrinsic("EqI64#".into())),
         ("Int", "Lt") => Some(OpBinding::Intrinsic("LtI64#".into())),
         ("Float", "Add") => Some(OpBinding::Intrinsic("FAddF64#".into())),
         ("Float", "Sub") => Some(OpBinding::Intrinsic("FSubF64#".into())),
@@ -151,8 +155,9 @@ pub fn protocol_category(universe: &TypeUniverse, ty: &Type) -> Option<String> {
         }
         let base = current.base.trim_start_matches('#');
         match base {
-            "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob"
-            | "Data" | "Bit" => return Some(base.to_string()),
+            "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob" | "Data" | "Bit" => {
+                return Some(base.to_string());
+            }
             "" => return None,
             _ => {}
         }
@@ -256,7 +261,8 @@ mod tests {
     #[test]
     fn test_missing_type() {
         // A custom type with no universe entry resolves to no category.
-        let binding = get_operator_intrinsic(&empty_universe(), "+", &Type::Custom("Nonexistent".into()));
+        let binding =
+            get_operator_intrinsic(&empty_universe(), "+", &Type::Custom("Nonexistent".into()));
         assert_eq!(binding, None);
     }
 

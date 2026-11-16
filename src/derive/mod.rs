@@ -6,32 +6,32 @@
 
 use crate::interpreter::Atom;
 
-mod engine;
-mod smt;
-mod cli;
+mod accept;
 mod assert;
 mod chain;
+mod cli;
 mod doppelganger;
+mod engine;
+mod equivalence;
 mod library;
 mod mcmc;
 mod mutate;
-mod equivalence;
 mod pareto;
-mod accept;
+mod smt;
 mod verify;
 mod verify_smt;
 
-pub use engine::*;
-pub use smt::*;
-pub use cli::*;
+pub use accept::*;
 pub use assert::*;
+pub use cli::*;
 pub use doppelganger::*;
+pub use engine::*;
+pub use equivalence::*;
 pub use library::*;
 pub use mcmc::*;
 pub use mutate::*;
-pub use equivalence::*;
 pub use pareto::*;
-pub use accept::*;
+pub use smt::*;
 pub use verify::*;
 pub use verify_smt::*;
 
@@ -75,20 +75,42 @@ pub fn synthesize(
 
     for iteration in 0..5 {
         // Step 1: Synthesize from current examples
-        let mut candidate_prog = synthesize_candidate(name, params, ret_type, &examples, adaptive_depth)?;
-        let cand_expr = candidate_prog.body.get(0).cloned().unwrap_or(Expr::Decimal(0));
+        let mut candidate_prog =
+            synthesize_candidate(name, params, ret_type, &examples, adaptive_depth)?;
+        let cand_expr = candidate_prog
+            .body
+            .get(0)
+            .cloned()
+            .unwrap_or(Expr::Decimal(0));
         let mut verified = true;
         // 2026-07-28: Use Z3 forall verification when postcondition provided.
         // 2026-07-29: Z3 reference-only verification returns sat with empty
         // model for bitvector equality queries. Use Z3 only for user-written
         // postconditions; reference-only falls through to random verification.
         if let Some(post) = postcondition {
-            match smt_verify_candidate(name, &cand_expr, params, &examples, post, precondition, ref_fn) {
+            match smt_verify_candidate(
+                name,
+                &cand_expr,
+                params,
+                &examples,
+                post,
+                precondition,
+                ref_fn,
+            ) {
                 CegisResult::Proven => {
-                    eprintln!("  cegis[{}/5] '{}': PROVEN for all inputs", iteration + 1, name);
+                    eprintln!(
+                        "  cegis[{}/5] '{}': PROVEN for all inputs",
+                        iteration + 1,
+                        name
+                    );
                 }
                 CegisResult::Counterexample(inputs, correct_output) => {
-                    eprintln!("  cegis[{}/5] '{}': counterexample at {:?}, adding example", iteration + 1, name, inputs);
+                    eprintln!(
+                        "  cegis[{}/5] '{}': counterexample at {:?}, adding example",
+                        iteration + 1,
+                        name,
+                        inputs
+                    );
                     examples.push(DerivationExample {
                         inputs,
                         output: Box::new(correct_output),
@@ -98,13 +120,31 @@ pub fn synthesize(
                     verified = false;
                 }
                 CegisResult::Error(reason) => {
-                    eprintln!("  cegis[{}/5] '{}': Z3 error ({}), fallback to random verify", iteration + 1, name, reason);
+                    eprintln!(
+                        "  cegis[{}/5] '{}': Z3 error ({}), fallback to random verify",
+                        iteration + 1,
+                        name,
+                        reason
+                    );
                     if verify_samples > 0 {
-                        match verify::verify_candidate(&cand_expr, params, Some(post), verify_samples, ref_fn) {
+                        match verify::verify_candidate(
+                            &cand_expr,
+                            params,
+                            Some(post),
+                            verify_samples,
+                            ref_fn,
+                        ) {
                             verify::VerifyResult::Pass => {}
                             verify::VerifyResult::Fail(inputs, correct_output, r) => {
-                                if let (Some(input_row), Some(output)) = (inputs.first(), correct_output) {
-                                    eprintln!("  cegis[{}/5] '{}': counterexample at {:?}, adding example", iteration + 1, name, input_row);
+                                if let (Some(input_row), Some(output)) =
+                                    (inputs.first(), correct_output)
+                                {
+                                    eprintln!(
+                                        "  cegis[{}/5] '{}': counterexample at {:?}, adding example",
+                                        iteration + 1,
+                                        name,
+                                        input_row
+                                    );
                                     examples.push(DerivationExample {
                                         inputs: input_row.clone(),
                                         output: Box::new(output),
@@ -113,7 +153,10 @@ pub fn synthesize(
                                     });
                                 } else {
                                     adaptive_depth += 1;
-                                    eprintln!("  verify: '{}' rejected ({}) — trying depth {}", name, r, adaptive_depth);
+                                    eprintln!(
+                                        "  verify: '{}' rejected ({}) — trying depth {}",
+                                        name, r, adaptive_depth
+                                    );
                                 }
                                 verified = false;
                             }
@@ -128,7 +171,12 @@ pub fn synthesize(
                 // Pushes to examples when correct output is known (reference mismatch).
                 verify::VerifyResult::Fail(inputs, correct_output, reason) => {
                     if let (Some(input_row), Some(output)) = (inputs.first(), correct_output) {
-                        eprintln!("  cegis[{}/5] '{}': counterexample at {:?}, adding example", iteration + 1, name, input_row);
+                        eprintln!(
+                            "  cegis[{}/5] '{}': counterexample at {:?}, adding example",
+                            iteration + 1,
+                            name,
+                            input_row
+                        );
                         examples.push(DerivationExample {
                             inputs: input_row.clone(),
                             output: Box::new(output),
@@ -137,7 +185,13 @@ pub fn synthesize(
                         });
                     } else {
                         adaptive_depth += 1;
-                        eprintln!("  cegis[{}/5] '{}': verification rejected ({}) — trying depth {}", iteration + 1, name, reason, adaptive_depth);
+                        eprintln!(
+                            "  cegis[{}/5] '{}': verification rejected ({}) — trying depth {}",
+                            iteration + 1,
+                            name,
+                            reason,
+                            adaptive_depth
+                        );
                     }
                     verified = false;
                 }
@@ -150,7 +204,8 @@ pub fn synthesize(
     }
 
     Err(SynthesizeError::NoSolution(format!(
-        "CEGIS failed to find verified implementation for '{}' after 5 iterations", name
+        "CEGIS failed to find verified implementation for '{}' after 5 iterations",
+        name
     )))
 }
 
@@ -177,7 +232,14 @@ fn smt_verify_candidate(
     ref_fn: Option<(&Expr, &[String])>,
 ) -> CegisResult {
     // Build forall verification query with precondition and optional reference
-    let query = verify_smt::build_verification_query(name, candidate, params, Some(postcondition), precondition, ref_fn);
+    let query = verify_smt::build_verification_query(
+        name,
+        candidate,
+        params,
+        Some(postcondition),
+        precondition,
+        ref_fn,
+    );
 
     // Run Z3
     let result = match verify_smt::run_z3_verify(&query) {
@@ -199,9 +261,7 @@ fn smt_verify_candidate(
 
             CegisResult::Counterexample(input_row, correct_output)
         }
-        verify_smt::VerificationResult::Error(reason) => {
-            CegisResult::Error(reason)
-        }
+        verify_smt::VerificationResult::Error(reason) => CegisResult::Error(reason),
     }
 }
 
@@ -213,7 +273,7 @@ fn compute_correct_output(
     params: &[(String, Type)],
     input_exprs: &[Expr],
 ) -> Expr {
-    use crate::derive::engine::{evaluate_synthesized, SynthesisEvalContext};
+    use crate::derive::engine::{SynthesisEvalContext, evaluate_synthesized};
 
     // Try to find the RHS of an equality: if post is `@result = expr`,
     // evaluate `expr` with the inputs bound to get the correct output.
@@ -305,8 +365,13 @@ fn synthesize_candidate(
     let beam = if params.len() >= 2 { 5000 } else { 4000 };
 
     match engine::synthesize_enumerative(
-        &param_types, &ret_type_str, &param_names,
-        examples, &cost_model, max_depth_u8, beam,
+        &param_types,
+        &ret_type_str,
+        &param_names,
+        examples,
+        &cost_model,
+        max_depth_u8,
+        beam,
     ) {
         Ok(prog) => return Ok(prog),
         Err(SynthesizeError::NoSolution(_)) => {} // fall through to SMT
@@ -317,7 +382,12 @@ fn synthesize_candidate(
     match smt::synthesize_via_smt(name, params, examples) {
         Ok(expr) => {
             let cost = engine::CostModel::default().cost_of_expr(&expr);
-            Ok(engine::SynthesizedProgram { body: vec![expr], cost, depth: 0, helpers: vec![] })
+            Ok(engine::SynthesizedProgram {
+                body: vec![expr],
+                cost,
+                depth: 0,
+                helpers: vec![],
+            })
         }
         Err(e) => Err(e),
     }
@@ -346,7 +416,11 @@ impl std::fmt::Display for SynthesizeError {
             }
             SynthesizeError::SolverError(msg) => write!(f, "SMT solver error: {}", msg),
             SynthesizeError::SolverUnavailable(name) => {
-                write!(f, "SMT solver is not available; derivation of '{}' requires it", name)
+                write!(
+                    f,
+                    "SMT solver is not available; derivation of '{}' requires it",
+                    name
+                )
             }
             SynthesizeError::NoSolution(name) => {
                 write!(f, "no solution found for '{}'", name)

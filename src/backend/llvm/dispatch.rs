@@ -1,9 +1,8 @@
-
 use crate::analysis::transition_graph;
 use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Type};
 use crate::backend::llvm::emit_stmt::emit_statement;
 use crate::backend::llvm::{
-    find_perfect_hash, sparsity_ratio, FoldParam, FunctionGuard, LlvmBackend,
+    FoldParam, FunctionGuard, LlvmBackend, find_perfect_hash, sparsity_ratio,
 };
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -35,6 +34,24 @@ impl LlvmBackend {
         out: &mut String,
         txns: &[(String, &crate::ast::Transaction)],
         fusable: &[(String, String)],
+    ) {
+        self.emit_reactor_named(out, txns, fusable, "reactor_tick");
+    }
+
+    /// Emit one reactor tick function under an explicit name.
+    ///
+    /// 2026-11-16 (per-worker arena plan, Stage 2a): a program that pins nodes
+    /// with `on thread <N>` emits one tick per worker — `@reactor_tick` for
+    /// worker 0 (which main calls inline) and `@reactor_tick_w<N>` for the
+    /// rest, each containing only its worker's nodes. Everything else about
+    /// the emission is the single-worker path, so the default program's IR is
+    /// untouched.
+    pub(crate) fn emit_reactor_named(
+        &mut self,
+        out: &mut String,
+        txns: &[(String, &crate::ast::Transaction)],
+        fusable: &[(String, String)],
+        fn_name: &str,
     ) {
         self.fused_to_first.clear();
         for (a, b) in fusable {
@@ -91,12 +108,16 @@ multi-node SSA loop can honor the gate.",
         // 2026-07-31: Phase 2 (§7.4) — the per-txn unguarded-FFI set is computed
         // once in the transition graph (has_unguarded_ffi) instead of re-walking
         // bodies here.
-        let has_unguarded = self.ctx.transition_graph.as_ref()
+        let has_unguarded = self
+            .ctx
+            .transition_graph
+            .as_ref()
             .map_or(false, |g| !g.has_unguarded_ffi.is_empty());
         let rct_attr = if has_unguarded { "#2" } else { "#12" };
         writeln!(
             out,
-            "define void @reactor_tick(ptr noalias nocapture %state) local_unnamed_addr {} {{", rct_attr
+            "define void @{}(ptr noalias nocapture %state) local_unnamed_addr {} {{",
+            fn_name, rct_attr
         )
         .ok();
         writeln!(out, "  entry:").ok();
@@ -252,7 +273,10 @@ multi-node SSA loop can honor the gate.",
     }
     /// 2026-07-27: Resolve an Expr to a decimal value, either directly (Decimal)
     /// or via constant lookup (Identifier). Returns None if not resolvable.
-    fn resolve_to_i64(expr: &Expr, constants: Option<&HashMap<String, (Type, Expr)>>) -> Option<i64> {
+    fn resolve_to_i64(
+        expr: &Expr,
+        constants: Option<&HashMap<String, (Type, Expr)>>,
+    ) -> Option<i64> {
         match expr {
             Expr::Decimal(v) => Some(*v),
             Expr::Identifier(name) => {
@@ -281,7 +305,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v < e.1 { e.1 = v; }
+                        if v < e.1 {
+                            e.1 = v;
+                        }
                     }
                 }
             }
@@ -289,7 +315,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v + 1 < e.1 { e.1 = v + 1; }
+                        if v + 1 < e.1 {
+                            e.1 = v + 1;
+                        }
                     }
                 }
             }
@@ -297,7 +325,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v > e.0 { e.0 = v; }
+                        if v > e.0 {
+                            e.0 = v;
+                        }
                     }
                 }
             }
@@ -305,7 +335,9 @@ multi-node SSA loop can honor the gate.",
                 if let Some(n) = Self::unwrap_cast_to_ident(l.as_ref()) {
                     if let Some(v) = Self::resolve_to_i64(rgt.as_ref(), constants) {
                         let e = r.entry(n.to_string()).or_insert((i64::MIN, i64::MAX));
-                        if v + 1 > e.0 { e.0 = v + 1; }
+                        if v + 1 > e.0 {
+                            e.0 = v + 1;
+                        }
                     }
                 }
             }
@@ -374,6 +406,113 @@ multi-node SSA loop can honor the gate.",
         }
     }
 
+    // ── THREADED DISPATCH (explicit workers via `on thread <N>`) ──────────
+    //
+    // 2026-11-16 (per-worker arena plan, Stage 2a): a pinned program gets one
+    // tick function per worker, a function-pointer table for the pool, and the
+    // threaded main loop. Worker 0's tick keeps the canonical `@reactor_tick`
+    // name and is called inline by main; every other worker runs its own
+    // `@reactor_tick_w<N>` on an OS thread created by `briev_workers_start`.
+    //
+    // The frontend has already proved the slices independent (distinct
+    // globals, at most one observable sink, at most one allocating worker), so
+    // this emitter only has to partition and emit — no extra guards here.
+    pub(crate) fn emit_threaded_dispatch(
+        &mut self,
+        out: &mut String,
+        txns: &[(String, &crate::ast::Transaction)],
+        fusable: &[(String, String)],
+        has_wake_triggers: bool,
+    ) {
+        let plan = self.ctx.thread_plan.clone();
+        let workers = plan.worker_count.max(1);
+        let mut slices: Vec<Vec<(String, &crate::ast::Transaction)>> =
+            (0..workers).map(|_| Vec::new()).collect();
+        for (name, txn) in txns {
+            let worker = plan.worker_of(name).unwrap_or(0).min(workers - 1);
+            slices[worker as usize].push((name.clone(), *txn));
+        }
+
+        // Pool ABI. The table holds `workers` entries; entry 0 is null because
+        // main runs worker 0 itself.
+        writeln!(out, "declare i64 @briev_workers_start(i64, ptr, ptr) local_unnamed_addr").ok();
+        writeln!(out, "declare void @briev_workers_release() local_unnamed_addr").ok();
+        writeln!(out, "declare void @briev_workers_wait() local_unnamed_addr").ok();
+        writeln!(out, "declare void @briev_workers_stop() local_unnamed_addr").ok();
+
+        // One tick per worker, worker 0 first so its body keeps its usual name
+        // and position in the output.
+        for (worker, slice) in slices.iter().enumerate() {
+            let fn_name = tick_name(worker);
+            let slice_fusable = slice_fusable_pairs(fusable, slice);
+            self.emit_reactor_named(out, slice, &slice_fusable, &fn_name);
+        }
+        self.ctx.has_reactor_tick = true;
+        self.emit_worker_table(out, &slices);
+        // 2026-11-16: `emit_reactor_named` calls `@cell_persistent_ticks` on
+        // every tick, but the definition is only emitted when the program has
+        // persistent cells (`emit_persistent_cell_ticks` returns early
+        // otherwise). The direct-SSA path never calls it, so the gap was
+        // invisible; the threaded lane must not emit a call to a symbol that
+        // does not exist. Emit the empty tick when there is nothing to tick.
+        if self.persistent_cell_ticks_absent() {
+            writeln!(
+                out,
+                "define void @cell_persistent_ticks({}) local_unnamed_addr {{",
+                self.ctx.state_ptr_param
+            )
+            .ok();
+            writeln!(out, "  ret void").ok();
+            writeln!(out, "}}").ok();
+            writeln!(out).ok();
+        }
+        self.warnings.push(format!(
+            "info: program dispatched via threaded reactor loop ({} workers)",
+            workers
+        ));
+        if has_wake_triggers {
+            writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
+        }
+        self.fun.txn_counter = 0;
+        self.fun.within_counter = 0;
+        if !self.ctx.no_main {
+            self.emit_main(out, has_wake_triggers);
+        }
+        if has_wake_triggers {
+            self.emit_wake_metadata(out);
+        }
+    }
+
+    /// The emitted function-pointer table the runtime pool indexes.
+    ///
+    /// Entry 0 is a null pointer: worker 0 is the calling thread, which invokes
+    /// `@reactor_tick` directly. Keeping the table dense (one entry per worker)
+    /// means the runtime's index arithmetic is the worker number itself.
+    fn emit_worker_table(
+        &mut self,
+        out: &mut String,
+        slices: &[Vec<(String, &crate::ast::Transaction)>],
+    ) {
+        let workers = slices.len();
+        let entries: Vec<String> = (0..workers)
+            .map(|worker| {
+                if worker == 0 {
+                    "ptr null".to_string()
+                } else {
+                    format!("ptr @{}", tick_name(worker))
+                }
+            })
+            .collect();
+        writeln!(
+            out,
+            "@__briev_worker_fns = internal constant [{} x ptr] [{}]",
+            workers,
+            entries.join(", ")
+        )
+        .ok();
+        writeln!(out).ok();
+    }
+
     // ── PARALLEL DISPATCH REACTOR ────────────────────────────
     //
     // Emits a reactor_tick that fires conflict-free transactions in parallel.
@@ -418,7 +557,10 @@ multi-node SSA loop can honor the gate.",
         // 2026-07-27: Same FFI-aware attribute selection as emit_reactor.
         // 2026-07-31: Phase 2 (§7.4) — consumes the transition graph's
         // has_unguarded_ffi set instead of re-walking bodies.
-        let has_unguarded = self.ctx.transition_graph.as_ref()
+        let has_unguarded = self
+            .ctx
+            .transition_graph
+            .as_ref()
             .map_or(false, |g| !g.has_unguarded_ffi.is_empty());
         let rct_attr = if has_unguarded { "#2" } else { "#12" };
         writeln!(
@@ -628,5 +770,40 @@ multi-node SSA loop can honor the gate.",
             Expr::UnaryOp(_, e) => self.check_exit_condition_idents_inner(e, errors),
             _ => {}
         }
+    }
+}
+
+/// The emitted tick function name for a worker: worker 0 keeps the canonical
+/// `@reactor_tick`, the rest are named after their index.
+fn tick_name(worker: usize) -> String {
+    if worker == 0 {
+        "reactor_tick".to_string()
+    } else {
+        format!("reactor_tick_w{}", worker)
+    }
+}
+
+/// The fusable pairs that survive inside one worker's slice. A pair straddling
+/// two workers was never fusable (fusion requires sequential execution), and
+/// the frontend refuses cross-worker pairs that share state, so dropping them
+/// here loses nothing.
+fn slice_fusable_pairs(
+    fusable: &[(String, String)],
+    slice: &[(String, &crate::ast::Transaction)],
+) -> Vec<(String, String)> {
+    let names: std::collections::HashSet<&str> =
+        slice.iter().map(|(name, _)| name.as_str()).collect();
+    fusable
+        .iter()
+        .filter(|(a, b)| names.contains(a.as_str()) && names.contains(b.as_str()))
+        .cloned()
+        .collect()
+}
+
+impl crate::backend::llvm::LlvmBackend {
+    /// True when no persistent cell exists, so `@cell_persistent_ticks` was
+    /// never defined. Mirrors `emit_persistent_cell_ticks`'s own guard.
+    pub(crate) fn persistent_cell_ticks_absent(&self) -> bool {
+        !self.ctx.cell_defs.iter().any(|(_, cell)| cell.is_persistent)
     }
 }

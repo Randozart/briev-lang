@@ -111,9 +111,7 @@ pub fn analyze(program: &HirProgram) -> HirDestinationOwnershipPlan {
 
 /// Index every callable the AST analyzer would see. Insertion order is
 /// program order; same-name later definitions win (BTreeMap insert).
-fn index_callables(
-    program: &HirProgram,
-) -> (BTreeMap<String, CallableSpec<'_>>, BTreeSet<String>) {
+fn index_callables(program: &HirProgram) -> (BTreeMap<String, CallableSpec<'_>>, BTreeSet<String>) {
     let mut specs = BTreeMap::new();
     let mut export_names = BTreeSet::new();
     for callable in &program.callables {
@@ -220,7 +218,10 @@ fn summarize_callables(
         .values()
         .map(|spec| {
             let direct_recursive = recursive.contains(&spec.name);
-            (spec.name.clone(), summarize_callable(spec, direct_recursive))
+            (
+                spec.name.clone(),
+                summarize_callable(spec, direct_recursive),
+            )
         })
         .collect()
 }
@@ -310,7 +311,11 @@ pub(crate) mod parity_dump {
         fact.sinks
             .iter()
             .map(|(kind, sites)| {
-                format!("{}=[{}]", kind.as_str(), sites.clone().into_iter().collect::<Vec<_>>().join(","))
+                format!(
+                    "{}=[{}]",
+                    kind.as_str(),
+                    sites.clone().into_iter().collect::<Vec<_>>().join(",")
+                )
             })
             .collect::<Vec<_>>()
             .join(";")
@@ -352,14 +357,21 @@ pub(crate) mod parity_dump {
                     .collect::<Vec<_>>()
                     .join(","),
                 copies_str(fact),
-                fact.reasons.clone().into_iter().collect::<Vec<_>>().join(","),
+                fact.reasons
+                    .clone()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(","),
             ),
         )
     }
 
     fn callsite_line(site_id: &CallSiteId, call: &CallSiteFact) -> (String, String) {
         (
-            format!("callsite/{}/{}/{}", site_id.owner, site_id.site, call.callee),
+            format!(
+                "callsite/{}/{}/{}",
+                site_id.owner, site_id.site, call.callee
+            ),
             format!(
                 "kind={:?} result={} alias={} obligations=[{}] args=[{}]",
                 call.kind,
@@ -457,5 +469,4 @@ pub(crate) mod parity_dump {
         }
         out
     }
-
 }

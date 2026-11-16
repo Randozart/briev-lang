@@ -316,6 +316,13 @@ impl<'a> Parser<'a> {
                         value: Some(Expr::Quoted(payload.into_bytes())),
                     });
                 }
+                Some(Token::Identifier(s)) if s == "on" && self.prefix_is_thread_pin() => {
+                    // 2026-11-15 (thread-assignment plan): `on thread <N>` /
+                    // `on thread any` — the CPU-affinity ambiguity keyword.
+                    // It selects WHERE a node fires, never whether it may fire
+                    // concurrently (that stays `async`/`sync<group>`, Rule 22).
+                    self.consume_thread_pin(&mut prefix)?;
+                }
                 Some(Token::Identifier(s))
                     if Self::is_shape_modifier(s)
                         && matches!(
@@ -347,6 +354,74 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(prefix)
+    }
+
+    /// 2026-11-15 (thread-assignment plan): consume `on thread <N>` /
+    /// `on thread any` into a `thread` annotation. Contextual identifiers, not
+    /// reserved tokens — the arm fires only for `on` directly followed by
+    /// `thread` in a declaration prefix, so identifiers named `on`/`thread`
+    /// stay usable. Payload forms:
+    ///   `on thread 0`   -> Annotation{name:"thread", value:Some(Decimal(0))}
+    ///   `on thread any` -> Annotation{name:"thread", value:None}
+    fn consume_thread_pin(&mut self, prefix: &mut ModifierPrefix) -> Result<(), SyntaxError> {
+        self.pos += 2; // consume `on thread`
+        let value = self.parse_thread_pin_payload()?;
+        self.record_annotation_value(prefix, "thread", value)
+    }
+
+    /// 2026-11-15 (thread-assignment plan): does the token stream at the
+    /// current position spell `on thread`? Keeps `on` and `thread` as
+    /// contextual identifiers rather than reserved tokens.
+    fn prefix_is_thread_pin(&self) -> bool {
+        matches!(
+            self.tokens.get(self.pos + 1).map(|(t, _)| t),
+            Some(Token::Identifier(w)) if w == "thread"
+        )
+    }
+
+    /// `on thread <N>` payload — a non-negative integer thread index, or the
+    /// bare `any` keyword meaning "compiler's choice". Returns the annotation
+    /// value: `Some(Decimal(n))` for a pin, `None` for `any`.
+    fn parse_thread_pin_payload(&mut self) -> Result<Option<Expr>, SyntaxError> {
+        match self.peek() {
+            Some(Token::Identifier(w)) if w == "any" => {
+                self.pos += 1;
+                Ok(None)
+            }
+            Some(Token::Integer(n)) => {
+                let n = *n;
+                self.pos += 1;
+                Ok(Some(Expr::Decimal(n)))
+            }
+            _ => Err(SyntaxError::InvalidStatement {
+                reason: "`on thread` expects a thread index (`on thread 0`) or \
+                         `any` (`on thread any`)"
+                    .to_string(),
+                span: self
+                    .tokens
+                    .get(self.pos)
+                    .map(|(_, s)| self.make_span(s.clone()))
+                    .unwrap_or(Span::dummy()),
+            }),
+        }
+    }
+
+    /// Record an annotation carrying an optional value, erroring on a
+    /// duplicate modifier of the same name.
+    fn record_annotation_value(
+        &mut self,
+        prefix: &mut ModifierPrefix,
+        name: &str,
+        value: Option<Expr>,
+    ) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| a.name == name) {
+            return Err(self.dup_modifier(name));
+        }
+        prefix.annotations.push(Annotation {
+            name: name.to_string(),
+            value,
+        });
+        Ok(())
     }
 
     /// 2026-09-30 (D1/D14/D29): record one shape declaration or the
@@ -382,7 +457,7 @@ impl<'a> Parser<'a> {
                     return Err(SyntaxError::InvalidStatement {
                         reason: format!("`{keyword}<...>` expects integer shape parameters"),
                         span: Span::dummy(),
-                    })
+                    });
                 }
             }
             if !self.eat(&Token::Comma) {

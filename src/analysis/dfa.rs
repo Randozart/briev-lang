@@ -367,11 +367,7 @@ fn subset_construct(nfa: &[NfaState], _num_groups: usize) -> DfaResult {
                         NfaEdge::Any => c != '\n',
                         NfaEdge::Class(chars, negated) => {
                             let in_class = chars.contains(&c);
-                            if *negated {
-                                !in_class
-                            } else {
-                                in_class
-                            }
+                            if *negated { !in_class } else { in_class }
                         }
                         NfaEdge::Epsilon => false,
                     };

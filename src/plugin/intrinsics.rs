@@ -44,16 +44,20 @@ pub fn dispatch_intrinsic(
         "EmitError$" => intrinsic_emit_error(args),
 
         // ── Navigation chain evaluation ────────────────────────────
-        name if name.ends_with('$') && name != "EmitInfo$"
-            && name != "EmitWarning$" && name != "EmitError$" => {
+        name if name.ends_with('$')
+            && name != "EmitInfo$"
+            && name != "EmitWarning$"
+            && name != "EmitError$" =>
+        {
             // All other $ intrinsics are handled by the navigation engine
             // For now, return a placeholder — Phase G implements full dispatch
-            Err(format!("navigation intrinsic '{}' is not yet implemented — Phase G", name))
+            Err(format!(
+                "navigation intrinsic '{}' is not yet implemented — Phase G",
+                name
+            ))
         }
 
-        _ => Err(format!(
-            "unknown $ intrinsic '{}'", name
-        )),
+        _ => Err(format!("unknown $ intrinsic '{}'", name)),
     }
 }
 
@@ -69,15 +73,18 @@ fn intrinsic_emit_info(args: &[Expr]) -> Result<(), String> {
 /// Extract a string literal from an expression at the given argument index.
 /// 2026-07-15: Phase 3 — literal-only. Phase 6 will add expression eval.
 fn expect_string_arg(args: &[Expr], idx: usize, intrinsic: &str) -> Result<String, String> {
-    let arg = args.get(idx).ok_or_else(|| {
-        format!("{}: missing argument {}", intrinsic, idx)
-    })?;
+    let arg = args
+        .get(idx)
+        .ok_or_else(|| format!("{}: missing argument {}", intrinsic, idx))?;
     match arg {
         Expr::Quoted(bytes) => {
             // Quoted bytes may contain non-UTF-8 data; for imports the path
             // must be valid UTF-8.
             String::from_utf8(bytes.clone()).map_err(|_| {
-                format!("{}: argument {} is not a valid UTF-8 string", intrinsic, idx)
+                format!(
+                    "{}: argument {} is not a valid UTF-8 string",
+                    intrinsic, idx
+                )
             })
         }
         _ => Err(format!(
@@ -127,9 +134,7 @@ pub fn evaluate_statement(
     universe: &mut TypeUniverse,
 ) -> Result<(), String> {
     match stmt {
-        Statement::Expression(expr) => {
-            evaluate_expression_for_intrinsic(expr, program, universe)
-        }
+        Statement::Expression(expr) => evaluate_expression_for_intrinsic(expr, program, universe),
         Statement::Block(statements) => {
             for s in statements {
                 evaluate_statement(s, program, universe)?;
@@ -294,10 +299,7 @@ mod tests {
     fn test_block_recursion() {
         let mut program = vec![];
         let mut universe = TypeUniverse::new();
-        let inner = make_expr_stmt(make_call(
-            "EmitInfo$",
-            vec![make_string("block test")],
-        ));
+        let inner = make_expr_stmt(make_call("EmitInfo$", vec![make_string("block test")]));
         let stmt = Statement::Block(vec![inner]);
         let result = evaluate_statement(&stmt, &mut program, &mut universe);
         assert!(result.is_ok());
@@ -330,7 +332,8 @@ mod tests {
     fn test_let_is_skipped() {
         let mut program = vec![];
         let mut universe = TypeUniverse::new();
-        let stmt = Statement::Let { names: vec![], 
+        let stmt = Statement::Let {
+            names: vec![],
             name: "x".to_string(),
             ty: None,
             expr: Some(Expr::Decimal(42)),
@@ -356,8 +359,14 @@ mod tests {
             parameters: vec![],
             output_type: None,
             outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true),
-                watchdog: None, span: None, explicit: false, post_authority: false},
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                span: None,
+                explicit: false,
+                post_authority: false,
+            },
             body: vec![],
             metadata: HashMap::new(),
             derivation: None,

@@ -414,7 +414,10 @@ mod tests {
             assert!(
                 (0.25..=4.0).contains(&ratio),
                 "{shape}³: our tile {}x{} (area {area}) not within family of cuBLAS {}x{} (area {cublas_area}), ratio {ratio:.2}",
-                s.tile_m, s.tile_n, cublas_area / shape, shape
+                s.tile_m,
+                s.tile_n,
+                cublas_area / shape,
+                shape
             );
         }
     }
@@ -513,7 +516,7 @@ fn rectangular_shapes_get_feasible_tiles() {
 #[test]
 fn reduction_split_fires_only_on_underfill() {
     let hw = GpuHardware::SM86; // 28 SMs, desired = 112 CTAs
-                                // Underfilled: the decode pv (H=20 heads, NKV=4096) → fill to ~112.
+    // Underfilled: the decode pv (H=20 heads, NKV=4096) → fill to ~112.
     assert_eq!(reduction_split_factor_for(20, 4096, &hw), 6);
     assert_eq!(reduction_split_factor_for(32, 4096, &hw), 4);
     // At/above the target, or a tiny span, → no split.
