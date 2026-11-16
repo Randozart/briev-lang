@@ -21,20 +21,17 @@ PROVEN=0
 UNPROVEN=0
 SKIPPED=0
 VIOLATED=0
+ERRORS=0
 ENTRY_COUNT=0
 
-# Write JSON header
-cat > "$JSON_OUT" <<'HEADER'
-{
-  "total_files": PLACEHOLDER,
-  "summary": {
-    "proven": 0,
-    "unproven": 0,
-    "skipped": 0,
-    "violated": 0
-  },
-  "files": [
-HEADER
+# Per-file entries are buffered and the document is assembled once at the end.
+#
+# Do NOT build the header first and patch it with `sed -i "s/\"proven\": 0/.../"`:
+# that rewrites EVERY match in the document, so each file's `"unproven": 0`
+# became the grand total. The full corpus looked like "5 unproven in all 92
+# files" while every file individually reported 0.
+ENTRIES="$(mktemp)"
+trap 'rm -f "$ENTRIES"' EXIT
 
 while IFS= read -r line || [[ -n "$line" ]]; do
   # Skip blank lines and comments
@@ -47,35 +44,47 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   # --no-link skips the link step: it produces an identical report (verified on
   # .smoke and lib/std files) and halves the wall time, which is what lets this
   # census fit in CI.
-  "$BRIEVC" build "$f" --verify-report "$TMP_JSON" --no-link 2>/dev/null || true
+  #
+  # The temp file is removed BEFORE the run, never after. A file that fails to
+  # build writes no report, so leaving the previous file's JSON in place made
+  # its counts reappear against this file — the full-corpus run reported
+  # "5 unproven" on every single file (10 files here error out at codegen) while
+  # the authoritative runner found exactly 5 unproven obligations in total.
+  rm -f "$TMP_JSON"
+  if ! "$BRIEVC" build "$f" --verify-report "$TMP_JSON" --no-link 2>/dev/null; then
+    f_error=1
+  else
+    f_error=0
+  fi
 
-  if [[ -f "$TMP_JSON" ]]; then
+  if [[ $f_error -eq 0 && -f "$TMP_JSON" ]]; then
     f_proven=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('proven',[])))" 2>/dev/null || echo 0)
     f_unproven=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('unproven',[])))" 2>/dev/null || echo 0)
     f_skipped=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('skipped',[])))" 2>/dev/null || echo 0)
     f_violated=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('violated',[])))" 2>/dev/null || echo 0)
-    rm -f "$TMP_JSON"
   else
     f_proven=0
     f_unproven=0
     f_skipped=0
     f_violated=0
   fi
+  rm -f "$TMP_JSON"
 
   PROVEN=$((PROVEN + f_proven))
   UNPROVEN=$((UNPROVEN + f_unproven))
   SKIPPED=$((SKIPPED + f_skipped))
   VIOLATED=$((VIOLATED + f_violated))
+  ERRORS=$((ERRORS + f_error))
 
   # Comma separator between entries
   if [[ $ENTRY_COUNT -gt 0 ]]; then
-    echo "," >> "$JSON_OUT"
+    echo "," >> "$ENTRIES"
   fi
   ENTRY_COUNT=$((ENTRY_COUNT + 1))
 
   # Write per-file entry
-  printf '    {"file": "%s", "proven": %d, "unproven": %d, "skipped": %d, "violated": %d}' \
-    "$f" "$f_proven" "$f_unproven" "$f_skipped" "$f_violated" >> "$JSON_OUT"
+  printf '    {"file": "%s", "proven": %d, "unproven": %d, "skipped": %d, "violated": %d, "error": %d}' \
+    "$f" "$f_proven" "$f_unproven" "$f_skipped" "$f_violated" "$f_error" >> "$ENTRIES"
 
   # Progress every 100 files
   if (( TOTAL % 100 == 0 )); then
@@ -83,20 +92,18 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 done < "$CORPUS"
 
-# Close JSON
-cat >> "$JSON_OUT" <<FOOTER
-  ]
-}
-FOOTER
+# Assemble the document once: summary from the computed totals, then the
+# buffered per-file entries. No post-hoc `sed` over the whole file.
+{
+  printf '{\n  "total_files": %d,\n' "$TOTAL"
+  printf '  "summary": {\n    "proven": %d,\n    "unproven": %d,\n    "skipped": %d,\n    "violated": %d,\n    "errors": %d\n  },\n' \
+    "$PROVEN" "$UNPROVEN" "$SKIPPED" "$VIOLATED" "$ERRORS"
+  printf '  "files": [\n'
+  cat "$ENTRIES"
+  printf '\n  ]\n}\n'
+} > "$JSON_OUT"
 
-# Replace placeholder with actual total and populate summary counters
-sed -i "s/PLACEHOLDER/$TOTAL/" "$JSON_OUT"
-sed -i "s/\"proven\": 0/\"proven\": $PROVEN/" "$JSON_OUT"
-sed -i "s/\"unproven\": 0/\"unproven\": $UNPROVEN/" "$JSON_OUT"
-sed -i "s/\"skipped\": 0/\"skipped\": $SKIPPED/" "$JSON_OUT"
-sed -i "s/\"violated\": 0/\"violated\": $VIOLATED/" "$JSON_OUT"
-
-echo "Summary: total=$TOTAL proven=$PROVEN unproven=$UNPROVEN skipped=$SKIPPED violated=$VIOLATED" >&2
+echo "Summary: total=$TOTAL proven=$PROVEN unproven=$UNPROVEN skipped=$SKIPPED violated=$VIOLATED errors=$ERRORS" >&2
 
 # Violated contracts are errors (false proofs)
 if [[ $VIOLATED -gt 0 ]]; then

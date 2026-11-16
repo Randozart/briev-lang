@@ -76,6 +76,7 @@ jobs:
           print(f'Unproven: {s[\"unproven\"]}')
           print(f'Skipped:  {s[\"skipped\"]}')
           print(f'Violated: {s[\"violated\"]}')
+          print(f'Errors:   {s[\"errors\"]}')
           if s['violated'] > 0:
               print('ERROR: Violated contracts found — false proofs!')
               exit(1)
