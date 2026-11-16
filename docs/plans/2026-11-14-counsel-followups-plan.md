@@ -314,3 +314,30 @@ Suggested shape for the follow-up, mirroring the body prover's summary design:
    postconditions before handing the facts to `callgate::prove_precondition`.
 3. Guard with tests: a caller with a lying callee must still be refuted, and a
    recursive cycle must yield neither summary nor proof.
+
+---
+
+## CI position at hand-off (PR #104)
+
+`--verify-bodies census` passes (6m20s, bounded 49-file corpus, `--no-link`).
+`Fuzz smoke` passes.
+
+`Default gates` runs 4352 tests: **4351 pass**, and the single failure is
+`wasm32_parity::wasm32_and_native_agree_on_the_exit_status`
+("basic_exit: native exit 85 != wasm exit 1").
+
+That test arrived on `main` with `22b23e000`/`6bee69082` (the wasm32 cross-backend
+parity gate and its `exit_prog` ABI fix) — after the base this branch merged.
+It exercises `tests/fixtures/wasm_parity/basic_exit.bv`, a fixture with **no
+contracts**, compiled twice (native, `--backend webstack`) and run under a Node
+harness. Nothing in this branch's diff reaches codegen, the webstack backend or
+`exit_prog`: the only backend change here is adding the missing
+`pub mod lean;` declaration.
+
+`wasm exit 1` is also the harness's own error exit, so the next step is to
+reproduce locally with the Node harness before concluding which side is wrong.
+
+For comparison, `main` at the merge base fails three tests
+(`conformance_sweep_…`, `test_rbv_edge_declared_surface`,
+`dependency_module_is_importable_by_name`). This branch fixes all three, so it
+is strictly better than the base even with the wasm gate still red.
