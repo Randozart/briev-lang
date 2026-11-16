@@ -365,6 +365,23 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         | Expr::Lambda(_, _) => SymbolicValue::Unknown,
 
         // Comparison operators don't produce symbolic values (boolean expressions)
+        // A relational value (`a == b`, `i < n`) is opaque, but *self-identical*:
+        // keyed on the operator and both symbolic operands, so `term` bound to
+        // `CharCount#(s) == 0` compares equal to the same comparison in the
+        // postcondition while two different comparisons stay distinct. Without
+        // this, a Bool-returning body that *is* its own postcondition is
+        // undecidable purely because the value has no scalar form.
+        Expr::BinaryOp(
+            kind @ (BinaryOpKind::Eq
+            | BinaryOpKind::Neq
+            | BinaryOpKind::Lt
+            | BinaryOpKind::Le
+            | BinaryOpKind::Gt
+            | BinaryOpKind::Ge),
+            left,
+            right,
+        ) => relational_atom(*kind, left, right, state),
+
         Expr::BinaryOp(BinaryOpKind::Eq, _, _)
         | Expr::BinaryOp(BinaryOpKind::Neq, _, _)
         | Expr::BinaryOp(BinaryOpKind::Lt, _, _)
@@ -446,6 +463,25 @@ pub(crate) fn simplify_binary(
 
 /// Match interpreter/SMT wrapping arithmetic without host-profile overflow panics.
 /// Exceptional division stays symbolic: native division is not a total operation.
+/// An opaque, self-identical atom for a comparison's boolean result.
+///
+/// Keyed on the operator and the *symbolic* operands, so it is stable across
+/// re-evaluation but changes when an operand does — the same discipline as the
+/// length atom. Two different comparisons never collapse into one value.
+fn relational_atom(
+    kind: BinaryOpKind,
+    left: &Expr,
+    right: &Expr,
+    state: &SymbolicState,
+) -> SymbolicValue {
+    let l = eval_symbolic(left, state);
+    let r = eval_symbolic(right, state);
+    if l == SymbolicValue::Unknown || r == SymbolicValue::Unknown {
+        return SymbolicValue::Unknown;
+    }
+    SymbolicValue::Identifier(format!("cmp#{kind:?}#{l:?}#{r:?}"))
+}
+
 /// The stored-length atom of a handle, as a non-negative integer.
 ///
 /// Keyed on the base's **symbolic value**, not its text: `s.^Length` in two

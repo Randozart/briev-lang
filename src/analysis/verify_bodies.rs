@@ -1065,9 +1065,12 @@ mod handle_model_tests {
     /// decided against it) and never guessed at.
     #[test]
     fn handle_returning_contract_is_skipped_with_a_reason() {
+        // A *value* claim about the result handle. (A length-only claim is in the
+        // model since phase 2b and is covered by `length_only_handle_contract_proves`;
+        // this fixture keeps the genuine skip case pinned.)
         let defn = parse_one(
-            "defn concat(a: String, b: String) [true][CharCount#(term) >= 0] -> String {\n\
-                 term a;\n\
+            "out defn pick(a: String, b: String) [true][CharCount#(term) == CharCount#(a)] -> String {\n\
+                 term b;\n\
              };",
         );
         let report = verify_bodies(&[defn]);
@@ -1145,6 +1148,98 @@ mod length_fact_tests {
         assert!(
             text.contains("no intrinsic (stored) length"),
             "unexpected diagnostic: {text}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod handle_contract_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A handle-returning contract that claims only a length bound is in the
+    /// model now, so it proves instead of being skipped wholesale.
+    #[test]
+    fn length_only_handle_contract_proves() {
+        let defn = parse_one(
+            "out defn ident(s: String) [true][term.^Length >= 0] -> String {\n\
+                 term s;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a length-only handle contract must prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// A postcondition relating **two** handles' lengths is outside the model
+    /// (`op Concat` algebra is not modelled), so it stays a skip — never unproven,
+    /// never proved.
+    #[test]
+    fn cross_handle_length_equation_is_skipped() {
+        let defn = parse_one(
+            "out defn join(a: String, b: String) [true][CharCount#(term) == CharCount#(a) + CharCount#(b)] -> String {\n\
+                 term a;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
+        assert!(
+            report.skipped.iter().any(|l| l.contains("handle-returning")),
+            "expected a handle skip: {:?}",
+            report.skipped
+        );
+    }
+
+    /// A handle-returning declaration whose post says nothing about the result
+    /// (`[i == count]`) proves nothing about the handle, so it is skipped rather
+    /// than examined into an unproven verdict.
+    #[test]
+    fn handle_returning_post_silent_about_handle_is_skipped() {
+        let defn = parse_one(
+            "out defn countdown(s: String, n: Int, i: Int) [i <= n][i == n] -> String {\n\
+                 term s;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
+        assert!(
+            report.skipped.iter().any(|l| l.contains("handle-returning")),
+            "expected a handle skip: {:?}",
+            report.skipped
+        );
+    }
+
+    /// A Bool body that *is* its own postcondition decides structurally: the
+    /// comparison is a self-identical opaque value, so `term == <same comparison>`
+    /// holds without a solver.
+    #[test]
+    fn relational_body_equalling_its_post_proves() {
+        let defn = parse_one(
+            "defn empty(s: String) [true][term == (CharCount#(s) == 0)] -> Bool {\n\
+                 term CharCount#(s) == 0;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a self-identical relational body must prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
         );
     }
 }

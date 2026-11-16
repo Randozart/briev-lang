@@ -410,9 +410,21 @@ pub fn verify_bodies_with_types(
         // No `mentions_ident` test: a handle postcondition reaches `term` through
         // wrappers (`CharCount#(term)`), which that walker does not descend into —
         // and every trivially-true post is filtered out above anyway.
-        if returns_opaque_handle(item) {
+        let post = &contract.post_condition;
+        // Length *equations* between handles are outside the model too: the
+        // prover knows each length atom and that it is non-negative, not that
+        // `CharCount#(a + b) == CharCount#(a) + CharCount#(b)`.
+        let bases = length_bases(post);
+        let relates_two_lengths = bases.len() > 1;
+        // Nothing about the returned handle is claimed at all (`[i == count]` on a
+        // String-returning txn): examining it proves nothing while its body's
+        // handle semantics stay unmodelled, so it stays a skip.
+        let silent_about_handle = bases.is_empty();
+        if returns_opaque_handle(item)
+            && (mentions_term_as_value(post) || relates_two_lengths || silent_about_handle)
+        {
             report.skipped.push(format!(
-                "{name}: a handle-returning contract is outside the word model (content and length are a separate gate)"
+                "{name}: a handle-returning contract about the value is outside the word model (length claims are modelled)"
             ));
             continue;
         }
@@ -656,6 +668,93 @@ fn unsupported_length_reflection(
     }
 
     body.iter().find_map(|stmt| stmt_reason(stmt, types))
+}
+
+/// The distinct handle bases whose length a postcondition mentions.
+///
+/// `term.^Length >= 0` names one; `CharCount#(term) == CharCount#(a) +
+/// CharCount#(b)` names three. The prover models a length atom and its
+/// non-negativity, but not the algebra *between* lengths (`op Concat`), so a post
+/// that relates two of them is still a claim outside the model.
+fn length_bases(post: &Expr) -> std::collections::BTreeSet<String> {
+    fn base_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(n) => Some(n.clone()),
+            Expr::Field(b, f) => Some(format!("{}.{}", base_name(b)?, f)),
+            _ => None,
+        }
+    }
+    fn go(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+        match expr {
+            Expr::Reflect(base, target, _) if target == "Length" => {
+                out.extend(base_name(base));
+            }
+            Expr::Call(name, args, _) if name == "CharCount#" => {
+                if let Some(arg) = args.first() {
+                    out.extend(base_name(arg));
+                }
+            }
+            Expr::BinaryOp(_, l, r) => {
+                go(l, out);
+                go(r, out);
+            }
+            Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Consume(inner) => {
+                go(inner, out)
+            }
+            Expr::Field(base, _) => go(base, out),
+            Expr::Index(base, idx) => {
+                go(base, out);
+                go(idx, out);
+            }
+            Expr::Call(_, args, _) => args.iter().for_each(|a| go(a, out)),
+            Expr::MethodCall(recv, _, args, _) => {
+                go(recv, out);
+                args.iter().for_each(|a| go(a, out));
+            }
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    go(post, &mut out);
+    out
+}
+
+/// Whether a postcondition mentions `term` as a *value*.
+///
+/// `term.^Length` / `CharCount#(term)` are length claims, and phase 2b models a
+/// handle's length as a non-negative atom — those posts are answerable. Anything
+/// else that mentions `term` is a claim about the text itself, which the word
+/// model cannot decide. Distinguishing the two is what keeps the handle skip from
+/// also discarding the length-only contracts it was never meant to cover.
+fn mentions_term_as_value(post: &Expr) -> bool {
+    /// The base of a length claim: `term` itself is not a value mention.
+    fn length_base(expr: &Expr) -> bool {
+        !matches!(expr, Expr::Identifier(n) if n == "term") && go(expr)
+    }
+
+    fn go(expr: &Expr) -> bool {
+        match expr {
+            // A length context: `term` there is asked about its length, not its
+            // value, so it is NOT a value mention. A *deeper* base (`f(term)
+            // .^Length`) still is.
+            Expr::Reflect(base, target, _) if target == "Length" => length_base(base),
+            Expr::Call(name, args, _) if name == "CharCount#" => {
+                args.iter().any(|a| length_base(a))
+            }
+            Expr::Identifier(name) => name == "term",
+            Expr::BinaryOp(_, l, r) => go(l) || go(r),
+            Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Consume(inner) => go(inner),
+            Expr::Field(base, _) => go(base),
+            Expr::Index(base, idx) => go(base) || go(idx),
+            Expr::Call(_, args, _) => args.iter().any(go),
+            Expr::MethodCall(recv, _, args, _) => go(recv) || args.iter().any(go),
+            _ => false,
+        }
+    }
+    // `term.^Length` reaches us as `Reflect(term, "Length")`. Inside that node we
+    // must not treat `term` as a value mention, so the walk starts at the node
+    // itself rather than at its base.
+    go(post)
 }
 
 /// Whether the declaration returns a `String`/`Data` handle.
@@ -2539,6 +2638,12 @@ fn inline_expr(expr: &Expr, sums: &HashMap<String, Summary>, depth: usize) -> Re
             // A modelled intrinsic keeps its call form: it has no summary to
             // inline, but `eval_symbolic` gives it an interval directly.
             if name == "Load#" && crate::symbolic::load_width(args).is_some() {
+                return Ok(expr.clone());
+            }
+            // `CharCount#` is a handle's length atom (phase 2b). Without this the
+            // body fails as "a call could not be inlined" even though the call is
+            // modelled — the two gates have to agree on what is in the model.
+            if name == "CharCount#" && args.len() == 1 {
                 return Ok(expr.clone());
             }
             let Some(sum) = sums.get(name) else {
