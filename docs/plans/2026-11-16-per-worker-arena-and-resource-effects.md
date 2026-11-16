@@ -384,6 +384,24 @@ Until then the both-allocate refusal stands, and it is now a retirement gate:
 `tests/compile_fail/thread_pin_alloc_shared_arena.bv` asserts the refusal and
 flips to a positive test when Part A lands.
 
+**Stage 2a gap found after landing** (needs a fix before the lane is
+universal): `emit_main` still prefers the async-phase arm —
+
+```rust
+if self.has_async_txns && !self.is_lightweight_async { emit_async_phase(..) }
+else { release; @reactor_tick; wait }
+```
+
+— and `emit_async_phase` never touches the worker barriers. So a pinned program
+whose async nodes are *not* "lightweight" (`strategy.rs` marks that only for pure
+bodies with a non-constant `bounded_pre`) runs its async bodies on the main
+thread while every worker sits at the release barrier: worker N's tick never
+runs, its nodes never fire, and the program cannot converge. The landed fixture
+is lightweight-async, which is why the tests pass. Fix: when the plan is pinned,
+the threaded arm must win over the async-phase arm unconditionally (one `if
+threaded` ahead of the async check), plus a regression fixture with a
+non-lightweight async pinned node.
+
 **Part B / D.2 — NOT LANDED** (the `current_worker` plumbing was part of the
 reverted Part A attempt; the debug write-mask assertion needs injected slots to
 be visible in the masks, which is the same prerequisite).
