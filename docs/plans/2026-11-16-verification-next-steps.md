@@ -136,11 +136,20 @@ unchanged); the String bucket has the same shape.
 1. `ScalarModel::OpaqueHandle` — admitted for `String` and `Data`: word-sized,
    **no value semantics**. Usable as an opaque atom; never ordered; never
    compared for content equality.
-2. `Expr::Cast` restricted to a **whitelist of representation casts** whose
-   source and target are both pointer-sized: `String → Data → Int` and back.
-   Identity on the word. Any cast that changes width or interprets bits as a
-   *value* (`Int → Byte`, `Float ↔ Int`) stays unsupported — `Float as Int` is a
-   value conversion, not a reinterpretation.
+2. `Expr::Cast` restricted to a **pair-keyed whitelist** of representation casts:
+   `String ↔ Data` and `Data ↔ Int` (both directions), as an identity on the word.
+   It must be keyed on the *pair*, not on "both operands are pointer-sized",
+   because the emitter proves the distinction (verified 2026-11-16):
+
+   | Cast | IR | Kind |
+   |---|---|---|
+   | `(s as Data) as Int` | `ptrtoint`/`inttoptr`/`bitcast`, **no call** | representation |
+   | `s as Int` | `ptrtoint` + `call @str_to_int` | **conversion** (parses) |
+   | `n as String` | `call @int_to_str` | **conversion** (formats) |
+
+   So `String → Int` directly is a parse and `Int → String` is a format; both
+   stay unsupported, as do width-changing casts (`Int → Byte`) and
+   `Float ↔ Int`.
 3. Target the leaves (`str_len_bytes`, `byte_raw`, `byte_at`); verify their posts
    prove from the `Load#` range model, then let the existing summary fixpoint
    feed the parser chain (`pf_ws` / `pf_sign` / `str_to_int`).
