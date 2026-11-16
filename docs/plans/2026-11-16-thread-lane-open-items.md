@@ -214,6 +214,21 @@ walks `find src -name '*.rs'`, runs counsel per file, and merges the per-file
 `files` arrays: 432 files with a census entry, `violated: 0`, exit 0 locally.
 The stray duplicated `EOF` tail it had been executing as a command is gone too.
 
+### B6-result. wasm parity harness vs toolchain drift (2026-11-16)
+
+`wasm32_and_native_agree_on_the_exit_status` failed on CI (and on another
+session's commit `99bfd8494` before mine) with
+`Import #2 module="env" function="memcpy": function import requires a callable`,
+surfaced as "wasm harness could not run … exit 121". The hosted runner's
+`llc`/`wasm-ld` keeps LLVM's `memcpy` as an `env` import; the local toolchain
+inlines it, so the same source produced different import lists — a toolchain
+mismatch reported as a program bug.
+
+The harness now provides `memcpy`/`memset` over the module's exported memory.
+Additive by construction: an extra unused import provider cannot change
+instantiation, and the local run (which imports only `malloc`, verified with
+`strings basic_exit.wasm`) still passes.
+
 ### B4 (historical). `Verify Bodies Census` workflow fails on infrastructure
 
 Last run: *"the hosted runner lost communication with the server"* after 55
