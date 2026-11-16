@@ -464,6 +464,11 @@ defn float_format(f: Float, precision: Int)
 };
 
 // mantissa_val - the 24-bit significand (hidden bit for normal values).
+// Hidden-bit significand: the caller (float_format) passes
+// `mant = bits & 0x7FFFFF`, so mathematically mant < 0x800000.
+// However briev-verify does not model bitwise AND as a numeric bound,
+// so this precondition is left as-is and the postcondition remains
+// unproven by the prover (Path B: documented gap, not weakened).
 defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
     [term >= 1 && term < 1 << 24]
     -> Int {

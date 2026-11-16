@@ -86,8 +86,12 @@ cat >> "$JSON_OUT" <<FOOTER
 }
 FOOTER
 
-# Replace placeholder with actual total
+# Replace placeholder with actual total and populate summary counters
 sed -i "s/PLACEHOLDER/$TOTAL/" "$JSON_OUT"
+sed -i "s/\"proven\": 0/\"proven\": $PROVEN/" "$JSON_OUT"
+sed -i "s/\"unproven\": 0/\"unproven\": $UNPROVEN/" "$JSON_OUT"
+sed -i "s/\"skipped\": 0/\"skipped\": $SKIPPED/" "$JSON_OUT"
+sed -i "s/\"violated\": 0/\"violated\": $VIOLATED/" "$JSON_OUT"
 
 echo "Summary: total=$TOTAL proven=$PROVEN unproven=$UNPROVEN skipped=$SKIPPED violated=$VIOLATED" >&2
 
