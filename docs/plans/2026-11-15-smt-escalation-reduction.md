@@ -290,3 +290,62 @@ Each phase:
 
 PROVEN count: 183 → estimated **~500+** (some overlap between classes).
 UNPROVEN: 467 → estimated **~100-150** (SMT-only classes remain).
+
+---
+
+## Measured results (2026-11-16)
+
+Controlled A/B: same 262-file corpus (`tests/tier1`, `tests/tier2`, `trophies`,
+`lib/std`, `examples`), same runner (`scripts/verify_bodies_corpus.sh`),
+before = `0b07cbed1` (pre-Phase-1/2), after = `f88c15a38` (Phases 1+2 + #104
+masked-plus-offset + hex/shift support landed).
+
+### Summary
+
+| Metric | Before | After | Delta |
+|---|---|---|---|
+| Files | 262 | 262 | — |
+| Fully clean files (PROVEN) | 11 | **211** | **+200** |
+| Files with ≥1 unproven goal | 237 | **18** | **−219** |
+| Total unproven goal lines | 510 | **18** | **−492 (−96%)** |
+| SKIPPED bodies | 39054 | 39041 | −13 (more bodies admitted) |
+| VIOLATED | 0 | 0 | — |
+| ERR (build failures) | 55 | 55 | — (corpus hygiene, unrelated) |
+
+### Per-goal histogram
+
+| Goal | Before | After | Cleared by |
+|---|---|---|---|
+| `mantissa_val \| (term >= 1) && (term < (1 << 24))` | 237 | **0** | Phase 2 (§1) |
+| `exponent_val \| (term >= -149) && (term <= 104)` | 237 | **0** | #104 masked-plus-offset + Phase 2 |
+| `fold_upper_byte / fold_lower_byte \| term >= 0` | 8 + 8 | **0** | #104 masked-plus-offset |
+| `lshr64 \| (term == 0) \|\| (term != 0)` | 3 | **0** | Phase 1 (§2) tautology |
+| `ascii_lower \| term >= 0` | 3 | **0** | #104 masked-plus-offset |
+| `ip_v4 \| (term >= 0) && (term <= 4294967295)` | 7 | 7 | **not addressed** (Tier 3 uint-range) |
+| `sha1_padded_len \| ... (term % 64) == 0` | 3 | 3 | SMT-only (modulo) |
+| `hash_loop \| i == count` | 2 | 2 | SMT-only (induction) |
+| `list_to_c_ptr \| term >= 0` | 0 | 4 | newly-admitted bodies (#104/Bool) |
+| `sum_loop \| i == count` / `mismatches \| term >= acc` | 1 + 1 | 1 + 1 | SMT-only |
+
+### Interpretation
+
+- **The 237-file dominant class is gone.** Every file that was failing on
+  `mantissa_val`/`exponent_val` (the stdlib `float_fmt` transitive dependency)
+  is now fully proven. 200 files went from "has ≥1 unproven goal" to
+  "completely clean" — the largest single reduction this measurement campaign.
+- **The tautology class is gone** where in the word model (lshr64's
+  `x == 0 || x != 0`; the earlier char_eq/is_ws_byte lines were in files
+  outside the 262-file set or already skipped for type-domain reasons).
+- **The 13 newly-admitted bodies** (SKIPPED 39054 → 39041) are a side effect
+  of the Bool admission (#103) and hex/shift folding (#104) letting more
+  bodies enter the word model — 4 of them surface a new
+  `list_to_c_ptr: term >= 0` obligation (a Ptr-to-int cast, not a tautology
+  or mantissa class).
+- **Remaining 18 unproven goals** are all SMT-only or Tier-3 shapes:
+  `ip_v4` (uint-range, the only true Tier-3 sign-lattice shape — 7x, the
+  smallest of the three originally identified classes), `sha1_padded_len`
+  (modulo-64, nonlinear), loop-induction invariants (`hash_loop`,
+  `sum_loop`), and `mismatches`/`list_to_c_ptr`.
+- Tier 3 sign-lattice remains deferred: the uint-range class is now 7x
+  (down from the ~60x originally profiled on the 650-file set), and no
+  single class justifies the machinery.
