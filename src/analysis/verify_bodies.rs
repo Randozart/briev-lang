@@ -1065,9 +1065,12 @@ mod handle_model_tests {
     /// decided against it) and never guessed at.
     #[test]
     fn handle_returning_contract_is_skipped_with_a_reason() {
+        // A *value* claim about the result handle. (A length-only claim is in the
+        // model since phase 2b and is covered by `length_only_handle_contract_proves`;
+        // this fixture keeps the genuine skip case pinned.)
         let defn = parse_one(
-            "defn concat(a: String, b: String) [true][CharCount#(term) >= 0] -> String {\n\
-                 term a;\n\
+            "out defn pick(a: String, b: String) [true][CharCount#(term) == CharCount#(a)] -> String {\n\
+                 term b;\n\
              };",
         );
         let report = verify_bodies(&[defn]);
@@ -1080,6 +1083,259 @@ mod handle_model_tests {
                 .any(|line| line.contains("handle-returning")),
             "expected the handle-returning skip: {:?}",
             report.skipped
+        );
+    }
+}
+
+#[cfg(test)]
+mod length_fact_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A handle's stored length is a non-negative integer, so the byte accessor's
+    /// guard no longer mentions reflection and its contract proves.
+    #[test]
+    fn length_guard_lets_the_byte_accessor_prove() {
+        let defn = parse_one(
+            "defn at(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {\n\
+                 let addr: Int = (s as Data) as Int;\n\
+                 when i < 0 || i >= s.^Length { term 0; };\n\
+                 term Load#(addr + 8 + i, 1);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "the length guard must let this prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// Two different handles have independent lengths: a claim that one equals
+    /// the other must stay undecided, never be assumed.
+    #[test]
+    fn distinct_handles_have_distinct_lengths() {
+        let defn = parse_one(
+            "defn same(a: String, b: String) [true][term >= 0] -> Int {\n\
+                 when a.^Length == b.^Length { term 0; };\n\
+                 term 1;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+    }
+
+    /// Length reflection on a non-handle never reaches the prover: the frontend
+    /// refuses it, which is why the prover's own base-type guard is defensive
+    /// rather than reachable from valid source.
+    #[test]
+    fn length_on_a_non_handle_is_a_frontend_error() {
+        let err = crate::library::parse_and_check(
+            "<test>",
+            "defn f(n: Int) [n >= 0][term >= 0] -> Int { term n.^Length; };",
+        )
+        .expect_err("`.^Length` on an Int must be rejected by the type checker");
+        let text = format!("{err}");
+        assert!(
+            text.contains("no intrinsic (stored) length"),
+            "unexpected diagnostic: {text}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod handle_contract_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A handle-returning contract that claims only a length bound is in the
+    /// model now, so it proves instead of being skipped wholesale.
+    #[test]
+    fn length_only_handle_contract_proves() {
+        let defn = parse_one(
+            "out defn ident(s: String) [true][term.^Length >= 0] -> String {\n\
+                 term s;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a length-only handle contract must prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// A postcondition relating **two** handles' lengths is outside the model
+    /// (`op Concat` algebra is not modelled), so it stays a skip — never unproven,
+    /// never proved.
+    #[test]
+    fn cross_handle_length_equation_is_skipped() {
+        let defn = parse_one(
+            "out defn join(a: String, b: String) [true][CharCount#(term) == CharCount#(a) + CharCount#(b)] -> String {\n\
+                 term a;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
+        assert!(
+            report.skipped.iter().any(|l| l.contains("handle-returning")),
+            "expected a handle skip: {:?}",
+            report.skipped
+        );
+    }
+
+    /// A handle-returning declaration whose post says nothing about the result
+    /// (`[i == count]`) proves nothing about the handle, so it is skipped rather
+    /// than examined into an unproven verdict.
+    #[test]
+    fn handle_returning_post_silent_about_handle_is_skipped() {
+        let defn = parse_one(
+            "out defn countdown(s: String, n: Int, i: Int) [i <= n][i == n] -> String {\n\
+                 term s;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
+        assert!(
+            report.skipped.iter().any(|l| l.contains("handle-returning")),
+            "expected a handle skip: {:?}",
+            report.skipped
+        );
+    }
+
+    /// A Bool body that *is* its own postcondition decides structurally: the
+    /// comparison is a self-identical opaque value, so `term == <same comparison>`
+    /// holds without a solver.
+    #[test]
+    fn relational_body_equalling_its_post_proves() {
+        let defn = parse_one(
+            "defn empty(s: String) [true][term == (CharCount#(s) == 0)] -> Bool {\n\
+                 term CharCount#(s) == 0;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a self-identical relational body must prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+}
+
+#[cfg(test)]
+mod contract_atom_tests {
+    use super::*;
+
+    /// Parse a whole program through the real frontend.
+    fn parse_all(src: &str) -> Vec<TopLevel> {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items
+    }
+
+    /// A caller proves from the callee's **declared** bound, even though the
+    /// callee's body could never earn a value summary (it reads memory).
+    #[test]
+    fn caller_proves_from_declared_bound() {
+        let items = parse_all(
+            "defn raw(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {\n\
+                 term Load#((s as Data) as Int + i, 1);\n\
+             };\n\
+             defn use_raw(s: String, i: Int) [true][term >= 0] -> Int {\n\
+                 term raw(s, i);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.proven.iter().any(|n| n == "use_raw"),
+            "the caller must prove from the declared bound: proven={:?} skipped={:?}",
+            report.proven,
+            report.skipped
+        );
+    }
+
+    /// A **value-relational** contract is not substituted: it would replace a call
+    /// with an atom that says nothing about the value, turning a skip into an
+    /// unproven verdict without widening the proof.
+    #[test]
+    fn value_relational_contract_is_not_substituted() {
+        let items = parse_all(
+            // Guarded body: no value summary is possible, and the contract is a
+            // value relation (`term == a`) rather than a literal bound.
+            "defn pick(a: Int) [a >= 0][term == a] -> Int {\n\
+                 when a > 0 { term a; };\n\
+                 term 0;\n\
+             };\n\
+             defn caller(a: Int) [a >= 0][term >= 0] -> Int {\n\
+                 term pick(a);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.skipped.iter().any(|l| l.contains("caller")),
+            "a value-relational callee must leave the body skipped: {:?}",
+            report.skipped
+        );
+    }
+
+    /// Two calls to the same callee get **distinct** atoms, so `f(x) - f(x)` never
+    /// folds to zero across a possible memory change.
+    #[test]
+    fn two_calls_to_one_callee_do_not_collapse() {
+        let items = parse_all(
+            "defn raw(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {\n\
+                 term Load#((s as Data) as Int + i, 1);\n\
+             };\n\
+             defn same(s: String) [true][term == 0] -> Int {\n\
+                 term raw(s, 0) - raw(s, 0);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            !report.proven.iter().any(|n| n == "same"),
+            "two calls must not be treated as one value: {:?}",
+            report.proven
+        );
+    }
+
+    /// A self-recursive contract contributes nothing: using it would be the guess
+    /// this prover exists to avoid.
+    #[test]
+    fn self_recursive_contract_contributes_nothing() {
+        let items = parse_all(
+            "defn spin(n: Int) [n >= 0][term == 999] -> Int {\n\
+                 term spin(n);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            report.proven.is_empty(),
+            "a self-referential contract must never prove itself: {:?}",
+            report.proven
         );
     }
 }

@@ -109,7 +109,7 @@ Static scan of `lib/std`: **192 defns take a `String` parameter**. Of those:
 
 The 155 "neither" cases are almost all *callers* of the byte accessors
 (`str_to_int` → `parse_int_ws` → `byte_at`, `pf_sign` → `byte_raw`, …), or they
-read `s .^Length`.
+read `s.^Length`.
 
 The load-bearing leaves are exactly these:
 
@@ -153,7 +153,7 @@ unchanged); the String bucket has the same shape.
 3. Target the leaves (`str_len_bytes`, `byte_raw`, `byte_at`); verify their posts
    prove from the `Load#` range model, then let the existing summary fixpoint
    feed the parser chain (`pf_ws` / `pf_sign` / `str_to_int`).
-4. `s .^Length` / `CharCount#` is a **third, separate gate** (a length fact on an
+4. `s.^Length` / `CharCount#` is a **third, separate gate** (a length fact on an
    opaque handle). Do not bundle it: `str_to_bool` and `truncate` need it, the
    byte accessors do not.
 
