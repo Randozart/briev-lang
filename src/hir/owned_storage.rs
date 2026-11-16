@@ -1804,7 +1804,13 @@ fn rewrite_list(
                         tname = format!("{}x", tname);
                         ctx.next += 1;
                     }
-                    let names: Vec<String> = owned.keys().cloned().collect();
+                    // Sorted: this Vec drives the ORDER of emitted releases.
+                    // A HashMap's iteration order varies per process (SipHash
+                    // seed), which made the emitted IR differ run to run —
+                    // caught by comparing two builds of the daemon (the same
+                    // coll_destroy calls in a different order).
+                    let mut names: Vec<String> = owned.keys().cloned().collect();
+                    names.sort();
                     let releases: Vec<(StorageKind, String)> = names
                         .iter()
                         .map(|n| {
@@ -1839,7 +1845,10 @@ fn rewrite_list(
                     owned.clear();
                     continue;
                 }
-                let names: Vec<String> = owned.keys().cloned().collect();
+                // Sorted for the same reason as the temp-transfer site: this
+                // Vec determines the release order in the emitted function.
+                let mut names: Vec<String> = owned.keys().cloned().collect();
+                names.sort();
                 for n in names {
                     let k = owned.get(&n).copied();
                     if !ids.contains(&n) {
@@ -1940,7 +1949,10 @@ fn rewrite_list(
         }
     }
     if top {
-        let names: Vec<(String, OwnKind)> = owned.iter().map(|(n, k)| (n.clone(), *k)).collect();
+        // Sorted: the exit releases are emitted in this order.
+        let mut names: Vec<(String, OwnKind)> =
+            owned.iter().map(|(n, k)| (n.clone(), *k)).collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
         for (n, k) in names {
             out.push(release(&n, k, ctx));
         }

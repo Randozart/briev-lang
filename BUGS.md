@@ -1,3 +1,42 @@
+## 2026-11-16 — emitted IR is not reproducible: state-field index and interned-string order vary per process
+
+**Symptom.** Two builds of the same source in two processes produce different
+`.ll`. Seen on the kiosk daemon (`briev-kiosk-avatar/briev/service/daemon.bv`):
+
+```
+<   %t65 = getelementptr inbounds %State, ptr %state, i32 0, i32 9
+>   %t65 = getelementptr inbounds %State, ptr %state, i32 0, i32 8
+...
+<   store i64 0, ptr %ip_8, align 8
+>   store i8* %ip_8s, ptr %ip_8, align 8
+```
+
+Two independent orderings are unstable:
+
+1. **State field numbering** — a field lands at `%State` index 8 in one build
+   and 9 in the other.
+2. **Interned string constant assignment** — `%ip_8` vs `%ip_9` swap which
+   string gets the zero constant and which gets `@str.0`.
+
+Both are the HashMap-iteration hazard AGENTS.md calls out ("every HashMap
+iteration producing LLVM IR MUST be sorted by key; SipHash seed varies per
+process, up to ~9% perf variation").
+
+**Why the gate missed it.** `benchmarks/ll_determinism_check.sh` passes on its
+corpus (recommender, multinode, pp-types, …) but none of those exercises this
+combination of state-field count and interned strings.
+
+**Partial fix in this commit.** The release-emission order (three sites in
+`src/hir/owned_storage.rs`) iterated `owned.keys()` unsorted, producing
+`coll_destroy` calls in varying order. All three now sort. That removed one of
+the three observed diffs; the state-index and `%ip_N` diffs remain.
+
+**Next.** Find the unsorted map in the state-layout assignment and in the
+string-interning order, and add a state-heavy fixture with many interned
+strings to the determinism corpus so this class cannot regress.
+
+---
+
 ## 2026-11-16 — missing stdlib import silently binds a name to a builtin with a different type
 
 **Symptom.** `concat(s, "x")` without `import "std/string.bv"` type-checks
