@@ -82,9 +82,9 @@ jobs:
           print(f'Unproven: {s[\"unproven\"]}')
           print(f'Skipped:  {s[\"skipped\"]}')
           print(f'Violated: {s[\"violated\"]}')
-          print(f'Errors:   {s["errors"]}')
+          print(f'Errors:   {s[\"errors\"]}')
           if s.get('timed_out', 0):
-              print(f'Timed out: {s["timed_out"]} — per-file bound hit; widen VERIFY_BODIES_TIMEOUT or investigate')
+              print(f'Timed out: {s[\"timed_out\"]} — per-file bound hit; widen VERIFY_BODIES_TIMEOUT or investigate')
           if s['violated'] > 0:
               print('ERROR: Violated contracts found — false proofs!')
               exit(1)
