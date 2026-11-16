@@ -927,18 +927,17 @@ Top-level `let` declares reactive program state. Local `let` declares a local bi
 storage classes, decided by the compiler and disclosed via an `info:` line:
 
 - **state** — machine state. The variable lives in the machine's state
-  struct; contracts, watchdogs, `#!exit` conditions, result expressions,
-  and view bindings may reference it; the transition graph, liveness, and
-  dead-field elimination govern it.
+  struct; contracts, watchdogs, result expressions, and view bindings may
+  reference it; the transition graph, liveness, and dead-field elimination
+  govern it.
 - **plain** — an ordinary variable. Same name, type, initializer, and
   read/write behavior, but the machine does not reason about it: no
   contract may reference it, it is not part of the transition graph, and
   defns that touch only plain lets do not carry machine state.
 
 **Inference.** A bare top-level `let` is **state** when the proof surface
-(contracts, watchdog conditions and on-fire arguments, `#!exit`
-conditions, out-pragmas, result expressions, view bindings) references
-it, and **plain** otherwise. Node and defn *bodies* never affect the
+(contracts, watchdog conditions and on-fire arguments, out-pragmas, result
+expressions, view bindings) references it, and **plain** otherwise. Node and defn *bodies* never affect the
 classification — reading or writing a plain let from a body compiles to
 ordinary access to its storage.
 
@@ -1498,9 +1497,15 @@ Each written `as` may traverse:
 Crossing multiple semantic protocol categories requires multiple written casts.
 
 ```briev
-let bits = text as Bit;
-let number = text as String as Int;
+let bits = text as Bit;                 // representation: raw bytes
+let number = text as String as Int;     // converts: the text is parsed
 ```
+
+Which of the two a cast is can be read off the lowering: `text as Bit` emits no
+call (a representation), while `... as Int` from a `String` inserts
+`str_to_int` — it **parses the text**, and `Int as String` inserts `int_to_str`
+to **format** it (§15.6). A route that is a conversion is a real operation with
+a declared edge, not a reinterpretation of bits.
 
 Missing proof evidence is an error unless the edge is declared as a trusted axiom. Axioms are declared, not assumed: the `axiom` contextual keyword prefixes the edge declaration, and the trust enters the verification ledger.
 
@@ -2256,21 +2261,74 @@ Type invariants must be proven across construction and every mutating transforma
 - `[condition];` is a convergence gate.
 - `[condition] { ... }` is invalid; use `when` for blocks.
 
-### 10.x Liveness checks
+### 10.2.1 Liveness checks — `check`
 
 ```briev
 check <expr>;
 ```
 
-A liveness check asserts that `<expr>` holds at this point in execution. It serves three roles:
+A liveness check asserts that `<expr>` holds at this point in execution. The
+solver returns one of three verdicts:
 
-1. **Compile-time proof**: if the solver proves `expr` from known facts (contracts, prior checks), the check is eliminated — zero cost.
-2. **Compile-time rejection**: if the solver DISPROVES `expr`, compilation fails with a diagnostic explaining under which conditions the check would be violated.
-3. **Runtime assertion**: for unprovable loops, the check evaluates at that point in execution. Failure triggers rollback (same as escape).
+1. **Proven** — the constraint follows from known facts (contracts, guards,
+   initializers, prior checks) and the check is eliminated: zero cost.
+2. **Refuted** — the established facts contradict it. The diagnostic says so and
+   asks for the check to be removed or the making code fixed.
+3. **Unproven** — nothing decides it. The diagnostic names how to establish it (a
+   `when` guard or an initializer) or points at the dynamic boundary idiom
+   (`Result` / `when`) instead of an assertion.
+
+**There is no runtime assertion to emit.** An unproven check is *never* lowered to
+a runtime branch; the backend emits nothing for it, so an unproven check cannot be
+"enforced later". What happens instead is staged by policy (2026-11-16):
+
+| `policy:` in `config/contracts.dbvl` | Unproven `check` / unprovable call precondition |
+|---|---|
+| `deny` (this repository) | compile error |
+| `warn` | warning, compilation continues |
+| `allow` (absent file or row) | accepted silently — the migration stage |
+
+The same three-stage policy governs the *call-site* rule: every call to a
+contracted `defn` must prove the callee's precondition from the facts at that
+point, or be reported with the argument-substituted goal.
+
+**Guard shape decides what a caller can prove.** The facts a guard contributes
+depend on how it is written, and this is the difference between a contract that
+discharges and one that does not:
+
+```briev
+defn exp_of(exp8: Int) [exp8 >= 0 && exp8 <= 255][term >= -149 && term <= 104] -> Int {
+    when exp8 > 254 {        // fall-through fact: exp8 <= 254  — a BOUND
+        term 1 - 150;
+    };
+    when exp8 == 0 {
+        term 1 - 150;
+    };
+    term exp8 - 150;
+};
+```
+
+Written the other way, the identical first condition leaves only a disequality
+(excerpt of the same function, first guard replaced):
+
+```briev
+    when exp8 == 0xFF {      // fall-through fact: exp8 != 255  — a DISEQUALITY
+        term 1 - 150;
+    };
+```
+
+For a byte field the two guards are the same condition, but only the range form
+leaves the upper bound a callee's `[exp8 <= 254]` precondition needs. A
+disequality narrows an interval only when a bound already sits exactly on that
+constant, so it cannot supply a missing one. When a contract needs a bound, spell
+the guard as a range.
 
 After a successful check, the solver records `expr` as a known fact, strengthening downstream proofs and enabling further optimization.
 
-`check` may appear in any function body (`defn`, `txn`, `node`). In looping contexts, it evaluates every pass through that point. In non-looping defns, it documents and verifies the programmer's assumptions about the input domain.
+`check` may appear in any function body (`defn`, `txn`, `node`). In a looping
+context it is an assertion *about each pass* — proved once from the invariant and
+the guard facts, not re-evaluated at run time. In a non-looping `defn` it
+documents and verifies the programmer's assumption about the input domain.
 
 ### 10.3 Watchdogs
 
@@ -2438,23 +2496,84 @@ verifier's entry point is the top-level declaration, so these never reach it.
 summary, and `foreach` over a range — with an invariant (§10.4) or one inferred —
 plus the invariant and variant clauses of §10.5 and §10.6.
 
+Since 2026-11-16 the model also decides three interval families and one
+intrinsic, all of which are exact rather than heuristic:
+
+| Fact | Rule | Why it is sound |
+|---|---|---|
+| mask range | `x & M ∈ [0, M]` for literal `M >= 0` | the AND cannot set a bit above the mask |
+| masked-plus-offset | `(x & M) + n ∈ [n, M+n]` for `n >= 0` | interval translation |
+| literal-shift bounds | `1 << 24` folds to an exact word | pure-literal folding; out-of-range shifts and division by zero do **not** fold |
+| `Load#(addr, w)` | `∈ [0, 2^(8w)-1]` for literal `w` in `1..=3` | the backend emits `load i{8w}` then zero-extends (`emit_load`) |
+
+`Load#` stops at 3 bytes on purpose: at `w = 4` the load equals the word width
+on wasm32, so zero-extension is the identity and the value may read negative —
+claiming `[0, 2^32-1]` there would be a false proof. Two textually identical
+loads are also kept distinct, so `a - b` never folds to zero across a possible
+store.
+
+**Call sites use the callee's contract, not its body.** Proving a caller's
+obligation may assume the callee's *declared* postcondition (parameters
+substituted by the arguments, `term` by the call expression itself). Only that
+one conjunct is taken — no transitive expansion, no result-free postcondition,
+no literal-`false` postcondition, no self-recursion.
+
 **Skipped, with a named reason.** Field access, indexing, buffers, floats,
-strings, casts, `match`, and intrinsics without a summary. The reason names the
-construct and the declaration:
+strings, *conversion* casts (§15.6), `match`, and intrinsics without a summary.
+The reason names the construct and the declaration:
 
 ```
-info: --verify-bodies skipped: byte_at: indexing
+info: --verify-bodies skipped: byte_at: type Custom("String") is outside the signed 64-bit word model
 ```
 
 Skips are advisory. They mean *nothing was proved here*, which is different from
 both "proved" and "refuted", and the report keeps those three apart.
 
-**Consequence.** Most of `lib/std`'s loops live in compile-time metaprogramming or
-in type members, so they are not candidates at all (measured: `lib/std/numeric.bv`
-holds 6 `$defn` and 0 plain `defn`). Verification today pays for **user code
-written in the integer subset**, not for the standard library. Widening it means
-index, bounds and alias reasoning, which the prover does not yet have — and which
-also gates parallelism, since independence is a claim about disjoint writes.
+**Why a name moves without the total moving.** Admission gates are ordered, and a
+skip names only the *first* gate that fired. Legitimately widening one gate
+re-attributes its bodies to whatever gate they were really blocked on — modelling
+`Load#` ranges moved 236 skips from "no value summary" to type-gate reasons
+without changing the proven total. So a bucket's size is not its fix's payoff, and
+census numbers must be read per reason, not in aggregate.
+
+**Consequence.** Compile-time metaprogramming and type members are never
+candidates (measured: `lib/std/numeric.bv` holds 6 `$defn` and 0 plain `defn`),
+but the library is no longer "not paid for": the full `lib/std` corpus (92 files)
+now reports **925 proven obligations**, **5 unproven**, **14 528 skipped** and
+**0 violated**. The whole unproven set is two goals — `ip_v4` (needs
+disjoint-bit OR reasoning) and `sha1_padded_len` (needs modular arithmetic). What
+remains skipped is dominated by strings and by host/memory intrinsics; widening
+those means a length model for handles, and index/alias reasoning, which the
+prover does not yet have — and which also gates parallelism, since independence
+is a claim about disjoint writes.
+
+### 10.7.1 Running it, and reading the verdict (2026-11-16)
+
+```bash
+brievc build file.bv --verify-bodies                    # human-readable findings
+brievc build file.bv --verify-report out.json           # machine-readable report
+brievc build file.bv --verify-report out.json --no-link # same report, no link step
+```
+
+The report is one JSON object with four arrays of `{ "name": …, "reason": … }`:
+
+| Array | Meaning | May fail a gate? |
+|---|---|---|
+| `proven` | the body entails its postcondition | — (this is the success bucket) |
+| `unproven` | the prover could not decide; `reason` names the first blocking path and the goal | **no** — advisory |
+| `skipped` | the declaration or body is outside the modelled subset; `reason` names the construct | no — advisory |
+| `violated` | a concrete counterexample exists | **yes** — this is a real failure, and `--verify-report` exits non-zero for it |
+
+`proven`, `unproven` and `skipped` are three distinct verdicts and must never be
+conflated: a skip means *nothing was proved here*, which is neither a proof nor a
+refutation. `--no-link` produces a byte-identical report to a normal build (the
+link step is downstream of verification) and exists so corpus-wide verification
+does not pay to link hundreds of programs.
+
+Corpus measurement has its own runners — `scripts/verify_bodies_corpus.sh`
+(per-file text tally) and `scripts/verify-bodies-census.sh` (JSON artifact). Both
+count a *failed build* separately from a proof outcome; a build error is not a
+verification result.
 
 ### 10.8 How convergence is established — three mechanisms
 
@@ -3358,6 +3477,71 @@ From highest to lowest:
 > netlist consumes them as wiring topology (§13). Implementation:
 > `analysis::desugar::rewrite_wildcard_lift`; worked example:
 > `examples/wildcard_lift.bv`.
+
+### 15.6 Casts: reinterpretation versus conversion (2026-11-16)
+
+Every `as` is exactly one of two things, and the distinction is normative
+because the verifier treats them differently:
+
+| Kind | What it does | Routes | Lowering |
+|---|---|---|---|
+| **Representation** | keeps the bits, changes the reading of them | through `Bits` | `ptrtoint` / `bitcast` / `zext` / `trunc` |
+| **Conversion** | computes a *different* value | a declared `CastTo(…)` / `CastFrom(…)` op | the op's body |
+
+**Representation casts are bit-preserving.** `Bits` is the bridge: the `Int`
+protocol states "conversion goes through `CastTo(Bits)` / `CastFrom(Bits)`"
+(§8.7), and the `String` protocol gives `CastTo(Bits)` / `CastFrom(Bits)` as
+*raw bytes*. So `Int ↔ Bits ↔ String`/`Data` are reinterpretations of one
+word, which is why the handle ABI ships a `String`/`Data` composite as `i64`.
+
+The raw-bytes view is what the byte accessors use, and it is the *address*:
+
+```briev
+defn str_len_bytes(s: String) [true][term >= 0] -> Int {
+    term Load#((s as Data) as Int, 8);      // handle → address, then read 8 bytes
+};
+defn byte_raw(s: String, i: Int) [true][term >= 0] -> Int {
+    term Load#((s as Data) as Int + 8 + i, 1);   // pointer arithmetic on the address
+};
+```
+
+**A cast never reads or writes memory.** Memory is reached only through
+`Load#` / `Store#` (and `VolatileLoad#` / `VolatileStore#` for `Ptr`). If `Data
+as Int` loaded a byte, the `+ 8 + i` above would be meaningless and no
+compiler could type it; a "load disguised as a cast" also has no defined
+address or width. When a raw byte value is wanted, it is spelled as a load.
+
+Both accessors above compile today. They are **not yet proved**, and the reason
+is the type gate, not this section: `--verify-bodies` reports
+`skipped: byte_raw: type Custom("String") is outside the signed 64-bit word
+model`. Admitting `String` as an opaque handle *and* the representation cast
+above, together, is what would let their `[term >= 0]` follow from the
+`Load#` width range (§10.7) — neither half suffices alone.
+
+**Conversions are not representations, and the *pair* decides which is which.**
+The compiler resolves every `as` through the casting graph (§8.7) and the
+lowering makes the difference visible — a representation emits no call, a
+conversion inserts the converting function:
+
+| Cast | Emitted IR | Kind | Meaning |
+|---|---|---|---|
+| `s as Data` | `ptrtoint` / `inttoptr` | representation | the same buffer, typed |
+| `d as Int` | `ptrtoint` | representation | the **address** |
+| `(s as Data) as Int` | `ptrtoint`/`inttoptr`/`bitcast`, **no call** | representation | the address, exactly |
+| `s as Int` | `ptrtoint` + `call @str_to_int` | **conversion** | parses the text |
+| `n as String` | `call @int_to_str` | **conversion** | formats the number |
+
+So the direct `String → Int` cast is not an error and not a reinterpretation: it
+*parses*, exactly as `Int → String` *formats* (`1` becomes the text `"1"`, not the
+byte `0x01`). Both are real operations with declared edges. The byte accessors
+above deliberately route through `Data` to avoid them: `(s as Data) as Int` is
+the address, which is why `+ 8 + i` is meaningful.
+
+**Consequence for verification.** A representation cast is *identity on the
+word*, so the body prover may model it as such. It must **not** model a
+conversion, or any cast that changes width: claiming bit-identity for
+`Float as Int` (or for a narrowing `Int as Byte`) would be a false proof. Those
+bodies are reported as skipped with a reason, never assumed (§10.7).
 
 ## 16. Literals, ranges, and slicing
 

@@ -201,7 +201,8 @@ language needs.
 ### 5.2 `glue.dbvl` — the target entry
 
 ```
-<lang>: { types_module: "glue/<lang>/types.bv";
+<lang>: { version: 1;                      // required — see "schema" below
+          types_module: "glue/<lang>/types.bv";
           extension: "<ext>"; bridge_kind: "<...>"; calling_convention: "c_abi";
           module_init: <bool>;
           protocols: { "Int":   { native: "i64";    c_abi: "long long" };
@@ -221,6 +222,65 @@ language needs.
 - The **toolchain recipe** (`native_*`) is how the extension is compiled — the
   include flags, the output suffix, the link flags, the compiler, and a filename
   prefix (the JVM needs `lib<bridge>.so`).
+
+#### ABI cores — `config/abi/<name>.dbvl` (2026-11-16)
+
+The machine axis lives apart from the language axis. A core states only
+argument-passing facts; a language adapter names one with `abi: "<name>"` and
+never restates them:
+
+```
+name: "sysv-x86_64";
+pointer_bits: 64; int_bits: 64; float_bits: 64; stack_align: 16;
+aggregate_small_max: 16; aggregate_in_regs: "eightbyte";
+aggregate_hidden_ptr_threshold: 16;
+symbol_prefix: ""; symbol_mangling: "none";
+temporaries_caller_frees: true;
+```
+
+Shipped: `sysv-x86_64`, `win64`, `aapcs64`, `riscv64`, `wasm32`, `ptx`. The flat
+line-table form is deliberate — it is the shape the config DB reads as typed
+integers (nested quoted-mode maps carry strings only).
+
+Rules that make it a *fact* file rather than a policy file:
+
+- **Closed keys.** An unrecognised key is refused with the section path, because
+  a silently-ignored ABI key leaves the compiler believing something about the
+  machine that the data does not say.
+- **No strategies.** A core may not state a preference, a cost, or "use the fast
+  path". Efficiency is derived from representations plus proofs.
+- **`abi:` is validated.** Naming a core that is not shipped is a refusal that
+  lists the alternatives — "no core" and "core I did not find" must not behave
+  alike. Only `c` declares one today: the managed-language adapters carry
+  host-FFI type names (`ctypes.c_int64`, `jlong`), not a machine ABI, so claiming
+  a core for them would be false.
+
+#### Descriptor schema: versioned and closed (2026-11-16)
+
+`version` is **required**, and an **unknown key is an error** at every level the
+compiler reads (target, `protocols.<Name>`, `values.<Class>`, `values.<Class>.to`/
+`.from`, `state`, `discipline`, `errors`, `conversions`). Both rules exist because
+this file now carries semantics: a descriptor written for a newer schema read by
+an older compiler would silently lose sections, and an older one read by a newer
+compiler would silently take defaults — either way the boundary marshalling
+changes with no diagnostic. `GLUE_SCHEMA_VERSION` in `src/glue/config.rs` names
+what this compiler implements; anything outside `1..=GLUE_SCHEMA_VERSION` is
+refused with the range named.
+
+The same change declares — but does not yet consume — the boundary-contract
+sections from `docs/plans/2026-11-16-ffi-contract-and-metaprogramming.md`:
+
+| Section | Meaning |
+|---|---|
+| `values: { <Class>: { class; zero_copy; layout; len; retain_op; release_op; kind } }` | how a Briev type maps onto a boundary value class (the conversion ops live as flat `to_op`/`from_op` fields — the `.dbv` parser nests two levels, and `values.<Class>.to` would be a third) |
+| `frees: { <class>: caller\|callee }` | the language's ownership *convention* (a specific call's ownership is declared per function, not here) |
+| `discipline: { blocking; reentrant; needs_main_thread }` | what the reactor and thread gate need to know about a call |
+| `errors: { class; success }` | errno / status / sentinel convention |
+| `supports: [...]` | value classes this adapter can honour — a `frgn` requiring anything else is refused |
+
+They parse today so a descriptor can state the contract before its consumers
+land; a well-formed example is pinned by
+`glue::config::tests::boundary_sections_parse_when_well_formed`.
 
 ### 5.3 templates
 

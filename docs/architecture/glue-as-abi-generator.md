@@ -125,3 +125,28 @@ inline `$(Normalized)` stage blocks. Exercises the full macro system:
 The `.bv` plugin produces the same template-rendered output as the Rust
 pipeline, proving that the `$` intrinsic system is complete enough to
 implement a cross-language bridge generator entirely in Briev.
+
+---
+
+## Operational form (2026-11-16)
+
+This document is the doctrine; its operational form is
+`docs/plans/2026-11-16-ffi-contract-and-metaprogramming.md`, which turns it into
+data and generated code:
+
+- **ABI cores** (`config/abi/*.dbvl`, per target family) hold the only place a
+  width/alignment may be written down.
+- **Boundary value classes** — `scalar`, `ptr`, `borrowed_bytes`, `owned_buffer`,
+  `opaque_handle`, `aggregate`, `callback`, `error_channel` — are the universal
+  vocabulary every language maps onto. The compiler never names a language.
+- **Language adapters** (`lib/glue/<lang>/glue.dbv`) declare representation,
+  ownership *conventions*, retain/release ops, call discipline, and a capability
+  list. Ownership of a *specific* call is declared per function, not per
+  language: `getenv` is borrowed and `strdup` is owned in the same header, with
+  the same types.
+- **Efficiency stays a consequence**: a fast path exists only when
+  representations coincide *and* the prover licenses it. The descriptor may
+  declare facts, never strategies.
+
+Measured evidence for the generation path (a `$(Resolved)` macro emitting a
+boundary protocol that drives zero-copy marshalling) is in that plan's §8a.

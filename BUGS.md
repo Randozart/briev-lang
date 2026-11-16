@@ -1,3 +1,59 @@
+## 2026-11-16 — HIR drops the FFI boundary surface, and the audit does not notice
+
+**Reproduced.** A program with a generated boundary protocol, a `frgn` carrying
+`from #Link<libc>`, and a boundary cast:
+
+```briev
+$(Resolved) { Insert$(All$().Last$().After$(), Quote$("type CStrG: String<C_String> { };"));
+};
+import "glue/c.bv";
+frgn c_strlen(p: Int) -> Int from #Link<libc>;
+let done: Bool = false;
+node main [!done][done] {
+    let s: CStrG = "hi" as CStrG;
+    Print#(c_strlen(s as Int));
+    done = true; endprogram;
+};
+```
+
+`BRIEV_HIR_AUDIT=1 brievc build … --llvm` reports:
+
+```
+HIR_AUDIT ok callables=210 types=27 values=731 sinks=2218 unsupported=0
+```
+
+**`unsupported=0`.** The audit certifies the program as fully representable while
+the entire boundary contract is absent from HIR:
+
+- `HirTypeDefKind` has `Enum | Object | Struct` — there is **no protocol
+  variant**, so a `proto` with its `axiom CastTo`/`CastFrom` bindings reduces to
+  `HirProgram::protocol_binding_fns: Vec<String>` (`src/hir/program.rs:367`,
+  collected by `lower_protocol_bindings`, `src/hir/lower.rs:131`): the protocol
+  name, variant, direction and op contract are gone.
+- `HirForeign { name, link_symbol, params, ret }` (`src/hir/program.rs:229`,
+  lowered at `src/hir/lower.rs:445`) drops `ForeignBinding.from` (literal / registry
+  / protocol / `#Link`), `buffer_mode`, `precondition`, `postcondition`,
+  `default_watchdog`, `error_type`/`error_fields`, `is_optional`,
+  `is_fire_forget`, `is_delivery`, and the variadic marker.
+
+**Why it matters.** HIR emission is the default path
+(`hir_emit_enabled`, `src/backend/mod.rs:181`). It is correct today only because
+of AST-derived side channels (`resolved_frgns`, `compile.rs:1026`, and the
+universe `Cast.*` properties). Consequence: the reactor cannot ask whether a
+foreign call blocks, the thread gate cannot see a retained handle, and the
+destination model classifies boundaries from the *type declaration's* protocol
+string rather than from the call's actual contract.
+
+**Not a miscompile today** — the side channels carry codegen. It is a fidelity
+gap that blocks the FFI contract work
+(`docs/plans/2026-11-16-ffi-contract-and-metaprogramming.md` §3 G3, §8a), and a
+landmine: the audit's "ok" actively certifies the loss.
+
+**Fix direction (S4 of that plan).** `HirProtocol` + `HirBoundary` nodes, and
+`lower_program_checked` must report boundary facts it cannot represent instead of
+returning `unsupported=0`. The fixture above is the acceptance test: it must stop
+being "ok" while the contract is unrepresented.
+
 ## 2026-11-16 — emitted IR is not reproducible: state-field index and interned-string order vary per process
 
 **Symptom.** Two builds of the same source in two processes produce different
@@ -14212,3 +14268,97 @@ four constructions with overflow literals and `Sqrt#(-1.0)`. On merging
 lines. The trap contract and its CLI regressions remain in force; exceptional
 formatting values are supplied without zero division. See the formatting
 fixture diagnosis above and the hosted qualification record.
+
+## 2026-11-16 — corpus hygiene: 17 host-buildable IR regressions + 2 string bugs
+
+Observed by the `scripts/verify_bodies_corpus.sh` re-baseline on
+`origin/main@98f4b1ec1` (corpus-hygiene worktree, branch `feat/corpus-hygiene`).
+These are genuine host-target build failures — not target-specific, not
+intentional-negative, not excluded. Grouped by error class.
+
+### A. Missing callee declaration in emitted IR (11 files)
+The emitted LLVM IR contains `call i64 @<name>` but never emits the callee's
+declaration or definition, so LLVM verification fails with `use of undefined
+value '@<name>'`.
+
+| File | Undefined value |
+|------|-----------------|
+| `examples/async-events.bv` | `%flc8` (local SSA value) |
+| `examples/fn-ptr-demo.bv` | `@cmp_int` |
+| `examples/mmap-demo.bv` | `@mmap` |
+| `examples/networking.bv` | `@close` |
+| `examples/process-spawn.bv` | `@chdir` |
+| `examples/syntax/decl/import-forms.bv` | `@val` |
+| `examples/syntax/decl/sync-group.bv` | `@i` |
+| `lib/std/os/temp.bv` | `@to_c_string` |
+| `lib/std/posix/io.bv` | `@FD_STDOUT` |
+| `lib/std/posix/process.bv` | `@SYS_CLONE` (redefinition of global) |
+| `tests/tier2/test_string_ops.bv` | `@is_whitespace_str` (and siblings) |
+
+The `@FD_STDOUT` and `@SYS_CLONE` cases are the same class: a global constant
+or FFI symbol is referenced but its declaration is not emitted. `@SYS_CLONE`
+trips a different LLVM verifier check (`redefinition of global`) because the
+symbol is declared twice.
+
+### B. Type mismatch in emitted IR (5 files)
+
+| File | Error |
+|------|-------|
+| `examples/pointer-trickery.bv` | `integer/byte constant must have integer/byte type` |
+| `examples/ptr-arithmetic.bv` | `integer/byte constant must have integer/byte type` |
+| `examples/syntax/meta/defn-composite.bv` | `integer/byte constant must have integer/byte type` |
+| `examples/volatile-io.bv` | `integer/byte constant must have integer/byte type` |
+| `examples/ptr-swap.bv` | `'%t37' defined with type 'i64' but expected 'ptr'` |
+| `examples/sig_as_type.bv` | `'%t5' defined with type 'ptr' but expected 'i64'` |
+
+The `integer/byte constant` class (4 files) is likely the same root cause:
+the emitter produces an `i64` constant where LLVM expects a byte-typed
+constant (or vice versa). The `ptr`/`i64` mismatch (2 files) is a pointer
+vs. integer type disagreement in the emitted IR.
+
+### C. Linker failure (1 file)
+
+| File | Error |
+|------|-------|
+| `examples/ptr-runtime.bv` | `clang: error: linker command failed with exit code 1` |
+
+The IR verifies but the link step fails — likely an undefined symbol at link
+time (a C runtime function not provided by the host).
+
+### D. String value-summary lane bug (discovered during test_string_ops migration)
+
+The value summary models the results of the pure-Briev string lane defns
+(`to_lower_str`, `to_upper_str`, `trim_str`, `reverse_str`) as Int, degrading
+their declared String return to Int at the call site. Their bodies call FFI
+intrinsics (`Malloc#`/`Load#`/`Store#`/`Free#`) the summary does not track.
+
+**Reproduction**:
+```briev
+defn t() [true][term == true] -> Bool {
+    let s: String = to_lower_str("HELLO");
+    term true;
+};
+// → type mismatch: expected String for let 's', found Int
+```
+
+**Impact**: any code that assigns a string lane result to a String-typed
+variable fails type-checking. The tier1 `unicode_search_smoke.bv` test works
+because it uses the result in a `Print#` (Int sink) rather than a String-typed
+`let`.
+
+**Fix path**: teach the value summary to preserve the declared return type of
+defns whose bodies contain FFI intrinsics it cannot summarize — or add a
+`String`-typed opaque summary for lane defns.
+
+### E. String callee liveness gap
+
+String helper defns (`is_whitespace_str`, `is_alpha_str`, `is_numeric_str`)
+whose bodies loop over `byte_at`/`Load#`/`Store#` emit `call i64 @<defn>` but
+never emit the callee declaration, so the emitted IR fails LLVM verification.
+Same class as A, but specific to string helpers.
+
+**Status**: OPEN. All 17 + 2 are genuine compiler defects. The corpus gate
+now excludes only the 9 host-unbuildable files (target-specific, missing
+external deps, browser prelude) and the `trophies/` directory (stale for
+multiple removed surfaces). The 17 + 2 are the documented floor — fixing them
+is the next workstream.

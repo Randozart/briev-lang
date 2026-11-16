@@ -60,6 +60,12 @@ impl<'a> BodyTypeModel<'a> {
             // Bool-typed defns was this one gate. Admit it: the symbolic and SMT
             // layers need no change. This is a gate fix, not a capability fix.
             (Some("Bool"), _) => ScalarModel::Bool,
+            // 2026-11-16 (phase 2a): a String/Data value is a word-sized handle
+            // with no value semantics. Admitting it cannot prove anything about
+            // text — it lets the body be *examined*, and the only claims that
+            // can then discharge are about the handle's word (e.g. an address
+            // read through Load#). Content and length are separate gates.
+            (Some("String"), _) | (Some("Data"), _) => ScalarModel::OpaqueHandle,
             _ => ScalarModel::Unsupported,
         }
     }
@@ -996,6 +1002,83 @@ mod load_width_tests {
                 .iter()
                 .any(|line| line.contains("no value summary")),
             "a 4-byte load must stay skipped: {:?}",
+            report.skipped
+        );
+    }
+}
+
+#[cfg(test)]
+mod handle_model_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A String parameter is an opaque handle, so the byte accessor shape proves.
+    ///
+    /// `(s as Data) as Int` is a representation cast (ptrtoint, no call), and
+    /// `Load#(..., 1)` is zero-extended, so `term >= 0` follows. Before phase 2a
+    /// this body never reached the prover: the String type gate refused it.
+    #[test]
+    fn handle_representation_cast_proves_a_byte_bound() {
+        let defn = parse_one(
+            "defn raw(s: String) [true][term >= 0] -> Int {\n\
+                 term Load#((s as Data) as Int, 1);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a representation-cast byte read must prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// `String as Int` is a **conversion** (it lowers through `str_to_int`), so it
+    /// must never be read as a representation — treating it as identity would
+    /// fabricate a proof about parsed text.
+    #[test]
+    fn direct_string_to_int_cast_is_not_identity() {
+        let defn = parse_one(
+            "defn parsed(s: String) [true][term >= 0] -> Int {\n\
+                 term s as Int;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            report.proven.is_empty(),
+            "a conversion must not be proved as an identity: {:?}",
+            report.proven
+        );
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+    }
+
+    /// A handle-returning contract is a claim about text or length — a separate
+    /// gate. It is skipped with a reason, never reported as unproven (nothing was
+    /// decided against it) and never guessed at.
+    #[test]
+    fn handle_returning_contract_is_skipped_with_a_reason() {
+        let defn = parse_one(
+            "defn concat(a: String, b: String) [true][CharCount#(term) >= 0] -> String {\n\
+                 term a;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|line| line.contains("handle-returning")),
+            "expected the handle-returning skip: {:?}",
             report.skipped
         );
     }

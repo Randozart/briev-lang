@@ -1,0 +1,7 @@
+// 2026-11-16: `#!exit <cond>` was removed. `#` lexes as an identifier, so this
+// used to fail with "unknown top-level item '#'" — the diagnostic below says
+// what happened and what to do instead.
+// EXPECT-ERROR: `#!exit` was removed — a program's exit condition is no longer a source directive
+#!exit count == 10;
+let count: Int = 0;
+node tick [count < 10][count == 10] { count = count + 1; term; };

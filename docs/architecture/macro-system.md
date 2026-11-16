@@ -98,6 +98,21 @@ Build new AST nodes:
 | `Defn$(name)` | TopLevel | `Defn$("my_fn")` |
 | `Call$(name, args...)` | Statement | `Call$("print", "hello")` |
 | `Block$(stmts...)` | Statement | `Block$(Call$("work"))` |
+| `Quote$(text)` | TopLevel | `Insert$(All$().Last$().After$(), Quote$("type CStrG: String<C_String> { };"));` |
+
+**`Quote$` is the synthesis door**: it tokenizes and parses a string into one
+`TopLevel` item, so a macro can emit any declaration — `type`, `proto` with its
+`axiom CastTo`/`CastFrom` bindings, `frgn`, `struct`. Combined with `Insert$`
+this is how data-driven glue is generated rather than hand-written.
+
+**Stage rule (2026-11-16).** A generated *declaration* must be inserted at
+`Parsed` or `Resolved`: `check_types` runs once (`src/compile.rs:501`) and
+`rewrite_boundary_marshalling` runs at `:608`, both before the `Typed` stage, so
+anything declared later is neither typechecked nor visible to the boundary
+rewriter. Inserting a `type`/`proto`/`frgn` at `Typed` or later is being turned
+into a compile error (plan `2026-11-16-ffi-contract-and-metaprogramming.md` §S5).
+Body-bearing `defn`s are the exception: they may be generated at `Typed` and must
+pass the `verify_bodies` gate that runs at `:838`.
 
 ### Compile-Time Data
 

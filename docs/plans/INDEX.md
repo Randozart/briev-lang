@@ -396,6 +396,22 @@ never touch; all baselines/gates measure **main only**.
 
 ---
 
+## FFI contract + metaprogramming (2026-11-16, plan of record)
+
+`2026-11-16-ffi-contract-and-metaprogramming.md` — the universal FFI surface:
+ABI cores (`config/abi/`) + eight boundary value classes + per-language adapters
+(`lib/glue/<lang>/glue.dbv`) + generated protocol bindings, with the
+metaprogramming layer (`Quote$`/`Insert$`/`InjectTypeLayout$` at stage
+`Resolved`) doing the generation. Records the measured pipeline ordering that
+forces the stage choice, and the HIR gap: `HirTypeDefKind` has no protocol
+variant and `HirForeign` drops the `from`/flags/contracts, so the HIR path is
+blind to the boundary surface — measured, with `HIR_AUDIT ok … unsupported=0` on
+a boundary-bearing program. Decisions D1–D6 (ownership per function; ABI cores in
+config; versioned descriptor with unknown-key errors; the removed-surface gate
+before the generator; facts never strategies; generated items traced to a
+descriptor line). S0 spike: generated protocol drives zero-copy marshalling
+(PASS); aggregate layout injection still unmeasured.
+
 ## The active umbrella
 
 `docs/plans/2026-09-24-followup-stages.md` — the post-metacomputing queue.

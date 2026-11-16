@@ -1,5 +1,3 @@
-#!exit true;
-
 frgn #out print_int(val: Int) -> Bool;
 frgn #out print_float(val: Float) -> Bool;
 

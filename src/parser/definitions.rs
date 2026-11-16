@@ -389,6 +389,24 @@ impl<'a> Parser<'a> {
                     self.pos += 1; // consume `init` identifier
                     return Ok(TopLevel::Init(self.parse_init_declaration()?));
                 }
+                // 2026-11-16: `#!exit <cond>` was removed. `#` lexes as an
+                // identifier, so without this the author gets "unknown
+                // top-level item '#'" — which says nothing about what to do.
+                // The directive is gone because the exit condition is derived
+                // (node preconditions + reachable termination) or explicit
+                // (`endprogram` in the node that reaches it).
+                if self.peek_identifier_text("#") && self.next_is_exit_directive() {
+                    return Err(SyntaxError::InvalidStatement {
+                        reason: "`#!exit` was removed — a program's exit condition is \
+                                 no longer a source directive. The reactor derives it from \
+                                 the node preconditions, or the node that reaches the end \
+                                 calls `endprogram`. Delete the `#!exit` line; if the \
+                                 program must stop at a specific point, put `endprogram` \
+                                 in the node that gets there."
+                            .to_string(),
+                        span: crate::errors::Span::dummy(),
+                    });
+                }
                 // 2026-08-04 (remove-vestigial-return): Briev has no `return`
                 // statement — give the same helpful error at top level as in
                 // statement bodies (src/parser/statements.rs parse_statement).
@@ -8079,6 +8097,25 @@ mod tests {
         assert!(
             p.parse_top_level().is_ok(),
             "`thread` must stay a usable name"
+        );
+    }
+
+    #[test]
+    fn removed_exit_directive_gets_a_helpful_error() {
+        // 2026-11-16: `#!exit` is gone. `#` lexes as an identifier, so without a
+        // dedicated diagnostic the author sees "unknown top-level item '#'".
+        let src = "#!exit true;\nlet a: Int = 0;\n";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err();
+        let text = format!("{err}");
+        assert!(
+            text.contains("`#!exit` was removed"),
+            "expected the removed-directive diagnostic, got: {text}"
+        );
+        assert!(
+            text.contains("endprogram"),
+            "the diagnostic must name the fix, got: {text}"
         );
     }
 

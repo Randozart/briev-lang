@@ -28,21 +28,17 @@ PROVEN=0
 UNPROVEN=0
 SKIPPED=0
 VIOLATED=0
+ERRORS=0
 ENTRY_COUNT=0
 
-# Write JSON header
-cat > "$JSON_OUT" <<'HEADER'
-{
-  "total_files": PLACEHOLDER,
-  "summary": {
-    "proven": 0,
-    "unproven": 0,
-    "skipped": 0,
-    "violated": 0,
-    "timed_out": 0
-  },
-  "files": [
-HEADER
+# Per-file entries are buffered and the document is assembled once at the end.
+#
+# Do NOT build the header first and patch it with `sed -i "s/\"proven\": 0/.../"`:
+# sed without an address rewrites EVERY match in the document, so each file's
+# `"unproven": 0` became the grand total — the full corpus looked like
+# "5 unproven in all 92 files" while every file individually reported 0.
+ENTRIES="$(mktemp)"
+trap 'rm -f "$ENTRIES"' EXIT
 
 while IFS= read -r line || [[ -n "$line" ]]; do
   # Skip blank lines and comments
@@ -55,43 +51,59 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   # --no-link skips the link step: it produces an identical report (verified on
   # .smoke and lib/std files) and halves the wall time, which is what lets this
   # census fit in CI.
+  #
+  # The temp file is removed BEFORE the run, never after. A file that fails to
+  # build writes no report, so leaving the previous file's JSON in place made its
+  # counts reappear against this file — the full-corpus run once reported
+  # "5 unproven" on every single file while the authoritative runner found
+  # exactly 5 unproven obligations in total.
+  rm -f "$TMP_JSON"
+  f_error=0
   f_timed_out=0
   if [[ "$PER_FILE_TIMEOUT" == "0" ]]; then
-    "$BRIEVC" build "$f" --verify-report "$TMP_JSON" --no-link 2>/dev/null || true
+    "$BRIEVC" build "$f" --verify-report "$TMP_JSON" --no-link 2>/dev/null || f_error=1
   else
     timeout --kill-after=10 "$PER_FILE_TIMEOUT" \
       "$BRIEVC" build "$f" --verify-report "$TMP_JSON" --no-link 2>/dev/null \
-      || { [[ $? -eq 124 ]] && f_timed_out=1; }
+      || { rc=$?; [[ $rc -eq 124 || $rc -eq 137 ]] && f_timed_out=1 || f_error=1; }
   fi
 
-  if [[ -f "$TMP_JSON" ]]; then
+  if [[ $f_error -eq 0 && -f "$TMP_JSON" ]]; then
     f_proven=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('proven',[])))" 2>/dev/null || echo 0)
     f_unproven=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('unproven',[])))" 2>/dev/null || echo 0)
     f_skipped=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('skipped',[])))" 2>/dev/null || echo 0)
     f_violated=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('violated',[])))" 2>/dev/null || echo 0)
-    rm -f "$TMP_JSON"
   else
     f_proven=0
     f_unproven=0
     f_skipped=0
     f_violated=0
   fi
+  # A timeout can land *after* brievc has written the report (verification is
+  # earlier in the pipeline than codegen), in which case the verdicts are real
+  # and the cut only cost us the build. `timed_out` therefore means exactly
+  # "verification did not complete", never "the build was slow".
+  if [[ $f_timed_out -eq 1 && -f "$TMP_JSON" ]]; then
+    f_timed_out=0
+  fi
+  rm -f "$TMP_JSON"
 
   PROVEN=$((PROVEN + f_proven))
   UNPROVEN=$((UNPROVEN + f_unproven))
   SKIPPED=$((SKIPPED + f_skipped))
   VIOLATED=$((VIOLATED + f_violated))
+  ERRORS=$((ERRORS + f_error))
   TIMED_OUT=$((TIMED_OUT + f_timed_out))
 
   # Comma separator between entries
   if [[ $ENTRY_COUNT -gt 0 ]]; then
-    echo "," >> "$JSON_OUT"
+    echo "," >> "$ENTRIES"
   fi
   ENTRY_COUNT=$((ENTRY_COUNT + 1))
 
   # Write per-file entry
-  printf '    {"file": "%s", "proven": %d, "unproven": %d, "skipped": %d, "violated": %d, "timed_out": %d}' \
-    "$f" "$f_proven" "$f_unproven" "$f_skipped" "$f_violated" "$f_timed_out" >> "$JSON_OUT"
+  printf '    {"file": "%s", "proven": %d, "unproven": %d, "skipped": %d, "violated": %d, "error": %d, "timed_out": %d}' \
+    "$f" "$f_proven" "$f_unproven" "$f_skipped" "$f_violated" "$f_error" "$f_timed_out" >> "$ENTRIES"
 
   # Progress every 100 files
   if (( TOTAL % 100 == 0 )); then
@@ -99,24 +111,20 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 done < "$CORPUS"
 
-# Close JSON
-cat >> "$JSON_OUT" <<FOOTER
-  ]
-}
-FOOTER
+# Assemble the document once: summary from the computed totals, then the
+# buffered per-file entries. No post-hoc `sed` over the whole file.
+{
+  printf '{\n  "total_files": %d,\n' "$TOTAL"
+  printf '  "summary": {\n    "proven": %d,\n    "unproven": %d,\n    "skipped": %d,\n    "violated": %d,\n    "errors": %d,\n    "timed_out": %d\n  },\n' \
+    "$PROVEN" "$UNPROVEN" "$SKIPPED" "$VIOLATED" "$ERRORS" "$TIMED_OUT"
+  printf '  "files": [\n'
+  cat "$ENTRIES"
+  printf '\n  ]\n}\n'
+} > "$JSON_OUT"
 
-# Replace placeholder with actual total and populate summary counters
-sed -i "s/PLACEHOLDER/$TOTAL/" "$JSON_OUT"
-sed -i "s/\"proven\": 0/\"proven\": $PROVEN/" "$JSON_OUT"
-sed -i "s/\"unproven\": 0/\"unproven\": $UNPROVEN/" "$JSON_OUT"
-sed -i "s/\"skipped\": 0/\"skipped\": $SKIPPED/" "$JSON_OUT"
-sed -i "s/\"violated\": 0 /\"violated\": $VIOLATED,/" "$JSON_OUT" 2>/dev/null || true
-sed -i "s/\"violated\": 0,\$/\"violated\": $VIOLATED,/" "$JSON_OUT" 2>/dev/null || true
-sed -i "s/\"timed_out\": 0/\"timed_out\": $TIMED_OUT/" "$JSON_OUT"
-
-echo "Summary: total=$TOTAL proven=$PROVEN unproven=$UNPROVEN skipped=$SKIPPED violated=$VIOLATED timed_out=$TIMED_OUT" >&2
+echo "Summary: total=$TOTAL proven=$PROVEN unproven=$UNPROVEN skipped=$SKIPPED violated=$VIOLATED errors=$ERRORS timed_out=$TIMED_OUT" >&2
 if [[ $TIMED_OUT -gt 0 ]]; then
-  echo "WARNING: $TIMED_OUT file(s) hit the ${PER_FILE_TIMEOUT}s per-file bound; they are recorded as timed_out, not counted as proven." >&2
+  echo "WARNING: $TIMED_OUT file(s) had no verdict: the ${PER_FILE_TIMEOUT}s per-file bound cut verification short." >&2
 fi
 
 # Violated contracts are errors (false proofs)

@@ -1,10 +1,57 @@
 # Value-Summary and Word-Model Admission (2026-11-15)
 
-**Status**: in progress (Bool admission implemented this round; phases 2-3 documented).
+**Status**: in progress. **Re-baselined 2026-11-16** after PRs #104/#105 — the
+numbers in §1 were taken before the masked-offset kernel, the post→pre call
+gate and the `Load#` width model landed.
+
 **Supersedes**: the "value summaries for `Store#`/`Load#`" item in
 `2026-11-15-remaining-verification-work.md` §6 — that diagnosis was half
 right (summaries are the mechanism) and half wrong (the biggest "summary"
 classes are memory operations that cannot soundly be summarized).
+
+## 0. Current baseline (2026-11-16, commit `424c69ed`, `brievc` release build)
+
+`bash scripts/verify_bodies_corpus.sh lib/std` (92 files):
+
+```
+Files:            92
+PROVEN:           81        (files with no failure bucket — NOT obligations)
+UNPROVEN:         5
+NO_POSTCONDITION: 0
+SKIPPED:          14685
+VIOLATED:         0
+ERR:              10        (codegen/link errors, not proof failures)
+```
+
+Obligation-level tallies (`scripts/verify-bodies-census.sh`, 92 files):
+
+```
+proven 925 | unproven 5 | skipped 14528 | violated 0 | build errors 2
+```
+
+The whole unproven set is now two goals:
+
+| defn | obligations | goal | blocker |
+|---|---|---|---|
+| `ip_v4` | 3 | `term >= 0 && term <= 4294967295` | needs disjoint-bit Or / shift reasoning |
+| `sha1_padded_len` | 2 | `term >= msg_len + 9`, `term % 64 == 0` | needs modular arithmetic |
+
+**`mantissa_val` and `exponent_val` are gone from this table** — both are
+proven now (PR #104: masked-offset interval + literal-shift folding; PR #104
+also taught the call gate to use a callee's postcondition, and the
+`float_format` NaN/Inf guard is spelled `when exp8 > 254` so its fall-through
+fact is the bound the callee needs).
+
+## 0.1 The census script was under-reporting
+
+`scripts/verify-bodies-census.sh` built its header first and then patched it
+with `sed -i "s/\"unproven\": 0/.../"`. That rewrites **every** match in the
+document, so each file's `"unproven": 0` became the grand total: the full run
+claimed "5 unproven in all 92 files" while every file individually reported 0.
+The script now buffers per-file entries and assembles the document once, and it
+counts a failed build as its own `error` field instead of silently attributing
+the previous file's report to it. **Any census number produced before this fix
+should be treated as unreliable at per-file granularity.**
 
 ## 1. Measured baseline (full `lib/std`, 92 files)
 
@@ -60,13 +107,24 @@ splits that 16 k into two very different populations:
    `build_summaries` fixpoint already collects what it can — the residual
    cases are helpers whose own bodies call yet-unsurmarized things, and the
    fixpoint correctly refuses to guess.
-2. **Unsummable operations** — `Load#(addr, width)`, `Store#(addr, value,
-   width)`, `SysCall#`, `Asm#`, `Argc#`. These read/write *memory at an
-   address expression*, or enter the host. Their results are not a function
-   of their arguments in any model the prover has. A "summary" here would be
-   a fabricated relation and would turn "skipped" into false proofs. The
-   sound disposition is to **keep skipping them and say so** — which the
-   diagnostic already does, and this plan now records as doctrine.
+2. **Unsummable operations** — `Store#(addr, value, width)`, `SysCall#`,
+   `Asm#`, `Argc#`. These write memory at an address expression, or enter the
+   host. Their results are not a function of their arguments in any model the
+   prover has. A "summary" here would be a fabricated relation and would turn
+   "skipped" into false proofs. The sound disposition is to **keep skipping
+   them and say so** — which the diagnostic already does, and this plan records
+   as doctrine.
+
+   **`Load#` is the one exception, and it is not a summary (PR #105).**
+   `Load#(addr, w)` emits `load i{8w}` and then *zero-extends*, so its value
+   lies in `[0, 2^(8w)-1]` — a *range* that follows from the emitter, not a
+   relation over the arguments. The prover states that range for literal
+   widths 1..=3 only: at width 4 the load equals the word width on wasm32, so
+   zero-extension is the identity and the value may read negative, making
+   `[0, 2^32-1]` a false proof. The atom is keyed by AST node so two identical
+   loads stay distinct (otherwise `a - b` would fold to 0 across a store). This
+   is an intrinsic-model exception, documented so it is not mistaken for
+   licence to summarize `Store#`.
 
 So the honest statement is: `Load#`/`Store#` (2 549 skips) are not waiting on
 summaries; they are waiting on a **memory model** (pointer state,
@@ -187,17 +245,25 @@ threading parameter types (not just the return type) through the encoding
 pipeline. The corpus payoff is small (a handful of Bool-param defns), so
 this is deferred.
 
-## 6. Conformance sweep status (2026-11-15)
+## 6. Conformance sweep status (RESOLVED 2026-11-16)
 
-The conformance sweep is failing with 387 sources — **pre-existing**, not
-caused by phase 1a/1b. The root cause is the `exponent_val`/`mantissa_val`
-precondition tightening in `4a24b3a21` (float_fmt.bv): the declared-edge
-call-site checker does not propagate callee postconditions and does not
-perform mask-bound reasoning, so every call site of `exponent_val` fails,
-cascading through `float_fmt.bv` to nearly every file that imports it.
-Documented in `BUGS.md`. The 2 `ascii_lower` failures in `http.bv`/`task_board`
-are the same class. Fix path: teach the call-site checker to propagate
-callee postconditions, or revert the preconditions.
+The sweep was failing with 387 sources, rooted in the
+`exponent_val`/`mantissa_val` precondition tightenings in `4a24b3a21`: the
+call-site checker neither propagated callee postconditions nor reasoned about
+byte masks, so every call site failed and the failure cascaded through every
+file importing `float_fmt.bv`.
+
+**Both halves are fixed and merged:**
+
+1. `post_facts_for_term` (PR #104) lets a caller use its callee's *declared*
+   postcondition for an inline call term — the `ascii_lower(byte_at(...))`
+   class.
+2. `float_format`'s NaN/Inf guard is `when exp8 > 254` rather than
+   `when exp8 == 0xFF`. Identical for a byte field, but the fall-through fact
+   is then the upper bound `exponent_val`'s precondition needs (a disequality
+   `exp8 != 255` is not a bound the gate can use).
+
+`conformance_sweep_every_active_source_parses_and_checks` passes (393s).
 
 ## 7. Undo
 

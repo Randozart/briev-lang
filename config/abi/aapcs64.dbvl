@@ -1,0 +1,16 @@
+// ABI core "aapcs64" — facts only, no language knowledge.
+// 2026-11-16 (FFI contract plan S2): flat .dbvl line-table form (the form
+// the config DB reads as typed ints); a language adapter names this core
+// with `abi: "aapcs64"`. Closed keys: an unknown one is refused.
+
+name: "aapcs64";
+pointer_bits: 64;
+int_bits: 64;
+float_bits: 64;
+stack_align: 16;
+aggregate_small_max: 16;
+aggregate_in_regs: "eightbyte";
+aggregate_hidden_ptr_threshold: 16;
+symbol_prefix: "";
+symbol_mangling: "none";
+temporaries_caller_frees: true;

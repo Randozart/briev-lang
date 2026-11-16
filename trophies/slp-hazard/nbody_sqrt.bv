@@ -7,7 +7,6 @@
 //   ./target/release/briev-compiler llvm benchmarks/nbody_sqrt.bv \
 //       --out benchmarks --optimize-budget 2048
 
-#!exit count == bound;
 
 import { get_env_int } from "std/env.bv";
 import "link/briev_rt.c";

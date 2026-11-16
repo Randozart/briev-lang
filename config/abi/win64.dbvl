@@ -1,0 +1,16 @@
+// ABI core "win64" — facts only, no language knowledge.
+// 2026-11-16 (FFI contract plan S2): flat .dbvl line-table form (the form
+// the config DB reads as typed ints); a language adapter names this core
+// with `abi: "win64"`. Closed keys: an unknown one is refused.
+
+name: "win64";
+pointer_bits: 64;
+int_bits: 64;
+float_bits: 64;
+stack_align: 16;
+aggregate_small_max: 8;
+aggregate_in_regs: "by_value";
+aggregate_hidden_ptr_threshold: 8;
+symbol_prefix: "";
+symbol_mangling: "none";
+temporaries_caller_frees: true;
