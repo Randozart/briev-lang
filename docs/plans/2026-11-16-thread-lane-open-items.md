@@ -187,7 +187,23 @@ nothing from the thread work is red.
 **Owner work:** establish the guard at those call sites (`when` guard or a
 `Result` boundary in `lib/std/float_fmt.bv` / `lib/std/net/http.bv`).
 
-### B4. `Verify Bodies Census` workflow fails on infrastructure
+### B4-result. Census bounded per file (2026-11-16)
+
+Root cause of "the hosted runner lost communication" after ~55 min: one
+pathological file (or the accumulated cost of a few) ran unbounded inside the
+census loop, so the runner starved instead of the job recording anything.
+
+Fix: `scripts/verify-bodies-census.sh` now runs each file under
+`timeout --kill-after=10 ${VERIFY_BODIES_TIMEOUT:-120}`, counts a hit as
+`timed_out` (a new per-file field and summary counter) instead of letting it kill
+the job, and warns on stderr. The workflow sets the bound explicitly (120 s) and
+prints the count. Verified both paths locally: a normal file reports
+`timed_out: 0`; forcing `VERIFY_BODIES_TIMEOUT=1` reports `timed_out: 1` and
+still exits 0 with a valid JSON report.
+
+Reversible: set `VERIFY_BODIES_TIMEOUT: "0"` to disable the bound.
+
+### B4 (historical). `Verify Bodies Census` workflow fails on infrastructure
 
 Last run: *"the hosted runner lost communication with the server"* after 55
 minutes. Looks like a resource-exhaustion timeout, not a code failure.
