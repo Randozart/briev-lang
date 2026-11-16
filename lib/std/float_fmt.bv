@@ -435,7 +435,10 @@ defn float_format(f: Float, precision: Int)
     let sign: Int = (bits >> 31) & 1;
     let exp8: Int = (bits >> 23) & 0xFF;
     let mant: Int = bits & 0x7FFFFF;
-    when exp8 == 0xFF {
+    // exp8 is a byte field ((bits >> 23) & 0xFF), so `exp8 > 254` is exactly
+    // `exp8 == 0xFF` — NaN/Inf. Spelling it as a range (not an equality) is what
+    // leaves `exp8 <= 254` as a provable fact for the callers below.
+    when exp8 > 254 {
         when mant == 0 {
             when sign == 1 {
                 term "-inf";
