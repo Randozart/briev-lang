@@ -8290,6 +8290,25 @@ impl LlvmBackend {
         self.fun.in_callable_txn = false;
         self.fun.returns_i64 = false;
         self.fun.fn_ret_ty = "void".to_string();
+        // 2026-11-16 (async-events undefined-value fix): the single-node main
+        // fold (emit_countable_main) leaves the loop register maps populated
+        // (phi_field_regs: guard field → its header phi; pending_phi_backedge;
+        // last_val_temps). The txn body emission below re-populates them for
+        // THIS function's loop — but the pre-condition check runs BEFORE
+        // that, resolving the guard's identifiers through the STALE maps to
+        // registers defined only in main() (e.g. `%flc8` in `txn_run`'s
+        // `[i < 1]` guard → `use of undefined value` IR). The end-of-txn
+        // clears below (see the "countdown" comment) are too late: they fix
+        // the NEXT function, not the current one. Clear at the start, before
+        // any identifier read in this function. The body emission re-populates
+        // the maps it needs (counter.rs registers the header phis after the
+        // guard), so the guard falls back to the %State load — the correct
+        // entry-block value.
+        self.fun.pending_phi_backedge.clear();
+        self.fun.phi_field_regs.clear();
+        self.fun.backedge_field_regs.clear();
+        self.fun.last_val_temps.clear();
+        self.fun.last_val_types.clear();
         self.emit_arena_init(out, "  ");
         // The swan-song-stripped body + post-loop hoist, mirroring the
         // single-node fold (analysis.swan_songs).
