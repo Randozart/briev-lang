@@ -1158,14 +1158,16 @@ fn rel_verdict(
         }
     }
     // Identifier-vs-literal: decide through the path's interval bounds.
+    // The other side may be a folded constant term (`1 << 24`) as well as a
+    // plain literal, so both spellings resolve through `try_to_literal`.
     if let SymbolicValue::Identifier(name) = lv {
-        if let SymbolicValue::Literal(v, _) = rv {
-            return ident_verdict(op, name, *v, false, bounds);
+        if let Some(v) = rv.try_to_literal() {
+            return ident_verdict(op, name, v, false, bounds);
         }
     }
-    if let SymbolicValue::Literal(v, _) = lv {
+    if let Some(v) = lv.try_to_literal() {
         if let SymbolicValue::Identifier(name) = rv {
-            return ident_verdict(op, name, *v, true, bounds);
+            return ident_verdict(op, name, v, true, bounds);
         }
     }
     // Masked value vs literal: `x & M` with `M >= 0` lies in `[0, M]`, which
@@ -1176,7 +1178,99 @@ fn rel_verdict(
     if let (Some(bound), SymbolicValue::Literal(v, _)) = (mask_bound(rv), lv) {
         return interval_verdict(op, bound, *v, true);
     }
+    // Masked-plus-offset vs literal — the `mantissa_val` shape.
+    //
+    // `lv` is `(x & mask) + n` and `rv` is a literal `v`. Because
+    // `x & mask ∈ [0, mask]` for a non-negative mask, the whole expression
+    // lies in `[n, mask + n]` whenever `n >= 0`. That interval decides the
+    // comparison without a solver:
+    //   `Lt` holds when `mask + n < v`, refutes when `mask < v`.
+    //   `Le` holds when `mask + n <= v`, refutes when `mask > v`.
+    //   `Ge`/`Gt` are the mirrored lower-bound checks.
+    //
+    // Worked example (`mantissa_val`):
+    //   term = mant + 0x800000,  v = 1 << 24,  mant = bits & 0x7FFFFF
+    //   0x7FFFFF + 0x800000 = 16777215 < 16777216  ⇒  Holds.
+    if let SymbolicValue::Binary(add_op, inner_box, lit_sym_box) = lv {
+        if add_op.as_str() == "+" {
+            if let Some(offset) = lit_sym_box.try_to_literal() {
+                if offset >= 0 {
+                    if let Some(inner_bound) = value_bound(&inner_box, bounds) {
+                        // `rv` may be a literal or a foldable constant term such
+                        // as `1 << 24`; both denote an exact bound.
+                        if let Some(limit) = rv.try_to_literal() {
+                            let combined_max = inner_bound.upper.saturating_add(offset);
+                            // The reachable interval is [offset, combined_max].
+                            // Holds needs the whole interval on the true side,
+                            // refuted needs the whole interval on the false side,
+                            // and anything else stays undecided.
+                            match op {
+                                BinaryOpKind::Lt => {
+                                    return if combined_max < limit {
+                                        ProofVerdict::Holds
+                                    } else if inner_bound.lower.saturating_add(offset) >= limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                BinaryOpKind::Le => {
+                                    return if combined_max <= limit {
+                                        ProofVerdict::Holds
+                                    } else if inner_bound.lower.saturating_add(offset) > limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                BinaryOpKind::Ge => {
+                                    return if inner_bound.lower.saturating_add(offset) >= limit {
+                                        ProofVerdict::Holds
+                                    } else if combined_max < limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                BinaryOpKind::Gt => {
+                                    return if inner_bound.lower.saturating_add(offset) > limit {
+                                        ProofVerdict::Holds
+                                    } else if combined_max <= limit {
+                                        ProofVerdict::Violated
+                                    } else {
+                                        ProofVerdict::Undecided
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     ProofVerdict::Undecided
+}
+
+/// The best interval known for one symbolic operand.
+///
+/// Two sources contribute, and both are needed by the masked-offset rule:
+/// a mask expression (`x & MASK`) carries its own interval, while an ordinary
+/// identifier carries whatever the path's precondition and guards established.
+/// Returning `None` (rather than `Bound::FULL`) keeps the caller from treating
+/// "no information" as "the whole range is decided".
+fn value_bound(value: &SymbolicValue, bounds: &HashMap<String, Bound>) -> Option<Bound> {
+    if let Some(masked) = mask_bound(value) {
+        return Some(masked);
+    }
+    match value {
+        SymbolicValue::Literal(n, _) => Some(Bound {
+            lower: *n,
+            upper: *n,
+        }),
+        SymbolicValue::Identifier(name) => bounds.get(name).copied(),
+        _ => None,
+    }
 }
 
 /// The interval of a value masked by a non-negative constant.

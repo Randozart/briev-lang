@@ -639,6 +639,87 @@ mod inferred_invariant_tests {
 }
 
 #[cfg(test)]
+mod mask_offset_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// The `mantissa_val` shape: a masked value plus the hidden bit.
+    ///
+    /// `term = (bits & 0x7FFFFF) + 0x800000` cannot exceed
+    /// `0x7FFFFF + 0x800000 == 0xFFFFFF`, so `term < 1 << 24` holds on every
+    /// path without a solver. Before the masked-offset rule this body was
+    /// reported unproven: the AND had a bound, but nothing propagated it
+    /// through the addition.
+    #[test]
+    fn masked_offset_upper_bound_proves() {
+        let defn = parse_one(
+            "defn f(bits: Int) [bits >= 0][term >= 1 && term < 1 << 24] -> Int {\n\
+                 let mant: Int = bits & 0x7FFFFF;\n\
+                 term mant + 0x800000;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a masked+offset value must prove its upper bound: unproven={:?}",
+            report.unproven
+        );
+    }
+
+    /// The rule must not invent proofs: an offset that can overshoot the
+    /// postcondition stays refuted rather than proven.
+    #[test]
+    fn masked_offset_that_can_overshoot_is_refuted() {
+        let defn = parse_one(
+            "defn f(bits: Int) [bits >= 0][term < 1 << 24] -> Int {\n\
+                 let mant: Int = bits & 0x7FFFFF;\n\
+                 term mant + 0x1000000;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert_eq!(
+            report.violated.len(),
+            1,
+            "an offset past the bound must be refuted: proven={:?} unproven={:?}",
+            report.proven,
+            report.unproven
+        );
+    }
+
+    /// A comparison that straddles the reachable interval stays undecided —
+    /// neither proven nor refuted, never guessed at.
+    #[test]
+    fn masked_offset_straddling_the_bound_stays_undecided() {
+        let defn = parse_one(
+            "defn f(bits: Int) [bits >= 0][term < 0x800000] -> Int {\n\
+                 let mant: Int = bits & 0x7FFFFF;\n\
+                 term mant + 0x400000;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            report.violated.is_empty(),
+            "a straddling goal must not be refuted: {:?}",
+            report.violated
+        );
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert_eq!(report.unproven.len(), 1, "unproven: {:?}", report.unproven);
+    }
+}
+
+#[cfg(test)]
 mod variant_tests {
     use super::*;
 

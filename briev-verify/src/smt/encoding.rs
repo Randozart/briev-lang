@@ -14,6 +14,16 @@ pub(super) struct Term {
 }
 
 pub(super) fn encode(expr: &Expr) -> Option<Term> {
+    // Constant-fold a fully-literal arithmetic/bitwise subtree first. Bounds
+    // like `1 << 24` are idiomatic in contracts, but the SMT table deliberately
+    // carries no shift signature; folding keeps the *exact* value in the word
+    // model instead of refusing the contract as ill-sorted.
+    if let Some(value) = fold_literals(expr) {
+        return Some(Term {
+            text: format!("#x{:016x}", value as u64),
+            sort: Sort::Word,
+        });
+    }
     match expr {
         Expr::Bool(value) => Some(Term {
             text: if *value { "(= #b1 #b1)" } else { "(= #b0 #b1)" }.into(),
@@ -51,9 +61,51 @@ pub(super) fn expect(expr: &Expr, sort: Sort) -> Option<String> {
     (term.sort == sort).then_some(term.text)
 }
 
+/// Fold a subtree whose leaves are all integer literals to its exact value.
+///
+/// Contract bounds are routinely written as expressions (`1 << 24`,
+/// `0x7FFFFF + 1`) rather than decimal literals. The solver table only carries
+/// the operators it can reason about symbolically, so without folding a bound
+/// like `term < 1 << 24` would be rejected as ill-sorted and never reach the
+/// prover. Folding is exact — it returns the same integer the interpreter
+/// computes — so it can only ever make a contract *decidable*, never true.
+///
+/// Only fully-literal subtrees fold. Overflowing arithmetic, division by zero,
+/// and out-of-range shifts return `None` rather than an invented value, which
+/// keeps the caller on the conservative "not encodable" path.
+fn fold_literals(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Decimal(value) => Some(*value),
+        Expr::UnaryOp(UnaryOpKind::Neg, inner) => fold_literals(inner)?.checked_neg(),
+        Expr::BinaryOp(op, left, right) => {
+            let a = fold_literals(left)?;
+            let b = fold_literals(right)?;
+            match op {
+                Op::Add => a.checked_add(b),
+                Op::Sub => a.checked_sub(b),
+                Op::Mul => a.checked_mul(b),
+                Op::Div => (b != 0).then(|| a.checked_div(b))?,
+                Op::Mod => (b != 0).then(|| a.checked_rem(b))?,
+                Op::Shl => u32::try_from(b).ok().and_then(|shift| a.checked_shl(shift)),
+                Op::Shr => u32::try_from(b).ok().and_then(|shift| a.checked_shr(shift)),
+                Op::BitAnd => Some(a & b),
+                Op::BitOr => Some(a | b),
+                Op::BitXor => Some(a ^ b),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The standalone word AST also models directly tracked fields as words.
 /// This rank check does not grant them an SMT encoding or source type admission.
 pub(super) fn postcondition_sort(expr: &Expr) -> Option<Sort> {
+    // A fully-literal subtree has an exact word value, so it sorts as a word
+    // even when its surface operator (a shift) has no SMT signature.
+    if fold_literals(expr).is_some() {
+        return Some(Sort::Word);
+    }
     match expr {
         Expr::Field(base, _) if matches!(base.as_ref(), Expr::Identifier(_)) => Some(Sort::Word),
         Expr::BinaryOp(op, left, right) => {
