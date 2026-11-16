@@ -794,10 +794,19 @@ mod typed_model_tests {
 mod boolean_model_boundary_tests {
     use super::*;
 
+    /// 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1a): Bool is
+    /// admitted into the body model. The symbolic evaluator handles it
+    /// (`Literal(0|1, "bool")`) and the SMT encoder encodes `Expr::Bool` as
+    /// a Boolean. The SMT *encoding* side (declaring `term` as `Bool` rather
+    /// than `BitVec`) is a separate concern (phase 1b) — until then, Bool
+    /// postconditions that compare `term` against BitVec values are rejected
+    /// at the SMT gate as "unsupported or ill-sorted", which is an honest
+    /// skip, never a false proof.
     #[test]
-    fn boolean_storage_requires_a_separate_expression_model() {
+    fn boolean_storage_is_admitted_into_the_body_model() {
         let universe = TypeUniverse::new();
         let model = BodyTypeModel::new(&[], &universe, 64);
-        assert_eq!(model.resolve(&Type::bool_()), ScalarModel::Unsupported);
+        assert_eq!(model.resolve(&Type::bool_()), ScalarModel::Bool);
+        assert!(model.resolve(&Type::bool_()).admitted());
     }
 }
