@@ -66,9 +66,18 @@ values: { "String": { class: "borrowed_bytes"; zero_copy: true; to_op: "str_to_c
           "Char": { class: "scalar"; layout: "i32" } };
 ```
 
-**Next measurement, not guess:** bisect the block in the characterisation test —
-add the six class names with one field each, then add fields back one at a time —
-until the offset reproduces. Half an hour of bisection, and the rule is known.
+**Bisection result (P0, 2026-11-16): the block itself parses.** Three new cases
+were added to the characterisation test — six classes with one field each, one
+class with five fields, and the six classes with their real field sets — and all
+three **pass**. So the failing text is not the `values` block, not its class
+names, and not its field names: it is the block **in context**, i.e. inside the
+`c: { … }` entry alongside `protocols`, `conversions` and `state`.
+
+That moves the suspect set to entry-level interaction. The next measurement, and
+it is one test away: parse the **whole** `lib/glue/c/glue.dbv` text from the test
+(read the file, splice the block back in, `parse_document_quoted`) and then delete
+one sibling section at a time (`protocols`, then `conversions`, then `state`)
+until the offset disappears. Whichever removal fixes it names the interaction.
 
 Practical consequence: the descriptor ships with **one** value class today
 (`String`, the one whose asymmetry matters), which side-steps the unknown without

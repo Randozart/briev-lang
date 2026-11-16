@@ -1476,6 +1476,24 @@ mod tests {
                 true,
             ),
             ("two sibling nested maps", r#"a: { x: "1" }; b: { y: "2" };"#, true),
+            // 2026-11-16 (P0 bisection): the shipped C adapter failed on this
+            // block with "Expected named field". These cases narrow it: the six
+            // class names with one field each, then the real field sets.
+            (
+                "six classes, one field each",
+                r#"a: { "String": { class: "b" }; "Int": { class: "s" }; "Float": { class: "s" }; "Bool": { class: "s" }; "Data": { class: "b" }; "Char": { class: "s" } };"#,
+                true,
+            ),
+            (
+                "one class, five fields",
+                r#"a: { "String": { class: "b"; zero_copy: true; to_op: "t"; from_op: "f"; from_copy: true } };"#,
+                true,
+            ),
+            (
+                "six classes, real field sets",
+                r#"a: { "String": { class: "b"; zero_copy: true; to_op: "t"; from_op: "f"; from_copy: true }; "Int": { class: "s"; layout: "i" }; "Float": { class: "s"; layout: "f" }; "Bool": { class: "s"; layout: "i8" }; "Data": { class: "b"; zero_copy: true }; "Char": { class: "s"; layout: "i32" } };"#,
+                true,
+            ),
             (
                 "two nested, bool in first",
                 r#"a: { "X": { class: "c1"; flag: true }; "Z": { class: "c2" } };"#,
