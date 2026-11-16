@@ -1754,6 +1754,46 @@ fn rewrite_list(
                 // already carries the value; stay conservative (leak).
                 let self_tail =
                     matches!(&e.kind, HirExprKind::Call { callee, .. } if *callee == ctx.function);
+                // 2026-11-16: report the leak the exclusion above creates.
+                // A self-tail call that passes an OWNED INLINE temporary (a
+                // concat/slice/fresh_string argument, not a local) leaks it
+                // every iteration: the tail-loop lowering stores the new value
+                // into the parameter slot and branches to the header, so the
+                // old value is dropped with no release. The local-based census
+                // cannot see it (the temporary has no name), so this is the
+                // only place it becomes visible. Reported as UNDECIDED, not as
+                // a conservative drop: it is a real unbounded leak (quadratic
+                // RSS; BUGS.md 2026-11-16) and must block
+                // --deny-memory-ambiguity.
+                if self_tail {
+                    if let HirExprKind::Call { args, .. } = &e.kind {
+                        for (i, a) in args.iter().enumerate() {
+                            let inline = !matches!(a.kind, HirExprKind::Identifier(_));
+                            // Scalars are copied values: `is_fresh` says true for
+                            // them (they cannot leak) but they own no storage, so
+                            // require an owned storage type as well.
+                            let owns_storage = a.ty.as_ref().is_some_and(owned_ty);
+                            let owned_temp = is_fresh(
+                                a,
+                                fresh_vars,
+                                ctx.param_return,
+                                ctx.fresh,
+                                ctx.ok_fresh,
+                                &fn_freed,
+                            );
+                            if inline && owns_storage && owned_temp {
+                                ctx.events.push(OwnedEvent {
+                                    function: ctx.function.clone(),
+                                    name: format!("self-tail arg{i}"),
+                                    kind: OwnedEventKind::UndecidedInit(
+                                        "owned temporary at a self-tail call is freed nowhere "
+                                            .to_string(),
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
                 let borrows_owned = !self_tail
                     && transferred.is_none()
                     && ids.iter().any(|n| owned.contains_key(n));
@@ -2712,6 +2752,62 @@ defn owned() [true][true] -> List<Int> {
             bound_var("owned", "picked"),
             Some(true),
             "pick over two fresh lists is fresh (every candidate is owned)"
+        );
+    }
+
+    /// A self-tail call passing an owned INLINE temporary leaks it every
+    /// iteration; the census must SAY so (it used to be invisible because the
+    /// temporary has no name). Scalar arguments must NOT be reported — they own
+    /// no storage, and flagging them was a false positive.
+    #[test]
+    fn self_tail_owned_temporary_is_reported_and_scalars_are_not() {
+        let mut program = annotated(
+            r#"
+import "std/alloc.bv";
+defn mk(s: String) [true][true] -> String {
+    term fresh_string(s);
+};
+defn loop(s: String, n: Int) [true][true] -> String {
+    when n <= 0 {
+        term mk(s);
+    };
+    term loop(mk(s), n - 1);
+};
+"#,
+        );
+        let events = memcheck_owned(&program, &HashMap::new());
+        let hits: Vec<&OwnedEvent> = events
+            .iter()
+            .filter(
+                |e| matches!(&e.kind, OwnedEventKind::UndecidedInit(w) if w.contains("self-tail")),
+            )
+            .collect();
+        assert_eq!(hits.len(), 1, "one owned temporary at the self-tail call");
+        assert_eq!(hits[0].name, "self-tail arg0");
+        assert_eq!(hits[0].function, "loop");
+        insert_releases(&mut program, &HashMap::new());
+    }
+
+    /// A self-tail call with no owned temporary must stay silent.
+    #[test]
+    fn self_tail_without_owned_temporary_is_not_reported() {
+        let program = annotated(
+            r#"
+import "std/alloc.bv";
+defn loop(s: String, n: Int) [true][true] -> String {
+    when n <= 0 {
+        term fresh_string(s);
+    };
+    term loop(s, n - 1);
+};
+"#,
+        );
+        let events = memcheck_owned(&program, &HashMap::new());
+        assert!(
+            !events.iter().any(
+                |e| matches!(&e.kind, OwnedEventKind::UndecidedInit(w) if w.contains("self-tail"))
+            ),
+            "the carried value is a parameter, not a temporary"
         );
     }
 }

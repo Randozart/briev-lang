@@ -1,3 +1,120 @@
+## 2026-11-16 — missing stdlib import silently binds a name to a builtin with a different type
+
+**Symptom.** `concat(s, "x")` without `import "std/string.bv"` type-checks
+against some other `concat` and reports a confusing error about an unrelated
+call:
+
+```
+error: type errors:
+  type mismatch: expected String for term value vs declared return type, found Int
+```
+
+or, when the expression is inside a recursive call, it blames the recursive
+call's argument:
+
+```
+  type mismatch: expected String for argument 0 of 'tls', found Int
+```
+
+Nothing in the message says `concat` is unresolved, so the reader debugs the
+wrong line.
+
+**Repro.**
+
+```briev
+import "std/io.bv";
+defn f(s: String) -> String {
+    term concat(s, "x");          // no import "std/string.bv"
+};
+```
+
+Adding `import "std/string.bv";` makes it compile.
+
+**Expected.** An unresolved name should be reported as unresolved ("unknown
+function `concat` — did you mean to import `std/string.bv`?"), never silently
+resolved to a builtin whose signature differs. This is the vocabulary/name
+resolution path, not the stdlib.
+
+---
+
+## 2026-11-16 — self-tail call leaks every iteration's owned temporary (quadratic RSS)
+
+**Symptom.** A tail-recursive defn whose recursive call passes an OWNED
+temporary (`concat`, slice, `fresh_string`) never frees it. The tail-loop
+lowering stores the new value into the parameter slot and branches to the
+header, so the previous value is dropped without a release. The ownership pass
+cannot help: the self-tail call is excluded from temp-transfer (the transfer's
+releases would land after the loop-back `br`).
+
+Measured with a runtime bound (`get_env_int!`), maxRSS of the child process:
+
+| N (iterations) | maxRSS |
+|---|---|
+| 1 000 | 12.6 MB |
+| 100 000 | 4 775.9 MB |
+| 400 000 | 23 675.5 MB |
+
+Growth is quadratic, not linear: the carried string grows one byte per
+iteration, so each iteration allocates O(i) and nothing is returned.
+
+**Repro** (`import "std/string.bv"` is required — without it `concat` resolves
+to a builtin with an incompatible type and the error is misleading):
+
+```briev
+import "std/io.bv";
+import "std/string.bv";
+defn tls(s: String, n: Int) -> String {
+    when n <= 0 { term fresh_string(s); };
+    term tls(concat(s, "x"), n - 1);
+};
+node entry [beginprogram][true] {
+    let bound: Int = get_env_int!("N");
+    let r: String = tls("a", bound);
+    print_int(r .^Length);
+    endprogram 0;
+};
+```
+
+`brievc memcheck` reports `releases inserted: 0` and no undecided owners — the
+temporary is invisible to the census (it is an inline argument, never a local).
+So this class of leak cannot be found by the local-based census at all; it
+needs an allocation-count assertion or an RSS-bound test.
+
+**Why the obvious fix is wrong.** Freeing the slot value at the backedge also
+frees the CALLER's argument on the first iteration — the slot is initialised
+from the caller's handle. `use-after-free` (the earlier attempt produced
+`free(): invalid pointer` from a related double release).
+
+**Correct fix (not implemented yet).** In `try_emit_tail_loop_backedge`
+(`src/backend/llvm/emit_llvm/…/emit_expr.rs`), emit an iteration flag per owned
+backedge argument:
+
+1. At loop entry, initialise a hidden `owned` slot to `false` and store the
+   caller's argument in the parameter slot.
+2. Before each backedge store, branch on `owned`: when true, load the current
+   slot value and `free` it; then store the new value and set `owned = true`.
+3. At loop exit, release the final carried value on the base path (the base
+   case already consumes it where it copies).
+
+The "which backedge args are owned" fact belongs in the frontend
+(`RecursiveCarrierValue`, `src/analysis/destination_model.rs`), per the
+frontend-driven-dispatch rule — not a name/type heuristic in the backend.
+Spec: `docs/plans/2026-11-16-memory-and-xpu-finish-grind.md` §M2.
+
+**Workaround today.** Write the recursion non-tail and free explicitly:
+
+```briev
+let next: String = concat(s, "x");
+let r: String = tls(next, n - 1);
+Free#(next as Ptr<Bit<8>>);
+term r;
+```
+
+Trade-off: real stack growth per level. For deep recursion prefer an
+accumulator shape that never allocates per iteration.
+
+---
+
 ## 2026-11-13 — aggregate value passed to a defn forwards an i64 handle as `ptr`
 
 **Symptom.** A struct/obj VALUE whose fields include a collection/pointer
