@@ -58,10 +58,12 @@ The skip stack splits into two populations with different fixes:
    (144 on this corpus). The prover's symbolic + SMT layers already handle the
    *operations*; the type gate (`ScalarModel::admitted`, only `SignedWord{64}`
    or `Bool`) rejects the bodies before they reach those layers. Bool was
-   admitted this way in phase 1 (369 skips → proven, gate fix only). **String is
-   the same shape, one level up**: admitting it requires a *length abstraction*
-   (opaque atom + `.^Length` facts, counsel's P2 pattern), not content
-   reasoning — do that first, defer content.
+   admitted this way in phase 1 (369 skips → proven, gate fix only).
+   **String is NOT the same shape**, and the first draft of this plan was wrong
+   about it: measured, 19% of String-parameter bodies also need an integer
+   *cast* (`(s as Data) as Int`), and those are precisely the byte-accessor
+   leaves every parser sits on. String admission alone yields zero new proofs.
+   See §Phase 2 for the measured breakdown and the paired slice.
 2. **Opaque operations** — `Store#`, `SysCall#`, `Asm#`, `Argc#`,
    `sched_tail_block`. These enter the host or write memory at a computed
    address; a *value* summary would be a fabricated relation = false proofs.
@@ -93,29 +95,61 @@ guard-forms), not a mechanical fix.
 - **Gate:** the numbers come from `verify_bodies_corpus.sh`; the fixed census now
   agrees with it at obligation level.
 
-### Phase 2 — Admit `String` with a length-only abstraction  (big payoff: 2519–4830)
+### Phase 2 — Admit `String`, but **only together with integer casts**  (measured)
 
-The type gate admits `SignedWord{64}` and `Bool`. Add a third model:
-`String` as an **opaque atom with a length fact**, mirroring how counsel models
-collection parameters.
+#### Why the naive order fails (measured 2026-11-16)
 
-- `ScalarModel::StringLen` (or similar): admitted for String-typed parameters
-  and returns **whose contract mentions nothing but `term`, `.^Length`, and
-  integer ops on them** — the `byte_at` shape (`[term >= 0 && term <= 255]` has
-  no `.^Length`, but `truncate`'s `[CharCount#(term) <= max_len]` does).
-- Encode `.^Length`/`CharCount#` as a fresh integer variable per String value,
-  with the path facts carrying its bounds. No content reasoning — a String is
-  an opaque atom plus a length.
-- The SMT layer needs two widths of work: (a) a `String` sort or atom encoding
-  for the term itself (opaque, only comparable via `.^Length`), (b) the
-  length-of-parameter fact injected like counsel's P2.
-- **Risk, stated honestly:** this is a *new theory layer*, not a gate fix. The
-  gate admission is trivial; the length-encoding and the "which strings are
-  admitted" predicate are the hard 70%. Do it in two sub-phases (2a: type-gate +
-  length-of-param facts with a bounded set of stdlib defns; 2b: widen).
-- **Gate:** a `byte_at`-calling defn and a `truncate`-shaped defn prove their
-  contracts; a String-goal that needs content reasoning stays skipped with a
-  reason, never guessed.
+Static scan of `lib/std`: **192 defns take a `String` parameter**. Of those:
+
+| property | count |
+|---|---|
+| body contains an `as` cast | 37 (19%) |
+| body uses `Load#` | 14 |
+| neither cast nor `Load#`/`Store#` | 155 |
+
+The 155 "neither" cases are almost all *callers* of the byte accessors
+(`str_to_int` → `parse_int_ws` → `byte_at`, `pf_sign` → `byte_raw`, …), or they
+read `s .^Length`.
+
+The load-bearing leaves are exactly these:
+
+```briev
+defn str_len_bytes(s: String) [true][term >= 0] -> Int {
+    term Load#((s as Data) as Int, 8);
+};
+defn byte_raw(s: String, i: Int) [true][term >= 0] -> Int {
+    term Load#((s as Data) as Int + 8 + i, 1);
+};
+```
+
+Both are blocked by **two** gates at once: the `String` type gate *and* the
+`(s as Data) as Int` cast. Admitting `String` alone moves them from "type String
+is outside the word model" to "an unsupported expression" — zero new proofs.
+
+**General lesson:** the skip table's counts are conditional on the *first* gate
+that fires. Fixing gate A re-attributes A's bodies to whatever gate B they were
+really blocked on. PR #105 demonstrated it for `Load#` (1237 → 1001, totals
+unchanged); the String bucket has the same shape.
+
+#### The refined slice (2a)
+
+1. `ScalarModel::OpaqueHandle` — admitted for `String` and `Data`: word-sized,
+   **no value semantics**. Usable as an opaque atom; never ordered; never
+   compared for content equality.
+2. `Expr::Cast` restricted to a **whitelist of representation casts** whose
+   source and target are both pointer-sized: `String → Data → Int` and back.
+   Identity on the word. Any cast that changes width or interprets bits as a
+   *value* (`Int → Byte`, `Float ↔ Int`) stays unsupported — `Float as Int` is a
+   value conversion, not a reinterpretation.
+3. Target the leaves (`str_len_bytes`, `byte_raw`, `byte_at`); verify their posts
+   prove from the `Load#` range model, then let the existing summary fixpoint
+   feed the parser chain (`pf_ws` / `pf_sign` / `str_to_int`).
+4. `s .^Length` / `CharCount#` is a **third, separate gate** (a length fact on an
+   opaque handle). Do not bundle it: `str_to_bool` and `truncate` need it, the
+   byte accessors do not.
+
+**Gate:** a `byte_at`-calling defn proves its contract; a String goal needing
+content reasoning stays skipped with a reason, never guessed; `violated` stays 0.
 
 ### Phase 3 — Multi-field results (`Int, Int` tuples)  (273 full-corpus)
 
