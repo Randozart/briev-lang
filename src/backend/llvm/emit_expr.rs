@@ -9292,6 +9292,11 @@ impl LlvmBackend {
                 .unwrap_or(2);
             carrier_slots.insert(carrier.param_index, (hidden, words));
         }
+        // 2026-11-16 (M2 tail-loop owned destruction): the arguments are already
+        // evaluated into `arg_regs`, so the previous value in each owned slot is
+        // dead here. The `first` bit skips iteration 1: that value came from the
+        // caller and is not this frame's to free.
+        self.emit_tail_owned_slot_release(out, indent);
         for (index, reg) in arg_regs.iter().enumerate() {
             let Some((_, slot)) = slots.get(index) else {
                 return None;
@@ -9330,6 +9335,117 @@ impl LlvmBackend {
             name: v.to_string(),
             ty,
         })
+    }
+
+    /// 2026-11-16 (M2 tail-loop owned destruction): release the loop-carried
+    /// owned storage the backedge is about to overwrite.
+    ///
+    /// The frontend records an owned slot only when every call site hands over
+    /// a value this frame owns (an inline fresh allocation, never the caller's
+    /// own storage), so the value in the slot is dead here — from the first
+    /// backedge on — and this frame is its owner. The value is bound under the
+    /// parameter's own name while the shared release lane runs, so the arena
+    /// skip (String) and the `coll_destroy` availability gate (List) apply
+    /// unchanged instead of being re-derived here.
+    fn emit_tail_owned_slot_release(&mut self, out: &mut String, indent: &str) {
+        self.emit_tail_owned_releases(out, indent, false)
+    }
+
+    /// 2026-11-16 (M2 tail-loop owned destruction): the exit side of the same
+    /// release. When the base case returns a value of its own, the loop's last
+    /// slot value has no owner and must be freed here; when the base case hands
+    /// the slot value to the caller it must not be.
+    ///
+    /// `ret_reg` is the register being returned. A slot whose parameter binding
+    /// IS that register is being handed to the caller, so it is skipped — a
+    /// backend-side guard that holds even if the frontend's `exit_transfers`
+    /// verdict is wrong, which is the difference between a leak and a
+    /// use-after-free.
+    pub(super) fn emit_tail_owned_exit_release(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        ret_reg: &str,
+    ) {
+        let owned: Vec<crate::backend::llvm::context::TailOwnedSlot> = self
+            .fun
+            .tail_owned_slots
+            .iter()
+            .filter(|os| !os.exit_transfers)
+            .filter(|os| self.fun.let_bindings.get(&os.param).map(String::as_str) != Some(ret_reg))
+            .cloned()
+            .collect();
+        self.emit_tail_owned_releases_of(out, indent, owned, true)
+    }
+
+    /// Shared body of the backedge and exit owned-slot releases.
+    fn emit_tail_owned_releases(&mut self, out: &mut String, indent: &str, at_exit: bool) {
+        let owned: Vec<crate::backend::llvm::context::TailOwnedSlot> =
+            self.fun.tail_owned_slots.clone();
+        self.emit_tail_owned_releases_of(out, indent, owned, at_exit)
+    }
+
+    /// Destructor emission for one batch of owned slots; `at_exit` only decides
+    /// whether the `first` bit is cleared.
+    fn emit_tail_owned_releases_of(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        owned: Vec<crate::backend::llvm::context::TailOwnedSlot>,
+        at_exit: bool,
+    ) {
+        if owned.is_empty() {
+            return;
+        }
+        let param_tys = self
+            .fun
+            .tail_loop_fn
+            .clone()
+            .and_then(|n| self.ctx.defn_params.get(&n).cloned())
+            .unwrap_or_default();
+        for os in owned {
+            // A `first` bit exists only where the caller's value is not the
+            // loop's to free: skip both the free and, at the backedge, mark the
+            // slot transferred to the loop.
+            let skip = os.flag.as_ref().map(|flag| {
+                let first = self.fun.gen_reg();
+                writeln!(out, "{indent}{first} = load i1, ptr {flag}").ok();
+                if !at_exit {
+                    writeln!(out, "{indent}store i1 false, ptr {flag}").ok();
+                }
+                let frees = self.fun.next_reg_with_prefix("tore");
+                let keep = self.fun.next_reg_with_prefix("tokp");
+                writeln!(out, "{indent}br i1 {first}, label {keep}, label {frees}").ok();
+                // `next_reg_with_prefix` returns the `%name` form for
+                // references; a label DEFINITION carries no `%`.
+                writeln!(out, "{}:", frees.trim_start_matches('%')).ok();
+                keep
+            });
+            let raw = self.fun.gen_reg();
+            writeln!(out, "{indent}{raw} = load i64, ptr {}", os.slot).ok();
+            let ty = param_tys.get(os.index).cloned().unwrap_or_else(Type::int);
+            let native = if self.tail_loop_binding_is_i64(&ty) {
+                raw
+            } else {
+                self.adapt_from_i64(out, indent, &raw, &ty)
+            };
+            let saved = self.fun.let_bindings.insert(os.param.clone(), native);
+            super::emit_hir_stmt::emit_release_owned_statement(
+                self, out, os.storage, &os.param, indent,
+            );
+            match saved {
+                Some(binding) => {
+                    self.fun.let_bindings.insert(os.param.clone(), binding);
+                }
+                None => {
+                    self.fun.let_bindings.remove(&os.param);
+                }
+            }
+            if let Some(keep) = skip {
+                writeln!(out, "{indent}br label {keep}").ok();
+                writeln!(out, "{}:", keep.trim_start_matches('%')).ok();
+            }
+        }
     }
 
     /// 2026-10-27: enum/Result handles use target-width call ABI even when

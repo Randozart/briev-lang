@@ -3889,6 +3889,10 @@ impl LlvmBackend {
             )
         };
         self.ctx.tail_loop = tail_loop;
+        // 2026-11-16 (M2): owned loop-carried slots, from the owned-storage
+        // pass. Sorted BTreeMap; consumed by `tail_loop_enabled` and the
+        // backedge/exit release emission.
+        self.ctx.owned_tail_params = analysis.owned_tail_params.clone();
         self.ctx.tail_recursive = tail_plan
             .defns
             .iter()
@@ -6493,12 +6497,7 @@ impl LlvmBackend {
                     // identity), so it takes the reactor path with one tick per
                     // worker and the runtime's thread pool.
                     self.reject_bootstrap_off_ssa("threaded reactor loop");
-                    self.emit_threaded_dispatch(
-                        &mut out,
-                        &txns,
-                        &fusable,
-                        has_wake_triggers,
-                    );
+                    self.emit_threaded_dispatch(&mut out, &txns, &fusable, has_wake_triggers);
                 } else if !txns.is_empty()
                     && self.async_txn_names.is_empty()
                     && self.ctx.mmio_fields.is_empty()
@@ -10389,7 +10388,6 @@ fn build_hir_stmt_bodies(
         .collect()
 }
 
-
 /// GEP+load+inttoptr for an arena `%State` slot, returning the pointer register.
 ///
 /// 2026-11-16 (thread-lane E3): module-scope twin of the closure-based macro
@@ -10401,7 +10399,9 @@ macro_rules! arena_load_state_ptr {
         ::std::writeln!(
             $out,
             "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-            $indent, gep, $idx
+            $indent,
+            gep,
+            $idx
         )
         .ok();
         let vi = $self.fun.next_reg_with_prefix(concat!($pfx, "i"));
@@ -10419,7 +10419,9 @@ macro_rules! arena_store_state_ptr {
         ::std::writeln!(
             $out,
             "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
-            $indent, gep, $idx
+            $indent,
+            gep,
+            $idx
         )
         .ok();
         let pi = $self.fun.next_reg_with_prefix(concat!($pfx, "pi"));
@@ -10615,7 +10617,12 @@ impl crate::backend::llvm::LlvmBackend {
     fn emit_arena_reserve_base(&mut self, out: &mut String, indent: &str, total: u64) -> String {
         if self.ctx.is_embedded {
             let base = self.fun.next_reg_with_prefix("arpb");
-            writeln!(out, "{}{} = ptrtoint ptr @embedded_heap to i64", indent, base).ok();
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr @embedded_heap to i64",
+                indent, base
+            )
+            .ok();
             return base;
         }
         if self.arena_uses_brk() {
@@ -10660,7 +10667,13 @@ impl crate::backend::llvm::LlvmBackend {
     /// Carve the reservation into one triple per worker: `[base + w*size,
     /// base + (w+1)*size)`. Every later init is a rewind of the cursor to
     /// `base`.
-    fn emit_arena_slice_stores(&mut self, out: &mut String, indent: &str, reserved: &str, size: u64) {
+    fn emit_arena_slice_stores(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reserved: &str,
+        size: u64,
+    ) {
         let slots = self.arena_workers.clone();
         for (worker, slot) in slots.iter().enumerate() {
             let off = self.fun.next_reg_with_prefix("arwo");

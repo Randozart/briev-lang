@@ -14,13 +14,19 @@ the remaining work of `2026-11-14-post-reland-hygiene-soak-tailloop.md` (§B) an
 | M3 census 12 → 0 | **done** | `2026-11-16-owners-census-zero.md`; releases 65 → 73, drops 2200 → 2196 |
 | M4 deny-at-zero | **done** | `brievc memcheck --deny-memory-ambiguity` exits 0; wired into kiosk CI before the ratchet |
 | M5 drops ratchet | **done** | three counters/three directions; both new failure modes probe-tested |
-| M2 tail-loop | **measured + exposed, fix specified** | 1000→12.6 MB, 100k→4775.9 MB, 400k→23675.5 MB (quadratic). `memcheck` now reports the shape as undecided so it blocks deny-at-zero. Fix algorithm in BUGS.md 2026-11-16 (iteration-flag free before the backedge). |
+| M2 tail-loop | **done (2026-11-16)** | `benchmarks/results/2026-11-16-tailloop-owned-destruction.md` — landed as a frontend fact (`OwnedTailParam` / `AnalysisResults::owned_tail_params`) + per-target loop lowering; 4k/8k/16k/32k carried length → 12.6/12.8/12.8/13.0 MB flat (pre-fix 12.9/33.7/127.9 MB, quadratic). Gate: `daily_use_smoke::owned_tail_transfer_frees_at_every_backedge`. |
 
 **What M2 taught (record it so nobody "simplifies" it back):** freeing the
 slot value at the backedge also frees the CALLER's argument on iteration 1 —
-the slot is initialised from the caller's handle. The loop needs an `owned`
-flag: false at entry, true after the first backedge store; free the slot value
-only when it is true, and release the final value on the base path.
+the slot is initialised from the caller's handle. Two mechanisms are needed and
+both exist now: (a) a **transfer proof over EVERY call site in the program**
+(inline `fresh` allocation, a local the caller mentions exactly once, or a
+literal), which alone licenses freeing the first backedge; and (b) a per-slot
+`first` bit for the slots where the first value is a caller literal nothing
+owns. A fact is recorded ONLY when both the loop can be lowered AND every site
+passes the transfer proof — otherwise the leak stays in the census. Do not
+widen the transfer proof to make the census look better: the unsafe direction is
+a use-after-free in the caller, not a leak.
 
 **Mandatory first reads:** `AGENTS.md` (Rules 12/12b/20/25),
 `docs/plans/INDEX.md`, `docs/plans/2026-11-10-unified-program-capability-and-ceilings.md`
@@ -154,6 +160,26 @@ measurement, not hypothesis: with the leak fixed the curve is flat from call
   same-geometry correctness evidence (face count `0`, `error: None`).
 
 ### M2. Tail-loop-aware destruction (replaces the self-tail exclusion)
+
+**LANDED 2026-11-16.** Outcome: `OwnedTailParam` +
+`AnalysisResults::owned_tail_params` in `src/hir/owned_storage.rs`, consumed by
+`tail_loop_enabled` / `try_emit_tail_loop_backedge` / `emit_term_value_tail`.
+The release reuses the `ReleaseOwned` lane, so the arena skip and the
+`coll_destroy` gate apply unchanged. Evidence:
+`benchmarks/results/2026-11-16-tailloop-owned-destruction.md` (flat RSS across a
+16× carried-length range; pre-fix quadratic). The route below was superseded on
+two points, recorded so the next reader does not re-derive them:
+
+* The carrier plan (`RecursiveCarrierValue`) was NOT the vehicle. The fact is a
+  per-defn BTreeMap keyed by callable name, because it must also be readable by
+  the ownership pass itself (the census event and the fix must agree) and by the
+  gate extension, neither of which sees the carrier plan.
+* The first iteration's value is NOT "the caller's and never released here" as
+  a blanket rule. It is released whenever the call sites prove transfer; a
+  `free_first` bit covers the remaining case (a caller literal). "Never release
+  iteration 1" would have left one allocation per top-level call leaking.
+
+The original text follows.
 
 The self-tail exclusion is a real leak with a main-lane test documenting the
 intended behaviour (`tests/tier1/owned_tail_cleanup.bv`, comment: "ownership

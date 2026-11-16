@@ -155,6 +155,14 @@ pub struct AnalysisResults {
     /// classes. Analysis-only; backend lowering does not consume it yet. See
     /// docs/plans/2026-10-29-destination-ownership-reconciliation.md.
     pub destination_ownership: crate::analysis::destination_ownership::DestinationOwnershipPlan,
+    /// 2026-11-16 (M2 tail-loop owned destruction): for each defn the tail-loop
+    /// lowering runs on, the owned (String/List) parameter slots the loop must
+    /// destroy, plus whether the base case hands the final value to the caller.
+    /// Produced by the owned-storage pass (same detection that reports the
+    /// `self-tail argN` census event), consumed by the LLVM backend: it extends
+    /// `tail_loop_enabled` and emits the free-before-backedge / exit release.
+    /// Empty means no loop-carried owned storage on any lowered defn.
+    pub owned_tail_params: crate::hir::owned_storage::OwnedTailLoopPlan,
     /// 2026-09-13 (defn-liveness emission): the call-reachable defn/txn set.
     /// The backend emits ONLY these (plus keep_all when live code uses `.^^`
     /// reflection). Imports grant capability; liveness gates emission cost.
@@ -673,6 +681,7 @@ pub fn analyze_program(
     } else {
         crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe)
     };
+    let mut owned_tail_params = crate::hir::owned_storage::OwnedTailLoopPlan::new();
     // 2026-11-14 (A/B byte-identity, recommender): owned-storage releases are
     // statements (`ReleaseOwned`/`TempTransfer`) that the HIR statement walk
     // emits natively in BOTH modes; gating the insertion on HIR mode made the
@@ -681,7 +690,7 @@ pub fn analyze_program(
     // analysis result, not an emission choice: run it unconditionally.
     {
         let escapes = crate::analysis::allocation::summarize_escapes(items);
-        crate::hir::owned_storage::insert_releases(&mut hir, &escapes);
+        owned_tail_params = crate::hir::owned_storage::insert_releases(&mut hir, &escapes);
     }
     let mut destination_ownership = crate::analysis::destination_ownership::analyze(items);
     // D6: LoopShape.local_fields is the canonical Local proof and joins the
@@ -758,6 +767,7 @@ pub fn analyze_program(
         task_segments,
         boundary_ownership,
         destination_ownership,
+        owned_tail_params,
         electronics: {
             // 2026-11-12 (H5): HIR netlist is the default; the AST result is
             // the debug oracle while BRIEV_HIR_EMIT is on.

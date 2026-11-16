@@ -56,7 +56,7 @@ fn coll_destroy_available(backend: &LlvmBackend) -> bool {
 /// Native emission for a compiler-inserted storage release. Str reuses the
 /// strategy-aware destroy (arena no-ops honored); List calls the stdlib
 /// coll_destroy handle-destroy.
-fn emit_release_owned_statement(
+pub(crate) fn emit_release_owned_statement(
     backend: &mut LlvmBackend,
     out: &mut String,
     storage: crate::hir::stmt::StorageKind,
