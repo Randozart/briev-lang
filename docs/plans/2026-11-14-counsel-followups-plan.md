@@ -1,6 +1,29 @@
 # Counsel follow-ups plan (post-#102/#100)
 
-Status: PLAN. Three near-term follow-ups from the verify-bodies campaign:
+Status: **DONE**, plus a follow-on prover fix (PR #104).
+
+Outcome in one line: the `mantissa_val` unproven bucket is closed *at the
+prover*, not by weakening the contract. `--verify-bodies` on `.smoke/` went
+from 40 unproven to 0 with zero violations, and `proven` rose from 104 to 119.
+
+### Resolution log
+
+| Step | Result |
+|---|---|
+| Path A (strengthen pre alone) | Rejected on its own — the body still did not prove |
+| Path B (document the gap) | Superseded by the kernel below |
+| **Kernel (PR #104)** | Masked-offset interval + literal-shift folding; `mantissa_val` proves |
+
+The kernel is the honest fix: it teaches the prover a true fact
+(`(x & mask) + n ∈ [n, mask+n]`) instead of relaxing a postcondition. It is
+guarded by tests for all three outcomes (proved / refuted / undecided), and a
+60-file sweep reported zero violations.
+
+---
+
+## Historical record (as planned, 2026-11-15)
+
+Three near-term follow-ups from the verify-bodies campaign:
 1. Merge PR #102 (`feat/counsel-expand` — stdlib fixes + census script + CI).
 2. Triage the `mantissa_val` unproven diagnostic (the dominant unproven bucket).
 3. Run PR #100 (`feat/counsel-seed-v3` — 4 Rust advisory contracts) through review/merge.
