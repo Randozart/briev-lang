@@ -43,8 +43,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   TOTAL=$((TOTAL + 1))
   f="$line"
 
-  # Run brievc --verify-report (writes JSON to TMP_JSON)
-  "$BRIEVC" build "$f" --verify-report "$TMP_JSON" 2>/dev/null || true
+  # Run brievc --verify-report (writes JSON to TMP_JSON).
+  # --no-link skips the link step: it produces an identical report (verified on
+  # .smoke and lib/std files) and halves the wall time, which is what lets this
+  # census fit in CI.
+  "$BRIEVC" build "$f" --verify-report "$TMP_JSON" --no-link 2>/dev/null || true
 
   if [[ -f "$TMP_JSON" ]]; then
     f_proven=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('proven',[])))" 2>/dev/null || echo 0)
