@@ -209,6 +209,108 @@ accept it as advisory.
 
 ---
 
+## E. Execution plan (2026-11-16, approved)
+
+Four steps, each its own commit, each verified before the next. The first is a
+correctness fix in work already on `main`; the second closes the one open
+branch decision; the last two remove the arena restriction.
+
+### E1 — `emit_main`: the threaded arm wins (A1)
+
+**Change.** `src/backend/llvm/loop_engine/mod.rs`, `emit_main`:
+
+```rust
+let threaded = self.ctx.thread_plan.is_pinned();
+if threaded {
+    call void @briev_workers_release()
+    call void @reactor_tick(ptr %state)
+    call void @briev_workers_wait()
+} else if self.has_async_txns && !self.is_lightweight_async {
+    self.emit_async_phase(out, "%state");
+} else {
+    call void @reactor_tick(ptr %state)
+}
+```
+
+Why the threaded arm must come first: `emit_async_phase` runs the async bodies
+on the main thread and never touches the barrier pair, so a pinned program that
+takes that arm leaves every worker parked while main executes other bodies —
+worker N's tick never runs and its nodes never fire.
+
+**Fixture.** `tests/fixtures/thread_pin_async_guard.bv`: two pinned nodes whose
+preconditions are boolean state flags with no `bounded_pre` increment, which is
+exactly the shape `strategy.rs` refuses to call lightweight. Both `async`,
+disjoint state, one printing reporter (single observable sink). Assert the run
+prints the expected value — a deadlock or a missing tick fails the test by
+timeout/number.
+
+**Verify.** `cargo test --test thread_pin`; `scripts/gate.sh quick`.
+
+### E2 — `h5-phase-c4` decision (6 commits, 2026-11-13)
+
+**Method.** Temp branch from `main`, merge, `cargo build --lib`, then
+`scripts/gate.sh quick`. If green → land it with the usual commit message. If it
+conflicts substantively in HIR lowering (not just docs/INDEX) → close the branch
+with the conflict list recorded in this document, because a stale HIR rewrite is
+not something to reconcile blindly.
+
+### E3 — Part A: per-worker arenas, injected through the FieldMode pass (A2)
+
+The reverted attempt injected `__arena_ptr_w<N>` **after** `build_field_index`,
+and `ctx.field_types` is rebuilt by the FieldMode promotion arm
+(`FieldMode::Always | LazyCached` re-pushes `old_types`), which drops the new
+slots while `field_index_map` keeps them → emitted `%State` shorter than the
+indices referenced.
+
+**Change.** Emit the arena slot triple per worker in the same place the existing
+single-worker triple is emitted (inside `build_field_index`, before the
+promotion pass), tagged so the promotion arm carries them as `FieldMode::Always`
+rather than relying on the generic path. Concretely:
+
+1. `arena_workers: Vec<ArenaSlots>` on `LlvmBackend` + `current_worker: u32`,
+   `fn arena_slots() -> Option<ArenaSlots>` (falls back to the legacy triple).
+2. Injection: when `thread_plan.worker_count > 1`, push one triple per worker
+   with `field_types`/`field_briev_types` entries at injection time (the
+   existing single-worker code path stays byte-identical).
+3. `emit_arena_init` → rewind (`ptr = base`) when partitioned; `emit_arena_alloc`
+   → bump within the slice, `malloc` on overflow, never `brk`/`realloc`;
+   `emit_arena_fini` → no-op when partitioned.
+4. `emit_arena_reserve_partitioned` in `main` before the pool starts: one
+   `brk`/`malloc`/static region of `workers × arena_initial_size`, then one
+   triple store per worker.
+5. `emit_reactor_named(.., worker)` sets `current_worker` for the body and
+   restores it after.
+
+**Then retire the refusal:** delete the both-allocate row from
+`thread_plan.rs`, and turn
+`tests/compile_fail/thread_pin_alloc_shared_arena.bv` into
+`tests/fixtures/thread_pin_alloc.bv` (a positive fixture) asserting each
+worker's tick touches only its own slots and that neither emits `brk`.
+
+**Verify.** `%State` for a pinned allocating program lists `__arena_ptr_w0` and
+`__arena_ptr_w1`; both ticks write only their own; the linked program runs;
+**unpinned** corpus `.ll` stays byte-identical (`ll_determinism_check`).
+
+### E4 — cross-worker write-mask assertion (A3/D.2)
+
+After `build_write_masks`, in debug builds only: for every `%State` slot, the
+set of workers whose tick functions can write it must have size ≤ 1. Exemption
+list starts empty; a slot that needs one is itself a finding. This is the
+mechanical guard that makes "inject a slot and forget the partition" impossible
+to miss — the failure that produced A2.
+
+**Verify.** An intentional injected shared slot in a scratch build trips the
+assertion; the shipped tree passes the full gate.
+
+### Order and gates
+
+| Step | Gate before commit |
+|---|---|
+| E1 | `tests/thread_pin` + `scripts/gate.sh quick` |
+| E2 | build + `scripts/gate.sh quick` (on the temp branch) |
+| E3 | `tests/thread_pin`, `tests/thread_pin_alloc`, determinism corpus, quick gate |
+| E4 | quick gate; scratch-build assertion check |
+
 ## D. Suggested order once decisions are made
 
 1. Finish/abort the in-progress merge on `main` (see B1-era work — the merge of

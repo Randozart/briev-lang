@@ -178,3 +178,62 @@ fn pinned_program_runs_and_matches_the_unpinned_result() {
         "two workers incrementing disjoint counters 3 times each must print 3 + 3"
     );
 }
+
+// ── 2026-11-16 (thread-lane E1): the threaded arm must beat the async phase ──
+
+/// `emit_main` used to prefer the async-phase arm, which runs `@async_body_*`
+/// on the main thread and never touches the worker barriers. A pinned program
+/// taking that arm left every worker parked on `release` while its nodes
+/// silently never fired.
+///
+/// This fixture is deliberately NOT "lightweight" async
+/// (`src/backend/llvm/strategy.rs` grants that only to pure bodies with a
+/// non-constant `bounded_pre`), so before the fix it took the async-phase arm.
+#[test]
+fn pinned_non_lightweight_async_uses_the_threaded_arm() {
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("thread_pin_async");
+    let ll = emit_ir("thread_pin_async_guard.bv", &out);
+    let main = function_body(&ll, "define i32 @main(");
+
+    assert!(
+        main.contains("call void @briev_workers_release()")
+            && main.contains("call void @briev_workers_wait()"),
+        "main must bracket the tick with the worker barriers"
+    );
+    assert!(
+        !main.contains("call void @async_body_"),
+        "a pinned program must not take the async-phase arm — its bodies would \
+         run on the main thread while every worker waits at the barrier"
+    );
+
+    // And the pool really runs: worker 1's node prints and ends the program.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let binary = out.join("thread_pin_async_guard");
+    let link = Command::new("clang")
+        .args([
+            "-O2",
+            "-march=native",
+            &out.join("thread_pin_async_guard.ll").to_string_lossy(),
+            &root.join("lib/runtime/briev_rt.c").to_string_lossy(),
+            "-o",
+            &binary.to_string_lossy(),
+        ])
+        .output()
+        .expect("spawn clang");
+    assert!(
+        link.status.success(),
+        "link failed:\n{}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&binary).output().expect("run pinned async binary");
+    assert!(
+        run.status.success(),
+        "pinned async program failed: stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "42",
+        "worker 1's node must actually fire (a parked worker would print nothing)"
+    );
+}

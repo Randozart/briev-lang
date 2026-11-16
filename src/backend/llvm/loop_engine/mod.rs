@@ -292,21 +292,29 @@ impl LlvmBackend {
         // then waits for the others. The barriers provide every ordering the
         // tick needs, so no fences are emitted.
         let threaded = self.ctx.thread_plan.is_pinned();
-        // 2026-07-14: Use async phase for async programs
-        if self.has_async_txns && !self.is_lightweight_async {
-            self.emit_async_phase(out, "%state");
-        } else {
-            if threaded {
-                writeln!(out, "  call void @briev_workers_release()").ok();
-            }
+        // 2026-11-16 (thread-lane E1): the threaded arm is authoritative. The
+        // async-phase path runs its bodies on the main thread and never touches
+        // the worker barrier pair, so taking it in a pinned program would leave
+        // every worker parked on `release` while main executed other bodies —
+        // worker N's tick would never run and its nodes would never fire. Only
+        // an unpinned program may choose the async-phase shape.
+        if threaded {
+            writeln!(out, "  call void @briev_workers_release()").ok();
             writeln!(
                 out,
                 "  call void @reactor_tick(ptr noalias nocapture %state)"
             )
             .ok();
-            if threaded {
-                writeln!(out, "  call void @briev_workers_wait()").ok();
-            }
+            writeln!(out, "  call void @briev_workers_wait()").ok();
+        } else if self.has_async_txns && !self.is_lightweight_async {
+            // 2026-07-14: Use async phase for async programs
+            self.emit_async_phase(out, "%state");
+        } else {
+            writeln!(
+                out,
+                "  call void @reactor_tick(ptr noalias nocapture %state)"
+            )
+            .ok();
         }
         // 2026-07-18: Convergence exit logic.
         // - Wake triggers: check @llvm.wake.any(); exit if none pending.
