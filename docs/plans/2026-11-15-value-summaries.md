@@ -135,7 +135,8 @@ assumption that memory ops were the cheap win.
 
 ## 5. Verification plan (phase 1)
 
-Phase 1 splits into 1a (type gate, done) and 1b (SMT encoding, deferred):
+Phase 1 splits into 1a (type gate, done), 1b (SMT encoding, done), and 1c
+(Bool parameters, deferred):
 
 ### 5.1 Phase 1a — type-gate admission (DONE, commits `e9aeea8da`, `af24dbc27`)
 
@@ -152,23 +153,54 @@ Phase 1 splits into 1a (type gate, done) and 1b (SMT encoding, deferred):
    change; verified by stashing the Bool commit and re-running).
 4. Praetor on `briev-verify/src` and `src/analysis`: clean.
 
-### 5.2 Phase 1b — SMT encoding (DEFERRED)
+### 5.2 Phase 1b — SMT encoding (DONE, commit `edd80e024`)
 
-Declaring `term` as `Bool` rather than `(_ BitVec 64)` in the SMT query
-requires threading the defn's return type through the encoding pipeline,
-because `term` is used in both Int and Bool defns. Attempting it
-unconditionally breaks 7 tests (`mask_bound`, `structural_derivation`,
-`prover_api`) because Int postconditions compare `term` against BitVec
-values. The sound fix is to thread `OutputType` from `contract_target` into
-`verify_one` → `smt_discharge` → `build_vc_query` → `query_header`, so only
-Bool-defn queries declare `term` as `Bool`. This is a separate commit with
-its own before/after measurement.
+The return type is threaded from `contract_target` (which reads the declared
+`OutputType`) through `verify_supported` → `verify_one` → `smt_discharge` →
+`build_vc_query` → `query_header`. Bool-typed defns declare `term` as
+`Bool` in the SMT query; Int-typed defns keep `(_ BitVec 64)`.
 
-Expected payoff when 1b lands: the ~364 Bool-typed defns currently rejected
-at the SMT gate move to Proven/Violated/Unproven (real verdicts) — the
-largest single class of honest skips in the corpus after String.
+The pre/postcondition gate is term-sort aware: Bool defns use
+`supported_boolean_with_term_sort` (the SMT encoder with `term` declared
+Bool), word-model defns keep `supported_word_postcondition` (which
+special-cases `Field` expressions that the strict `expect` encoder rejects).
 
-## 6. Undo
+Measured before/after (full lib/std, 92 files):
+  Baseline (a754b25fd):     SKIPPED 14 690, UNPROVEN 187
+  Phase 1a (e9aeea8da):     SKIPPED 14 685, UNPROVEN 192
+  Phase 1b (edd80e024):     SKIPPED 14 685, UNPROVEN 101
 
-Reverting the phase-1a commits (`e9aeea8da`, `af24dbc27`) restores the gate;
-nothing else is touched. Phase 1b is not started.
+The 91 unproven reduction is because several Bool-typed defns that were
+"unsupported or ill-sorted" are now genuinely PROVED by the SMT solver.
+The remaining Bool defns that were "ill-sorted" are now either genuinely
+unprovable (pre-state `term` unbound — the solver correctly reports
+could-not-prove) or proven. No Bool defn is silently skipped.
+
+`cargo test -p briev-verify`: 50/50 pass.
+
+### 5.3 Phase 1c — Bool parameters (DEFERRED)
+
+Bool-typed *parameters* (e.g. `defn f(b: Bool)`) still fail the SMT gate:
+the encoder hard-codes every identifier as `BitVec 64`, and a Bool parameter
+compared against a Bool literal is ill-sorted. Fixing this requires
+threading parameter types (not just the return type) through the encoding
+pipeline. The corpus payoff is small (a handful of Bool-param defns), so
+this is deferred.
+
+## 6. Conformance sweep status (2026-11-15)
+
+The conformance sweep is failing with 387 sources — **pre-existing**, not
+caused by phase 1a/1b. The root cause is the `exponent_val`/`mantissa_val`
+precondition tightening in `4a24b3a21` (float_fmt.bv): the declared-edge
+call-site checker does not propagate callee postconditions and does not
+perform mask-bound reasoning, so every call site of `exponent_val` fails,
+cascading through `float_fmt.bv` to nearly every file that imports it.
+Documented in `BUGS.md`. The 2 `ascii_lower` failures in `http.bv`/`task_board`
+are the same class. Fix path: teach the call-site checker to propagate
+callee postconditions, or revert the preconditions.
+
+## 7. Undo
+
+Reverting the phase-1a commits (`e9aeea8da`, `af24dbc27`) and the phase-1b
+commit (`edd80e024`) restores the gate and the SMT pipeline; nothing else
+is touched. Phase 1c is not started.
