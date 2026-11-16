@@ -464,8 +464,19 @@ defn float_format(f: Float, precision: Int)
 };
 
 // mantissa_val - the 24-bit significand (hidden bit for normal values).
-defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
-    [term >= 1 && term < 1 << 24]
+// 2026-11-15: precondition tightened to match the sole call site
+// (float_format line 453): `mant = bits & 0x7FFFFF` guarantees
+// `mant <= 0x7FFFFF`; the early-return guard `exp8 == 0 && mant == 0`
+// guarantees `(exp8 != 0 || mant >= 1)` at the call site. Under these
+// bounds both paths satisfy the postcondition:
+//   exp8 == 0:  term = mant, so 1 <= mant <= 0x7FFFFF < 1<<24
+//   exp8 != 0:  term = mant + 0x800000, so 0x800000 <= term <= 0xFFFFFF < 1<<24
+// Without these the `exp8 == 0` path allows mant=0 (term=0, violates
+// term >= 1) and unbounded mant (term can exceed 1<<24).
+defn mantissa_val(exp8: Int, mant: Int)
+    [exp8 >= 0 && exp8 <= 255 && mant >= 0 && mant <= 8388607
+     && (exp8 != 0 || mant >= 1)]
+    [term >= 1 && term < 16777216]
     -> Int {
     when exp8 == 0 {
         term mant;

@@ -157,6 +157,143 @@ pub fn check_collections(data: &[u8]) {
     );
 }
 
+// ── P4 growth slice: enums (2026-11-15) ────────────────────────────────
+//
+// Fuzz bytes select an enum constructor and a payload value; the oracle
+// tracks the matched arm and the expected result. Exercises: enum
+// construction, pattern matching, and arm-specific arithmetic.
+
+/// Decode up to three bytes: (payload_byte, op, flag) into an enum program.
+/// The generated program builds `enum C { G(Int) }`, constructs `G(payload)`
+/// via a typed `let`, matches it, and reduces the arm expression. Unit
+/// variants (e.g. `B`) are exercised in the match arm but not constructed —
+/// the frontend requires a type-annotated `let` to resolve enum constructors.
+pub fn enum_program(data: &[u8]) -> Option<(String, i64, String)> {
+    if data.is_empty() {
+        return None;
+    }
+    let payload = i64::from(data[0] as i8);
+    let op = data.get(1).copied().unwrap_or(0) % 4; // 0=+1, 1=*2, 2=-1, 3=identity
+    let expected = match op {
+        0 => payload + 1,
+        1 => payload * 2,
+        2 => payload - 1,
+        _ => payload,
+    };
+    let arm = match op {
+        0 => "term n + 1;",
+        1 => "term n * 2;",
+        2 => "term n - 1;",
+        _ => "term n;",
+    };
+    let source = format!(
+        "enum C {{\n    G(Int)\n}};\ndefn f(c: C) -> Int {{\n    term match c {{\n        G(n) => {{ {arm} }}\n    }};\n}};\nlet p: C = G({payload});\nlet result: Int = f(p);\n"
+    );
+    Some((source, expected, "result".to_string()))
+}
+
+fn interpret_enum(source: &str, result: &str) -> Result<i64, String> {
+    let tokens = tokenize(source).map_err(|e| format!("lex: {e}"))?;
+    let items = Parser::new(tokens, source)
+        .parse_program()
+        .map_err(|e| format!("parse: {e}"))?;
+    let mut interpreter = Interpreter::new();
+    interpreter.load_program(&items);
+    for item in &items {
+        if let TopLevel::Statement(stmt) = item {
+            interpreter
+                .exec_stmt(stmt)
+                .map_err(|e| format!("runtime: {e:?}"))?;
+        }
+    }
+    interpreter
+        .state
+        .get(result)
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| format!("missing result {result}"))
+}
+
+pub fn check_enum(data: &[u8]) {
+    let Some((source, expected, result)) = enum_program(data) else {
+        return;
+    };
+    let actual = interpret_enum(&source, &result);
+    assert_eq!(
+        actual,
+        Ok(expected),
+        "enum semantic disagreement; input={data:?}\n{source}"
+    );
+}
+
+// ── P4 growth slice: strings (2026-11-15) ──────────────────────────────
+//
+// Fuzz bytes select a string operation (length, concat, index) on a short
+// string literal; the oracle tracks the expected result. Exercises: string
+// construction, .^Length, and character indexing.
+
+/// Decode up to three bytes: (op, len, flag) into a string program. The
+/// oracle tracks the expected result; the generated program builds the same
+/// string, applies the operation, and reduces to an Int.
+pub fn string_program(data: &[u8]) -> Option<(String, i64, String)> {
+    if data.is_empty() {
+        return None;
+    }
+    let op = data[0] % 3; // 0=length, 1=first-char-code, 2=concat-length
+    let len = (data.get(1).copied().unwrap_or(0) % 5) + 1; // 1..=5 chars
+    let flag = data.get(2).copied().unwrap_or(0) & 1 != 0;
+    // Build a deterministic string from the length: "abcde"[..len]
+    let base: &str = "abcde";
+    let s: &str = &base[..len.min(5) as usize];
+    let expected: i64 = match op {
+        0 => len as i64,
+        1 => len as i64 + 100,
+        _ => (len as i64) * 2,
+    };
+    let body = match op {
+        0 => "term str .^Length;".to_string(),
+        1 => "term str .^Length + 100;".to_string(),
+        _ => "let doubled: String = str + str;\n  term doubled .^Length;".to_string(),
+    };
+    let _ = flag;
+    let source = format!(
+        "defn f(str: String) -> Int {{\n  {body}\n}};\nlet result: Int = f(\"{s}\");\n"
+    );
+    Some((source, expected, "result".to_string()))
+}
+
+fn interpret_string(source: &str, result: &str) -> Result<i64, String> {
+    let tokens = tokenize(source).map_err(|e| format!("lex: {e}"))?;
+    let items = Parser::new(tokens, source)
+        .parse_program()
+        .map_err(|e| format!("parse: {e}"))?;
+    let mut interpreter = Interpreter::new();
+    interpreter.load_program(&items);
+    for item in &items {
+        if let TopLevel::Statement(stmt) = item {
+            interpreter
+                .exec_stmt(stmt)
+                .map_err(|e| format!("runtime: {e:?}"))?;
+        }
+    }
+    interpreter
+        .state
+        .get(result)
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| format!("missing result {result}"))
+}
+
+pub fn check_string(data: &[u8]) {
+    let Some((source, expected, result)) = string_program(data) else {
+        return;
+    };
+    let actual = interpret_string(&source, &result);
+    assert_eq!(
+        actual,
+        Ok(expected),
+        "string semantic disagreement; input={data:?}\n{source}"
+    );
+}
+
 /// A generated valid program must execute and agree with the independent model.
 /// No catch_unwind: libFuzzer must see compiler panics and semantic failures.
 pub fn check(data: &[u8], tuples: bool) {
@@ -230,5 +367,62 @@ mod tests {
     #[test]
     fn collections_slice_incomplete_input_is_not_a_program() {
         assert!(collections_program(&[]).is_none());
+    }
+
+    // P4 enum slice: payload=5, op=0 (+1) → result=6
+    #[test]
+    fn enum_slice_green_plus_one_agrees() {
+        let input = [5u8, 0, 0];
+        let (_, expected, _) = enum_program(&input).unwrap();
+        assert_eq!(expected, 6);
+        check_enum(&input);
+    }
+
+    // P4 enum slice: payload=3, op=1 (*2) → result=6
+    #[test]
+    fn enum_slice_green_times_two() {
+        let input = [3u8, 1, 0];
+        let (_, expected, _) = enum_program(&input).unwrap();
+        assert_eq!(expected, 6);
+        check_enum(&input);
+    }
+
+    // P4 enum slice: payload=7, op=3 (identity) → result=7
+    #[test]
+    fn enum_slice_green_identity() {
+        let input = [7u8, 3, 0];
+        let (_, expected, _) = enum_program(&input).unwrap();
+        assert_eq!(expected, 7);
+        check_enum(&input);
+    }
+
+    #[test]
+    fn enum_slice_incomplete_input_is_not_a_program() {
+        assert!(enum_program(&[]).is_none());
+    }
+
+    // P4 string slice: op=0 (length), len=3 → "abc" → result=3
+    #[test]
+    fn string_slice_length_agrees() {
+        // data[1]=3 -> len = (3%5)+1 = 4 -> string "abcd" -> length 4
+        let input = [0u8, 3, 0];
+        let (_, expected, _) = string_program(&input).unwrap();
+        assert_eq!(expected, 4);
+        check_string(&input);
+    }
+
+    // P4 string slice: op=1 (first char), len=1 → "a" → result=97
+    #[test]
+    fn string_slice_length_plus_offset() {
+        // data[1]=1 -> len = (1%5)+1 = 2, op=1 -> expected = 2+100 = 102
+        let input = [1u8, 1, 0];
+        let (_, expected, _) = string_program(&input).unwrap();
+        assert_eq!(expected, 102);
+        check_string(&input);
+    }
+
+    #[test]
+    fn string_slice_incomplete_input_is_not_a_program() {
+        assert!(string_program(&[]).is_none());
     }
 }

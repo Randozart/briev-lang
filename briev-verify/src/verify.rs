@@ -1023,6 +1023,12 @@ fn eval_post(post: &Expr, state: &SymbolicState, bounds: &HashMap<String, Bound>
                 combine_and(lv, rv)
             }
             BinaryOpKind::Or => {
+                // Tautology discharge (2026-11-15): `A == true || A == false`
+                // and `A == 0 || A != 0` are logic tautologies (x ∨ ¬x) —
+                // always true, provable structurally with zero SMT.
+                if is_tautology_or(l, r) {
+                    return ProofVerdict::Holds;
+                }
                 let lv = eval_post(l, state, bounds);
                 let rv = eval_post(r, state, bounds);
                 combine_or(lv, rv)
@@ -1036,6 +1042,70 @@ fn eval_post(post: &Expr, state: &SymbolicState, bounds: &HashMap<String, Bound>
         Expr::UnaryOp(UnaryOpKind::Not, inner) => not_verdict(eval_post(inner, state, bounds)),
         _ => ProofVerdict::Undecided,
     }
+}
+
+/// True if `l` and `r` are complementary tautology disjuncts (x ∨ ¬x):
+/// either `A == true || A == false` (Bool domain) or `A == 0 || A != 0`
+/// (zero/nonzero). Structural pattern match on the Expr AST — no semantic
+/// evaluation, so it works even when `A` is an unresolved identifier.
+fn is_tautology_or(l: &Expr, r: &Expr) -> bool {
+    if is_eq_to_true(l) && is_eq_to_false(r) {
+        return true;
+    }
+    if is_eq_to_false(l) && is_eq_to_true(r) {
+        return true;
+    }
+    if is_eq_to_zero(l) && is_neq_to_zero(r) {
+        return true;
+    }
+    if is_neq_to_zero(l) && is_eq_to_zero(r) {
+        return true;
+    }
+    false
+}
+
+/// `A == true` where A is a single identifier (the tautology's subject).
+fn is_eq_to_true(e: &Expr) -> bool {
+    match e {
+        Expr::BinaryOp(BinaryOpKind::Eq, subject, other) => {
+            is_identifier(subject) && matches!(other.as_ref(), Expr::Bool(true))
+        }
+        _ => false,
+    }
+}
+
+/// `A == false` where A is a single identifier.
+fn is_eq_to_false(e: &Expr) -> bool {
+    match e {
+        Expr::BinaryOp(BinaryOpKind::Eq, subject, other) => {
+            is_identifier(subject) && matches!(other.as_ref(), Expr::Bool(false))
+        }
+        _ => false,
+    }
+}
+
+/// `A == 0` where A is a single identifier.
+fn is_eq_to_zero(e: &Expr) -> bool {
+    match e {
+        Expr::BinaryOp(BinaryOpKind::Eq, subject, other) => {
+            is_identifier(subject) && matches!(other.as_ref(), Expr::Decimal(0))
+        }
+        _ => false,
+    }
+}
+
+/// `A != 0` where A is a single identifier.
+fn is_neq_to_zero(e: &Expr) -> bool {
+    match e {
+        Expr::BinaryOp(BinaryOpKind::Neq, subject, other) => {
+            is_identifier(subject) && matches!(other.as_ref(), Expr::Decimal(0))
+        }
+        _ => false,
+    }
+}
+
+fn is_identifier(e: &Expr) -> bool {
+    matches!(e, Expr::Identifier(_))
 }
 
 /// Kleene negation.

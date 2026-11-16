@@ -46,3 +46,15 @@ pub fn welltyped(data: &[u8]) {
 pub fn collections(data: &[u8]) {
     semantic::check_collections(data);
 }
+
+/// 2026-11-15 (P4 growth slice): fuzz enum construction + pattern matching.
+/// Exercises enum defn, `match` arms, and arm-specific arithmetic.
+pub fn enums(data: &[u8]) {
+    semantic::check_enum(data);
+}
+
+/// 2026-11-15 (P4 growth slice): fuzz string operations (length, indexing,
+/// concat). Exercises string construction, `.^Length`, and char indexing.
+pub fn strings(data: &[u8]) {
+    semantic::check_string(data);
+}
