@@ -391,8 +391,25 @@ pub fn verify_bodies_with_types(
         if !contract.explicit || trivially_true(&contract.post_condition) {
             continue;
         }
+        // Representation casts are erased before admission: they are identity on
+        // the word (spec 15.6), and leaving them in would refuse the body as "an
+        // unsupported expression". Conversions stay, so they keep being skipped.
+        let value_types = declared_value_types(item);
+        let normalized_body = normalize_representation_casts(body, &value_types);
+        let body: &[Statement] = &normalized_body;
         if let Some(reason) = crate::domain::unsupported_declaration(item, resolve, &globals) {
             report.skipped.push(format!("{name}: {reason}"));
+            continue;
+        }
+        // A handle-returning contract is a claim about text or length, not about
+        // a word. Say so as a skip: the model examined nothing to refute.
+        // No `mentions_ident` test: a handle postcondition reaches `term` through
+        // wrappers (`CharCount#(term)`), which that walker does not descend into —
+        // and every trivially-true post is filtered out above anyway.
+        if returns_opaque_handle(item) {
+            report.skipped.push(format!(
+                "{name}: a handle-returning contract is outside the word model (content and length are a separate gate)"
+            ));
             continue;
         }
         // A loop carrying an `invariant` annotation is proved by its three
@@ -511,6 +528,213 @@ fn contract_target(item: &TopLevel) -> Option<(&str, &crate::ast::Contract, &[St
         TopLevel::Export(e) => contract_target(e.inner.as_ref()),
         TopLevel::SyncGroup { item: inner, .. } => contract_target(inner.as_ref()),
         _ => None,
+    }
+}
+
+/// Declared types of an item's parameters and `let` bindings.
+///
+/// Representation casts are keyed on the *pair* of types, not on the target
+/// alone (`String as Int` is a parse, `(s as Data) as Int` is the address), so
+/// the cast normalizer needs the source type too — and the AST's `Cast` node
+/// carries only the target.
+fn declared_value_types(item: &TopLevel) -> HashMap<String, Type> {
+    let mut out = HashMap::new();
+    match item {
+        TopLevel::Definition(d) => {
+            for (name, ty) in &d.parameters {
+                out.insert(name.clone(), ty.clone());
+            }
+            collect_let_types(&d.body, &mut out);
+        }
+        TopLevel::Transaction(t) => {
+            for (name, ty) in &t.parameters {
+                out.insert(name.clone(), ty.clone());
+            }
+            collect_let_types(&t.body, &mut out);
+        }
+        TopLevel::Export(e) => out.extend(declared_value_types(e.inner.as_ref())),
+        TopLevel::SyncGroup { item: inner, .. } => out.extend(declared_value_types(inner.as_ref())),
+        _ => {}
+    }
+    out
+}
+
+/// Collect `let name: T = ...` declarations, descending into guard blocks.
+fn collect_let_types(body: &[Statement], out: &mut HashMap<String, Type>) {
+    for stmt in body {
+        match stmt {
+            Statement::Let {
+                name, ty, names, ..
+            } => {
+                if names.len() <= 1 {
+                    if let Some(declared) = ty {
+                        out.insert(name.clone(), declared.clone());
+                    }
+                }
+            }
+            Statement::Guarded(_, inner) => collect_let_types(inner, out),
+            _ => {}
+        }
+    }
+}
+
+/// A custom type's protocol name, for text-free comparisons below.
+fn protocol_name(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Custom(n) => Some(n.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether the declaration returns a `String`/`Data` handle.
+///
+/// A postcondition about a handle is a claim about text or length, which is a
+/// separate gate (phase 2a admits handles as opaque words, not their contents).
+/// Reporting such a declaration as *unproven* would be a category error: nothing
+/// was decided against it, so it is a skip with a reason.
+fn returns_opaque_handle(item: &TopLevel) -> bool {
+    let item = match item {
+        TopLevel::Export(e) => e.inner.as_ref(),
+        TopLevel::SyncGroup { item, .. } => item.as_ref(),
+        other => other,
+    };
+    let output = match item {
+        TopLevel::Definition(d) => d.output_type.as_ref(),
+        TopLevel::Transaction(t) => t.output_type.as_ref(),
+        _ => None,
+    };
+    matches!(
+        output,
+        Some(OutputType::Single(ty)) if matches!(protocol_name(ty), Some("String") | Some("Data"))
+    )
+}
+
+/// Whether `from as to` is a bit-preserving representation cast.
+///
+/// Deliberately pair-keyed. The emitter proves the distinction (2026-11-16):
+/// `(s as Data) as Int` lowers to ptrtoint/inttoptr/bitcast with no call, while
+/// `s as Int` inserts `str_to_int` and `n as String` inserts `int_to_str`. A
+/// size-based rule ("both are words") would wrongly fold the conversions into
+/// identities and turn skipped bodies into false proofs.
+fn is_representation_pair(from: &Type, to: &Type) -> bool {
+    matches!(
+        (protocol_name(from), protocol_name(to)),
+        (Some("String"), Some("Data"))
+            | (Some("Data"), Some("String"))
+            | (Some("Data"), Some("Int"))
+            | (Some("Int"), Some("Data"))
+    )
+}
+
+/// Rewrite representation casts out of a body, leaving every conversion and
+/// unmodelled cast in place so admission still refuses it.
+fn normalize_representation_casts(
+    body: &[Statement],
+    types: &HashMap<String, Type>,
+) -> Vec<Statement> {
+    body.iter()
+        .map(|stmt| normalize_stmt_casts(stmt, types))
+        .collect()
+}
+
+/// One statement's cast normalization, descending into guard blocks.
+fn normalize_stmt_casts(stmt: &Statement, types: &HashMap<String, Type>) -> Statement {
+    let e = |x: &Expr| normalize_expr_casts(x, types).0;
+    match stmt {
+        Statement::Assign(lhs, rhs) => Statement::Assign(lhs.clone(), e(rhs)),
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => Statement::Let {
+            name: name.clone(),
+            names: names.clone(),
+            ty: ty.clone(),
+            expr: expr.as_ref().map(|x| e(x)),
+            modifiers: modifiers.clone(),
+        },
+        Statement::Guarded(cond, inner) => Statement::Guarded(
+            e(cond),
+            normalize_representation_casts(inner, types),
+        ),
+        Statement::Term(Some(x)) => Statement::Term(Some(e(x))),
+        Statement::EndProgram(Some(x)) => Statement::EndProgram(Some(e(x))),
+        Statement::Tail(x) => Statement::Tail(e(x)),
+        Statement::Gate(c) => Statement::Gate(e(c)),
+        Statement::Check(c) => Statement::Check(e(c)),
+        Statement::Expression(x) => Statement::Expression(e(x)),
+        other => other.clone(),
+    }
+}
+
+/// Rewrite one expression's representation casts, carrying its effective type.
+///
+/// The type is threaded because erasure *changes* it: `s as Data` becomes `s`,
+/// but the result is a `Data`, not the `String` that `s` is declared as. Losing
+/// that distinction is how `(s as Data) as Int` looks like the `String as Int`
+/// *conversion* and gets refused instead of erased.
+fn normalize_expr_casts(expr: &Expr, types: &HashMap<String, Type>) -> (Expr, Option<Type>) {
+    match expr {
+        Expr::Cast(inner, target) => {
+            let (inner, inner_ty) = normalize_expr_casts(inner, types);
+            let identity = inner_ty
+                .as_ref()
+                .is_some_and(|from| is_representation_pair(from, target));
+            if identity {
+                (inner, Some(target.clone()))
+            } else {
+                (
+                    Expr::Cast(Box::new(inner), target.clone()),
+                    Some(target.clone()),
+                )
+            }
+        }
+        Expr::Identifier(name) => (expr.clone(), types.get(name).cloned()),
+        Expr::BinaryOp(kind, l, r) => {
+            let (l, _) = normalize_expr_casts(l, types);
+            let (r, _) = normalize_expr_casts(r, types);
+            (Expr::BinaryOp(*kind, Box::new(l), Box::new(r)), None)
+        }
+        Expr::UnaryOp(kind, inner) => {
+            let (inner, _) = normalize_expr_casts(inner, types);
+            (Expr::UnaryOp(*kind, Box::new(inner)), None)
+        }
+        Expr::Call(name, args, id) => (
+            Expr::Call(
+                name.clone(),
+                args.iter().map(|a| normalize_expr_casts(a, types).0).collect(),
+                *id,
+            ),
+            None,
+        ),
+        Expr::MethodCall(recv, name, args, id) => {
+            let (recv, _) = normalize_expr_casts(recv, types);
+            (
+                Expr::MethodCall(
+                    Box::new(recv),
+                    name.clone(),
+                    args.iter().map(|a| normalize_expr_casts(a, types).0).collect(),
+                    *id,
+                ),
+                None,
+            )
+        }
+        Expr::Field(base, f) => {
+            let (base, _) = normalize_expr_casts(base, types);
+            (Expr::Field(Box::new(base), f.clone()), None)
+        }
+        Expr::Index(base, idx) => {
+            let (base, _) = normalize_expr_casts(base, types);
+            let (idx, _) = normalize_expr_casts(idx, types);
+            (Expr::Index(Box::new(base), Box::new(idx)), None)
+        }
+        Expr::Consume(inner) => {
+            let (inner, _) = normalize_expr_casts(inner, types);
+            (Expr::Consume(Box::new(inner)), None)
+        }
+        other => (other.clone(), None),
     }
 }
 

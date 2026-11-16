@@ -17,14 +17,25 @@ pub enum ScalarModel {
     /// Boolean, `==`/`!=` on same-sort operands, `Not`) already handle it
     /// end-to-end; admitting it here is a gate fix, not a capability fix.
     Bool,
+    /// 2026-11-16 (plan 2026-11-16-verification-next-steps.md phase 2a): a
+    /// word-sized **handle** (a `String` or `Data` value) with no value
+    /// semantics. It may be passed through and reinterpreted by a
+    /// representation cast, never ordered, and never compared for content — so
+    /// admitting it cannot create a proof about text. Representation casts are
+    /// what make it useful: `(s as Data) as Int` is the handle's address, and
+    /// the `Load#` width model then bounds what is read through it.
+    OpaqueHandle,
     Unsupported,
 }
 
 impl ScalarModel {
-    /// The current arithmetic engine models exactly signed wrapping 64-bit
-    /// words, plus Bool as a distinct admitted sort.
+    /// The current arithmetic engine models signed wrapping 64-bit words, Bool
+    /// as a distinct sort, and opaque handles as words with no value semantics.
     pub fn admitted(self) -> bool {
-        matches!(self, Self::SignedWord { bits: 64 } | Self::Bool)
+        matches!(
+            self,
+            Self::SignedWord { bits: 64 } | Self::Bool | Self::OpaqueHandle
+        )
     }
 }
 
