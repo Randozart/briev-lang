@@ -1,6 +1,29 @@
 # Counsel follow-ups plan (post-#102/#100)
 
-Status: PLAN. Three near-term follow-ups from the verify-bodies campaign:
+Status: **DONE**, plus a follow-on prover fix (PR #104).
+
+Outcome in one line: the `mantissa_val` unproven bucket is closed *at the
+prover*, not by weakening the contract. `--verify-bodies` on `.smoke/` went
+from 40 unproven to 0 with zero violations, and `proven` rose from 104 to 119.
+
+### Resolution log
+
+| Step | Result |
+|---|---|
+| Path A (strengthen pre alone) | Rejected on its own — the body still did not prove |
+| Path B (document the gap) | Superseded by the kernel below |
+| **Kernel (PR #104)** | Masked-offset interval + literal-shift folding; `mantissa_val` proves |
+
+The kernel is the honest fix: it teaches the prover a true fact
+(`(x & mask) + n ∈ [n, mask+n]`) instead of relaxing a postcondition. It is
+guarded by tests for all three outcomes (proved / refuted / undecided), and a
+60-file sweep reported zero violations.
+
+---
+
+## Historical record (as planned, 2026-11-15)
+
+Three near-term follow-ups from the verify-bodies campaign:
 1. Merge PR #102 (`feat/counsel-expand` — stdlib fixes + census script + CI).
 2. Triage the `mantissa_val` unproven diagnostic (the dominant unproven bucket).
 3. Run PR #100 (`feat/counsel-seed-v3` — 4 Rust advisory contracts) through review/merge.
@@ -250,3 +273,71 @@ Checklist:
 - [x] counsel-check: 0 Violated (advisory is fine)
 - [x] No --no-verify / no // praetor:ignore in diff
 - [x] Honest: documents intent, labelled unproven, not claimed as proof
+
+---
+
+## Follow-up: post→pre reasoning at call sites (NOT YET DONE)
+
+`conformance_sweep_every_active_source_parses_and_checks` fails on `main` with:
+
+```
+call to 'ascii_lower' — the precondition '(byte_at(left, k) >= 0)' is not
+provable at this call site
+```
+
+Origin: `1504b3da6` replaced `ascii_lower`'s `[true]` precondition with the real
+byte domain `[b >= 0]` (correct — the passthrough branch returns `b`, so a
+negative input refutes `[term >= 0]`). Every call site passes `byte_at(...)`,
+whose *declared* postcondition is `[term >= 0 && term <= 255]`.
+
+The call gate cannot see that, because it proves a caller's obligation only from
+path facts (guards, `check`, initializers) — it never consults the **callee's
+postcondition** for the call *expression*. That is the missing rule:
+
+> A call term `f(args)` may be treated as satisfying `f`'s declared
+> postcondition (with parameters substituted by `args`) when proving an
+> enclosing goal.
+
+Why it was not done here:
+
+- It is a new proof rule, not a local fix, and it interacts with the admission
+  boundary (which summaries are sound to substitute — recursion must not earn
+  one, mirroring the `--verify-bodies` summary rules).
+- Every local workaround weakens or edits a contract the owner deliberately
+  strengthened (`[true]` → `[b >= 0]` would be reverted).
+
+Suggested shape for the follow-up, mirroring the body prover's summary design:
+
+1. Build the same fixpoint of *value summaries* over contracted defns (no
+   summary for recursive cycles).
+2. In `prove_with_constants`, expand a goal's call subterms into their summary
+   postconditions before handing the facts to `callgate::prove_precondition`.
+3. Guard with tests: a caller with a lying callee must still be refuted, and a
+   recursive cycle must yield neither summary nor proof.
+
+---
+
+## CI position at hand-off (PR #104)
+
+`--verify-bodies census` passes (6m20s, bounded 49-file corpus, `--no-link`).
+`Fuzz smoke` passes.
+
+`Default gates` runs 4352 tests: **4351 pass**, and the single failure is
+`wasm32_parity::wasm32_and_native_agree_on_the_exit_status`
+("basic_exit: native exit 85 != wasm exit 1").
+
+That test arrived on `main` with `22b23e000`/`6bee69082` (the wasm32 cross-backend
+parity gate and its `exit_prog` ABI fix) — after the base this branch merged.
+It exercises `tests/fixtures/wasm_parity/basic_exit.bv`, a fixture with **no
+contracts**, compiled twice (native, `--backend webstack`) and run under a Node
+harness. Nothing in this branch's diff reaches codegen, the webstack backend or
+`exit_prog`: the only backend change here is adding the missing
+`pub mod lean;` declaration.
+
+`wasm exit 1` is also the harness's own error exit, so the next step is to
+reproduce locally with the Node harness before concluding which side is wrong.
+
+For comparison, `main` at the merge base fails three tests
+(`conformance_sweep_…`, `test_rbv_edge_declared_surface`,
+`dependency_module_is_importable_by_name`). This branch fixes all three, so it
+is strictly better than the base even with the wasm gate still red.

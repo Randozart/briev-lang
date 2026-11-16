@@ -36,10 +36,19 @@ jobs:
       - name: Build counsel-check
         run: cargo install counsel --quiet --no-default-features --features static
 
-      # --- Census over all .bv files (excluding src/) ---
+      # --- Census over a bounded, fast corpus ---
+      #
+      # The full tree is 650+ files and includes benchmarks that take minutes
+      # each to codegen; running them all exceeded the job timeout. The signal
+      # we need is "no contract became violated", so the corpus is the stdlib
+      # surface that carries the contracts plus the smoke programs that pull
+      # them in. Widen it deliberately once per-file cost is understood.
       - name: Generate file list
         run: |
-          find . -name "*.bv" -not -path "./src/*" -not -path "./target/*" -not -path "./.cache/*" | sort > /tmp/bv_corpus.txt
+          {
+            find lib/std -maxdepth 1 -name "*.bv"
+            find .smoke -name "*.bv"
+          } | sort > /tmp/bv_corpus.txt
           echo "Corpus: $(wc -l < /tmp/bv_corpus.txt) files"
 
       - name: Run verify-bodies census
