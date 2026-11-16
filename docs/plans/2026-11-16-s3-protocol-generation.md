@@ -236,3 +236,30 @@ S3.1–S3.2 half a day; S3.3–S3.4 half a day; S3.5 an hour.
 3. **`--check` in CI now or later.** Recommendation: add it in S3.2 and wire it
    into CI in the same commit that first commits a generated file, so drift cannot
    start.
+
+### G4 blocked by F1 — reproduced on demand (2026-11-16)
+
+The parity gate says "byte-identical IR". Splitting `lib/glue/c.bv` to import the
+generated `protocols.bv` and diffing the emitted `.ll` for
+`tests/fixtures/cstr_str_to_c_meld.bv` shows:
+
+- **identical interned-string content set** (`SAME STRING SET` after normalising
+  `@str.N`),
+- **different numbering and declaration order**: `@str.2` changes from `"Prefetch"`
+  to `"true"`, 3471 differing lines.
+
+Same compiler binary, same source; only the *import graph* differs. That is the
+`F1` defect ("interned-string order varies per process") reproduced deterministically,
+with a two-file trigger.
+
+Two consequences:
+
+1. The G3 split is **semantically identical** (same string set, same code shapes)
+   and can land, but its correctness is argued, not byte-proved.
+2. `G4` as specified cannot pass until `F1` is fixed. The gate needs either
+   F1 first (preferred — it is a real bug, and a byte gate on non-reproducible
+   output is a coin flip) or a normalising comparison (strings sorted by content),
+   which would weaken the strongest acceptance test in the workstream.
+
+Decision recorded: **F1 before G4**, and the split lands meanwhile with this
+evidence attached.
