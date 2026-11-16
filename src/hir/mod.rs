@@ -85,7 +85,7 @@ pub use needs_state::{
 pub use ownership::{
     HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey, build_value_facts,
 };
-pub use program::{HirCallable, HirCallableKind, HirOutput, HirProgram};
+pub use program::{HirCallable, HirCallableKind, HirOutput, HirProgram, ThreadPin};
 pub use render::{render_callable, render_program};
 pub use sinks::{HirAggregateKind, HirSinkFacts, HirSinkKey, build_sink_facts};
 pub use stats::{UnsupportedCounts, unsupported_counts};

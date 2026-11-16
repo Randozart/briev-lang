@@ -21,7 +21,9 @@
 // surface are skipped silently (declared coverage, per the plan's soundness
 // boundary).
 
-use crate::ast::{Annotation, BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
+use crate::ast::{
+    Annotation, BinaryOpKind, Contract, Expr, OutputType, Statement, TopLevel, Type, UnaryOpKind,
+};
 use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic, simplify_binary};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -396,6 +398,13 @@ pub fn verify_bodies_with_types(
         // A loop carrying an `invariant` annotation is proved by its three
         // Hoare obligations, not as one straight-line body. Each obligation is
         // loop-free, so the ordinary path walk discharges it.
+        // 2026-11-15 (phase 1b): Bool-typed defns declare `term` as `Bool` in
+        // the SMT query. `term_is_bool` reads the declared return type once.
+        let term_sort = if term_is_bool(item) {
+            Some(crate::smt::encoding::Sort::Boolean)
+        } else {
+            None
+        };
         let obligations = loop_obligations(name, contract, body)
             .or_else(|| inferred_loop_obligations(name, contract, body))
             .or_else(|| convergent_obligations(item, name, contract, body));
@@ -407,6 +416,7 @@ pub fn verify_bodies_with_types(
                     (&pre, &post),
                     &obligation_body,
                     &sums,
+                    term_sort,
                 );
             }
             continue;
@@ -417,6 +427,7 @@ pub fn verify_bodies_with_types(
             (&contract.pre_condition, &contract.post_condition),
             body,
             &sums,
+            term_sort,
         );
     }
     // Emit Z3 escalation histogram when profiling is active.
@@ -435,6 +446,7 @@ fn verify_supported(
     contract: (&Expr, &Expr),
     body: &[Statement],
     sums: &HashMap<String, Summary>,
+    term_sort: Option<crate::smt::encoding::Sort>,
 ) {
     let reason = unsupported_reason(body, sums)
         .or_else(|| crate::domain::unsupported_expression(contract.0))
@@ -443,9 +455,34 @@ fn verify_supported(
         report.skipped.push(format!("{name}: {reason}"));
         return;
     }
-    if !crate::smt::supported_boolean(contract.0)
-        || !crate::smt::supported_word_postcondition(contract.1)
-    {
+    // 2026-11-15 (phase 1b): Bool-typed defns are gated with `supported_boolean`
+    // on the postcondition (the SMT query declares `term` as `Bool`, so
+    // `term == (n >= 10)` encodes as Bool == Bool). Int-typed defns keep the
+    // word-model gate. Both gates encode to the same SMT-LIB Boolean sort;
+    // the difference is only which operand sorts the encoder admits.
+    // 2026-11-15 (phase 1b): Bool-typed defns skip the gate entirely — the
+    // SMT encoding with `term_sort=Some(Boolean)` is the authoritative sort
+    // check (it encodes `term` as `Bool` and `==`/`!=`/`and`/`or`/`not` on
+    // Bool operands produce Boolean terms). The gate is only meaningful for
+    // word-model contracts, where it distinguishes BitVec encodings from
+    // unsupported syntax. Skipping it for Bool defns avoids a false reject
+    // when the standalone API (no type universe) cannot resolve Bool's
+    // protocol category, leaving the SMT encoder to decide.
+    // 2026-11-15 (phase 1b): the PRECONDITION is gated with the term-sort
+    // aware encoder (a Bool defn's `[pre]` may mention `term` as Bool);
+    // the POSTCONDITION keeps `supported_word_postcondition` for the word
+    // model — it special-cases `Field` expressions that the strict
+    // `expect` encoder rejects. For Bool defns the postcondition is gated
+    // with the term-sort aware encoder instead, since `term` is declared
+    // `Bool` and comparisons like `term == (x == 0)` encode as Bool == Bool.
+    let pre_ok = crate::smt::supported_boolean_with_term_sort(contract.0, term_sort);
+    let post_ok = match term_sort {
+        Some(crate::smt::encoding::Sort::Boolean) => {
+            crate::smt::supported_boolean_with_term_sort(contract.1, term_sort)
+        }
+        _ => crate::smt::supported_word_postcondition(contract.1),
+    };
+    if !pre_ok || !post_ok {
         report.unproven.push(format!(
             "{name}: unsupported or ill-sorted word-model contract"
         ));
@@ -458,7 +495,7 @@ fn verify_supported(
             .push(format!("{name}: a call could not be inlined"));
         return;
     };
-    match verify_one(contract.0, contract.1, &flattened) {
+    match verify_one_with_term_sort(contract.0, contract.1, &flattened, term_sort) {
         BodyOutcome::Proven => report.proven.push(name.to_string()),
         BodyOutcome::Unproven(why) => report.unproven.push(format!("{name}: {why}")),
         BodyOutcome::Violated(why) => report.violated.push(format!("{name}: {why}")),
@@ -475,6 +512,30 @@ fn contract_target(item: &TopLevel) -> Option<(&str, &crate::ast::Contract, &[St
         TopLevel::SyncGroup { item: inner, .. } => contract_target(inner.as_ref()),
         _ => None,
     }
+}
+
+/// Whether the item's declared return type is Bool, so the SMT query can
+/// declare `term` as `Bool` (2026-11-15 phase 1b).
+///
+/// Only `-> Bool` admits the Bool sort. Structured results (tuples,
+/// unions, arrays) have no single `term` projection, and Int is the word
+/// model. Returning false for everything else keeps Int defns on the
+/// `(_ BitVec 64)` path they have always used.
+fn term_is_bool(item: &TopLevel) -> bool {
+    let item = match item {
+        TopLevel::Export(e) => e.inner.as_ref(),
+        TopLevel::SyncGroup { item, .. } => item.as_ref(),
+        other => other,
+    };
+    let output = match item {
+        TopLevel::Definition(d) => d.output_type.as_ref(),
+        TopLevel::Transaction(t) => t.output_type.as_ref(),
+        _ => None,
+    };
+    matches!(
+        output,
+        Some(OutputType::Single(Type::Custom(name))) if name == "Bool"
+    )
 }
 
 /// Whether an expression is the literal `true` (nothing to prove).
@@ -514,6 +575,19 @@ fn pin_points(state: &mut SymbolicState, fact: &Expr) {
 }
 
 fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
+    verify_one_with_term_sort(pre, post, body, None)
+}
+
+/// 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1b): verify with an
+/// explicit sort for `term`. Bool-typed defns pass `Some(Sort::Boolean)` so
+/// the SMT query declares `term` as `Bool` and postconditions like
+/// `term == (x > 5)` are well-sorted. Int-typed defns pass `None`.
+fn verify_one_with_term_sort(
+    pre: &Expr,
+    post: &Expr,
+    body: &[Statement],
+    term_sort: Option<crate::smt::encoding::Sort>,
+) -> BodyOutcome {
     let mut initial = SymbolicState::new(pre);
     pin_points(&mut initial, pre);
     let mut terminated = Vec::new();
@@ -538,7 +612,7 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
                 // C4: escalate an inconclusive symbolic verdict to the solver
                 // before reporting "could not prove". Only a real `Sat` becomes
                 // a violation; every other answer stays honest and undecided.
-                let smt_result = smt_discharge(post, state);
+                let smt_result = smt_discharge(post, state, term_sort);
                 z3_profile_record!(post, smt_result);
                 match smt_result {
                     Some(ProofVerdict::Violated) => {
@@ -636,7 +710,11 @@ fn path_feasible(state: &SymbolicState) -> Option<bool> {
 /// when no solver is installed, when the goal falls outside the encodable
 /// subset, or when the path's state cannot be substituted unambiguously (a
 /// prior-state `@x` reference or an unknown value).
-fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
+fn smt_discharge(
+    post: &Expr,
+    state: &SymbolicState,
+    term_sort: Option<crate::smt::encoding::Sort>,
+) -> Option<ProofVerdict> {
     if !crate::smt::is_z3_available() {
         return None;
     }
@@ -675,7 +753,7 @@ fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
         eprintln!("[vc] facts={facts:?}");
         eprintln!("[vc] goal={goal:?}");
     }
-    let query = crate::smt::build_vc_query(&facts, &goal);
+    let query = crate::smt::build_vc_query_with_term_sort(&facts, &goal, term_sort);
     if std::env::var_os("BRIEV_DIAG_VC").is_some() {
         eprintln!("[vc] query=\n{query}");
     }

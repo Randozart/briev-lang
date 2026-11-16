@@ -8,7 +8,7 @@
 // (no cross-compilation persistence) and is invalidated when the Z3 binary
 // changes. See docs/plans/2026-11-14-proof-result-caching.md.
 
-mod encoding;
+pub(crate) mod encoding;
 mod symbols;
 
 use crate::ast::{Expr, Type};
@@ -290,11 +290,25 @@ fn encoding_diagnostic() -> String {
 }
 
 fn query_header(names: &std::collections::BTreeSet<String>) -> String {
+    query_header_with_term_sort(names, None)
+}
+
+/// Query header with an explicit sort for `term` (2026-11-15 phase 1b).
+fn query_header_with_term_sort(
+    names: &std::collections::BTreeSet<String>,
+    term_sort: Option<encoding::Sort>,
+) -> String {
     let mut query = "(set-option :produce-models true)\n(set-logic QF_BV)\n".to_string();
     let symbols: std::collections::BTreeSet<_> =
         names.iter().map(|name| sanitize_name(name)).collect();
+    let term_sym = symbols::encode("term");
     for symbol in symbols {
-        query.push_str(&format!("(declare-const {symbol} (_ BitVec 64))\n"));
+        let sort = if symbol == term_sym && term_sort == Some(encoding::Sort::Boolean) {
+            "Bool"
+        } else {
+            "(_ BitVec 64)"
+        };
+        query.push_str(&format!("(declare-const {symbol} {sort})\n"));
     }
     query
 }
@@ -345,6 +359,25 @@ pub fn build_contract_query(expr: &Expr, params: &[(String, Type)]) -> String {
 /// exactly the universal quantification weakest-precondition reasoning needs, so
 /// callers need no parameter list to use it correctly.
 pub fn build_vc_query(facts: &[Expr], post: &Expr) -> String {
+    build_vc_query_with_term_sort(facts, post, None)
+}
+
+/// Build a verification-condition query with an explicit sort for `term`.
+///
+/// 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1b): Bool-typed
+/// defns declare `term` as SMT-LIB `Bool` rather than `(_ BitVec 64)`, so
+/// postconditions like `term == (x > 5)` are well-sorted (Bool == Bool).
+/// Int-typed defns (or `None`) keep the word model.
+///
+/// `term_sort` is `Some(encoding::Sort::Boolean)` for Bool defns and
+/// `None` (or `Some(Word)`) for everything else. The flag is threaded
+/// through the encoding so `Expr::Identifier("term")` gets the right sort
+/// in the query, and `binary_sort` sees matching sorts on both sides.
+pub fn build_vc_query_with_term_sort(
+    facts: &[Expr],
+    post: &Expr,
+    term_sort: Option<encoding::Sort>,
+) -> String {
     // Sorted so the emitted query is byte-identical across processes.
     let mut free = std::collections::BTreeSet::new();
     for fact in facts {
@@ -352,17 +385,18 @@ pub fn build_vc_query(facts: &[Expr], post: &Expr) -> String {
     }
     collect_free_idents(post, &mut free);
 
-    let Some(goal) = encoding::expect(post, encoding::Sort::Boolean) else {
+    let Some(goal) = encoding::expect_with_term_sort(post, encoding::Sort::Boolean, term_sort)
+    else {
         return encoding_diagnostic();
     };
     let Some(encoded_facts): Option<Vec<String>> = facts
         .iter()
-        .map(|fact| encoding::expect(fact, encoding::Sort::Boolean))
+        .map(|fact| encoding::expect_with_term_sort(fact, encoding::Sort::Boolean, term_sort))
         .collect()
     else {
         return encoding_diagnostic();
     };
-    let mut q = query_header(&free);
+    let mut q = query_header_with_term_sort(&free, term_sort);
 
     // Assumptions first, then the negated goal.
     for fact in encoded_facts {
@@ -410,7 +444,18 @@ pub fn try_encode_word_for_proof(expr: &Expr) -> Option<String> {
 }
 
 pub(crate) fn supported_boolean(expr: &Expr) -> bool {
-    encoding::expect(expr, encoding::Sort::Boolean).is_some()
+    supported_boolean_with_term_sort(expr, None)
+}
+
+/// 2026-11-15 (phase 1b): `supported_boolean` with an explicit sort for
+/// `term`. Bool-typed defns pass `Some(Sort::Boolean)` so postconditions
+/// like `term == (x == 0)` encode as Bool == Bool. Int-typed defns pass
+/// `None` (the word model).
+pub(crate) fn supported_boolean_with_term_sort(
+    expr: &Expr,
+    term_sort: Option<encoding::Sort>,
+) -> bool {
+    encoding::expect_with_term_sort(expr, encoding::Sort::Boolean, term_sort).is_some()
 }
 
 /// Fast word-model postconditions may contain directly tracked fields; this

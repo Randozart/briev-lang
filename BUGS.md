@@ -13838,3 +13838,31 @@ recorded on a different target is not yet established.
 **Next step:** determine which side is correct — run the corresponding C
 reference for the same shapes and compare, then either fix the presenter or
 regenerate the two goldens with a note in the results file.
+
+## 2026-11-15: Conformance sweep 387-failure cascade (exponent_val/mantissa_val precondition tightening)
+
+**Root cause**: `4a24b3a21` tightened `exponent_val` and `mantissa_val` preconditions
+in `lib/std/float_fmt.bv` to require `exp8 >= 0 && exp8 <= 254` and
+`mant <= 0x7FFFFF`. The declared-edge call-site checker (`src/proof_engine/callgate.rs`)
+does NOT propagate callee postconditions into the caller's fact set, and does NOT
+perform mask-bound reasoning. So every call site of `exponent_val`/`mantissa_val`
+fails the precondition check, cascading through `float_fmt.bv` to nearly every file
+that imports it (387 sources).
+
+**The `mantissa_val`/`exponent_val` precondition tightenings were reverted in
+`6bee69082`** — but the `exponent_val` tightening in `float_fmt.bv` itself was NOT
+reverted (only the `mantissa_val` tightening was). This is the active cause.
+
+**Fix path**: Either (a) revert the `exponent_val` precondition to `[true]` (losing
+the body-proof benefit), or (b) teach the declared-edge checker to propagate
+callee postconditions (a significant change to `callgate.rs`), or (c) add explicit
+`check` statements at every call site of `exponent_val`/`mantissa_val` (tedious,
+fragile).
+
+**Status**: OPEN. The conformance sweep has been failing since `4a24b3a21`.
+The 2 `ascii_lower` failures in `http.bv`/`task_board/main.bv` are the same class:
+`byte_at`'s postcondition `[term >= 0 && term <= 255]` is not propagated to the
+call-site checker, so `ascii_lower`'s `[b >= 0]` precondition is unprovable.
+
+**A/B evidence**: Stashing all my changes (Bool admission, SMT encoding,
+http.bv) still produces the 387 failures. The cascade is pre-existing.

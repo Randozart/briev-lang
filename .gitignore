@@ -397,3 +397,54 @@ benchmarks/parity/_out/
 
 # Out-of-tree CARGO_TARGET_DIR. Build output must never be committed.
 .phase-c-target/
+
+# ============================================
+# TREE SWEEP (2026-11-16): regenerate-here artifacts polluting git status
+# ============================================
+# Only regenerate-here artifacts below; real sources/results stay tracked
+# (negations re-include exactly the hand-written extensions present today —
+# a NEW fixture type under these dirs must be re-included here too).
+.officina/
+.pi/
+
+# Compiled Briev test binaries (brievc test drops an extension-less ELF next
+# to each .bv fixture; tests/tier1 tracks only .bv + .golden today).
+tests/tier1/*
+!tests/tier1/*.bv
+!tests/tier1/*.golden
+
+# Compiled saltpetre library probes (lib/saltpetre/*.bv builds in place).
+lib/saltpetre/*
+!lib/saltpetre/*.bv
+
+# Compiled example binaries (extension-less ELF next to their sources).
+examples/apps/task_board/backend/main
+examples/async-events-compiled
+examples/async-ready-gate
+examples/async-tasks
+examples/cli-args
+examples/contract_verification
+examples/eor-demo
+examples/fizzbuzz
+examples/globtest/glib
+examples/glue-host/bench
+examples/glue-host/boundary
+examples/glue-host/callback
+examples/glue-host/cancel
+examples/glue-host/node_bridge
+examples/glue-host/rank
+examples/glue-python-bridge/bridge
+examples/glue-rust-bridge/bridge
+examples/gpu/resident_test
+examples/hello-world/src/main
+examples/hello/main
+examples/layout-ptr-demo
+examples/mask_select
+examples/net-bytes-sink
+
+# Generated RBV HTML outputs (every examples/*.html today is an rbv build
+# product; no hand-written .html is tracked under examples/).
+examples/apps/task_board/frontend/task_board.html
+examples/counter.html
+examples/multi_page_a.html
+examples/multi_page_b.html
