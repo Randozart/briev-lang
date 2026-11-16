@@ -752,3 +752,31 @@ carry host-FFI type names (`ctypes.c_int64`, `jlong`, `IntPtr`), not a machine
 ABI — declaring a core for them would assert something false. Deriving `c_abi`
 defaults from the core (§4.1's "no restatement") therefore waits for S3, where
 the generator knows which side of the boundary a type sits on.
+
+### S3 prerequisite found (2026-11-16) — the .dbvl parser nests two levels
+
+Trying to state the C adapter's boundary value classes in the descriptor failed:
+
+```
+values: { "String": { class: "borrowed_bytes"; to: { op: "str_to_c" }; … } };
+```
+
+→ `Expected named field at position 825`. The quoted-mode `.dbv` parser handles
+**two** levels (`values: { "String": { … } }`, exactly like
+`protocols: { "String": { native; c_abi } }`); `values.<Class>.to` is a third and
+is rejected. Bare identifiers are also not valid values (they must be quoted), so
+the first attempt failed twice for two different reasons.
+
+Two ways forward, to pick in S3 rather than here:
+
+1. **Flatten the schema** (recommended): `values: { "String": { class;
+   zero_copy; to_op; from_op; from_copy; len_op } }` — two levels, no parser
+   change, and the field names say "op" so the value is obviously an operation
+   name rather than a nested record. The `values.<Class>.to` shape in §4.3 and in
+   `glue-ffi.md` is documentation-only today, so flattening costs nothing.
+2. Extend the quoted-mode parser to arbitrary nesting — a change to a parser
+   every config file shares, for one consumer's convenience.
+
+Until this is decided the descriptor carries `version`, `abi`, and the existing
+sections only; the `values`/`discipline`/`errors`/`supports` keys are *accepted and
+validated when flat*, but no shipped adapter uses them yet.

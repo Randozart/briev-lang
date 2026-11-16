@@ -272,7 +272,7 @@ sections from `docs/plans/2026-11-16-ffi-contract-and-metaprogramming.md`:
 
 | Section | Meaning |
 |---|---|
-| `values: { <Class>: { class; zero_copy; layout; len; to{op,copy}; from{op,copy}; retain_op; release_op; kind } }` | how a Briev type maps onto a boundary value class |
+| `values: { <Class>: { class; zero_copy; layout; len; retain_op; release_op; kind } }` | how a Briev type maps onto a boundary value class (the conversion ops live as flat `to_op`/`from_op` fields — the `.dbv` parser nests two levels, and `values.<Class>.to` would be a third) |
 | `frees: { <class>: caller\|callee }` | the language's ownership *convention* (a specific call's ownership is declared per function, not here) |
 | `discipline: { blocking; reentrant; needs_main_thread }` | what the reactor and thread gate need to know about a call |
 | `errors: { class; success }` | errno / status / sentinel convention |
