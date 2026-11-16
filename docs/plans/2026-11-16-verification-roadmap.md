@@ -208,6 +208,22 @@ back — verify), and `violated == 0` on the corpus at the tagged commit.
 Each phase is its own PR with a before/after corpus table, because "proven went
 up" is only meaningful next to "violated stayed 0".
 
+### Gate amendment after phase B (measured 2026-11-16)
+
+"`unproven` must not grow" was too strict, and phase B showed why. An unproven
+verdict means *examined, could not decide* — so widening the model legitimately
+turns some skips into unproven ones. The rule is now:
+
+1. `violated` stays **0** (a false proof is the only hard failure);
+2. every new unproven is **inspected and named** in the PR — it must be a genuine
+   "needs a theory we do not have", not a gate disagreement (the 2b encoder bug
+   was exactly that, and this is how it was caught);
+3. `proven` must rise by substantially more than `unproven` grows.
+
+Phase B: `proven` +997, `unproven` +5, and the five are two distinct defns
+(`is_alpha_loop`, `is_numeric_loop`, both `i == s.^Length`) plus three
+pre-existing lines.
+
 ## 10. What this plan deliberately does not do
 
 - **`Store#`/`SysCall#`/`Asm#`/`Argc#` summaries** — soundly impossible; the

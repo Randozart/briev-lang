@@ -1243,3 +1243,99 @@ mod handle_contract_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod contract_atom_tests {
+    use super::*;
+
+    /// Parse a whole program through the real frontend.
+    fn parse_all(src: &str) -> Vec<TopLevel> {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items
+    }
+
+    /// A caller proves from the callee's **declared** bound, even though the
+    /// callee's body could never earn a value summary (it reads memory).
+    #[test]
+    fn caller_proves_from_declared_bound() {
+        let items = parse_all(
+            "defn raw(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {\n\
+                 term Load#((s as Data) as Int + i, 1);\n\
+             };\n\
+             defn use_raw(s: String, i: Int) [true][term >= 0] -> Int {\n\
+                 term raw(s, i);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.proven.iter().any(|n| n == "use_raw"),
+            "the caller must prove from the declared bound: proven={:?} skipped={:?}",
+            report.proven,
+            report.skipped
+        );
+    }
+
+    /// A **value-relational** contract is not substituted: it would replace a call
+    /// with an atom that says nothing about the value, turning a skip into an
+    /// unproven verdict without widening the proof.
+    #[test]
+    fn value_relational_contract_is_not_substituted() {
+        let items = parse_all(
+            // Guarded body: no value summary is possible, and the contract is a
+            // value relation (`term == a`) rather than a literal bound.
+            "defn pick(a: Int) [a >= 0][term == a] -> Int {\n\
+                 when a > 0 { term a; };\n\
+                 term 0;\n\
+             };\n\
+             defn caller(a: Int) [a >= 0][term >= 0] -> Int {\n\
+                 term pick(a);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.skipped.iter().any(|l| l.contains("caller")),
+            "a value-relational callee must leave the body skipped: {:?}",
+            report.skipped
+        );
+    }
+
+    /// Two calls to the same callee get **distinct** atoms, so `f(x) - f(x)` never
+    /// folds to zero across a possible memory change.
+    #[test]
+    fn two_calls_to_one_callee_do_not_collapse() {
+        let items = parse_all(
+            "defn raw(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {\n\
+                 term Load#((s as Data) as Int + i, 1);\n\
+             };\n\
+             defn same(s: String) [true][term == 0] -> Int {\n\
+                 term raw(s, 0) - raw(s, 0);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            !report.proven.iter().any(|n| n == "same"),
+            "two calls must not be treated as one value: {:?}",
+            report.proven
+        );
+    }
+
+    /// A self-recursive contract contributes nothing: using it would be the guess
+    /// this prover exists to avoid.
+    #[test]
+    fn self_recursive_contract_contributes_nothing() {
+        let items = parse_all(
+            "defn spin(n: Int) [n >= 0][term == 999] -> Int {\n\
+                 term spin(n);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            report.proven.is_empty(),
+            "a self-referential contract must never prove itself: {:?}",
+            report.proven
+        );
+    }
+}
