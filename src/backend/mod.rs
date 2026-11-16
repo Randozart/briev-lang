@@ -697,9 +697,16 @@ pub fn analyze_program(
         optimize_mode: optimize,
         transition_graph,
         // 2026-11-15 (thread-assignment plan): the `on thread <N>` plan. The
-        // gate's errors are raised by the caller (compile.rs) before emission;
-        // here only the plan itself is needed.
-        thread_plan: crate::analysis::thread_plan::run_thread_gate(items).plan,
+        // refusal gate lives in compile.rs (which owns the interprocedural
+        // effect summary); here only the assignment map is needed, so the
+        // resource map is empty and any errors it would raise are the gate's
+        // job, not this call's. compile.rs overwrites this field with the
+        // gate-validated plan.
+        thread_plan: crate::analysis::thread_plan::run_thread_gate(
+            items,
+            &crate::analysis::resource_effects::ResourceMap::default(),
+        )
+        .plan,
         // 2026-11-05 (H5 inventory port 1): web commit writes from typed
         // HIR under the flag; debug builds assert exact AST equality.
         web_commit_writes: if hir_emit_enabled() {

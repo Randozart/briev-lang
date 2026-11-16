@@ -21,10 +21,10 @@
 //! worker may read a field another worker writes. Anything less is a data race,
 //! which this language refuses rather than tolerates.
 
+use crate::analysis::resource_effects::{ResourceEffects, ResourceMap};
 use crate::ast::{Annotation, Expr, TopLevel};
-use crate::backend::{collect_assigned_identifiers, collect_read_identifiers};
 use crate::proof_engine::check_satisfiable;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// The most workers a single program may pin. Keeps the emission bounded (a
 /// per-worker reactor function and a runtime thread per worker) and far above
@@ -108,21 +108,26 @@ pub struct ThreadGate {
 /// One reactive callable carrying a pin.
 struct PinnedNode<'a> {
     name: &'a str,
-    body: &'a [crate::ast::Statement],
     pre: &'a Expr,
     is_async: bool,
     pin: u32,
 }
 
 /// Run the thread gate over a program. Returns the plan and its diagnostics.
-pub fn run_thread_gate(items: &[TopLevel]) -> ThreadGate {
+///
+/// `resources` is the interprocedural effect summary
+/// (`analysis::resource_effects`): the gate reasons about what a node does
+/// *through its callees*, not just what its own body spells out. Without it a
+/// node that prints via a helper would look independent of another printing
+/// node, because `stdout_fill` lives inside the stdlib print lane.
+pub fn run_thread_gate(items: &[TopLevel], resources: &ResourceMap) -> ThreadGate {
     let mut gate = ThreadGate::default();
     let mut pinned: Vec<PinnedNode<'_>> = Vec::new();
     let mut any_declared: Vec<String> = Vec::new();
     for item in items {
         collect_item(item, &mut pinned, &mut any_declared, &mut gate);
     }
-    finish_plan(&mut gate, pinned, any_declared);
+    finish_plan(&mut gate, pinned, any_declared, resources);
     gate
 }
 
@@ -180,7 +185,6 @@ fn record_pin<'a>(
     }
     pinned.push(PinnedNode {
         name: &t.name,
-        body: &t.body,
         pre: &t.contract.pre_condition,
         is_async: t.is_async,
         pin,
@@ -206,7 +210,12 @@ fn read_pin(modifiers: &[Annotation]) -> Option<ThreadPin> {
 
 /// Build the plan from the collected pins and run the cross-worker soundness
 /// checks plus the advisory sweeps.
-fn finish_plan(gate: &mut ThreadGate, pinned: Vec<PinnedNode<'_>>, any_declared: Vec<String>) {
+fn finish_plan(
+    gate: &mut ThreadGate,
+    pinned: Vec<PinnedNode<'_>>,
+    any_declared: Vec<String>,
+    resources: &ResourceMap,
+) {
     let mut worker_count = 0;
     for node in &pinned {
         gate.plan
@@ -224,7 +233,7 @@ fn finish_plan(gate: &mut ThreadGate, pinned: Vec<PinnedNode<'_>>, any_declared:
     for names in gate.plan.workers.values_mut() {
         names.sort();
     }
-    check_cross_worker(gate, &pinned);
+    check_cross_worker(gate, &pinned, resources);
     advise_single_worker(gate);
     advise_mixed_any(gate);
 }
@@ -236,9 +245,10 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// Prove that two nodes on different workers cannot race. They may fire in the
-/// same tick by construction, so their write sets must be disjoint and neither
-/// may read a field the other writes.
+/// Prove that two nodes on different workers cannot interfere. They may fire in
+/// the same tick by construction, so their *transitive* effects must be
+/// disjoint, they must not both perform an observable sink, and they must not
+/// both need the shared arena cursor.
 ///
 /// The pairwise shape is inherent, not incidental: soundness is a property of
 /// every *pair* of workers, so no single-pass scan replaces the comparison. The
@@ -246,41 +256,76 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
 /// (63) nodes — so this is at most ~2k comparisons at compile time and never
 /// executes at runtime. The pairs are produced in index order, which keeps the
 /// diagnostics deterministic.
-fn check_cross_worker(gate: &mut ThreadGate, pinned: &[PinnedNode<'_>]) {
-    gate.errors.extend(conflicting_pairs(pinned));
+fn check_cross_worker(gate: &mut ThreadGate, pinned: &[PinnedNode<'_>], resources: &ResourceMap) {
+    gate.errors.extend(conflicting_pairs(pinned, resources));
 }
 
-/// Every cross-worker race or missing `async` classification, in index order.
-fn conflicting_pairs(pinned: &[PinnedNode<'_>]) -> Vec<String> {
+/// Every cross-worker conflict or missing `async` classification, in index
+/// order.
+fn conflicting_pairs(pinned: &[PinnedNode<'_>], resources: &ResourceMap) -> Vec<String> {
     (0..pinned.len())
         .flat_map(|i| ((i + 1)..pinned.len()).map(move |j| (i, j)))
         .filter(|(i, j)| pinned[*i].pin != pinned[*j].pin)
-        .filter_map(|(i, j)| cross_worker_conflict(&pinned[i], &pinned[j]))
+        .filter_map(|(i, j)| cross_worker_conflict(&pinned[i], &pinned[j], resources))
         .collect()
 }
 
 /// The pairwise cross-worker soundness question for two nodes on different
-/// workers. `None` means safe; `Some` names the racy field.
-fn cross_worker_conflict(a: &PinnedNode<'_>, b: &PinnedNode<'_>) -> Option<String> {
+/// workers. `None` means safe; `Some` is the diagnostic for the first
+/// interference found (globals first, then shared sinks, then the arena).
+fn cross_worker_conflict(
+    a: &PinnedNode<'_>,
+    b: &PinnedNode<'_>,
+    resources: &ResourceMap,
+) -> Option<String> {
     if !check_satisfiable(a.pre, b.pre) {
         // Mutually exclusive guards: the two never fire in the same tick, so
         // there is no simultaneous access to order.
         return None;
     }
-    let a_writes = writes_of(a.body);
-    let b_writes = writes_of(b.body);
-    if let Some(field) = a_writes.intersection(&b_writes).next() {
-        return Some(race_message(a, b, field, "both write it"));
+    let a_effects = resources.of(a.name);
+    let b_effects = resources.of(b.name);
+    if let Some(shared) = a_effects.races_with(&b_effects) {
+        return Some(race_message(
+            a,
+            b,
+            shared.name(),
+            shared.describe(),
+            "give them disjoint state, or move both nodes to one worker",
+        ));
     }
-    let a_reads: BTreeSet<String> = collect_read_identifiers(a.body).into_iter().collect();
-    let b_reads: BTreeSet<String> = collect_read_identifiers(b.body).into_iter().collect();
-    if let Some(field) = a_writes.intersection(&b_reads).next() {
-        return Some(race_message(a, b, field, "one writes what the other reads"));
+    if a_effects.both_observe(&b_effects) {
+        return Some(sink_message(a, b));
     }
-    if let Some(field) = b_writes.intersection(&a_reads).next() {
-        return Some(race_message(a, b, field, "one writes what the other reads"));
+    if a_effects.both_allocate(&b_effects) {
+        return Some(arena_message(a, b));
     }
     unclassified_message(a, b)
+}
+
+/// Both workers perform an observable sink. A `sync<group>` barrier joins
+/// members, it does not sequence them, so the interleaving would still be
+/// observable nondeterminism — the only sound fix is one worker.
+fn sink_message(a: &PinnedNode<'_>, b: &PinnedNode<'_>) -> String {
+    format!(
+        "'{}' (worker {}) and '{}' (worker {}) both perform observable effects \
+         (output, FFI, or a state write through a callee). Concurrent workers \
+         cannot be ordered, so the interleaving would be visible. Move both \
+         nodes to one worker to keep output deterministic",
+        a.name, a.pin, b.name, b.pin
+    )
+}
+
+/// Both workers need the bump arena. Its cursor is one `%State` slot, so two
+/// allocating workers bump the same pointer. (Per-worker arenas lift this —
+/// `docs/plans/2026-11-16-per-worker-arena-and-resource-effects.md`.)
+fn arena_message(a: &PinnedNode<'_>, b: &PinnedNode<'_>) -> String {
+    format!(
+        "'{}' (worker {}) and '{}' (worker {}) both allocate, and the arena \
+         cursor is a single shared slot. Move one of them to a different worker \
+         with no allocations, or keep both on one worker",
+        a.name, a.pin, b.name, b.pin
+    )
 }
 
 /// A node on its own worker runs truly concurrently, so the pair needs `async`
@@ -298,18 +343,18 @@ fn unclassified_message(a: &PinnedNode<'_>, b: &PinnedNode<'_>) -> Option<String
 }
 
 /// The house-style race diagnostic with the concrete fix.
-fn race_message(a: &PinnedNode<'_>, b: &PinnedNode<'_>, field: &str, what: &str) -> String {
+fn race_message(
+    a: &PinnedNode<'_>,
+    b: &PinnedNode<'_>,
+    field: &str,
+    what: &str,
+    fix: &str,
+) -> String {
     format!(
         "'{}' (worker {}) and '{}' (worker {}) both touch '{}' — {}. \
-         Workers run concurrently, so move both nodes to one worker, give them \
-         disjoint state, or serialise them with 'sync<group>'",
-        a.name, a.pin, b.name, b.pin, field, what
+         Workers run concurrently, so {} or serialise them with 'sync<group>'",
+        a.name, a.pin, b.name, b.pin, field, what, fix
     )
-}
-
-/// Write set of a node body, as a set for intersection.
-fn writes_of(body: &[crate::ast::Statement]) -> BTreeSet<String> {
-    collect_assigned_identifiers(body).into_iter().collect()
 }
 
 /// A pin that leaves the program on a single worker buys no parallelism — the
@@ -350,11 +395,29 @@ mod tests {
         p.parse_program().unwrap()
     }
 
+    /// Run the gate the way the compile pipeline does: parse, summarise the
+    /// callables' resource effects, then gate. No arena users by default.
+    fn gate_for(src: &str) -> ThreadGate {
+        let items = parse(src);
+        let resources = crate::analysis::resource_effects::analyze_resource_effects(
+            &items,
+            &std::collections::HashSet::new(),
+        );
+        run_thread_gate(&items, &resources)
+    }
+
+    /// Run the gate with an explicit arena-need set (for the shared-cursor row).
+    fn gate_with_arena(src: &str, needing: &[&str]) -> ThreadGate {
+        let items = parse(src);
+        let needs: std::collections::HashSet<String> =
+            needing.iter().map(|n| n.to_string()).collect();
+        let resources = crate::analysis::resource_effects::analyze_resource_effects(&items, &needs);
+        run_thread_gate(&items, &resources)
+    }
+
     #[test]
     fn no_pins_yields_empty_plan() {
-        let gate = run_thread_gate(&parse(
-            "let a: Int = 0;\nnode n [a < 1][a == 1] { a = a + 1; term; };",
-        ));
+        let gate = gate_for("let a: Int = 0;\nnode n [a < 1][a == 1] { a = a + 1; term; };");
         assert!(!gate.plan.is_pinned());
         assert_eq!(gate.plan.worker_count, 0);
         assert!(gate.errors.is_empty());
@@ -363,11 +426,11 @@ mod tests {
 
     #[test]
     fn two_workers_with_disjoint_state_plan_cleanly() {
-        let gate = run_thread_gate(&parse(
+        let gate = gate_for(
             "let a: Int = 0;\nlet b: Int = 0;\n\
              async on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };\n\
              async on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };",
-        ));
+        );
         assert!(gate.errors.is_empty(), "errors: {:?}", gate.errors);
         assert_eq!(gate.plan.worker_count, 2);
         assert_eq!(gate.plan.worker_of("na"), Some(0));
@@ -378,11 +441,11 @@ mod tests {
 
     #[test]
     fn cross_worker_shared_write_is_a_race() {
-        let gate = run_thread_gate(&parse(
+        let gate = gate_for(
             "let a: Int = 0;\n\
              async on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };\n\
              async on thread 1 node nb [a < 2][a == 2] { a = a + 2; term; };",
-        ));
+        );
         assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
         assert!(
             gate.errors[0].contains("both write it"),
@@ -393,11 +456,11 @@ mod tests {
 
     #[test]
     fn cross_worker_read_of_other_write_is_a_race() {
-        let gate = run_thread_gate(&parse(
+        let gate = gate_for(
             "let a: Int = 0;\nlet b: Int = 0;\n\
              async on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };\n\
              async on thread 1 node nb [b < 1][b == 1] { b = a; term; };",
-        ));
+        );
         assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
         assert!(
             gate.errors[0].contains("one writes what the other reads"),
@@ -408,11 +471,11 @@ mod tests {
 
     #[test]
     fn cross_worker_without_async_is_refused() {
-        let gate = run_thread_gate(&parse(
+        let gate = gate_for(
             "let a: Int = 0;\nlet b: Int = 0;\n\
              on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };\n\
              on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };",
-        ));
+        );
         assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
         assert!(
             gate.errors[0].contains("declare 'async' on both"),
@@ -423,19 +486,18 @@ mod tests {
 
     #[test]
     fn mutually_exclusive_guards_are_safe_across_workers() {
-        let gate = run_thread_gate(&parse(
+        let gate = gate_for(
             "let mode: Int = 0;\nlet a: Int = 0;\n\
              async on thread 0 node na [mode == 0][a == 1] { a = a + 1; term; };\n\
              async on thread 1 node nb [mode == 1][a == 2] { a = a + 2; term; };",
-        ));
+        );
         assert!(gate.errors.is_empty(), "errors: {:?}", gate.errors);
     }
 
     #[test]
     fn single_worker_pin_is_advisory_not_an_error() {
-        let gate = run_thread_gate(&parse(
-            "let a: Int = 0;\non thread 0 node na [a < 1][a == 1] { a = a + 1; term; };",
-        ));
+        let gate =
+            gate_for("let a: Int = 0;\non thread 0 node na [a < 1][a == 1] { a = a + 1; term; };");
         assert!(gate.errors.is_empty(), "errors: {:?}", gate.errors);
         assert!(
             gate.warnings
@@ -448,11 +510,11 @@ mod tests {
 
     #[test]
     fn explicit_any_is_recorded_and_disclosed() {
-        let gate = run_thread_gate(&parse(
+        let gate = gate_for(
             "let a: Int = 0;\nlet b: Int = 0;\n\
              on thread any node na [a < 1][a == 1] { a = a + 1; term; };\n\
              on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };",
-        ));
+        );
         assert_eq!(gate.plan.explicit_any, vec!["na".to_string()]);
         assert!(
             gate.warnings
@@ -469,7 +531,7 @@ mod tests {
             "let a: Int = 0;\non thread {} node na [a < 1][a == 1] {{ a = a + 1; term; }};",
             MAX_THREADS + 1
         );
-        let gate = run_thread_gate(&parse(&src));
+        let gate = gate_for(&src);
         assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
         assert!(
             gate.errors[0].contains("only workers 0..="),
@@ -480,9 +542,8 @@ mod tests {
 
     #[test]
     fn pin_on_plain_txn_is_advisory() {
-        let gate = run_thread_gate(&parse(
-            "let a: Int = 0;\non thread 0 txn t(a: Int) [a >= 0][a >= 0] { term; };",
-        ));
+        let gate =
+            gate_for("let a: Int = 0;\non thread 0 txn t(a: Int) [a >= 0][a >= 0] { term; };");
         assert!(gate.errors.is_empty(), "errors: {:?}", gate.errors);
         assert!(
             gate.warnings
@@ -491,5 +552,80 @@ mod tests {
             "warnings: {:?}",
             gate.warnings
         );
+    }
+
+    // ── 2026-11-16 (per-worker arena plan, Part D.1): interprocedural rows ──
+
+    #[test]
+    fn transitive_write_through_a_callee_is_a_cross_worker_race() {
+        // Neither node body names `a` directly: the write lives in the defn.
+        // Without the interprocedural summary this pair would look independent.
+        let gate = gate_for(
+            "let a: Int = 0;\n\
+             defn bump() -> Int [true][term >= 0] { a = a + 1; term a; };\n\
+             async on thread 0 node na [a < 1][a == 1] { let v: Int = bump(); term; };\n\
+             async on thread 1 node nb [a < 3][a == 3] { let w: Int = bump(); term; };",
+        );
+        assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
+        assert!(
+            gate.errors[0].contains("'a'") && gate.errors[0].contains("both write it"),
+            "got: {}",
+            gate.errors[0]
+        );
+    }
+
+    #[test]
+    fn two_workers_both_printing_are_refused() {
+        let gate = gate_for(
+            "let a: Int = 0;\nlet b: Int = 0;\n\
+             async on thread 0 node na [a < 1][a == 1] { Print#(a); term; };\n\
+             async on thread 1 node nb [b < 1][b == 1] { Print#(b); term; };",
+        );
+        assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
+        assert!(
+            gate.errors[0].contains("both perform observable effects"),
+            "got: {}",
+            gate.errors[0]
+        );
+    }
+
+    #[test]
+    fn one_printing_worker_is_accepted() {
+        // Only one worker produces output, so the order stays deterministic.
+        let gate = gate_for(
+            "let a: Int = 0;\nlet b: Int = 0;\n\
+             async on thread 0 node na [a < 1][a == 1] { Print#(a); term; };\n\
+             async on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };",
+        );
+        assert!(gate.errors.is_empty(), "errors: {:?}", gate.errors);
+    }
+
+    #[test]
+    fn two_workers_both_allocating_are_refused_while_the_arena_is_shared() {
+        // The row disappears when per-worker arenas land (Part A).
+        let gate = gate_with_arena(
+            "let a: Int = 0;\nlet b: Int = 0;\n\
+             async on thread 0 node na [a < 1][a == 1] { let p: Ptr = Alloc#(16) as Ptr; term; };\n\
+             async on thread 1 node nb [b < 1][b == 1] { let q: Ptr = Alloc#(16) as Ptr; term; };",
+            &["na", "nb"],
+        );
+        assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
+        assert!(
+            gate.errors[0].contains("both allocate"),
+            "got: {}",
+            gate.errors[0]
+        );
+    }
+
+    #[test]
+    fn allocate_gate_row_is_silent_without_arena_need() {
+        // The same shape, but the arena-need set is empty (the compile pipeline
+        // only adds names it proved need the arena) — no refusal.
+        let gate = gate_for(
+            "let a: Int = 0;\nlet b: Int = 0;\n\
+             async on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };\n\
+             async on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };",
+        );
+        assert!(gate.errors.is_empty(), "errors: {:?}", gate.errors);
     }
 }

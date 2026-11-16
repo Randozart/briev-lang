@@ -59,6 +59,10 @@ pub mod purity;
 pub mod range;
 pub mod reclamation;
 pub mod region;
+// 2026-11-16 (per-worker arena plan, Part C): interprocedural resource-effect
+// summary consumed by the thread gate (observable sinks, transitive global
+// writes, arena need) so concurrency decisions see callee effects.
+pub mod resource_effects;
 pub mod roofline;
 pub mod schema_validator;
 pub mod slp_isomorphism;

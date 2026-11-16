@@ -635,32 +635,6 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         return Err(format!("concurrency gate:\n  {}", gate_errors.join("\n  ")));
     }
 
-    // ── Thread gate (2026-11-15, thread-assignment plan) ──────────────────
-    // `on thread <N>` binds a node to a reactor worker. Two pinned nodes on
-    // different workers really do run concurrently, so their state must be
-    // provably disjoint and the pair `async`-classified. The plan itself rides
-    // in the analysis results for the backend's per-worker dispatch.
-    let thread_gate = briev_compiler::analysis::thread_plan::run_thread_gate(&items);
-    if !thread_gate.errors.is_empty() {
-        return Err(format!(
-            "thread gate:\n  {}",
-            thread_gate.errors.join("\n  ")
-        ));
-    }
-    for warning in &thread_gate.warnings {
-        eprintln!("warning: {warning}");
-    }
-    let thread_plan = thread_gate.plan;
-    // 2026-11-15 (thread-assignment plan, Stage 2 hold): the plan is proved and
-    // carried, but the threaded dispatch lane is not emitted yet. A pin changes
-    // dispatch order if it is served sequentially, and dispatch order is
-    // observable — so the only two honest outcomes are real workers or a
-    // refusal. Refusing (with the missing piece named) beats silently reordering
-    // or silently ignoring a declared pin.
-    if thread_plan.is_pinned() {
-        return Err(briev_compiler::analysis::thread_plan::unemitted_pin_message(&thread_plan));
-    }
-
     // ── Static hold-law gate (2026-09-22, Slice C2) ──────────────────────
     // Software `hold G { F }` at top level / in obj / in type bodies is a
     // forced fact the compiler must make hold everywhere. A member fact that
@@ -952,6 +926,38 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // arena fields in %State and all arena init/fini calls are skipped — saving
     // 64KB malloc and 24 bytes of %State for benchmarks with no Alloc# calls.
     let needs_arena = briev_compiler::analysis::allocation::analyze_arena_need(&mut items);
+
+    // ── Thread gate (2026-11-15, thread-assignment plan) ──────────────────
+    // `on thread <N>` binds a node to a reactor worker, and different workers
+    // really do run concurrently. The gate therefore reasons about what each
+    // pinned node does *through its callees* (`analyze_resource_effects`), not
+    // just what its own body spells out: the stdlib print lane mutates
+    // `stdout_fill`, which no node body mentions. It runs here, after the
+    // effect summary and arena need exist, so there is exactly one definition
+    // of both.
+    let resources =
+        briev_compiler::analysis::resource_effects::analyze_resource_effects(&items, &needs_arena);
+    let thread_gate = briev_compiler::analysis::thread_plan::run_thread_gate(&items, &resources);
+    if !thread_gate.errors.is_empty() {
+        return Err(format!(
+            "thread gate:\n  {}",
+            thread_gate.errors.join("\n  ")
+        ));
+    }
+    for warning in &thread_gate.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let thread_plan = thread_gate.plan;
+    // 2026-11-15 (thread-assignment plan, Stage 2 hold): the plan is proved and
+    // carried, but the threaded dispatch lane is not emitted yet. A pin changes
+    // dispatch order if it is served sequentially, and dispatch order is
+    // observable — so the only two honest outcomes are real workers or a
+    // refusal. Refusing (with the missing piece named) beats silently reordering
+    // or silently ignoring a declared pin.
+    if thread_plan.is_pinned() {
+        return Err(briev_compiler::analysis::thread_plan::unemitted_pin_message(&thread_plan));
+    }
+
     emit_beast_snapshot(
         file_path,
         BeastStage::Alloc,
@@ -1209,6 +1215,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         opts,
         alloc_strategies,
         needs_arena,
+        thread_plan,
         resolved_frgns,
         enable_module_init,
         &mut web_layout,
@@ -1990,6 +1997,11 @@ fn codegen(
         briev_compiler::backend::llvm::AllocStrategy,
     >,
     needs_arena: std::collections::HashSet<String>,
+    // 2026-11-16 (per-worker arena plan, Part D.1): the gate-validated
+    // `on thread <N>` plan. Produced by compile_source (which owns the
+    // interprocedural effect summary) and installed on the analysis results
+    // here so the backend reads one authoritative plan.
+    thread_plan: briev_compiler::analysis::thread_plan::ThreadPlan,
     resolved_frgns: std::collections::HashMap<
         String,
         briev_compiler::analysis::frgn_dispatch::ResolvedFrgn,
@@ -2162,6 +2174,11 @@ fn codegen(
         Some(&*universe),
         effective_accel_mode,
     );
+    // 2026-11-16 (per-worker arena plan, Part D.1): install the gate-validated
+    // plan. `analyze_program` runs the same collection without the effect
+    // summary (the refusal is compile_source's job), so the authoritative plan
+    // must win over its plan-only pass.
+    analysis.thread_plan = thread_plan;
 
     // ── Capability validation (Plan 0.2, 2026-08-23) ───────────────────
     // Backends with a partial surface declare it (backend::*::CAPABILITIES);
