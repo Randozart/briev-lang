@@ -1,9 +1,25 @@
 // Test string operations
-let s: String = "Hello, World!";
+//
+// 2026-11-15 (corpus hygiene): this fixture was written against the removed
+// `[expr] { ... }` block-guard syntax. A full migration to `when` blocks is
+// blocked by two genuine compiler defects (see BUGS.md):
+//   1. "string value-summary lane bug" — the value summary models the
+//      results of the pure-Briev string lane defns (to_lower_str,
+//      to_upper_str, trim_str, reverse_str) as Int, degrading their declared
+//      String return to Int at the call site. Their bodies call FFI
+//      intrinsics (Malloc#/Load#/Store#/Free#) the summary does not track.
+//   2. "string callee liveness gap" — string helper defns (is_whitespace_str,
+//      is_alpha_str, is_numeric_str) whose bodies loop over byte_at /
+//      Load#/Store# emit `call i64 @<defn>` but never emit the callee
+//      declaration, so the emitted IR fails LLVM verification
+//      (`use of undefined value '@<defn>'`).
+// The fixture is therefore excluded from the host-corpus gate
+// (scripts/verify_bodies_corpus.sh) until those defects are fixed. Full
+// runtime string behavior is covered by tests/tier1/unicode_search_smoke.bv.
 
 defn test_case_conversion() -> Bool {
-    [to_lower_str("HELLO") == "hello"] {
-        [to_upper_str("hello") == "HELLO"] {
+    when to_lower_str("HELLO") == "hello" {
+        when to_upper_str("hello") == "HELLO" {
             term true;
         };
     };
@@ -11,23 +27,23 @@ defn test_case_conversion() -> Bool {
 };
 
 defn test_trim() -> Bool {
-    [trim_str("  hello  ") == "hello"] {
+    when trim_str("  hello  ") == "hello" {
         term true;
     };
     term false;
 };
 
 defn test_reverse() -> Bool {
-    [reverse_str("hello") == "olleh"] {
+    when reverse_str("hello") == "olleh" {
         term true;
     };
     term false;
 };
 
 defn test_char_classification() -> Bool {
-    [is_whitespace_str("   ")] {
-        [is_alpha_str("hello")] {
-            [is_numeric_str("123")] {
+    when is_whitespace_str("   ") {
+        when is_alpha_str("hello") {
+            when is_numeric_str("123") {
                 term true;
             };
         };
