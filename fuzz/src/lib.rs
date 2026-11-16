@@ -60,3 +60,16 @@ pub fn enums(data: &[u8]) {
 pub fn strings(data: &[u8]) {
     semantic::check_strings(data);
 }
+
+/// 2026-11-15 (P4 growth slice, second oracle): the enum slice with a
+/// returned-value oracle — the generated program returns its result instead of
+/// binding a top-level `let`, and the interpreter is re-run over that text.
+pub fn enum_dispatch(data: &[u8]) {
+    semantic::check_enum_dispatch(data);
+}
+
+/// 2026-11-15 (P4 growth slice, second oracle): the string slice with a
+/// returned-value oracle, same shape as `enum_dispatch`.
+pub fn string_ops(data: &[u8]) {
+    semantic::check_string_ops(data);
+}
