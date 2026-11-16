@@ -1448,6 +1448,55 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    /// 2026-11-16 (S3.0 characterisation): which map shapes parse? The FFI
+    /// descriptor needs `values: { "Class": { field; … }; "Class2": { … } }`, and
+    /// a multi-entry block in the shipped adapter failed with "Expected named
+    /// field" while a single-entry one parsed. This pins the exact rule instead
+    /// of guessing: each case asserts whether it parses, and the failure message
+    /// carries the parser's own error.
+    #[test]
+    fn characterise_named_map_shapes() {
+        let cases: &[(&str, &str, bool)] = &[
+            ("flat", "a: 1; b: 2;", true),
+            ("one nested", r#"a: { x: "1" };"#, true),
+            ("one nested, quoted key", r#"a: { "X": { y: "1" } };"#, true),
+            (
+                "two nested, quoted keys",
+                r#"a: { "X": { y: "1" }; "Z": { y: "2" } };"#,
+                true,
+            ),
+            (
+                "two nested, quoted keys, quoted values",
+                r#"a: { "X": { class: "c1" }; "Z": { class: "c2" } };"#,
+                true,
+            ),
+            (
+                "three nested, quoted keys",
+                r#"a: { "X": { class: "c1" }; "Z": { class: "c2" }; "W": { class: "c3" } };"#,
+                true,
+            ),
+            ("two sibling nested maps", r#"a: { x: "1" }; b: { y: "2" };"#, true),
+            (
+                "two nested, bool in first",
+                r#"a: { "X": { class: "c1"; flag: true }; "Z": { class: "c2" } };"#,
+                true,
+            ),
+        ];
+        let mut failures: Vec<String> = Vec::new();
+        for (name, src, expect_ok) in cases {
+            let got = parse_document_quoted(src);
+            let ok = got.is_ok();
+            if ok != *expect_ok {
+                failures.push(format!(
+                    "{name}: expected ok={expect_ok}, got {:?}",
+                    got.err()
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "shape failures:\n{}", failures.join("\n"));
+    }
+
+
     use super::*;
 
     // ---- Schema Tests ----
