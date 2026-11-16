@@ -139,6 +139,7 @@ defn iter_all<T>(list: List<T>, pred: T -> Bool) -> Bool [true][term == true || 
 
 // Collect into list (identity for List)
 defn iter_collect<T>(list: List<T>) -> List<T> [true][term.Count#() == list.Count#()] {
+    when list.Count#() == 0 { term []; };
     term list;
 };
 

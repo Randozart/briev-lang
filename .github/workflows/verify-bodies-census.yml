@@ -1,0 +1,73 @@
+# Non-blocking --verify-bodies census on the .bv corpus.
+# Runs on every push/PR to main, produces a JSON artifact.
+# Fails CI only if any contract is VIOLATED (false proof).
+name: Verify Bodies Census
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-bodies:
+    name: --verify-bodies census
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm z3 build-essential
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build brievc
+        run: cargo build --release --bin brievc
+
+      - name: Build counsel-check
+        run: cargo install counsel --quiet --no-default-features --features static
+
+      # --- Census over all .bv files (excluding src/) ---
+      - name: Generate file list
+        run: |
+          find . -name "*.bv" -not -path "./src/*" -not -path "./target/*" -not -path "./.cache/*" | sort > /tmp/bv_corpus.txt
+          echo "Corpus: $(wc -l < /tmp/bv_corpus.txt) files"
+
+      - name: Run verify-bodies census
+        run: |
+          export BRIEVC=./target/release/brievc
+          bash scripts/verify-bodies-census.sh /tmp/bv_corpus.txt /tmp/verify-bodies-report.json
+
+      - name: Upload census artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-bodies-report
+          path: /tmp/verify-bodies-report.json
+          retention-days: 14
+
+      - name: Print summary
+        if: always()
+        run: |
+          python3 -c "
+          import json
+          d = json.load(open('/tmp/verify-bodies-report.json'))
+          s = d['summary']
+          print(f'Corpus: {d[\"total_files\"]} files')
+          print(f'Proven:   {s[\"proven\"]}')
+          print(f'Unproven: {s[\"unproven\"]}')
+          print(f'Skipped:  {s[\"skipped\"]}')
+          print(f'Violated: {s[\"violated\"]}')
+          if s['violated'] > 0:
+              print('ERROR: Violated contracts found — false proofs!')
+              exit(1)
+          "
