@@ -273,3 +273,44 @@ Checklist:
 - [x] counsel-check: 0 Violated (advisory is fine)
 - [x] No --no-verify / no // praetor:ignore in diff
 - [x] Honest: documents intent, labelled unproven, not claimed as proof
+
+---
+
+## Follow-up: post→pre reasoning at call sites (NOT YET DONE)
+
+`conformance_sweep_every_active_source_parses_and_checks` fails on `main` with:
+
+```
+call to 'ascii_lower' — the precondition '(byte_at(left, k) >= 0)' is not
+provable at this call site
+```
+
+Origin: `1504b3da6` replaced `ascii_lower`'s `[true]` precondition with the real
+byte domain `[b >= 0]` (correct — the passthrough branch returns `b`, so a
+negative input refutes `[term >= 0]`). Every call site passes `byte_at(...)`,
+whose *declared* postcondition is `[term >= 0 && term <= 255]`.
+
+The call gate cannot see that, because it proves a caller's obligation only from
+path facts (guards, `check`, initializers) — it never consults the **callee's
+postcondition** for the call *expression*. That is the missing rule:
+
+> A call term `f(args)` may be treated as satisfying `f`'s declared
+> postcondition (with parameters substituted by `args`) when proving an
+> enclosing goal.
+
+Why it was not done here:
+
+- It is a new proof rule, not a local fix, and it interacts with the admission
+  boundary (which summaries are sound to substitute — recursion must not earn
+  one, mirroring the `--verify-bodies` summary rules).
+- Every local workaround weakens or edits a contract the owner deliberately
+  strengthened (`[true]` → `[b >= 0]` would be reverted).
+
+Suggested shape for the follow-up, mirroring the body prover's summary design:
+
+1. Build the same fixpoint of *value summaries* over contracted defns (no
+   summary for recursive cycles).
+2. In `prove_with_constants`, expand a goal's call subterms into their summary
+   postconditions before handing the facts to `callgate::prove_precondition`.
+3. Guard with tests: a caller with a lying callee must still be refuted, and a
+   recursive cycle must yield neither summary nor proof.
