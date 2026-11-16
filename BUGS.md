@@ -74,6 +74,106 @@ Public-API and source/CLI regressions reject all three false-proof routes and
 preserve valid saved-value and known-guard proofs. Input-dependent counterexamples
 retain the existing advisory policy; the fix removes their erroneous proven status.
 
+## 2026-11-15 — required verifier selection missed the new typed boundary
+
+Integrating `0400749f` revealed that the explicit verifier suite list omitted
+the new `typed_boundary` binary. Ordinary workspace runs also skip its ignored
+real-Z3 floating-increment regression. Add all six typed-boundary cases by
+exact name to quick/verifier selections, including that ignored case. Both
+adapters must discover every name and report its execution; missing cases fail
+closed. Controls also keep unrelated ignored cases excluded. See the
+[hosted qualification record](docs/plans/2026-11-15-a0-hosted-qualification.md).
+
+## 2026-11-15 — formatting parity fixtures still divide by zero after native trap parity
+
+**Symptom.** `benchmarks/parity/run.sh` traps in `float_cases` with SIGILL;
+`float_fmt_cases` contains the same stale constructions. Both the original
+release build and its transferred CI artifact reproduce the failure.
+
+**Cause.** These formatting fixtures construct infinity/NaN using `/ 0.0`.
+Native Float division now intentionally traps on zero, matching the reference
+interpreter and the regression contract in `tests/cli_args_test.rs`. The format
+goldens remain valid; their input construction no longer reaches formatting.
+
+**Fix.** Supply infinity through the existing float32 overflow literal and NaN
+through the existing `Sqrt#` intrinsic, preserving both signs and all existing
+golden output lines. Keep division-trap regressions as the division oracle.
+Validation is recorded in the [CI split plan](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
+
+## 2026-11-15 — Data-to-Float width mismatch emits an invalid bitcast (OPEN)
+
+An alternative exceptional-value probe, `(0x7F800000 as Data) as Float`, emits
+`bitcast i64 ... to float`, rejected by LLVM verification. Narrowing the input
+through `Int32` before `Data` still produces i64. An unequal-width bitcast must
+be diagnosed or explicitly resized according to the declared cast contract;
+it cannot emit invalid IR. Reproduced with the release compiler at `2b64e8c8`;
+diagnostics are in `/tmp/opencode/briev-ci-split-validation/float-special-values-build.log`
+and `float-special-values-build-int32.log`. The formatting corpus uses the
+existing intrinsic/literal construction instead of this cast route.
+
+## 2026-11-15 — a library failure suppresses unrelated required CI evidence
+
+**Cause.** The single `Default gates` job ran verifier, library, native,
+workspace, browser and census commands serially. A failing early step skipped
+all later checks, obscuring independent failures. Its “Contract census (deny)”
+label also overstated the existing script, which explicitly uses a warn-policy
+overlay for diagnostic counting.
+
+**Fix.** Independent required jobs share only the release-build prerequisite
+where needed. The native matrix disables fail-fast. An `always()` aggregate
+retains the `Default gates` name and requires every required job to succeed;
+skipped/cancelled/missing results cannot turn green. Quarantine/Counsel remain
+explicitly non-blocking. Each job retains attempt-specific logs/artifacts.
+The census label now states its actual warn-policy diagnostic scope.
+
+The shared build includes both runtime archives consumed by `src/compile.rs`,
+not just `brievc`; revision/hash/mode checks protect the job boundary. Controls
+exercise failed/skipped aggregate results, malformed evidence, missing build
+inputs, lost executable mode, wrong revisions, and corrupted transfers. See
+[CI split execution](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
+
+## 2026-11-15 — quick fallback loses suites and omits required verifier execution
+
+**Symptom.** The nextest quick path selected 12 integration binaries; the Cargo
+fallback selected seven. Neither path included `briev-verify`'s 27 unit tests,
+two arithmetic tests, or three ignored solver-boundary regressions. CI's
+non-blocking ignored-test command did not establish required solver coverage.
+The conflict scan also accepted Git errors as no conflicts and shared a
+temporary output filename between invocations.
+
+**Cause.** Independent shell selection lists drifted. A zero process exit was
+the only runner-level evidence, with no shared discovered-test inventory or
+terminal-result accounting.
+
+**Fix.** `scripts/gate_selection.py` defines both adapters' selection, including
+the original 12 integrations plus `gate_runner`, verifier tests, and the three
+exact solver names. Quick/verifier preflight required tools, cross-check
+discovery/results/totals, retain `briev-gate/v1` manifests and raw logs, and
+reject missing/empty/invalid evidence. Git exit 1 alone establishes no conflict
+matches. CI requires the verifier gate and preserves its evidence. Behavioral
+controls: `scripts/tests/test_gate.py`, also run through `tests/gate_runner.rs`.
+Execution results: [A0 record](docs/plans/2026-11-15-a0-gate-integrity.md).
+
+## 2026-11-15 — nextest JSON reporter double-counts explicitly enabled ignored tests
+
+**Symptom.** nextest 0.9.151 executes all three solver-boundary cases successfully
+but emits repeated suite starts, empty successful finishes with `ignored: 3`,
+and a final `filtered_out: 18446744073709551613`. Both `--include-ignored` and
+`--run-ignored only` reproduce this in `libtest-json-plus` 0.1 output. The new
+strict gate correctly rejects the stream despite the successful process exit.
+
+An independent mixed ordinary/ignored suite also emits premature finishes and
+repeated starts when its ignored case stays disabled.
+
+**Containment.** Keep nextest discovery, execute binaries containing ignored
+tests and explicitly named selections through Cargo, and record the real
+execution runner per suite. Unaffected binaries remain batched in nextest. The malformed
+JSON control continues to reject the observed reporter behavior. Retire this
+routing when the pinned nextest reporter produces coherent ignored-suite
+lifecycles and counts with ignored cases enabled and disabled; do not relax
+the evidence contract. Upstream reporter
+repair remains external to this repository.
+
 ## 2026-11-15 — a right operand supplied an unsupported Boolean operator
 
 **Reproduced.** `defn f(b: Bool) [true][term == b + 1] -> Bool { term b + 1; };`
@@ -13866,3 +13966,9 @@ call-site checker, so `ascii_lower`'s `[b >= 0]` precondition is unprovable.
 
 **A/B evidence**: Stashing all my changes (Bool admission, SMT encoding,
 http.bv) still produces the 387 failures. The cascade is pre-existing.
+**Integration follow-up.** The correctness branch independently replaced those
+four constructions with overflow literals and `Sqrt#(-1.0)`. On merging
+`8b69cbe2`, retain these supported inputs and restore all 39 original golden
+lines. The trap contract and its CLI regressions remain in force; exceptional
+formatting values are supplied without zero division. See the formatting
+fixture diagnosis above and the hosted qualification record.

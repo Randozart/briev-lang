@@ -39,10 +39,13 @@ node go [done == false][done == true] {
         println!("{}", float_format(1e-3, 9));
         println!("{}", float_format(1e-2, 9));
         println!("{}", float_format(-0.0, 9));
-        // 2026-11-15: division-by-zero edge cases REMOVED. The interpreter (the
-        // semantic authority) raises RuntimeError::DivisionByZero for
-        // `Float / 0.0`; native codegen matches via `@llvm.trap()`. The old
-        // IEEE inf/-inf/nan golden predates the div-zero alignment.
+        // 2026-11-15: match float_cases' exceptional-value construction without
+        // invoking DivisionByZero (interpreter) or its native trap. The old
+        // zero-divisor probes predate alignment. Retire for stdlib special constants.
+        println!("{}", float_format(1.5e308, 9));
+        println!("{}", float_format(-1.5e308, 9));
+        println!("{}", float_format(Sqrt#(-1.0), 9));
+        println!("{}", float_format(-Sqrt#(-1.0), 9));
         done = true;
     };
     term;

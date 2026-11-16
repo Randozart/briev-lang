@@ -114,6 +114,7 @@ metrod*
 test_*
 !src/test_runner.rs
 !src/test_engine.rs
+!scripts/tests/test_*.py
 test_cases/
 test_rstruct-build/
 test_schema/

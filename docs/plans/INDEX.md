@@ -4,6 +4,42 @@
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
 **Suite state:** `cargo test --lib` 3732 green (2026-11-12, incl. 7 owned-storage tests); daily corpus 41 green; quick gate 36 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
+
+**Production correctness strategy (adopted 2026-11-15):**
+[Production compiler correctness: evidence, oracles, and an execution plan](2026-11-14-production-correctness-strategy.md)
+preserves the audit of upstream `e9169750`. The
+[current-main reassessment](2026-11-15-production-correctness-reassessment.md)
+checks `817f1d69`: CI solver setup, exact solver-status recognition and native
+wrapping repairs landed; gate coverage/accounting, strong HIR/native oracles,
+and the complete ownership/proof campaigns remain.
+[A0 gate integrity](2026-11-15-a0-gate-integrity.md) implements shared quick
+selection, explicit verifier/Z3 execution, fail-closed runner controls, and
+retained manifests; its execution record contains the current gate results.
+Acceptance: both quick runners **3,873 passed / 17 suites**, exact identity and
+outcome parity; full root library **3,788 passed**; **22** infrastructure
+controls; all **32** verifier cases including the three named Z3 regressions.
+The [independent CI jobs increment](2026-11-15-a0-independent-ci-jobs.md) splits
+required checks behind their actual build dependencies, transfers the compiler
+with its runtime archives, and keeps a fail-closed `Default gates` aggregate.
+Local acceptance: **31 controls**, the same **3,873** quick results, **3,788**
+library tests, **18** binary tests, **42** tier-1 fixtures, census, and restored-
+artifact native/browser checks pass; hosted scheduling remains to be qualified.
+The [hosted qualification increment](2026-11-15-a0-hosted-qualification.md)
+integrates `8b69cbe2`, retains upstream's per-file Counsel census, restores full
+39-line float-formatting coverage, and makes all six typed-boundary cases
+required (including the ignored real-Z3 regression). Refreshed validation and
+publication results are recorded there.
+Integrated local acceptance: **3,892** passing quick tests under both runners
+with identical identities/outcomes, **38** required verifier cases, **3,801**
+library tests, **4,254** full-workspace tests, **32** controls, and all native/
+browser checks pass. The full workspace's four ignored Z3 cases run explicitly
+in each quick invocation.
+The [gate contract](../architecture/compiler-correctness.md) documents runner,
+job, and evidence boundaries. Next: A1 controls and A2 full observations;
+exact-revision hosted qualification and broader per-case manifests remain A0
+acceptance work. Suite counts above and prior CI/proof results are
+dated; each execution record states its own evidence.
+
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
