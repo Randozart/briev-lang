@@ -29,7 +29,7 @@
 /// - Enumerates execution paths through guard blocks
 ///
 /// Coverage: ~90% of real Briev contracts
-use crate::ast::{BinaryOpKind, Expr, Statement, UnaryOpKind};
+use crate::ast::{BinaryOpKind, Expr, ReflectKind, Statement, UnaryOpKind};
 use std::collections::HashMap;
 
 pub(crate) mod snapshot;
@@ -324,6 +324,17 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
             SymbolicValue::Binary("++".to_string(), Box::new(left_sym), Box::new(right_sym))
         }
 
+        // A handle's stored length (`s.^Length`, `CharCount#(s)`) is an integer
+        // atom, distinct per handle and always non-negative. Modelled as
+        // `atom & i64::MAX` so the existing mask range supplies `>= 0` — the same
+        // machinery that bounds `x & MASK`, reused rather than duplicated.
+        Expr::Reflect(base, target, ReflectKind::Runtime) if target == "Length" => {
+            length_atom(base, state)
+        }
+        Expr::Call(name, args, _) if name == "CharCount#" && args.len() == 1 => {
+            length_atom(&args[0], state)
+        }
+
         // A whole-word load of `w` bytes is `zext i{8w}` at the backend (see
         // emit_load), so its value lies in `[0, 2^(8w) - 1]`. Modelling that
         // interval is what lets the stdlib's own byte contracts prove:
@@ -354,6 +365,23 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         | Expr::Lambda(_, _) => SymbolicValue::Unknown,
 
         // Comparison operators don't produce symbolic values (boolean expressions)
+        // A relational value (`a == b`, `i < n`) is opaque, but *self-identical*:
+        // keyed on the operator and both symbolic operands, so `term` bound to
+        // `CharCount#(s) == 0` compares equal to the same comparison in the
+        // postcondition while two different comparisons stay distinct. Without
+        // this, a Bool-returning body that *is* its own postcondition is
+        // undecidable purely because the value has no scalar form.
+        Expr::BinaryOp(
+            kind @ (BinaryOpKind::Eq
+            | BinaryOpKind::Neq
+            | BinaryOpKind::Lt
+            | BinaryOpKind::Le
+            | BinaryOpKind::Gt
+            | BinaryOpKind::Ge),
+            left,
+            right,
+        ) => relational_atom(*kind, left, right, state),
+
         Expr::BinaryOp(BinaryOpKind::Eq, _, _)
         | Expr::BinaryOp(BinaryOpKind::Neq, _, _)
         | Expr::BinaryOp(BinaryOpKind::Lt, _, _)
@@ -435,6 +463,48 @@ pub(crate) fn simplify_binary(
 
 /// Match interpreter/SMT wrapping arithmetic without host-profile overflow panics.
 /// Exceptional division stays symbolic: native division is not a total operation.
+/// An opaque, self-identical atom for a comparison's boolean result.
+///
+/// Keyed on the operator and the *symbolic* operands, so it is stable across
+/// re-evaluation but changes when an operand does — the same discipline as the
+/// length atom. Two different comparisons never collapse into one value.
+fn relational_atom(
+    kind: BinaryOpKind,
+    left: &Expr,
+    right: &Expr,
+    state: &SymbolicState,
+) -> SymbolicValue {
+    let l = eval_symbolic(left, state);
+    let r = eval_symbolic(right, state);
+    if l == SymbolicValue::Unknown || r == SymbolicValue::Unknown {
+        return SymbolicValue::Unknown;
+    }
+    SymbolicValue::Identifier(format!("cmp#{kind:?}#{l:?}#{r:?}"))
+}
+
+/// The stored-length atom of a handle, as a non-negative integer.
+///
+/// Keyed on the base's **symbolic value**, not its text: `s.^Length` in two
+/// places denotes one quantity, while `a.^Length` and `b.^Length` stay distinct —
+/// and after a rebinding the value differs, so the old length does not carry
+/// over. Keying on the identifier name alone would make those two mistakes
+/// possible, and a length claim is exactly where such a mistake becomes a false
+/// proof.
+///
+/// An unknown base has no length to speak of, so the caller gets `Unknown` rather
+/// than an atom that would compare equal to itself for the wrong reason.
+fn length_atom(base: &Expr, state: &SymbolicState) -> SymbolicValue {
+    let value = eval_symbolic(base, state);
+    if value == SymbolicValue::Unknown {
+        return SymbolicValue::Unknown;
+    }
+    SymbolicValue::Binary(
+        "&".to_string(),
+        Box::new(SymbolicValue::Identifier(format!("len#{value:?}"))),
+        Box::new(SymbolicValue::Literal(i64::MAX, "int".to_string())),
+    )
+}
+
 /// The byte width a `Load#` call loads, when it is a literal in the modellable
 /// range.
 ///

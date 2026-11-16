@@ -1817,3 +1817,55 @@ mod tests {
             Some(PropertyValue::Identifier(s)) if s == "spirv"));
     }
 }
+
+#[cfg(test)]
+mod liveness_oracle_tests {
+    use super::*;
+
+    /// The HIR and AST liveness analyses must agree — `debug_assert_eq!` guards
+    /// this during a build, but that is invisible in release (where the HIR set
+    /// is the one actually used) and only fires when a whole stdlib file is
+    /// compiled. This pins the invariant on a small program with the shapes that
+    /// `lib/std/os/dir.bv` uses: calls inside `let`, inside a `when` block, and
+    /// in a `term`, plus a self-recursive txn.
+    #[test]
+    fn hir_and_ast_defn_liveness_agree() {
+        let src = "\
+defn leaf(p: Int) [p >= 0][term >= 0] -> Int { term p; };
+export defn mid(p: Int) [p >= 0][term >= 0] -> Int {
+    let a: Int = leaf(p);
+    when a > 0 { term leaf(a); };
+    term a;
+};
+txn walker(n: Int, acc: Int) [n >= 0 && acc >= 0][acc >= 0] -> Int {
+    when n == 0 { term acc; };
+    term walker(n - 1, mid(acc));
+};
+node sink() [true][n >= 0] {
+    let n: Int = walker(3, 1);
+    term;
+};
+";
+        let (items, universe) =
+            crate::library::parse_and_check("<liveness-test>", src).expect("parse_and_check");
+        let hir = build_hir(&items, Some(&universe));
+
+        let ast = crate::analysis::defn_liveness::DefnLiveness::build(&items);
+        let h = crate::hir::defn_liveness::DefnLiveness::build(&hir);
+        assert_eq!(
+            h.keep_all, ast.keep_all,
+            "keep_all drift between HIR and AST liveness"
+        );
+        if ast.keep_all {
+            return;
+        }
+        let mut only_ast: Vec<&String> = ast.live.difference(&h.live).collect();
+        let mut only_hir: Vec<&String> = h.live.difference(&ast.live).collect();
+        only_ast.sort();
+        only_hir.sort();
+        assert!(
+            only_ast.is_empty() && only_hir.is_empty(),
+            "HIR/AST defn-liveness drift\n  AST only: {only_ast:?}\n  HIR only: {only_hir:?}"
+        );
+    }
+}
