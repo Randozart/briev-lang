@@ -27,6 +27,11 @@ use std::path::{Path, PathBuf};
 /// not about Briev-internal type names.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GlueTarget {
+    /// 2026-11-16 (FFI contract plan S2): the ABI core this adapter targets
+    /// (`config/abi/<name>.dbvl`). Optional: an adapter whose boundary is not a
+    /// machine ABI (e.g. a JS host module) omits it. When present it must name a
+    /// shipped core — validated at load, so a typo cannot silently fall back.
+    pub abi: Option<String>,
     /// 2026-11-16 (FFI contract plan D3): descriptor schema version. A file
     /// written for a schema the compiler does not implement is refused rather
     /// than silently read with defaults — see `validate_target_entry`.
@@ -346,6 +351,7 @@ const KNOWN_TARGET_KEYS: &[&str] = &[
     "discipline",
     "errors",
     "supports",
+    "abi",
 ];
 
 /// Nested key sets, so a typo inside a section is caught as well as at the top.
@@ -387,11 +393,35 @@ fn reject_unknown_key(path: &str, key: &str, known: &[&str]) -> Result<(), Strin
 /// unknown key at any level this compiler reads.
 fn validate_target_entry(lang: &str, entry: &HashMap<String, DataValue>) -> Result<(), String> {
     validate_version(lang, entry)?;
+    validate_abi_core(lang, entry)?;
     for (key, value) in entry {
         reject_unknown_key(lang, key, KNOWN_TARGET_KEYS)?;
         validate_section(lang, key, value)?;
     }
     Ok(())
+}
+
+/// The `abi:` gate: when an adapter names an ABI core, that core must be shipped.
+/// A typo is refused rather than silently leaving the adapter without ABI facts,
+/// because "no core" and "core I did not find" would behave differently later.
+fn validate_abi_core(lang: &str, entry: &HashMap<String, DataValue>) -> Result<(), String> {
+    let Some(DataValue::String(name)) = entry.get("abi") else {
+        return Ok(());
+    };
+    if crate::glue::abi::load_core(name).is_ok() {
+        return Ok(());
+    }
+    let known = crate::glue::abi::core_names();
+    Err(format!(
+        "glue descriptor for `{lang}` names ABI core `{name}`, which is not \
+         shipped. Known cores: {}. Each core is `config/abi/<name>.dbvl`; write \
+         the descriptor against one of them or add the core.",
+        if known.is_empty() {
+            "<none found>".to_string()
+        } else {
+            known.join(", ")
+        }
+    ))
 }
 
 /// The version gate: present, integral, and within what this compiler reads.
@@ -501,6 +531,10 @@ fn glue_target_from_entry(
             _ => HashMap::new(),
         }
     };
+    let abi = match entry.get("abi") {
+        Some(DataValue::String(name)) => Some(name.clone()),
+        _ => None,
+    };
     let version = match entry.get("version") {
         Some(DataValue::Int(n)) => *n,
         _ => 0,
@@ -549,6 +583,7 @@ fn glue_target_from_entry(
     let param_decl = str_field("param_decl").unwrap_or_else(|| "{name}: {type}".to_string());
     let fn_param_decl = str_field("fn_param_decl").unwrap_or_else(|| "{name}: {type}".to_string());
     Some(GlueTarget {
+        abi,
         version,
         language: key.to_string(),
         types_module: PathBuf::from(types_module),
@@ -903,6 +938,30 @@ rust: { version: 1; types_module: "glue/rust/types.bv"; extension: "rs"; bridge_
             err.contains("values.String"),
             "the error must name the key path, got: {err}"
         );
+    }
+
+    #[test]
+    fn unknown_abi_core_is_refused() {
+        let err = parse_one(
+            "glue_unknown_abi.dbvl",
+            r#"c: { version: 1; abi: "sysv-x9999"; types_module: "t.bv"; extension: "h"; bridge_kind: "extern_c_crate"; calling_convention: "c_abi" };"#,
+        )
+        .expect_err("unknown ABI core must be refused");
+        assert!(err.contains("names ABI core `sysv-x9999`"), "got: {err}");
+        assert!(
+            err.contains("sysv-x86_64"),
+            "the error must list the known cores, got: {err}"
+        );
+    }
+
+    #[test]
+    fn the_c_adapter_declares_its_abi_core() {
+        // Only where `c_abi` values are genuine C types; the managed-language
+        // adapters name host-FFI types, not a machine ABI.
+        let core = load_glue_language("c").expect("c adapter loads");
+        assert_eq!(core.abi.as_deref(), Some("sysv-x86_64"));
+        let loaded = crate::glue::abi::load_core("sysv-x86_64").expect("core loads");
+        assert_eq!(loaded.aggregate_small_max, 16);
     }
 
     #[test]

@@ -18,6 +18,7 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
         (
             "python".to_string(),
             GlueTarget {
+                abi: None,
                 version: 1,
                 language: "python".to_string(),
                 types_module: std::path::PathBuf::from("glue/python/types.bv"),
@@ -46,6 +47,7 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
         (
             "rust".to_string(),
             GlueTarget {
+                abi: None,
                 version: 1,
                 language: "rust".to_string(),
                 types_module: std::path::PathBuf::from("glue/rust/types.bv"),

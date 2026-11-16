@@ -721,3 +721,34 @@ would assert on. Replaced by `BUGS.md` §"HIR drops the FFI boundary surface",
 which records the measurement (`unsupported=0`), the two structural causes
 (`HirTypeDefKind` has no protocol; `HirForeign` drops `from`/contracts/flags),
 and names the S0 fixture as S4's acceptance test.
+
+### S2 — DONE (2026-11-16)
+
+- `config/abi/{sysv-x86_64,win64,aapcs64,riscv64,wasm32,ptx}.dbvl` — the machine
+  axis as data: pointer/int/float widths, stack alignment, aggregate passing
+  (size threshold, classification, hidden-pointer threshold), symbol decoration,
+  and whether the caller frees returned memory.
+- `src/glue/abi.rs` — `AbiCore` + `load_core` / `load_core_from` / `parse_core` /
+  `core_names`, with **closed keys** and named-field errors. Four tests: every
+  shipped core parses and its `name` matches its file stem; the aggregate rules
+  differ per family (wasm has none, SysV passes ≤16 bytes in registers); an
+  unknown key is refused with its section; a missing integer is refused by name.
+- `GlueTarget.abi: Option<String>`; `validate_abi_core` refuses a name that is
+  not shipped and lists the known cores. `lib/glue/c/glue.dbv` declares
+  `abi: "sysv-x86_64"`.
+
+**Form finding.** The cores use the flat `.dbvl` line-table shape
+(`key: value;` at top level, as `config/ir-lowering.dbvl` does) rather than the
+nested form the glue descriptors use: nested quoted-mode maps reject bare integer
+values ("Expected named field"), and ABI facts are integers. Recorded in the file
+headers so the next author does not rediscover it.
+
+**Gate met:** `glue::` 69/69, `tests/glue_bridge_tests` 13/13, `tests/glue_test`
+11/11, `scripts/gate.sh quick` pass (`20261116T201939Z-7e8039ddc0f4`); Praetor
+clean on both touched files.
+
+**Scope note.** Only the C adapter names a core. The managed-language adapters
+carry host-FFI type names (`ctypes.c_int64`, `jlong`, `IntPtr`), not a machine
+ABI — declaring a core for them would assert something false. Deriving `c_abi`
+defaults from the core (§4.1's "no restatement") therefore waits for S3, where
+the generator knows which side of the boundary a type sits on.

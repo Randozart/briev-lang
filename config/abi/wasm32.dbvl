@@ -1,0 +1,16 @@
+// ABI core "wasm32" — facts only, no language knowledge.
+// 2026-11-16 (FFI contract plan S2): flat .dbvl line-table form (the form
+// the config DB reads as typed ints); a language adapter names this core
+// with `abi: "wasm32"`. Closed keys: an unknown one is refused.
+
+name: "wasm32";
+pointer_bits: 32;
+int_bits: 32;
+float_bits: 64;
+stack_align: 16;
+aggregate_small_max: 0;
+aggregate_in_regs: "none";
+aggregate_hidden_ptr_threshold: 0;
+symbol_prefix: "";
+symbol_mangling: "none";
+temporaries_caller_frees: true;

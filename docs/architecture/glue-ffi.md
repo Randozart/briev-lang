@@ -223,6 +223,38 @@ language needs.
   include flags, the output suffix, the link flags, the compiler, and a filename
   prefix (the JVM needs `lib<bridge>.so`).
 
+#### ABI cores — `config/abi/<name>.dbvl` (2026-11-16)
+
+The machine axis lives apart from the language axis. A core states only
+argument-passing facts; a language adapter names one with `abi: "<name>"` and
+never restates them:
+
+```
+name: "sysv-x86_64";
+pointer_bits: 64; int_bits: 64; float_bits: 64; stack_align: 16;
+aggregate_small_max: 16; aggregate_in_regs: "eightbyte";
+aggregate_hidden_ptr_threshold: 16;
+symbol_prefix: ""; symbol_mangling: "none";
+temporaries_caller_frees: true;
+```
+
+Shipped: `sysv-x86_64`, `win64`, `aapcs64`, `riscv64`, `wasm32`, `ptx`. The flat
+line-table form is deliberate — it is the shape the config DB reads as typed
+integers (nested quoted-mode maps carry strings only).
+
+Rules that make it a *fact* file rather than a policy file:
+
+- **Closed keys.** An unrecognised key is refused with the section path, because
+  a silently-ignored ABI key leaves the compiler believing something about the
+  machine that the data does not say.
+- **No strategies.** A core may not state a preference, a cost, or "use the fast
+  path". Efficiency is derived from representations plus proofs.
+- **`abi:` is validated.** Naming a core that is not shipped is a refusal that
+  lists the alternatives — "no core" and "core I did not find" must not behave
+  alike. Only `c` declares one today: the managed-language adapters carry
+  host-FFI type names (`ctypes.c_int64`, `jlong`), not a machine ABI, so claiming
+  a core for them would be false.
+
 #### Descriptor schema: versioned and closed (2026-11-16)
 
 `version` is **required**, and an **unknown key is an error** at every level the

@@ -21,6 +21,7 @@
 // See docs/plans/2026-06-22-glue-architecture.md for full design.
 // See docs/plans/2026-06-23-glue-implementation-status.md for status.
 
+pub mod abi;
 pub mod bridge;
 pub mod briev_pass;
 pub mod config;
