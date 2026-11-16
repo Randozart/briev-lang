@@ -240,21 +240,19 @@ fn pinned_non_lightweight_async_uses_the_threaded_arm() {
 
 // ── 2026-11-16 (thread-lane E3): the both-allocate refusal is retired ────────
 
-/// Two pinned workers that both allocate. This pair was refused while the arena
-/// cursor was a single shared slot; with one triple per worker it is accepted.
+/// Two pinned workers that both allocate from the bump arena. This pair was
+/// refused while the arena cursor was a single shared slot; with one triple per
+/// worker it is accepted, and the partition is what the IR must show.
 ///
-/// Note what the fixture actually reaches: the heap path. No program in this
-/// tree naturally reaches the bump arena — a runtime-sized `Alloc#` is folded or
-/// heap-allocated before codegen, and `needs_arena` stays empty — so the
-/// per-worker partition is covered structurally by
-/// `backend::llvm::tests::pinned_arena_injects_one_slot_triple_per_worker`. This
-/// test covers the retired refusal end to end.
+/// `%State` is an LLVM type, so the injected slot *names* never appear in emitted
+/// IR — the assertion is on indices: the six arena slots occupy the tail of
+/// `%State`, worker 0's tick touches exactly the first three and worker 1's
+/// exactly the last three, and main initialises all six once (the reservation).
 #[test]
 fn two_pinned_workers_may_both_allocate() {
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("thread_pin_alloc");
     let ll = emit_ir("thread_pin_alloc.bv", &out);
 
-    // Accepted: two workers, one tick each.
     assert!(
         ll.contains("define void @reactor_tick(ptr noalias nocapture %state)"),
         "worker 0's tick must exist"
@@ -264,6 +262,59 @@ fn two_pinned_workers_may_both_allocate() {
         "worker 1's tick must exist"
     );
 
+    // The arena is used: the two runtime-sized allocations are not folded away.
+    let state_line = ll
+        .lines()
+        .find(|l| l.starts_with("%State = type {"))
+        .expect("%State type");
+    let fields = state_line.matches(',').count() + 1;
+    assert!(
+        fields >= 9,
+        "4 user fields + 6 per-worker arena slots expected, got: {state_line}"
+    );
+
+    let arena_indices = |body: &str| -> Vec<usize> {
+        let mut idx: Vec<usize> = body
+            .match_indices("getelementptr inbounds %State, ptr %state, i32 0, i32 ")
+            .filter_map(|(pos, pat)| {
+                body[pos + pat.len()..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|n| n.parse().ok())
+            })
+            .collect();
+        idx.sort_unstable();
+        idx.dedup();
+        idx
+    };
+    // The arena slots are the last six fields; the user fields are the rest.
+    let arena_lo = fields - 6;
+    let tick0 = function_body(&ll, "define void @reactor_tick(");
+    let tick1 = function_body(&ll, "define void @reactor_tick_w1(");
+    let own0: Vec<usize> = arena_indices(tick0)
+        .into_iter()
+        .filter(|i| *i >= arena_lo)
+        .collect();
+    let own1: Vec<usize> = arena_indices(tick1)
+        .into_iter()
+        .filter(|i| *i >= arena_lo)
+        .collect();
+    assert_eq!(
+        own0.len(),
+        3,
+        "worker 0 must touch exactly its own ptr/end/base, got {own0:?} in:\n{tick0}"
+    );
+    assert_eq!(
+        own1.len(),
+        3,
+        "worker 1 must touch exactly its own ptr/end/base, got {own1:?} in:\n{tick1}"
+    );
+    assert!(
+        own0.iter().all(|i| *i < arena_lo + 3) && own1.iter().all(|i| *i >= arena_lo + 3),
+        "workers must not share an arena cursor: w0={own0:?} w1={own1:?}"
+    );
+
+    // And it runs: worker 1's own allocation round-trips through Store#/Load#.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let binary = out.join("thread_pin_alloc");
     let link = Command::new("clang")
@@ -294,3 +345,4 @@ fn two_pinned_workers_may_both_allocate() {
         "worker 1's own allocation round-trips (Store# 9 → Load# 9)"
     );
 }
+

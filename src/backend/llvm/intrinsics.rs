@@ -1183,7 +1183,10 @@ fn emit_alloc(
     // has %state (all txns, callable txns, and their helpers by inheritance).
     // 2026-09-24: stateless bodies are NOT in that set — fall through to the
     // alloca/malloc strategies below (no %state to reach into).
-    if backend.arena_ptr_idx.is_some() && !backend.fun.stateless_body {
+    // 2026-11-16 (thread-lane E3): same gate as `helpers.rs` — a partitioned
+    // arena is addressable through `arena_slots()` even though
+    // `arena_ptr_idx` is None.
+    if backend.arena_slots().is_some() && !backend.fun.stateless_body {
         // 2026-07-19: emit_arena_alloc returns the old bump pointer as i64.
         // The caller receives it directly — no ptrtoint needed.
         let result = backend.emit_arena_alloc(out, indent, &size);

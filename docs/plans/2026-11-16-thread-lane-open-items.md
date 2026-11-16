@@ -320,6 +320,21 @@ worker's tick touches only its own slots and that neither emits `brk`.
 `__arena_ptr_w1`; both ticks write only their own; the linked program runs;
 **unpinned** corpus `.ll` stays byte-identical (`ll_determinism_check`).
 
+### A4 — the untested shapes (DONE 2026-11-16)
+
+| Shape | Disposition |
+|---|---|
+| pinned + wake trigger | **unit test** `pinned_wake_trigger_program_brackets_ticks_and_stops_the_pool` — a wake trigger only exists through the `__wake*` naming rule, never source, so the trigger is synthesised and the pin comes from the fixture text. Asserts the wake path is taken, ticks stay bracketed, `.end` stops the pool |
+| worker-side `endprogram` | already covered by `thread_pin_async_guard.bv` (worker 1 prints and exits) |
+| `MAX_THREADS` scale | **unit test** `sixty_three_workers_emit_a_tick_each_and_a_full_table` — 63-entry table, `@reactor_tick_w62` present, nothing beyond the max. Not run: 63 OS threads is a CI flakiness source |
+| zero-tick exit | **not expressible from source.** The `#!exit` directive is referenced by the execution-model doc, several benchmarks and trophies, but the parser has no production for it (`bvc` rejects `#!exit true;` at line 1, and `trophies/bracket-universal/example.bv` fails the same way). The `.end` pool stop it would exercise is asserted by `threaded_main_starts_once_and_balances_the_barriers`. Filed below |
+
+**New finding (documentation gap, not fixed here):** `#!exit <cond>` is dead
+syntax — no lexer token, no parser production, yet `docs/architecture/briev-execution-model.md`,
+`benchmarks/iir_filter_runtime.bv`, `benchmarks/…` and two trophies still use it.
+Either the directive was removed without sweeping its users or the sweep missed
+them; whoever owns the exit-condition surface should decide restore-vs-delete.
+
 ### E4 — cross-worker write-mask assertion (A3/D.2)
 
 After `build_write_masks`, in debug builds only: for every `%State` slot, the
