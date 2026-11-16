@@ -63,6 +63,21 @@ actions. References — does not replace — the kiosk program, lane ceilings,
 float formats, H5, verification, stability, lifetime/arena/destination,
 proof-consumption, eternal ABI, Intel G1.5, and doctrine plans.
 
+**Next steps + lane protocol (2026-11-16, ACTIVE):**
+`docs/plans/2026-11-16-next-steps-memory-determinism-lanes.md` — the four open
+engineering items in priority order (M2 tail-loop destruction: measured
+12.6 MB/4.8 GB/23.7 GB at 1k/100k/400k iterations, shape now reported so it
+blocks `--deny-memory-ambiguity`; R RSS step-growth: 150→204 MB over 400 calls
+on all three builds incl. the pre-campaign one — read main's A4 arena retraction
+first; D IR determinism: `%State` index and interned-string order still vary and
+the determinism corpus does not cover the shape; X six XPU items blocked on PTL
+node access, K3 edge budgets blocked on owner numbers). Also records the
+binding worktree/branch protocol (own worktree `briev-intel-xpu` on
+`intel-xpu-harvest`; `main` is a shared trunk never checked out here;
+fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
+refuses off-branch or on a dirty tree, reports what would merge, and prints the
+two known conflict recipes instead of guessing.
+
 **Finishing grind — memory to zero + XPU ceilings (2026-11-16, ACTIVE execution plan):**
 `docs/plans/2026-11-16-memory-and-xpu-finish-grind.md` — executes the
 remaining work of the post-re-land memory plan (§B) and the Intel lane
