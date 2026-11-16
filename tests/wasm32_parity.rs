@@ -71,7 +71,17 @@ const env = {
   },
 };
 
-const { instance } = await WebAssembly.instantiate(buf, { env });
+// Instantiation is where a missing/renamed host import shows up. Without this
+// guard Node exits 1 and the Rust side reports "wasm exit 1", which reads like
+// the program returned 1 instead of "the harness could not load the module" —
+// a wrong diagnosis that costs a debugging session every time.
+let instance;
+try {
+  ({ instance } = await WebAssembly.instantiate(buf, { env }));
+} catch (error) {
+  console.error('harness: instantiate failed: ' + String(error && error.message));
+  process.exit(121);
+}
 memory = instance.exports.memory;
 const exports = instance.exports;
 if (typeof exports.__web_boot === 'function') exports.__web_boot();
@@ -160,6 +170,11 @@ fn run_native(binary: &Path) -> i32 {
 }
 
 /// Run a wasm module through the Node harness and return its exit code.
+///
+/// The fixture is silent by contract, so *any* stderr output means the harness
+/// itself failed rather than the program producing a bad status. Reporting that
+/// distinctly matters: the opaque "wasm exit 1" from an uncaught JS exception
+/// looks exactly like a genuine cross-backend divergence.
 fn run_wasm(harness: &Path, wasm: &Path) -> i32 {
     let output = Command::new("node")
         .arg(harness)
@@ -167,12 +182,12 @@ fn run_wasm(harness: &Path, wasm: &Path) -> i32 {
         .output()
         .expect("failed to spawn node");
     let code = output.status.code().unwrap_or(-1);
-    if code == 120 || code == 124 || code == 125 {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if matches!(code, 120 | 121 | 124 | 125) || !stderr.trim().is_empty() {
         panic!(
-            "wasm harness could not run {}: {}\n{}",
+            "wasm harness could not run {}: exit {code}\n{}",
             wasm.display(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            stderr
         );
     }
     code
