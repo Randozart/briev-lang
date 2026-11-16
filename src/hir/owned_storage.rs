@@ -258,6 +258,8 @@ fn insert_releases_with_report(
         for param in &callable.params {
             fresh_vars.insert(param.name.clone(), false);
         }
+        let param_aliases =
+            param_alias_map(&callable.body.statements, &callable.params, &param_return);
         let mut ctx = Pass {
             fresh: &fresh,
             escapes,
@@ -266,6 +268,7 @@ fn insert_releases_with_report(
             ok_fresh: &ok_fresh,
             borrow_returns: &borrow_returns,
             freed_map: &freed,
+            param_aliases: &param_aliases,
             locals: &locals,
             next,
             function: callable.name.clone(),
@@ -480,12 +483,23 @@ fn expr_max(e: &HirExpr) -> u32 {
 /// `Match(Identifier(p), arms)` where every arm either traps (no value) or
 /// evaluates to an identifier bound by that arm's pattern. This is what lets
 /// `unwrap(fresh)` stay fresh across the Result boundary.
-fn expr_param_identity(e: &HirExpr, params: &[super::program::HirParam]) -> Option<usize> {
+/// Which parameter (or a local that still denotes one) the expression hands
+/// back unchanged. `Some(i)` licenses the caller to treat the call's result as
+/// an alias of argument `i`: freshness then flows from that argument, and no
+/// release is inserted for the result.
+///
+/// 2026-11-16: resolution goes through an alias map (params plus `let`-copies
+/// and push-mutated collections) instead of a bare param scan. The protobuf
+/// parser shape `let next = dims; next <- varint(r); term f(r, next)` returns
+/// a value that is still the caller's `dims` — `<-` grows the same collection
+/// object — so pinning the summary to param `dims` is the accounting that
+/// matches the representation.
+fn expr_param_identity(e: &HirExpr, aliases: &HashMap<String, usize>) -> Option<usize> {
     match &e.kind {
-        HirExprKind::Identifier(n) => params.iter().position(|p| &p.name == n),
+        HirExprKind::Identifier(n) => aliases.get(n).copied(),
         HirExprKind::Match { scrutinee, arms } => {
             let p = match &scrutinee.kind {
-                HirExprKind::Identifier(n) => params.iter().position(|q| &q.name == n)?,
+                HirExprKind::Identifier(n) => aliases.get(n).copied()?,
                 _ => return None,
             };
             for arm in arms {
@@ -678,34 +692,234 @@ fn borrow_result_summaries(program: &HirProgram) -> HashSet<String> {
     out
 }
 
-fn param_return_summaries(program: &HirProgram) -> HashMap<String, usize> {
-    let mut out = HashMap::new();
-    for c in &program.callables {
-        let mut returns = Vec::new();
-        collect_returns(&c.body.statements, &mut returns);
-        if returns.is_empty() {
-            continue;
-        }
-        let mut idx: Option<usize> = None;
-        let mut all_param = true;
-        for e in &returns {
-            let i = expr_param_identity(e, &c.params);
-            match (i, idx) {
-                (Some(i), None) => idx = Some(i),
-                (Some(i), Some(j)) if i == j => {}
-                _ => {
-                    all_param = false;
-                    break;
+/// Locals that still denote a parameter after `let` copies, reassignment,
+/// in-place collection mutation and param-return calls. Seeded with the
+/// parameters themselves so a lookup is uniform.
+///
+/// `pr` supplies the param-return summaries needed to see through a call:
+/// `let next = parse_dimension_loop(dr, dims)` still denotes `dims`, because
+/// `parse_dimension_loop` hands its second argument back unchanged.
+fn param_alias_map(
+    stmts: &[HirStmt],
+    params: &[super::program::HirParam],
+    pr: &HashMap<String, Vec<usize>>,
+) -> HashMap<String, usize> {
+    let mut aliases: HashMap<String, usize> = HashMap::new();
+    for (i, p) in params.iter().enumerate() {
+        aliases.insert(p.name.clone(), i);
+    }
+    collect_param_aliases(stmts, &mut aliases, pr);
+    aliases
+}
+
+/// Which parameter `e` still denotes, following param-return calls. Depth is
+/// bounded so a pathological `let x = f(x)` chain cannot recurse forever.
+fn param_alias_of(
+    e: &HirExpr,
+    aliases: &HashMap<String, usize>,
+    pr: &HashMap<String, Vec<usize>>,
+) -> Option<usize> {
+    param_alias_of_depth(e, aliases, pr, 0)
+}
+
+fn param_alias_of_depth(
+    e: &HirExpr,
+    aliases: &HashMap<String, usize>,
+    pr: &HashMap<String, Vec<usize>>,
+    depth: u8,
+) -> Option<usize> {
+    if let Some(i) = expr_param_identity(e, aliases) {
+        return Some(i);
+    }
+    if depth >= 8 {
+        return None;
+    }
+    let HirExprKind::Call { callee, args, .. } = &e.kind else {
+        return None;
+    };
+    // A LOCAL is only well-defined to denote one parameter when the callee has
+    // exactly one candidate return. A selector like `ints_or(a, b)` may hand
+    // back either, so it names no single parameter.
+    let cands = pr.get(callee)?;
+    if cands.len() != 1 {
+        return None;
+    }
+    param_alias_of_depth(args.get(cands[0])?, aliases, pr, depth + 1)
+}
+
+/// Statement half of [`param_alias_map`]. A binding whose value resolves to a
+/// parameter joins the map; a binding whose value does not RESETS the entry
+/// (the local stopped denoting the parameter). `<-` (push) is a no-op: it
+/// grows the same collection object, so the alias survives.
+///
+/// The single name a `Let` binds, when it binds exactly one. HIR fills `names`
+/// with the bound names and it normally holds just `name`; more than one entry
+/// is a tuple destructuring, whose parts do not each denote a parameter.
+fn single_binding<'a>(name: &'a str, names: &'a [String]) -> Option<&'a str> {
+    match names.len() {
+        0 => Some(name),
+        1 => names.first().map(String::as_str),
+        _ => None,
+    }
+}
+
+fn collect_param_aliases(
+    stmts: &[HirStmt],
+    aliases: &mut HashMap<String, usize>,
+    pr: &HashMap<String, Vec<usize>>,
+) {
+    for s in stmts {
+        match &s.kind {
+            HirStmtKind::Let {
+                name,
+                names,
+                expr: Some(e),
+                ..
+            } => {
+                let Some(target) = single_binding(name, names) else {
+                    continue;
+                };
+                match param_alias_of(e, aliases, pr) {
+                    Some(i) => {
+                        aliases.insert(target.to_string(), i);
+                    }
+                    None => {
+                        aliases.remove(target);
+                    }
                 }
             }
-        }
-        if all_param {
-            if let Some(i) = idx {
-                out.insert(c.name.clone(), i);
+            HirStmtKind::Assign(l, r) => {
+                if let HirExprKind::Identifier(n) = &l.kind {
+                    match param_alias_of(r, aliases, pr) {
+                        Some(i) => {
+                            aliases.insert(n.clone(), i);
+                        }
+                        None => {
+                            aliases.remove(n);
+                        }
+                    }
+                }
             }
+            HirStmtKind::Guarded(_, b)
+            | HirStmtKind::Block(b)
+            | HirStmtKind::SyncBlock(b)
+            | HirStmtKind::Mutex(b)
+            | HirStmtKind::Defer(b) => collect_param_aliases(b, aliases, pr),
+            HirStmtKind::Foreach { body, .. } => collect_param_aliases(body, aliases, pr),
+            HirStmtKind::Match { arms, .. } => {
+                for a in arms {
+                    collect_param_aliases(&a.body, aliases, pr);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Arguments of a direct self call, when `e` is one.
+fn self_call_args<'a>(e: &'a HirExpr, callee_name: &str) -> Option<&'a Vec<HirExpr>> {
+    match &e.kind {
+        HirExprKind::Call { callee, args, .. } if callee == callee_name => Some(args),
+        _ => None,
+    }
+}
+
+fn param_return_summaries(program: &HirProgram) -> HashMap<String, Vec<usize>> {
+    // Two-phase fixpoint. Round 0 resolves aliases through parameters and
+    // `let` copies only. Later rounds see through param-return CALLS
+    // (`let next = parse_dimension_loop(dr, dims)` denotes `dims`), which is
+    // what lets the protobuf parser chain — dimension → shape → tensor_type →
+    // type → value_name — settle one link per round. The lattice is finite and
+    // only ever grows, so this converges; the cap bounds work on pathological
+    // programs.
+    let mut pr: HashMap<String, Vec<usize>> = HashMap::new();
+    let rounds = program.callables.len().clamp(1, 16);
+    for _ in 0..rounds {
+        let next = param_return_round(program, &pr);
+        if next == pr {
+            break;
+        }
+        pr = next;
+    }
+    pr
+}
+
+/// One round of [`param_return_summaries`] against the previous round's
+/// summaries.
+fn param_return_round(
+    program: &HirProgram,
+    prev: &HashMap<String, Vec<usize>>,
+) -> HashMap<String, Vec<usize>> {
+    let mut out = HashMap::new();
+    for c in &program.callables {
+        if let Some(i) = identity_return_param(c, prev) {
+            out.insert(c.name.clone(), i);
         }
     }
     out
+}
+
+/// The parameter a callable hands back unchanged, if it has one.
+///
+/// 2026-11-16: self tail calls are neutral for the identity question. A
+/// tail-recursive parser (`term f(r, next)`) returns whatever its base case
+/// returns, and the base case pins the parameter; the recursive arm is
+/// validated separately (it must thread the SAME parameter), instead of
+/// disqualifying the summary outright.
+/// The parameters a callable may hand back unchanged, in order.
+///
+/// 2026-11-16: the result is a SET, not one index. A selector such as
+/// `ints_or(items, fallback)` returns either argument depending on a runtime
+/// test, and that is still ownership-relevant: the result may alias any of
+/// them, so the caller may only free it when EVERY candidate is caller-owned.
+/// Collapsing this to one index would either miss the free (leak) or free
+/// caller storage (double free).
+///
+/// Self tail calls are neutral for the identity question. A tail-recursive
+/// parser (`term f(r, next)`) returns whatever its base case returns, and the
+/// base case pins the candidate; the recursive arm must thread each candidate,
+/// which is checked separately.
+fn identity_return_param(
+    c: &HirCallable,
+    prev: &HashMap<String, Vec<usize>>,
+) -> Option<Vec<usize>> {
+    let mut returns = Vec::new();
+    collect_returns(&c.body.statements, &mut returns);
+    if returns.is_empty() {
+        return None;
+    }
+    let aliases = param_alias_map(&c.body.statements, &c.params, prev);
+    let mut cands: Vec<usize> = Vec::new();
+    for e in &returns {
+        if self_call_args(e, &c.name).is_some() {
+            continue;
+        }
+        let i = param_alias_of(e, &aliases, prev)?;
+        if !cands.contains(&i) {
+            cands.push(i);
+        }
+    }
+    if cands.is_empty() {
+        return None;
+    }
+    // Every recursive arm must carry each surviving candidate at its own
+    // position; a candidate that is not threaded cannot describe the result.
+    let mut carried: Vec<usize> = Vec::new();
+    'cand: for &i in &cands {
+        for e in &returns {
+            let Some(args) = self_call_args(e, &c.name) else {
+                continue;
+            };
+            if args.get(i).and_then(|a| param_alias_of(a, &aliases, prev)) != Some(i) {
+                continue 'cand;
+            }
+        }
+        carried.push(i);
+    }
+    if carried.is_empty() {
+        return None;
+    }
+    Some(carried)
 }
 
 fn is_result_type(ty: &Type) -> bool {
@@ -724,7 +938,7 @@ fn is_result_type(ty: &Type) -> bool {
 fn ok_fresh_callables(
     program: &HirProgram,
     escapes: &HashMap<String, Vec<bool>>,
-    pr: &HashMap<String, usize>,
+    pr: &HashMap<String, Vec<usize>>,
     fresh: &HashSet<String>,
     freed: &HashMap<String, HashSet<String>>,
 ) -> HashSet<String> {
@@ -882,7 +1096,7 @@ fn collect_fresh(
     stmts: &[HirStmt],
     vars: &mut HashMap<String, bool>,
     fresh: &HashSet<String>,
-    pr: &HashMap<String, usize>,
+    pr: &HashMap<String, Vec<usize>>,
     ok: &HashSet<String>,
     freed: &HashSet<String>,
 ) {
@@ -953,7 +1167,7 @@ fn collect_returns(stmts: &[HirStmt], out: &mut Vec<HirExpr>) {
 fn is_fresh(
     e: &HirExpr,
     vars: &HashMap<String, bool>,
-    pr: &HashMap<String, usize>,
+    pr: &HashMap<String, Vec<usize>>,
     fresh: &HashSet<String>,
     ok: &HashSet<String>,
     freed: &HashSet<String>,
@@ -1008,9 +1222,15 @@ fn is_fresh(
                 // unwrap boundary and the String payload is never freed.
                 args.first()
                     .is_some_and(|a| is_fresh(a, vars, pr, fresh, ok, freed))
-            } else if let Some(i) = pr.get(callee) {
-                args.get(*i)
-                    .is_some_and(|a| is_fresh(a, vars, pr, fresh, ok, freed))
+            } else if let Some(cands) = pr.get(callee) {
+                // Fresh only when EVERY candidate return is caller-owned. A
+                // selector handing back one of several arguments is owned
+                // exactly when all of them are (see identity_return_param).
+                !cands.is_empty()
+                    && cands.iter().all(|i| {
+                        args.get(*i)
+                            .is_some_and(|a| is_fresh(a, vars, pr, fresh, ok, freed))
+                    })
             } else {
                 false
             }
@@ -1043,7 +1263,7 @@ fn is_fresh(
 fn is_fresh_rhs(
     e: &HirExpr,
     vars: &HashMap<String, bool>,
-    pr: &HashMap<String, usize>,
+    pr: &HashMap<String, Vec<usize>>,
     fresh: &HashSet<String>,
     ok: &HashSet<String>,
     freed: &HashSet<String>,
@@ -1208,14 +1428,43 @@ struct Pass<'a> {
     fresh: &'a HashSet<String>,
     escapes: &'a HashMap<String, Vec<bool>>,
     consumed: &'a HashMap<String, HashSet<usize>>,
-    param_return: &'a HashMap<String, usize>,
+    param_return: &'a HashMap<String, Vec<usize>>,
     ok_fresh: &'a HashSet<String>,
     borrow_returns: &'a HashSet<String>,
     freed_map: &'a HashMap<String, HashSet<String>>,
+    /// Locals of the CURRENT callable that still denote one of its parameters
+    /// (param `i` reachable through `let` copies and push-mutated collec-
+    /// tions). Used to decide whether a param-return call hands back caller
+    /// storage (a borrow) or an unresolved value (undecided).
+    param_aliases: &'a HashMap<String, usize>,
     locals: &'a HashSet<String>,
     next: u32,
     function: String,
     events: &'a mut Vec<OwnedEvent>,
+}
+
+/// A call to a param-return callable hands back the storage of the argument it
+/// aliases; when that argument resolves to one of the CALLER's own parameters
+/// the result is indistinguishable from the parameter itself — a borrow, never
+/// an undecided owner. This is the protobuf parser shape: `let next =
+/// parse_dimension_loop(dr, dims)` where `dims` is the caller's parameter.
+/// Deliberately narrow: only a parameter-origin argument qualifies, so a call
+/// that hands back an unresolved LOCAL value still reports as undecided — a
+/// leak must not be relabelled as a borrow to make the census look better.
+fn call_aliases_caller_param(e: &HirExpr, ctx: &Pass) -> bool {
+    let HirExprKind::Call { callee, args, .. } = &e.kind else {
+        return false;
+    };
+    let Some(cands) = ctx.param_return.get(callee) else {
+        return false;
+    };
+    // ANY candidate resolving to caller storage is enough: the callee may pick
+    // that one at runtime, so the result may be a borrow.
+    cands.iter().any(|i| {
+        args.get(*i)
+            .and_then(|a| param_alias_of(a, ctx.param_aliases, ctx.param_return))
+            .is_some()
+    })
 }
 
 fn collect_let_names(stmts: &[HirStmt], out: &mut HashSet<String>) {
@@ -1319,7 +1568,8 @@ fn rewrite_list(
                         // storage (x.dims, list[i], *p) — an alias, not an
                         // undecided owner.
                         let borrow_call = matches!(&e.kind, HirExprKind::Call { callee, .. }
-                            if ctx.borrow_returns.contains(callee));
+                            if ctx.borrow_returns.contains(callee))
+                            || call_aliases_caller_param(e, ctx);
                         if borrow_call
                             || matches!(
                                 &e.kind,
@@ -2135,7 +2385,7 @@ defn fresh_int_list(items: List<Int>) [true][true] -> List<Int> {
             .unwrap();
         let mut vars: HashMap<String, bool> =
             b.params.iter().map(|p| (p.name.clone(), false)).collect();
-        let no_pr: HashMap<String, usize> = HashMap::new();
+        let no_pr: HashMap<String, Vec<usize>> = HashMap::new();
         let no_ok: HashSet<String> = HashSet::new();
         let no_freed: HashSet<String> = HashSet::new();
         collect_fresh(
@@ -2150,7 +2400,7 @@ defn fresh_int_list(items: List<Int>) [true][true] -> List<Int> {
         for s in &b.body.statements {
             eprintln!("dbg stmt={:?}", s.kind);
         }
-        let no_pr: HashMap<String, usize> = HashMap::new();
+        let no_pr: HashMap<String, Vec<usize>> = HashMap::new();
         let no_ok: HashSet<String> = HashSet::new();
         let no_freed: HashSet<String> = HashSet::new();
         let mut returns = Vec::new();
@@ -2356,5 +2606,112 @@ defn use() -> Int { let s: String = make(); keep s; let n: Int = CharCount#(s); 
         insert_releases(&mut program, &HashMap::new());
         let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
         assert!(!has_free(use_fn, "s"), "keep must suppress auto-release");
+    }
+
+    /// A self-tail-recursive handler that hands its accumulator back unchanged
+    /// must still publish a param-return summary. This is the protobuf parser
+    /// shape (`term f(r, next)` threaded through a base `term dims`): the
+    /// recursive arm is neutral, the base case pins the parameter.
+    #[test]
+    fn self_tail_loop_threads_its_parameter() {
+        let program = annotated(
+            r#"
+import "std/alloc.bv";
+defn keep_loop(n: Int, acc: List<Int>) [true][true] -> List<Int> {
+    when n <= 0 {
+        term acc;
+    };
+    term keep_loop(n - 1, acc);
+};
+"#,
+        );
+        let pr = param_return_summaries(&program);
+        assert_eq!(pr.get("keep_loop"), Some(&vec![1usize]));
+    }
+
+    /// A local bound from the recursive call still denotes the caller's
+    /// parameter, so the chain stays a borrow and never becomes an owner.
+    #[test]
+    fn call_bound_local_still_aliases_the_parameter() {
+        let program = annotated(
+            r#"
+import "std/alloc.bv";
+defn keep_loop(n: Int, acc: List<Int>) [true][true] -> List<Int> {
+    when n <= 0 {
+        term acc;
+    };
+    term keep_loop(n - 1, acc);
+};
+defn wrap(n: Int, acc: List<Int>) [true][true] -> List<Int> {
+    let next: List<Int> = keep_loop(n, acc);
+    term next;
+};
+"#,
+        );
+        let pr = param_return_summaries(&program);
+        // `wrap` returns the value bound from `keep_loop(n, acc)`, which is
+        // `acc` — parameter 1 — not a fresh list.
+        assert_eq!(pr.get("wrap"), Some(&vec![1usize]));
+    }
+
+    /// A selector returning one of SEVERAL parameters is only fresh when every
+    /// candidate argument is fresh; when all of them are caller storage the
+    /// result may be a borrow and must not be freed.
+    #[test]
+    fn multi_candidate_return_is_fresh_only_when_all_candidates_are() {
+        let program = annotated(
+            r#"
+import "std/alloc.bv";
+defn pick(a: List<Int>, b: List<Int>) [true][true] -> List<Int> {
+    when a.Count#() == 0 {
+        term b;
+    };
+    term a;
+};
+defn borrowed(a: List<Int>, b: List<Int>) [true][true] -> List<Int> {
+    let picked: List<Int> = pick(a, b);
+    term picked;
+};
+defn owned() [true][true] -> List<Int> {
+    let empty: List<Int> = [];
+    let other: List<Int> = [];
+    let picked: List<Int> = pick(empty, other);
+    term picked;
+};
+"#,
+        );
+        let pr = param_return_summaries(&program);
+        assert_eq!(pr.get("pick").map(|v| v.len()), Some(2), "both params");
+
+        let no_freed_map: HashMap<String, HashSet<String>> = HashMap::new();
+        let escapes: HashMap<String, Vec<bool>> = HashMap::new();
+        let fresh = fresh_callables(&program, &escapes, &no_freed_map);
+        let no_ok: HashSet<String> = HashSet::new();
+        let no_freed: HashSet<String> = HashSet::new();
+
+        let bound_var = |name: &str, var: &str| -> Option<bool> {
+            let c = program.callables.iter().find(|c| c.name == name).unwrap();
+            let mut vars: HashMap<String, bool> =
+                c.params.iter().map(|p| (p.name.clone(), false)).collect();
+            collect_fresh(
+                &c.body.statements,
+                &mut vars,
+                &fresh,
+                &pr,
+                &no_ok,
+                &no_freed,
+            );
+            vars.get(var).copied()
+        };
+        assert_eq!(
+            bound_var("borrowed", "picked"),
+            Some(false),
+            "pick(a, b) over caller storage must not be fresh (it may alias)"
+        );
+        assert_eq!(
+            bound_var("owned", "picked"),
+            Some(true),
+            "pick over two fresh lists is fresh (every candidate is owned)"
+        );
     }
 }
