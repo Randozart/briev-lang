@@ -8,6 +8,9 @@ pub mod capabilities;
 pub mod circt;
 pub mod electronics;
 pub mod gpu_lowering;
+/// Restricted contract export. `examples/lean_export.rs` links this module, so
+/// dropping the declaration breaks every all-target build.
+pub mod lean;
 pub mod llvm;
 pub mod metadata;
 pub mod normalizer;

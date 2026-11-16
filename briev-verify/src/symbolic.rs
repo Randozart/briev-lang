@@ -429,6 +429,17 @@ fn fold_integer(op: &str, a: i64, b: i64) -> Option<i64> {
         "-" => Some(a.wrapping_sub(b)),
         "*" => Some(a.wrapping_mul(b)),
         "/" => a.checked_div(b),
+        // Contract bounds are routinely written as shifts (`1 << 24`). Only an
+        // in-range shift folds: an out-of-range one has no agreed word value,
+        // so it stays symbolic rather than inventing a constant.
+        "<<" => u32::try_from(b)
+            .ok()
+            .filter(|shift| *shift < 64)
+            .and_then(|shift| a.checked_shl(shift)),
+        ">>" => u32::try_from(b)
+            .ok()
+            .filter(|shift| *shift < 64)
+            .and_then(|shift| a.checked_shr(shift)),
         _ => None,
     }
 }

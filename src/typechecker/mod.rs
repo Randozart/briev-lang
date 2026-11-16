@@ -4191,12 +4191,66 @@ fn prove_with_constants(
     ctx: &TypecheckContext,
 ) -> crate::proof_engine::callgate::Verdict {
     let goal = fold_constants(goal, ctx);
-    let facts: Vec<Expr> = ctx
+    let mut facts: Vec<Expr> = ctx
         .known_facts
         .iter()
         .map(|f| fold_constants(f, ctx))
         .collect();
+    // Contracts are declarations (this project's source of truth), so a callee's
+    // postcondition may stand as a fact about the call term itself. Without
+    // this, `ascii_lower(byte_at(s, k))` cannot establish `b >= 0` even though
+    // `byte_at` declares `[term >= 0 && term <= 255]`.
+    facts.extend(inline_call_post_facts(&goal, ctx));
     crate::proof_engine::callgate::prove_precondition(&goal, &facts)
+}
+
+/// Collect postcondition facts for calls used **inline** in `goal`.
+///
+/// Only contracted, non-self calls contribute, and a postcondition that folds
+/// to literal `false` is skipped: an inconsistent declaration must not poison
+/// every obligation that happens to mention the call.
+fn inline_call_post_facts(goal: &Expr, ctx: &TypecheckContext) -> Vec<Expr> {
+    let mut out = Vec::new();
+    collect_inline_call_post_facts(goal, ctx, &mut out);
+    out
+}
+
+/// Walk one expression, emitting postcondition facts for each inline call.
+fn collect_inline_call_post_facts(expr: &Expr, ctx: &TypecheckContext, out: &mut Vec<Expr>) {
+    match expr {
+        Expr::Call(callee, args, _) => {
+            let self_call = ctx.current_fn_name.as_deref() == Some(callee.as_str());
+            if let (false, Some(contract)) = (self_call, ctx.fn_contracts.get(callee)) {
+                if !matches!(contract.post, Expr::Bool(false)) {
+                    out.extend(crate::proof_engine::callgate::post_facts_for_term(
+                        contract, args, expr,
+                    ));
+                }
+            }
+            for arg in args {
+                collect_inline_call_post_facts(arg, ctx, out);
+            }
+        }
+        Expr::BinaryOp(_, l, r) => {
+            collect_inline_call_post_facts(l, ctx, out);
+            collect_inline_call_post_facts(r, ctx, out);
+        }
+        Expr::UnaryOp(_, inner)
+        | Expr::Field(inner, _)
+        | Expr::Cast(inner, _)
+        | Expr::Consume(inner) => collect_inline_call_post_facts(inner, ctx, out),
+        Expr::MethodCall(recv, _, args, _) => {
+            collect_inline_call_post_facts(recv, ctx, out);
+            for arg in args {
+                collect_inline_call_post_facts(arg, ctx, out);
+            }
+        }
+        Expr::Index(base, idx) => {
+            collect_inline_call_post_facts(base, ctx, out);
+            collect_inline_call_post_facts(idx, ctx, out);
+        }
+        _ => {}
+    }
 }
 
 /// 2026-10-26: dev-only guard audit. For `when !(cond) { trap; }`, ask the

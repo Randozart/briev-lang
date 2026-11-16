@@ -2046,6 +2046,78 @@ pub fn post_facts(contract: &FnContract, args: &[Expr], binding: &str) -> Vec<Ex
     out
 }
 
+/// Postcondition facts for a call term used **inline** rather than bound.
+///
+/// `ascii_lower(byte_at(s, k))` never passes through a `let`, so there is no
+/// binding name for `post_facts` to rename `term` to. Here the result is the
+/// call expression itself, which is exactly the atom the enclosing goal talks
+/// about — so `term >= 0` becomes `byte_at(s, k) >= 0` and can discharge the
+/// callee's precondition.
+///
+/// Admission mirrors `post_facts`: the substituted conjunct may only mention
+/// identifiers that already appear in the arguments or in the call term,
+/// otherwise it would smuggle in a fact about the caller's locals.
+pub fn post_facts_for_term(contract: &FnContract, args: &[Expr], call: &Expr) -> Vec<Expr> {
+    let mut allowed = BTreeSet::new();
+    for a in args {
+        free_identifiers(a, &mut allowed);
+    }
+    free_identifiers(call, &mut allowed);
+    let mut raw = Vec::new();
+    conjuncts(&contract.post, &mut raw);
+    let mut out = Vec::new();
+    for c in raw {
+        if !mentions(&c, "term") {
+            continue;
+        }
+        let substituted = substitute_params(&c, &contract.params, args);
+        let replaced = substitute_term(&substituted, call);
+        let mut ids = BTreeSet::new();
+        free_identifiers(&replaced, &mut ids);
+        if ids.iter().all(|id| allowed.contains(id)) {
+            out.push(replaced);
+        }
+    }
+    out
+}
+
+/// Replace every `term` / `__result` projection with a concrete expression.
+///
+/// `term` is the result hole of a contract; when the result is an inline call
+/// term, the hole is filled with that term so the fact talks about the call
+/// site's actual syntax. `term.f` style projections are left alone — a
+/// component postcondition has no whole-value expression to stand for it.
+fn substitute_term(e: &Expr, call: &Expr) -> Expr {
+    match e {
+        Expr::Identifier(n) if n == "term" || n == "__result" => call.clone(),
+        Expr::BinaryOp(k, l, r) => Expr::BinaryOp(
+            *k,
+            Box::new(substitute_term(l, call)),
+            Box::new(substitute_term(r, call)),
+        ),
+        Expr::UnaryOp(k, inner) => Expr::UnaryOp(*k, Box::new(substitute_term(inner, call))),
+        Expr::Field(base, f) => Expr::Field(Box::new(substitute_term(base, call)), f.clone()),
+        Expr::Call(name, args, id) => Expr::Call(
+            name.clone(),
+            args.iter().map(|a| substitute_term(a, call)).collect(),
+            *id,
+        ),
+        Expr::MethodCall(recv, name, args, id) => Expr::MethodCall(
+            Box::new(substitute_term(recv, call)),
+            name.clone(),
+            args.iter().map(|a| substitute_term(a, call)).collect(),
+            *id,
+        ),
+        Expr::Index(base, idx) => Expr::Index(
+            Box::new(substitute_term(base, call)),
+            Box::new(substitute_term(idx, call)),
+        ),
+        Expr::Cast(inner, ty) => Expr::Cast(Box::new(substitute_term(inner, call)), ty.clone()),
+        Expr::Consume(inner) => Expr::Consume(Box::new(substitute_term(inner, call))),
+        other => other.clone(),
+    }
+}
+
 /// Postcondition facts for a multi-value binding. `term.0`, `term.1`, ...
 /// name the bound components; a bare `term` names the first component.
 pub fn post_facts_components(contract: &FnContract, args: &[Expr], names: &[String]) -> Vec<Expr> {
@@ -2149,6 +2221,63 @@ mod tests {
     fn literal_proven() {
         let goal = e("5 >= 0");
         assert_eq!(prove_precondition(&goal, &[]), Verdict::Proven);
+    }
+
+    /// An inline call term inherits its callee's declared postcondition.
+    ///
+    /// `ascii_lower(byte_at(s, k))` never binds a local, so `post_facts` has no
+    /// name to rename `term` to. Filling the hole with the call term itself
+    /// yields the atom the enclosing goal actually talks about.
+    #[test]
+    fn inline_term_inherits_the_callee_postcondition() {
+        let contract = FnContract {
+            params: vec!["s".to_string(), "i".to_string()],
+            pre: e("s >= 0"),
+            post: e("term >= 0 && term <= 255"),
+        };
+        let call = e("byte_at(left, k)");
+        let args = vec![e("left"), e("k")];
+        let facts = post_facts_for_term(&contract, &args, &call);
+        assert!(
+            facts.iter().any(|f| f == &e("byte_at(left, k) >= 0")),
+            "expected the lower-bound fact, got {facts:?}"
+        );
+        assert_eq!(
+            prove_precondition(&e("byte_at(left, k) >= 0"), &facts),
+            Verdict::Proven
+        );
+    }
+
+    /// A postcondition mentioning an identifier that is neither an argument nor
+    /// part of the call term must not become a fact about the caller's locals.
+    #[test]
+    fn inline_term_rejects_escaped_identifiers() {
+        let contract = FnContract {
+            params: vec!["s".to_string()],
+            pre: e("s >= 0"),
+            post: e("term >= secret"),
+        };
+        let facts = post_facts_for_term(&contract, &[e("x")], &e("f(x)"));
+        assert!(
+            facts.is_empty(),
+            "a postcondition may not leak caller locals: {facts:?}"
+        );
+    }
+
+    /// A postcondition without a `term` projection says nothing about the
+    /// result, so it contributes no facts.
+    #[test]
+    fn inline_term_ignores_result_free_postconditions() {
+        let contract = FnContract {
+            params: vec!["s".to_string()],
+            pre: e("s >= 0"),
+            post: e("s >= 0"),
+        };
+        let facts = post_facts_for_term(&contract, &[e("x")], &e("f(x)"));
+        assert!(
+            facts.is_empty(),
+            "no result projection, no facts: {facts:?}"
+        );
     }
 
     #[test]
