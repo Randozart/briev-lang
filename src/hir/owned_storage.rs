@@ -813,6 +813,12 @@ fn fresh_callables(
     fresh.insert("tensor_alloc".to_owned());
     fresh.insert("tensor_alloc_owned".to_owned());
     fresh.insert("fresh_int_list".to_owned());
+    // 2026-11-16: fresh_string is the String constructor. It allocates a new
+    // owned String (a copy of its input); the input is NOT retained. Seeding
+    // it lets self-tail String processors (e.g. peel in owned_tail_cleanup.bv)
+    // reach their fixed point: the base case `term fresh_string(text)` becomes
+    // fresh, and the self-tail `term peel(rest)` is exempted above.
+    fresh.insert("fresh_string".to_owned());
     let pr = param_return_summaries(program);
     // Ok-side freshness is derived first (it only needs pr + its own fixed
     // point), so the plain-fresh derivation can consult it.
