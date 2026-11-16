@@ -27,6 +27,23 @@ actions. References — does not replace — the kiosk program, lane ceilings,
 float formats, H5, verification, stability, lifetime/arena/destination,
 proof-consumption, eternal ABI, Intel G1.5, and doctrine plans.
 
+**Finishing grind — memory to zero + XPU ceilings (2026-11-16, ACTIVE execution plan):**
+`docs/plans/2026-11-16-memory-and-xpu-finish-grind.md` — executes the
+remaining work of the post-re-land memory plan (§B) and the Intel lane
+ceilings plan (§W2c/W3/W4) as one dependency-ordered grind. Records the
+retirement of the HIR escape walker (non-monotone cross-pass summaries; the
+frame leak is fixed by the AST map + `fresh_changed` + nested-call
+attribution — 500-call soak flat 1.9→1.6 MB) and CORRECTS an interim claim:
+the 12 undecided census families are §13 copy discipline (parser chain,
+`packed_ints`, `arg`, `conv_attr4`, `unwrap` source, `dispatch`,
+`select_path`), not syscall-bound — zero is reachable. Tracks: M1 soak truth,
+M2 tail-loop destruction via `RecursiveCarrierValue` owned-arg facts, M3
+census 12→0, M4 deny-at-zero, M5 conservative-drops ratchet; X1 f16 coopmat
+tier (9× regression — fix or fact-gate), X2 NEO residency, X3 GLSL/XMX
+ceilings, X4 `clFinish` hang, X5 Stage F promotion (unblocked by the W1 probe
+fix), X6 dispatch waves, X7 OpenVINO gate on the node; K1 pin bump, K2 stale
+capability ledger, K3 edge budgets. Waves 0–7 with an exit gate each.
+
 **Kiosk native acceptance program (2026-11-10, ACTIVE — capability detail):**
 `docs/plans/2026-11-10-kiosk-native-acceptance-program.md` — make Briev
 capable of the entire `2d-Kiosk-Avatar` stack natively. The fork

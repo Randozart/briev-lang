@@ -1,5 +1,15 @@
 # Post-re-land: hygiene, soak truth, tail-loop destruction (2026-11-14)
 
+**Execution pointer (added 2026-11-16, forward reference only — history below
+is unchanged):** §B's remaining items are sequenced in
+`docs/plans/2026-11-16-memory-and-xpu-finish-grind.md`. Outcome of the §B1
+soak-truth investigation and the fate of the HIR escape walker are recorded
+there §0 (the walker is retired as unsound; the leak fix is the AST escape
+map + `fresh_changed` + nested-call attribution; 500-call soak flat
+1.9→1.6 MB). §B2 tail-loop design now has a concrete vehicle
+(`RecursiveCarrierValue` owned-arg facts). §B3's residual 12 families are
+enumerated there as §13 copy discipline — reachable, not intractable.
+
 ## Context
 
 Census campaign 2 is re-landed (intel `80abfc32c`, includes PR #96):

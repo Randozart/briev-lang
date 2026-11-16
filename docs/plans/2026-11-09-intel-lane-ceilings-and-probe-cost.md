@@ -2,6 +2,13 @@
 
 **Status:** active. Builds on Stage F slice 1 (`2026-11-08-intel-g1.5-stage-f-slice1.md`).
 
+**Execution pointer (added 2026-11-16, forward reference only — history above
+is unchanged):** the remaining W2c/W3/W4 work is sequenced in
+`docs/plans/2026-11-16-memory-and-xpu-finish-grind.md` §3 (X1 f16 coopmat
+fix-or-fact-gate, X2 NEO residency, X3 GLSL/XMX ceiling, X4 `clFinish`,
+X5 Stage F promotion — unblocked now that W1's probe fix removed the 641 MB
+link).
+
 **Unified program:** `docs/plans/2026-11-10-unified-program-capability-and-ceilings.md` — this plan is a detail of the one program (capability and ceiling meters + trust substrate).
 **Objective:** make the compiler fast enough to iterate, and evaluate the Intel
 OpenCL/Level-Zero lane **without mistaking our emitter's quality for the lane's
