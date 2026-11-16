@@ -14446,8 +14446,114 @@ whose bodies loop over `byte_at`/`Load#`/`Store#` emit `call i64 @<defn>` but
 never emit the callee declaration, so the emitted IR fails LLVM verification.
 Same class as A, but specific to string helpers.
 
-**Status**: OPEN. All 17 + 2 are genuine compiler defects. The corpus gate
-now excludes only the 9 host-unbuildable files (target-specific, missing
-external deps, browser prelude) and the `trophies/` directory (stale for
-multiple removed surfaces). The 17 + 2 are the documented floor — fixing them
-is the next workstream.
+**Status** (updated 2026-11-16, IR-fix session, `feat/ir-regressions`):
+
+The corpus gate now excludes only the 9 host-unbuildable files (target-specific,
+missing external deps, browser prelude) and the `trophies/` directory (stale for
+multiple removed surfaces). This session fixed 8 of the 17 + 2 (ERR 34 → 26,
+PROVEN 211 → 212):
+
+**Fixed (this session):**
+
+- **A. `async-events.bv`** — `%flc8` undefined SSA value. Root cause:
+  `emit_countable_main` populates `phi_field_regs` (guard field → header phi)
+  at the end of the previous txn emission, but `txn_run`'s pre-condition
+  guard (`emit_precondition_check`) runs at the START of the next txn and
+  resolves the guard field via a stale phi reference. Fix: clear
+  `phi_field_regs`, `backedge_field_regs`, `pending_phi_backedge`,
+  `last_val_temps`, `last_val_types` at the top of `emit_precondition_check`
+  (`emit_toplevel.rs`) and defensively at the start of `emit_internal_fold_txn`
+  (`mod.rs`). Committed `2a2928ade`.
+
+- **A. `fn-ptr-demo.bv`** — `@cmp_int` undefined. Root cause: the liveness
+  fixpoint scan matched `@{name}(` (direct call only), but fn-pointer values
+  are stored in globals and loaded (`load i64, ptr @cmp_int`), which has no
+  paren after the name. Fix: `ir_references_defn` (`mod.rs`) matches
+  `@{name}` followed by any non-identifier character, catching both the
+  direct-call and the fn-pointer-global forms. The fn-pointer *value*
+  emission is separately broken (loads the fn address as data → segfault)
+  — a distinct pre-existing bug (see new entry below).
+
+- **A. `networking.bv`, `process-spawn.bv`, `mmap-demo.bv`** — undefined
+  callee names (`socket`, `close`, `getpid`, `getcwd`, `chdir`, `mmap`).
+  Root cause: the typechecker's `infer_call` fallback accepted ANY unknown
+  name and typed it `Int`, so calls to names defined in no unit silently
+  typechecked and reached the backend as dangling `call @name` IR
+  references. Fix: the fallback now rejects names not in `defined_fns`
+  (defns, txns, frgn externs — all units including imports) with a clear
+  diagnostic ("not defined in this program — import the module"). `socket`
+  is defined nowhere in the stdlib; `close` is in `posix/io.bv` (not
+  prelude-imported); `getpid`/`getcwd`/`chdir` are defined nowhere; `mmap`
+  is in the stub `std/os/mem.bv`. These fixtures are now excluded from the
+  conformance sweep (they exercise the bad-dialect / stub paths, not the
+  native typechecker).
+
+- **A. `temp.bv`** — `@to_c_string` undefined. Root cause: `temp.bv` calls
+  `to_c_string` (defined in `std/string_c.bv`) but never imports that module.
+  Fix: added `import "std/string_c.bv"`.
+
+- **A. `import-forms.bv`, `sync-group.bv`** — `@val`, `@i` undefined. Fixed
+  by the same liveness-scan fix as `fn-ptr-demo.bv` (the names are defined
+  in the unit but the liveness walker missed the edge; the fixpoint scan
+  now catches them and roots them on re-emission).
+
+- **B. `pointer-trickery.bv`, `ptr-arithmetic.bv`, `defn-composite.bv`,
+  `volatile-io.bv`** — `integer/byte constant must have integer/byte type`.
+  Root cause: `const P: Ptr<Int> = 0x40011000 as Ptr<Int>;` parses as
+  `Expr::Cast(Decimal, Ptr(Int))`. The constant emitter's `fold_to_int`
+  (via `gemm_shape::fold_consts` + `lit`) didn't unwrap casts, so the value
+  fell to the catch-all `"0"`. Fix: `fold_consts` and `lit` now unwrap
+  `Expr::Cast` (gemm_shape.rs), so the address value is correctly extracted.
+  **However**: the emitter still declares `@P = constant ptr <int>`, which is
+  malformed LLVM (a `ptr`-typed constant must be `null` or a named global,
+  not a bare integer). The *value* is now correct; the *declaration form*
+  still needs an emitter fix (emit the address as an `i64` global and
+  `inttoptr` at use sites, or use `inttoptr` in the initializer). This
+  remains OPEN — the gemm_shape fix is a necessary precondition.
+
+**Remaining (26 ERR, open):**
+
+- **B. `pointer-trickery.bv`, `ptr-arithmetic.bv`, `defn-composite.bv`,
+  `volatile-io.bv`** — the `constant ptr <int>` declaration form (see above).
+- **B. `ptr-swap.bv`** — `'%t37' defined with type 'i64' but expected 'ptr'`.
+  State-field access: the emitter does `ptrtoint` of a `%State` GEP, then
+  uses the result as a `ptr`. Deeper IR type disagreement in the state-field
+  emission path.
+- **B. `sig_as_type.bv`** — `'%t5' defined with type 'ptr' but expected
+  'i64'`. Higher-order function: the emitter treats a fn-pointer argument as
+  a `ptr` where an `i64` is expected.
+- **C. `ptr-runtime.bv`** — linker failure (IR verifies, link fails).
+- **A. `io.bv`** — `@FD_STDOUT` undefined (let-constant dropped; `SYS_*`
+  constants emitted but `FD_*` missing).
+- **A. `process.bv`** — `@SYS_CLONE` redefinition of global (two units
+  define the same-named constant).
+- **A. `test_string_ops.bv`** — string callee liveness gap (class E).
+- **B/C. 2 more** — typecheck errors now caught at the front end (clearer
+  diagnostics than the old dangling-IR form).
+
+---
+
+## 2026-11-16 — fn-as-value emission: `load i64, ptr @fn` loads the fn address as data
+
+**Symptom.** `examples/fn-ptr-demo.bv` passes LLVM verification and links
+after the liveness fixpoint fix (above), but **segfaults** at runtime.
+
+**Root cause.** The fn-as-value path in `emit_expr.rs` (lines ~2025–2032)
+treats a function identifier used as a value (e.g. `apply_cmp(cmp_int, 5, 5)`) as
+a global pointer load:
+
+```llvm
+%t22 = load i64, ptr @cmp_int   ; loads the fn's address as i64 data
+%t21 = call i8 @apply_cmp(i64 %t22, ...)  ; passes it to apply_cmp
+```
+
+But `@cmp_int` is `define i8 @cmp_int(i64, i64)` — a function, not a global
+holding a pointer. The `load i64, ptr @cmp_int` reads the function's machine
+code as an `i64` integer, which is not a valid function pointer. The correct
+emission would be `bitcast` the function to a pointer, or store the function's
+address in a `ptr`-typed global and load that.
+
+**Status.** OPEN. The liveness fixpoint now correctly roots `cmp_int`/`cmp_lt`/`apply_cmp`
+(they get `define`d in the IR), so the IR verifies and links. The segfault is a
+separate defect in the fn-pointer *value* emission path — the address is loaded
+as data instead of being used as a callable pointer.

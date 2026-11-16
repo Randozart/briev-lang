@@ -7532,7 +7532,19 @@ impl LlvmBackend {
                 // "main" is the backend-generated entry itself (`define @main`)
                 // — always present in the IR, never a gate casualty.
                 .filter(|n| *n != "main")
-                .filter(|n| !self.ctx.live_defns.contains(*n) && out.contains(&format!("@{}(", n)))
+                // 2026-11-16 (fn-pointer liveness fix): the old pattern
+                // `@{name}(` only matched DIRECT calls (`call i64 @name(...)`).
+                // Function-pointer values are stored in globals and loaded:
+                //   %t = load i64, ptr @cmp_int
+                //   %r = call i64 (i64, i64) (i64, i64, i64) %t, ...
+                // The global `@cmp_int` is followed by a comma or whitespace,
+                // not a paren. The scan must match `@{name}` followed by ANY
+                // non-identifier character (paren, comma, space, etc.) so the
+                // global-address form is caught. We also must NOT match a LONGER
+                // name that merely starts with `{name}` (e.g. `@cmp_int2` when
+                // scanning for `cmp_int`), so we check the character immediately
+                // after the name is a non-identifier.
+                .filter(|n| !self.ctx.live_defns.contains(*n) && ir_references_defn(&out, n))
                 .collect();
             missed.sort();
             if !missed.is_empty() {
@@ -10408,6 +10420,28 @@ fn walk_expr_children(e: &Expr, f: &mut dyn FnMut(&Expr)) {
         }
         _ => {}
     }
+}
+
+/// 2026-11-16 (fn-pointer liveness fix): true when the emitted IR references
+/// the defn `name` in any form the liveness fixpoint must account for:
+/// a direct call (`call i64 @name(...)`), a function-pointer global load
+/// (`load i64, ptr @name`), or a define (`define ... @name(`). Matches
+/// `@{name}` followed by a non-identifier character, so `@cmp_int` is caught
+/// in `ptr @cmp_int` (comma/space) as well as `@cmp_int(` (paren), without
+/// false-matching a longer name like `@cmp_int2`.
+fn ir_references_defn(ir: &str, name: &str) -> bool {
+    let needle = format!("@{}", name);
+    let mut positions = ir.match_indices(&needle).peekable();
+    while let Some((pos, _)) = positions.next() {
+        let end = pos + needle.len();
+        let next_char = ir.get(end..).and_then(|s| s.chars().next());
+        match next_char {
+            Some(c) if !c.is_ascii_alphabetic() && c != '_' && !c.is_ascii_digit() => return true,
+            Some(_) => continue, // longer name (e.g. @cmp_int2) — not a match
+            None => return true, // name at end of IR — a match
+        }
+    }
+    false
 }
 
 /// Unique top-level defn/txn HIR bodies (duplicate names omitted so emission

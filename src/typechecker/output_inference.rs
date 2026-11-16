@@ -350,12 +350,15 @@ node main [n == 0][n == 1] {
     /// still infers.
     #[test]
     fn forward_reference_resolves_via_fixpoint() {
-        let src = format!("defn later(x: Int) {{ term x + 1; }};\n{}", bound("Bool"));
+        // 2026-11-16: the defn must be named `f` to match the harness's
+        // `f(1)` call — the old name `later` was genuinely undefined and
+        // the test passed via the Int fallback, not via forward resolution.
+        let src = format!("defn f(x: Int) {{ term x + 1; }};\n{}", bound("Bool"));
         assert!(
             check(&src).is_err(),
             "forward-inferred Int bound as Bool must error"
         );
-        let src = format!("defn later(x: Int) {{ term x + 1; }};\n{}", bound("Int"));
+        let src = format!("defn f(x: Int) {{ term x + 1; }};\n{}", bound("Int"));
         check(&src).expect("forward-inferred Int bound as Int typechecks");
     }
 

@@ -249,7 +249,32 @@ pub fn discover_active_sources() -> Vec<(PathBuf, SourceKind)> {
             .and_then(|n| n.to_str())
             .map(|n| n.starts_with("briev_") && n.contains("_test_"))
             .unwrap_or(false);
-        !is_glue_dbv && !is_tamer_wip && !is_browser_cast_prelude && !is_generated_fixture
+        // 2026-11-16 (undefined-name typecheck gap, corpus-hygiene RC(2c)):
+        // the typechecker now rejects calls to names defined in no unit
+        // (defns/txns/frgn externs, all imports). These fixtures call such
+        // names — genuinely broken (the names exist nowhere in the stdlib
+        // or are .bad-dialect items outside the native typechecker's surface)
+        // — and are exercised by their owning test suites / the corpus
+        // runner, not the native conformance sweep.
+        //   examples/bad/      — `.bad` dialect (typed bad fns, per-arch
+        //                        raw blocks); validated by the bad backend
+        //   networking.bv      — calls `socket` (defined nowhere) + `close`
+        //                        (posix/io.bv, not prelude-imported)
+        //   process-spawn.bv   — calls `getpid`/`getcwd`/`chdir` (defined
+        //                        nowhere in std)
+        //   mmap-demo.bv       — calls `mmap` (std/os/mem.bv is a stub)
+        let is_broken_fixture = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == "networking.bv" || n == "process-spawn.bv" || n == "mmap-demo.bv")
+            .unwrap_or(false);
+        let is_bad_dialect = p.components().any(|c| c.as_os_str() == "bad");
+        !is_glue_dbv
+            && !is_tamer_wip
+            && !is_browser_cast_prelude
+            && !is_generated_fixture
+            && !is_broken_fixture
+            && !is_bad_dialect
     });
     found
 }

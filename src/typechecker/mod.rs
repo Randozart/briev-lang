@@ -2322,6 +2322,27 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
         }
     }
     // 2026-07-25: Fallback — bind all destructured names to Int.
+    // 2026-11-16 (undefined-name typecheck gap, corpus-hygiene RC(2c)):
+    // the old fallback accepted ANY unknown name and typed it Int, so calls
+    // to names defined in no unit (e.g. `close` in a program that never
+    // imported `posix/io.bv`, or `socket` defined nowhere) silently
+    // typechecked and reached the backend as dangling `call @name` IR
+    // references — the corpus ERR bucket's "missing callee declarations"
+    // class. Now: a name that is (a) not an intrinsic (`#` suffix, handled
+    // above), (b) not a variant ctor, (c) not a bound function value, (d) not
+    // a contracted/generic user fn, (e) not a struct/obj constructor, and
+    // (f) not in `defined_fns` (defns, txns, frgn externs — all units
+    // including imports) is a genuine unknown name: report it with the fix,
+    // don't guess Int.
+    if !ctx.defined_fns.contains(name) {
+        return Err(TypeError::InvalidOperation {
+            operation: format!("call to '{}'", name),
+            type_name: format!(
+                "'{}' is not defined in this program — import the module that defines it (e.g. `import \"std/…\"`) or remove the call",
+                name
+            ),
+        });
+    }
     Ok(Type::int())
 }
 
@@ -6359,6 +6380,15 @@ pub fn check_program_with_target(
         .filter_map(|item| match item {
             TopLevel::Definition(d) => Some(d.name.clone()),
             TopLevel::Transaction(t) => Some(t.name.clone()),
+            // 2026-11-16 (undefined-name typecheck gap): frgn externs are
+            // callable names the typechecker must admit at the `Int`
+            // fallback — without them the new unknown-call error would
+            // reject every frgn call.
+            TopLevel::ForeignBinding(fb) => Some(
+                fb.briev_name
+                    .clone()
+                    .unwrap_or_else(|| fb.foreign_name.clone()),
+            ),
             _ => None,
         })
         .collect();

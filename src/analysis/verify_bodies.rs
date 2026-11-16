@@ -268,8 +268,12 @@ mod tests {
     #[test]
     fn unsupported_body_is_skipped() {
         // A call in the BODY puts it outside the prover's surface: skipped
-        // silently — never proven, never flagged.
-        let d = parse_defn("defn f(a: Int) [a >= 0][term >= 0] -> Int { term helper(a); };");
+        // silently — never proven, never flagged. The callee must be defined
+        // (2026-11-16: the typechecker now rejects calls to undefined names,
+        // so a bare `helper` no longer typechecks — define it here).
+        let d = parse_defn(
+            "defn helper(a: Int) -> Int { term a; }; defn f(a: Int) [a >= 0][term >= 0] -> Int { term helper(a); };",
+        );
         let r = verify_bodies(&[d]);
         assert!(r.violated.is_empty() && r.unproven.is_empty() && r.proven.is_empty());
     }
@@ -922,7 +926,11 @@ mod load_width_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert_eq!(
             report.proven.len(),
             1,
