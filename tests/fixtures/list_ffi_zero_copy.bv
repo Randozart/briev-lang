@@ -1,0 +1,39 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-15 (List FFI zero-copy): regression fixture for list_to_c_ptr and
+// list_len in glue/c.bv.
+//
+// The helpers are pure-Briev defns in glue/c.bv:
+//   list_to_c_ptr(handle: Int) -> Int  — zero-copy: returns handle as Int
+//                                         (boxed handle offset +0 = data ptr)
+//   list_len(handle: Int) -> Int       — loads len field at offset +16
+//
+// This fixture calls a C function with (list_to_c_ptr(lst), list_len(lst)).
+// The emitted IR should contain:
+//   - The list_to_c_ptr helper body: identity (returns handle)
+//   - The list_len helper body: Load#(handle + 16, 8)
+//   - A call to the C function with those two arguments
+//   - NO memcpy inside list_to_c_ptr or list_len
+
+import "glue/c.bv";
+
+// A C function that receives a pointer and count (C array FFI convention)
+frgn c_array_sum(ptr: Int, n: Int) -> Int from #Link<libc>;
+
+let done: Bool = false;
+node main [!done][done] {
+    let lst: List<Int> = [];
+    // Fill the list with a few elements so it's not empty
+    lst <- 1;
+    lst <- 2;
+    lst <- 3;
+    // Zero-copy FFI: pass (data_ptr, len) to C
+    // Cast lst to Int to get the boxed handle, then extract ptr + len
+    let ptr: Int = list_to_c_ptr(lst as Int);
+    let n: Int = list_len(lst as Int);
+    let s: Int = c_array_sum(ptr, n);
+    Print#(s);
+    done = true;
+    endprogram;
+};

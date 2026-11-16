@@ -973,10 +973,12 @@ fn boundary_conversion(
     else {
         return None;
     };
-    if category != "String" {
-        return None;
+    match category.as_str() {
+        "String" => Some(classify_string_variant(&variant, role)),
+        // List-category: the `coll obj` boxed handle maps to C (ptr, len).
+        "List" => Some(BoundaryConversion::CopyAtBoundary),
+        _ => None,
     }
-    Some(classify_string_variant(&variant, role))
 }
 
 /// Classify a String-category boundary value by its variant + role (HIR

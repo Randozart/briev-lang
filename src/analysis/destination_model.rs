@@ -1859,10 +1859,16 @@ fn boundary_conversion(
     else {
         return None;
     };
-    if category != "String" {
-        return None;
+    match category.as_str() {
+        // String-category: classify C_String vs UTF8/base variants.
+        "String" => Some(classify_string_variant(&variant, role)),
+        // List-category: the `coll obj` boxed handle maps to C (ptr, len).
+        // Data pointer is offset +0, length is offset +16 — zero-copy for
+        // the data buffer (the boxed handle itself is passed by value as
+        // an Int, so no copy of the list contents is needed).
+        "List" => Some(BoundaryConversion::CopyAtBoundary),
+        _ => None,
     }
-    Some(classify_string_variant(&variant, role))
 }
 
 /// Classify a String-category boundary value by its variant + role.
