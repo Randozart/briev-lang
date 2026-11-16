@@ -8,15 +8,45 @@
 
 ## Overview
 
-Briev has no built-in `as` cast operator. Type conversion is triggered by
-the `Cast#()` compiler intrinsic (emitted when the programmer writes
-`(TargetType)expr`). The intrinsick runs a resolution pipeline that checks,
-in order:
+Briev writes casts with `as` (`let n = handle as Int;`). Internally the
+`Cast#()` compiler intrinsic performs the work, and its resolution pipeline
+checks, in order:
 
 1. `meld Source <-> Target` — structural equivalence
 2. `op Cast(Target)` on Source — direct type-to-type
 3. `CastTo(#Category)` → `CastFrom(#Category)` — protocol path
 4. Implicit `CastTo(Bits)` + `CastFrom(Bits)` — raw bytes (always)
+
+## Representation versus conversion (normative, 2026-11-16)
+
+Step 4 is the important one: **`Bits` is always available, and it is the only
+edge that is guaranteed bit-preserving.** That splits every cast into two kinds,
+which the language specification states normatively in §15.6:
+
+| Kind | Route | Lowering | Verifier |
+|---|---|---|---|
+| **Representation** | through `Bits`/`Data` | `ptrtoint` / `bitcast` / `zext` / `trunc`, **no call** | identity on the word — modelable |
+| **Conversion** | a declared `CastTo` / `CastFrom` op | the op's body — e.g. `call @str_to_int` | never modelled |
+
+Consequences worth stating for implementers:
+
+- `String ↔ Data ↔ Int` are reinterpretations of one word: the emitter produces
+  `ptrtoint`/`inttoptr`/`bitcast` and **no call**. The handle ABI relies on it —
+  a `String`/`Data` composite crosses an FFI boundary as `i64` — and
+  `(s as Data) as Int` is therefore the **address**, which is what the stdlib's
+  `Load#((s as Data) as Int + 8 + i, 1)` does pointer arithmetic on.
+- `String as Int` is a **conversion**, not a reinterpretation: it emits
+  `ptrtoint` and then `call @str_to_int`, so it *parses the text*. `Int as
+  String` emits `call @int_to_str` and *formats*. The fact that the pair, not
+  the direction, decides is exactly why the implementation must be inspected
+  rather than assumed — and why neither may be modelled as bit-identity.
+- A cast never touches memory. Loads and stores are `Load#` / `Store#`
+  (`VolatileLoad#` / `VolatileStore#` for `Ptr`). A cast that read a byte would
+  have no defined address or width, and the byte accessors above could not be
+  typed at all.
+- The `String` protocol's `CastTo(String)` / `CastFrom(String)` pair negotiates
+  UTF-8 between string *variants*; that is a conversion of encoding, so it is
+  not bit-preserving either.
 
 ### User-declarable ops
 

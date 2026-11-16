@@ -353,3 +353,24 @@ let eq = fn_ptr(3, 5);
 
 No `reinterpret_cast` exists. If the compiler can't prove layout compatibility,
 use explicit byte-level operations or a `meld` declaration.
+
+### Two kinds of `as`
+
+Every cast is either a **representation** (the bits stay, the reading changes) or
+a **conversion** (a different value entirely). Bit-preserving casts all route
+through `Bits`, which is the one edge every type has:
+
+| Cast | Kind | What it means |
+|---|---|---|
+| `text as Data`, `data as Int` | representation | the handle's **address**, as a word (no call emitted) |
+| `bits as Int`, `n as Bit` | representation | the same bits |
+| `num as String` | conversion | formats — `1` becomes the text `"1"` (`call @int_to_str`) |
+| `text as Int` | conversion | parses the text (`call @str_to_int`) |
+| `f as Int` | conversion | a numeric conversion, never the float's bits |
+
+The rule that matters: **the pair decides, not the direction**, and the lowering
+shows which it is — a representation emits no call. That is why the stdlib's byte
+accessors spell `(s as Data) as Int`: it is the address, so `+ 8 + i` is
+meaningful. A cast never reads memory; bytes come from `Load#` / `Store#` (or
+`VolatileLoad#` / `VolatileStore#` for `Ptr`). Normative statement: **§15.6** of
+the specification.
