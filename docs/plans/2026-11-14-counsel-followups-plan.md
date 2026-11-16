@@ -175,18 +175,15 @@ Because they are advisory, the bar is *honesty + no violation*, not *proven*.
 
 ## 4. Concrete step checklist
 
-### Phase 1 — `mantissa_val` (BUILD)
-- [ ] 1. Edit `lib/std/float_fmt.bv`: add `&& mant < 0x800000` to
-  `mantissa_val`'s pre. Body unchanged.
-- [ ] 2. `cargo build --release --bin brievc --target-dir /scratch/briev-builds/bc-target`
-      (build tree stays in /scratch, never /tmp).
-- [ ] 3. `/scratch/briev-builds/bc-target/release/brievc build lib/std/float_fmt.bv --verify-bodies`
-      → confirm `mantissa_val` diagnostic gone; check `float_format` for a
-      new call-site diagnostic.
-- [ ] 4a. If gone (or moved, acceptable) → commit to `feat/counsel-expand`,
-      push (updates PR #102).
-- [ ] 4b. If it just moved / undecidable → revert pre edit, document as
-      accepted unproven gap in the plan doc, commit doc only.
+### Phase 1 — `mantissa_val` (DONE — Path B)
+- [x] 1. Tried strengthening pre with `&& mant < 0x800000`.
+- [x] 2. Built brievc with `--target-dir /scratch/briev-builds/bc-target`.
+- [x] 3. `--verify-bodies` on `float_fmt.bv`: `mantissa_val` **still unproven**.
+      Reason: briev-verify cannot model bitwise `&` as a numeric bound.
+      Even though the caller passes `mant = bits & 0x7FFFFF`, the prover
+      cannot derive `mant < 0x800000` from that.
+- [x] 4b. Reverted pre change. Documented as accepted unproven gap (Path B).
+      Commit: `c14976873` on `feat/counsel-expand` → PR #102.
 
 ### Phase 2 — merge order (BUILD)
 - [ ] 1. Sanitize #102 pre-merge gates (§2): census script + CI sanity,
@@ -224,3 +221,32 @@ Because they are advisory, the bar is *honesty + no violation*, not *proven*.
 - Growing the `counsel` crate beyond 0.5.0. Only if the above is blocked.
 - Moving `--verify-bodies` from non-blocking to blocking. Blocked until the
   `mantissa_val`-class false-positive rate is understood and zero-violated.
+
+## Phase 2 — merge order (BUILD)
+- [x] 1. Census script validated on smoke corpus: JSON parses, summary counters
+      match per-file sums, exits 0 on zero-violated.
+- [x] 2. PR #100 review (below). Honest advisory contracts, no weakened specs.
+- [ ] 3. Merge PR #100 first (squash). Its base is now `main`.
+- [ ] 4. Rebase/refresh PR #102 onto updated `main`; confirm clean diff.
+- [ ] 5. Merge PR #102 (squash). Counsel layer + stdlib fixes + census/CI land on main.
+
+## Phase 3 — record (BUILD, optional)
+- [x] This doc written with full findings, Path B resolution, and merge checklist.
+- [ ] 1. Update docs/plans/2026-11-14-counsel-expansion-plan.md with merged PR numbers.
+- [ ] 2. memory_write the merge of #100/#102 and the mantissa_val resolution.
+
+## PR #100 review (done — ready to merge)
+Files: src/analysis/call_graph.rs + src/analysis/region.rs
+
+Contracts added:
+1. CallGraph::node_count — Unproven (advisory): Vec::len not modelled
+2. Interval::size — Unproven (advisory): as-u64 cast outside subset
+3. count_statements_recursive — Unproven (advisory): while-let outside subset
+4. canonical_rid (test-only) — Unproven (advisory): HashMap::get opaque
+
+Checklist:
+- [x] Every contract has intent comment preserved
+- [x] No #[pre]/#[post] weakened to pass a check
+- [x] counsel-check: 0 Violated (advisory is fine)
+- [x] No --no-verify / no // praetor:ignore in diff
+- [x] Honest: documents intent, labelled unproven, not claimed as proof
