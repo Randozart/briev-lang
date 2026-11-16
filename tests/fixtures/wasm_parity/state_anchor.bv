@@ -1,0 +1,23 @@
+// wasm32 cross-backend parity fixture: native-sink state comparison
+// (2026-11-16).
+//
+// Purpose: give the parity gate a host-readable observable *other* than the
+// exit code. The program drives a deterministic counter to a fixed point,
+// then ends. The final state slots (host-read from %State via the
+// `state_layout` table) are an additional observable on top of the exit
+// code: the exit code is derived from the counter (`value % 97`), so a
+// state divergence necessarily changes the exit code too — the two
+// observables cross-anchor.
+//
+// Slot layout (state_layout table order): slot 0 = `done` (flag, i32),
+// slot 1 = `value` (i32), slot 2 = a compiler-added i64 word (always 0).
+// Fixed point: done = 1, value = 433 ((11*7+5) + 3*117 = 82 + 351). The
+// trailing i64 slot is not a program field; it is zero. Expected final
+// state: [1, 433, 0]. Expected exit: 433 % 97 = 45.
+let done: Int = 0;
+let value: Int = (11 * 7 + 5) + 3 * 117;
+
+node entry [done == 0][done == 1] {
+    done = 1;
+    endprogram value % 97;
+};
