@@ -423,6 +423,73 @@ top-level `term` — one removed-surface diagnostic path, one inventory from
   is a separate plan.
 - **Non-goal:** replacing `#Link`/`from #System` resolution.
 
+## 8a. S0 spike — measured results (2026-11-16)
+
+The spike asked three questions before the design commits to anything. Two are
+answered; one is deferred as the plan allowed.
+
+### (a) A `Resolved`-stage generated protocol **does** drive boundary marshalling — PASS
+
+Fixture (throwaway): a `$(Resolved)` block that `Quote$`s a boundary type and
+`Insert$`s it after the last top-level item, then a `frgn` + a cast to that
+generated type:
+
+```briev
+$(Resolved) {
+    Insert$(All$().Last$().After$(), Quote$("type CStrG: String<C_String> { };"));
+};
+import "glue/c.bv";
+frgn c_strlen(p: Int) -> Int from #Link<libc>;
+node main [!done][done] {
+    let s: CStrG = "hi" as CStrG;
+    Print#(c_strlen(s as Int));
+    done = true; endprogram;
+};
+```
+
+Emitted IR contains the zero-copy lane, not a copy:
+
+```llvm
+%t11 = call i64 @str_to_c(ptr %t13)      ; the axiom's binding, generated type in play
+%t16 = call i64 @c_strlen(i64 %t16)
+```
+
+So the ordering claim in §2.1 holds in practice: a macro-generated `proto` /
+sub-protocol type is visible to `rewrite_boundary_marshalling` (line 608) and to
+the casting graph, and produces the same marshalling a hand-written `c.bv`
+declaration would. **G1's fix is a stage rule, not a new mechanism.**
+
+Incidental finding: `Quote$` is not documented in
+`docs/architecture/macro-system.md` (the "AST Constructors" table lists only
+`Import$`, `Defn$`, `Call$`, `Block$`), which is why the spike needed code
+reading to find it. Docs debt for §7.
+
+### (b) `InjectTypeLayout$` → aggregate argument passing — NOT MEASURED
+
+Needs a struct passed by value across the boundary, which the current surface
+reaches only through layout metadata plus an `frgn` signature — i.e. after S1/S3
+give the descriptor somewhere to state it. Deferred as the plan allowed; it is
+the one open risk in S3.
+
+### (c) HIR **silently drops** the boundary surface — CONFIRMED, and worse than assumed
+
+`BRIEV_HIR_AUDIT=1` on the same fixture:
+
+```
+HIR_AUDIT ok callables=210 types=27 values=731 sinks=2218 unsupported=0
+```
+
+`unsupported=0`. The program carries a generated protocol, an `frgn` with a
+`#Link` source, and a boundary cast — and the lossless HIR audit reports
+*nothing missing*. G3 is therefore not just "HIR cannot represent the contract";
+**HIR does not notice that it cannot.** `lower_program_checked` cannot serve as
+the fidelity gate for boundary facts until S4 extends it; using it as-is would
+certify a program whose FFI contract was dropped on the floor.
+
+Operational consequence for S4: the gate must be built *with* the nodes, and its
+first red test should be this very fixture — today's `HIR_AUDIT ok` on a
+boundary-bearing program is the regression to fix.
+
 ## 9. Decisions — recommended defaults (2026-11-16)
 
 Each answer below is chosen for long-term language health: minimum permanent
