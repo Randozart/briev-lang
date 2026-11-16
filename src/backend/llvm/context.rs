@@ -146,6 +146,11 @@ pub struct CompilerContext {
     /// 2026-10-23 (direct tail-loop lowering): defns lowered to an explicit
     /// loop instead of a recursive self-call.
     pub tail_loop: crate::analysis::tail_recursion::TailLoopPlan,
+    /// 2026-11-16 (M2 tail-loop owned destruction): per-defn owned (String/
+    /// List) loop-carried parameter slots the loop lowering must destroy, from
+    /// the owned-storage pass. Also widens `tail_loop_enabled` to owned-carrying
+    /// defns that the carrier-only gate used to exclude.
+    pub owned_tail_params: crate::hir::owned_storage::OwnedTailLoopPlan,
     /// 2026-10-21 (nested carrier slots): loop-carried inline nested enum
     /// ownership plan for direct self-tail-recursive defns.
     /// 2026-10-30 (D3b): semantic enum facts joined with physical layout.
@@ -682,6 +687,7 @@ impl CompilerContext {
             defn_hoisted_sret: HashMap::new(),
             tail_recursive: std::collections::HashSet::new(),
             tail_loop: crate::analysis::tail_recursion::TailLoopPlan::default(),
+            owned_tail_params: crate::hir::owned_storage::OwnedTailLoopPlan::new(),
             enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan::default(),
             generalized_destination_ownership:
                 crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
@@ -985,6 +991,35 @@ fn collect_free_stmts(
     }
 }
 
+/// 2026-11-16 (M2 tail-loop owned destruction): one loop-carried parameter
+/// slot that holds heap storage the loop re-allocates on every backedge.
+///
+/// The lowered loop stores each new value into `slot`, dropping the previous
+/// one. The frontend records the slot only after proving the callers' side of
+/// ownership: every call site passes either an inline fresh allocation (which
+/// the callee then owns outright) or static storage nothing owns. In the first
+/// case the loop frees the previous value on every backedge including the
+/// first; in the second a `first` bit skips iteration 1, whose value is the
+/// caller's literal. `exit_transfers` records that the base case returns the
+/// final value to the caller, which then owns it — the exit path must not free
+/// it.
+#[derive(Debug, Clone)]
+pub struct TailOwnedSlot {
+    /// Parameter index in the lowered defn's parameter list.
+    pub index: usize,
+    /// Parameter name — the binding the shared release lane frees.
+    pub param: String,
+    /// Parameter slot (`tpsl*`) holding the current i64 value.
+    pub slot: String,
+    /// `first` bit alloca (i1), present only when the frontend could not prove
+    /// that the FIRST backedge may free (a caller passed static storage).
+    pub flag: Option<String>,
+    /// Which destructor the slot's value needs.
+    pub storage: crate::hir::stmt::StorageKind,
+    /// Base case hands the value to the caller: do not free at exit.
+    pub exit_transfers: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionContext {
     // SSA register counters — NEVER rewound (prevents %t{N} collisions)
@@ -1200,6 +1235,10 @@ pub struct FunctionContext {
     pub tail_loop_backedge: bool,
     /// Hidden carrier slot per loop-carried parameter index.
     pub carrier_params: HashMap<usize, String>,
+    /// 2026-11-16 (M2 tail-loop owned destruction): the loop-carried owned
+    /// storage slots of the CURRENT tail loop, with the `first` bit that keeps
+    /// iteration 1 from freeing the caller's value.
+    pub tail_owned_slots: Vec<TailOwnedSlot>,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1517,6 +1556,7 @@ impl FunctionContext {
             tail_param_slots: Vec::new(),
             tail_loop_backedge: false,
             carrier_params: HashMap::new(),
+            tail_owned_slots: Vec::new(),
             current_loop_engine: None,
             txn_counter: 0,
             within_counter: 0,
@@ -1673,6 +1713,7 @@ impl FunctionContext {
         self.tail_param_slots.clear();
         self.tail_loop_backedge = false;
         self.carrier_params.clear();
+        self.tail_owned_slots.clear();
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

@@ -1295,7 +1295,7 @@ impl LlvmBackend {
     /// Whether the parameter's entry binding is already an i64 value (a
     /// pointer parameter is ptrtoint'd, a boxed parameter is widened, an i64
     /// parameter is raw). Native sub-i64 parameters stay in their own width.
-    fn tail_loop_binding_is_i64(&self, ty: &Type) -> bool {
+    pub(super) fn tail_loop_binding_is_i64(&self, ty: &Type) -> bool {
         matches!(self.llvm_type(ty).as_str(), "i64" | "ptr") || self.is_boxed_type(ty)
     }
 
@@ -1317,7 +1317,16 @@ impl LlvmBackend {
             .recursive_carrier_obligations(&d.name)
             .is_empty();
         let plain_wasm = self.ctx.int_bits == 32 && !d.parameters.is_empty();
-        if !carrier_eligible && !plain_wasm {
+        // 2026-11-16 (M2 tail-loop owned destruction): a defn whose loop
+        // re-allocates an owned (String/List) parameter on every backedge MUST
+        // be lowered on every target — the plain recursive form has no place to
+        // release the previous iteration's value, so it leaks quadratically
+        // with the recursion depth (BUGS.md 2026-11-16). The owned-storage pass
+        // records exactly the defns it proved safe to release, so this admits a
+        // narrow, evidence-carrying subset rather than every recursion (the
+        // 2026-10-23 ws_frame regression came from lowering all of them).
+        let owned_carrying = self.ctx.owned_tail_params.contains_key(&d.name);
+        if !carrier_eligible && !plain_wasm && !owned_carrying {
             return false;
         }
         self.ctx.tail_loop.is_lowerable(&d.name)
@@ -5405,6 +5414,35 @@ impl LlvmBackend {
                 param_slots.push((name.clone(), slot));
             }
             self.fun.tail_param_slots = param_slots;
+            // 2026-11-16 (M2 tail-loop owned destruction): the owned slots the
+            // loop must free at every backedge. A `first` bit is allocated only
+            // for slots whose first backedge must be skipped (the caller passed
+            // static storage, which nothing owns and nothing may free).
+            let mut owned_slots = Vec::new();
+            if let Some(plan) = self.ctx.owned_tail_params.get(&d.name).cloned() {
+                for p in &plan {
+                    let Some((name, slot)) = self.fun.tail_param_slots.get(p.index).cloned() else {
+                        continue;
+                    };
+                    let flag = if p.free_first {
+                        None
+                    } else {
+                        let flag = self.fun.next_reg_with_prefix("tofs");
+                        writeln!(out, "  {} = alloca i1, align 1", flag).ok();
+                        writeln!(out, "  store i1 true, ptr {}", flag).ok();
+                        Some(flag)
+                    };
+                    owned_slots.push(crate::backend::llvm::context::TailOwnedSlot {
+                        index: p.index,
+                        param: name,
+                        slot,
+                        flag,
+                        storage: p.storage,
+                        exit_transfers: p.exit_transfers,
+                    });
+                }
+            }
+            self.fun.tail_owned_slots = owned_slots;
             // A tail loop has no loop-engine preheader to flush deferred
             // constant-field allocations into. Emit any queued allocation now
             // (it dominates the header) and keep body allocations inline.

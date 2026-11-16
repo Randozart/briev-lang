@@ -18,7 +18,7 @@ use super::ids::NodeId;
 use super::program::{HirCallable, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind, StorageKind};
 use crate::ast::{BinaryOpKind, Type};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// 2026-11-12 (memcheck tier): one decision the pass made about an owned
 /// candidate. Surfaced by `brievc memcheck` and enforced by
@@ -60,6 +60,40 @@ pub struct OwnedEvent {
     pub kind: OwnedEventKind,
 }
 
+/// 2026-11-16 (M2 tail-loop owned destruction): one loop-carried parameter that
+/// holds an OWNED value the tail loop re-allocates on every backedge. The
+/// lowered loop stores each backedge's new value into the parameter slot,
+/// dropping the previous value; from iteration 2 on that previous value is
+/// loop-owned and must be released, and on exit the final value must be
+/// released UNLESS the base case returns it as-is (ownership transfers to the
+/// caller). This is the frontend fact source — the backend consumes it to
+/// emit the owned-flag free-before-backedge + final release, and to gate the
+/// tail-loop lowering for owned-carrying defns. It is the loop-aware
+/// counterpart of the `self-tail argN` census event (same detection, different
+/// consumer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedTailParam {
+    /// 0-based index of the parameter in the defn's parameter list.
+    pub index: usize,
+    /// True when the base case returns this slot value as-is, transferring
+    /// ownership to the caller: the loop must NOT release the final value.
+    pub exit_transfers: bool,
+    /// True when EVERY call site hands over a value this frame already owns, so
+    /// the loop may free the slot at the FIRST backedge too. False when some
+    /// site passes storage the frame does not own (a static literal), in which
+    /// case the first backedge is skipped — iteration 1's value is not the
+    /// loop's to free.
+    pub free_first: bool,
+    /// Which destructor the slot needs. Decided HERE (from the parameter's
+    /// type) so the backend never matches Briev type names — see Golden Rule
+    /// 19; the fact carries the storage category the way `ReleaseOwned` does.
+    pub storage: StorageKind,
+}
+
+/// Per-defn owned tail-loop parameters, in parameter order. Empty/absent means
+/// the defn is not owned-carrying tail-recursive (no lowering needed).
+pub type OwnedTailLoopPlan = BTreeMap<String, Vec<OwnedTailParam>>;
+
 /// Report-only view: runs the real pass on a clone and returns its decision
 /// log. The program is unchanged.
 pub fn memcheck_owned(
@@ -67,17 +101,22 @@ pub fn memcheck_owned(
     escapes: &HashMap<String, Vec<bool>>,
 ) -> Vec<OwnedEvent> {
     let mut clone = program.clone();
-    insert_releases_with_report(&mut clone, escapes).0
+    let (events, _, _) = insert_releases_with_report(&mut clone, escapes);
+    events
 }
 
-pub fn insert_releases(program: &mut HirProgram, escapes: &HashMap<String, Vec<bool>>) {
-    let _ = insert_releases_with_report(program, escapes);
+pub fn insert_releases(
+    program: &mut HirProgram,
+    escapes: &HashMap<String, Vec<bool>>,
+) -> OwnedTailLoopPlan {
+    let (_, _, owned_tail) = insert_releases_with_report(program, escapes);
+    owned_tail
 }
 
 fn insert_releases_with_report(
     program: &mut HirProgram,
     escapes: &HashMap<String, Vec<bool>>,
-) -> (Vec<OwnedEvent>, usize) {
+) -> (Vec<OwnedEvent>, usize, OwnedTailLoopPlan) {
     let mut events: Vec<OwnedEvent> = Vec::new();
     let mut releases_inserted: usize = 0;
     let freed = freed_sources(program);
@@ -94,7 +133,7 @@ fn insert_releases_with_report(
     let param_return = param_return_summaries(program);
     let ok_fresh = ok_fresh_callables(program, escapes, &param_return, &fresh, &freed);
     let borrow_returns = borrow_result_summaries(program);
-    let consumed = consumed_params(program);
+    let mut consumed = consumed_params(program);
     if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
         eprintln!(
             "[owned-dbg] fresh: concat={} fresh_string={} fresh_int_list={} briev_str_substr={} read_file={}",
@@ -245,6 +284,49 @@ fn insert_releases_with_report(
         })
         .max()
         .unwrap_or(0);
+    let mut owned_tail: OwnedTailLoopPlan = BTreeMap::new();
+    // 2026-11-16 (M2): the tail-loop eligibility the backend will apply, so a
+    // param is only recorded as "loop-freed" when the loop lowering actually
+    // runs for that defn. Built from HIR (not AST) to stay in the same IR as
+    // this pass; the plan types are shared so the two plans cannot drift.
+    let tail_loop = crate::hir::tail_recursion::build_tail_loop_plan(program);
+    // 2026-11-16 (M2): every call site of a lowerable recursive defn, so the
+    // loop may free its slot at the FIRST backedge too — sound only when the
+    // caller always hands over a value it does not own. Collected only for the
+    // defns that could own-carry, to keep the pass cheap on large programs.
+    let mut call_sites: HashMap<String, Vec<CallSite>> = HashMap::new();
+    let mut mention_counts: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    collect_call_sites(program, &tail_loop, &mut call_sites, &mut mention_counts);
+    // 2026-11-16 (M2): decide the owned tail slots BEFORE the rewrite, then
+    // install the consuming summary. A caller that hands over its own local must
+    // not also release it — the callee's loop owns it — so the accepted index
+    // joins `consumed`, the same channel an authored `Free#` uses.
+    {
+        let fact_ctx = TailFactCtx {
+            fresh: &fresh,
+            escapes,
+            consumed: &consumed,
+            tail_loop: &tail_loop,
+            call_sites: &call_sites,
+            mentions: &mention_counts,
+        };
+        let mut planned: Vec<(String, Vec<OwnedTailParam>)> = Vec::new();
+        for callable in &program.callables {
+            let params = owned_tail_params(callable, &fact_ctx);
+            if !params.is_empty() {
+                planned.push((callable.name.clone(), params));
+            }
+        }
+        for (name, params) in planned {
+            for p in &params {
+                consumed.entry(name.clone()).or_default().insert(p.index);
+            }
+            owned_tail.insert(name, params);
+        }
+        if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+            eprintln!("[owned-dbg] owned_tail={:?}", owned_tail);
+        }
+    }
     for callable in &mut program.callables {
         // Conservative: generic bodies are emitted through the specialization
         // site, not the body seam; leave them leak-conservative for now.
@@ -260,6 +342,7 @@ fn insert_releases_with_report(
         }
         let param_aliases =
             param_alias_map(&callable.body.statements, &callable.params, &param_return);
+        let fixed_tail = owned_tail.get(&callable.name).cloned().unwrap_or_default();
         let mut ctx = Pass {
             fresh: &fresh,
             escapes,
@@ -269,6 +352,7 @@ fn insert_releases_with_report(
             borrow_returns: &borrow_returns,
             freed_map: &freed,
             param_aliases: &param_aliases,
+            fixed_tail: &fixed_tail,
             locals: &locals,
             next,
             function: callable.name.clone(),
@@ -303,7 +387,7 @@ fn insert_releases_with_report(
         .iter()
         .filter(|e| matches!(e.kind, OwnedEventKind::Release { .. }))
         .count();
-    (events, rel)
+    (events, rel, owned_tail)
 }
 
 fn returns_owned(c: &HirCallable) -> bool {
@@ -323,6 +407,30 @@ fn is_list(ty: &Type) -> bool {
 
 fn owned_ty(ty: &Type) -> bool {
     is_string(ty) || is_list(ty)
+}
+
+/// Mirror of the backend's `tail_loop_i64_binding` expressible from a `Type`
+/// alone: owned storage (a pointer) or a fundamental that occupies one i64/
+/// i1/ptr slot. Deliberately conservative — the backend additionally rejects
+/// protocol members such as `Float` (which keeps a native register cache), and
+/// the loop plan already rejects vectors, dyn, tasks, and aggregates.
+fn tail_loop_slot_representable(ty: &Type) -> bool {
+    if owned_ty(ty) {
+        return true;
+    }
+    match ty {
+        Type::Bits(0)
+        | Type::Bits(1)
+        | Type::Bits(8)
+        | Type::Bits(16)
+        | Type::Bits(32)
+        | Type::Bits(64)
+        | Type::Void
+        | Type::Ptr(_)
+        | Type::PtrConst(_) => true,
+        Type::Custom(n) => matches!(n.as_str(), "Int" | "Bool"),
+        _ => false,
+    }
 }
 
 /// What a released owner needs: a String frees its handle; a List goes
@@ -699,6 +807,328 @@ fn borrow_result_summaries(program: &HirProgram) -> HashSet<String> {
 /// `pr` supplies the param-return summaries needed to see through a call:
 /// `let next = parse_dimension_loop(dr, dims)` still denotes `dims`, because
 /// `parse_dimension_loop` hands its second argument back unchanged.
+/// Which parameters a defn's BASE CASE hands back untouched.
+///
+/// 2026-11-16 (M2 tail-loop owned destruction): when the lowered tail loop
+/// exits, the final value in a loop-carried owned parameter slot belongs to the
+/// loop and must be released — UNLESS the base case returns that slot value
+/// as-is, in which case ownership transfers to the caller and a release here
+/// would be a use-after-free. This map answers that per parameter. Only a
+/// direct param identity counts (`term s`), including the match-projection
+/// shape `expr_param_identity` already understands; anything else (a fresh
+/// `concat`, a literal) is a NEW value, so the loop owns the slot and frees it.
+/// The recursive arm (`term self(s, ...)`) never matches a param alias, so it
+/// never marks a transfer.
+/// Which parameters a defn's tail loop must destroy.
+///
+/// 2026-11-16 (M2 tail-loop owned destruction): the loop lowering stores each
+/// backedge's new value into the parameter slot, dropping the previous value.
+/// For an OWNED slot (String/List) that previous value is heap storage with no
+/// owner — a real unbounded leak (quadratic RSS; BUGS.md 2026-11-16). This
+/// records exactly the slots the backend may free, and it is deliberately
+/// narrow because a wrong entry is a use-after-free:
+///
+/// * the tail loop must actually be lowered for this defn
+///   (`tail_loop.is_lowerable`), so the fact cannot claim a fix the backend
+///   will not emit;
+/// * EVERY self-tail call site must pass a provably fresh allocation at that
+///   index (`fresh` callees allocate their own result and let no argument
+///   escape), so the new value never aliases the old one — this rejects
+///   in-place mutators like `append(s, x)` where freeing the old value would
+///   free the value just stored;
+/// * no other argument at those call sites may read the parameter (a read
+///   after the free), and
+/// * the parameter may appear nowhere else in the body except a base-case
+///   `term s` — the return that transfers the final value to the caller.
+/// One call to a loop-lowerable defn, tagged with the callable that contains
+/// it. The owner matters: the transfer proof for an identifier argument is
+/// "this caller mentions the local nowhere else", which is a fact about the
+/// CALLER's body, not the callee's.
+#[derive(Debug, Clone)]
+struct CallSite {
+    owner: String,
+    args: Vec<HirExpr>,
+}
+
+fn collect_call_sites(
+    program: &HirProgram,
+    tail_loop: &crate::analysis::tail_recursion::TailLoopPlan,
+    out: &mut HashMap<String, Vec<CallSite>>,
+    mentions: &mut HashMap<String, HashMap<String, usize>>,
+) {
+    for c in &program.callables {
+        crate::hir::expr_walk::walk_stmts(&c.body.statements, &mut |e| {
+            if let HirExprKind::Identifier(n) = &e.kind {
+                *mentions
+                    .entry(c.name.clone())
+                    .or_default()
+                    .entry(n.clone())
+                    .or_insert(0) += 1;
+                return;
+            }
+            let HirExprKind::Call { callee, args, .. } = &e.kind else {
+                return;
+            };
+            if !tail_loop.is_lowerable(callee) {
+                return;
+            }
+            out.entry(callee.clone()).or_default().push(CallSite {
+                owner: c.name.clone(),
+                args: args.clone(),
+            });
+        });
+    }
+}
+
+/// Everything `owned_tail_params` needs from the rest of the pass, bundled so
+/// the fact's inputs are explicit and the function stays within the parameter
+/// budget.
+struct TailFactCtx<'a> {
+    fresh: &'a HashSet<String>,
+    escapes: &'a HashMap<String, Vec<bool>>,
+    consumed: &'a HashMap<String, HashSet<usize>>,
+    tail_loop: &'a crate::analysis::tail_recursion::TailLoopPlan,
+    call_sites: &'a HashMap<String, Vec<CallSite>>,
+    mentions: &'a HashMap<String, HashMap<String, usize>>,
+}
+
+fn owned_tail_params(callable: &HirCallable, ctx: &TailFactCtx<'_>) -> Vec<OwnedTailParam> {
+    let fresh = ctx.fresh;
+    let tail_loop = ctx.tail_loop;
+    let call_sites = ctx.call_sites;
+    let dbg = std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok();
+    if !tail_loop.is_lowerable(&callable.name) {
+        if dbg && callable.params.iter().any(|p| owned_ty(&p.ty)) {
+            eprintln!("[fact] {} not loop-lowerable", callable.name);
+        }
+        return Vec::new();
+    }
+    // The backend lowers the loop only when EVERY parameter binds to one i64
+    // slot (`tail_loop_i64_binding`). A fact recorded for a defn the backend
+    // refuses would claim a fix that is never emitted, so mirror that gate
+    // here: the param must be owned storage or a single-register fundamental.
+    // Anything else (a boxed Float, an enum handle, an aggregate) stays a
+    // reported leak instead of a silent one.
+    if !callable
+        .params
+        .iter()
+        .all(|p| tail_loop_slot_representable(&p.ty))
+    {
+        return Vec::new();
+    }
+    let mut rets = Vec::new();
+    collect_returns(&callable.body.statements, &mut rets);
+    let self_sites: Vec<&Vec<HirExpr>> = rets
+        .iter()
+        .filter_map(|e| match &e.kind {
+            HirExprKind::Call { callee, args, .. } if *callee == callable.name => Some(args),
+            _ => None,
+        })
+        .collect();
+    if self_sites.is_empty() {
+        if dbg {
+            eprintln!("[fact] {} no self tail sites", callable.name);
+        }
+        return Vec::new();
+    }
+    if dbg {
+        eprintln!("[fact] {} self_sites={}", callable.name, self_sites.len());
+    }
+    // EVERY call site in the program — internal backedges and external entry
+    // calls alike. The loop frees the slot value at each backedge, INCLUDING
+    // the first one, whose value the caller passed. That is only sound when the
+    // caller handed over a value it does not own: an inline fresh allocation
+    // (a `fresh`-set callee allocates its own result and lets no argument
+    // escape) that no local, field, or container holds. Any site that passes
+    // an identifier — the caller's own storage — disqualifies the slot, because
+    // freeing it would be a use-after-free in that caller.
+    let sites: &[CallSite] = call_sites
+        .get(&callable.name)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    let exit_transfers = exit_transfers_map(&callable.body.statements, &callable.params);
+    let mut out = Vec::new();
+    for (i, p) in callable.params.iter().enumerate() {
+        if !owned_ty(&p.ty) {
+            continue;
+        }
+        let mut free_first = true;
+        let transferable = sites.iter().all(|site| {
+            let args = &site.args;
+            let Some(a) = args.get(i) else {
+                return false;
+            };
+            // A sibling argument may read a value this slot will free only if
+            // the read happens before the callee's backedge — true for every
+            // argument, since all of them are evaluated before the call. The
+            // remaining hazard is ALIASING: a sibling that receives the same
+            // owned storage would be freed under it, so an owned-storage
+            // sibling that mentions the parameter disqualifies the slot.
+            let sibling_aliases = args
+                .iter()
+                .enumerate()
+                .any(|(j, other)| j != i && expr_mentions(other, &p.name));
+            if sibling_aliases {
+                return false;
+            }
+            // The parameter's own type is what makes the slot owned, so the
+            // argument's stamped type is irrelevant here (typing is advisory and
+            // absent on the AST-emit path).
+            match &a.kind {
+                HirExprKind::Call { callee, .. } if fresh.contains(callee) => true,
+                HirExprKind::Literal(_) => {
+                    free_first = false;
+                    true
+                }
+                HirExprKind::Identifier(local) => {
+                    free_first = false;
+                    ctx.mentions
+                        .get(&site.owner)
+                        .and_then(|m| m.get(local))
+                        .copied()
+                        .unwrap_or(0)
+                        == 1
+                }
+                _ => false,
+            }
+        });
+        if !transferable {
+            if dbg {
+                eprintln!("[fact] {}.{} site not transferable", callable.name, p.name);
+            }
+            continue;
+        }
+        if param_escapes_in_body(callable, &p.name, i, ctx) {
+            if dbg {
+                eprintln!("[fact] {}.{} escapes", callable.name, p.name);
+            }
+            continue;
+        }
+        out.push(OwnedTailParam {
+            index: i,
+            exit_transfers: exit_transfers.get(&i).copied().unwrap_or(false),
+            free_first,
+            storage: match kind_of(&p.ty) {
+                OwnKind::Str => StorageKind::Str,
+                OwnKind::Lst => StorageKind::List,
+            },
+        });
+    }
+    out
+}
+
+/// Does `name` occur in `e` anywhere? Used to prove a parameter is not read by
+/// the sibling arguments of a self-tail call.
+fn expr_mentions(e: &HirExpr, name: &str) -> bool {
+    let mut ids = HashSet::new();
+    mention(e, &mut ids);
+    ids.contains(name)
+}
+
+/// Does `param` reach a sink that would keep it alive past the loop?
+///
+/// The loop frees the parameter slot at every backedge, so the parameter must be
+/// dead there: reading it is fine (reads happen while the body runs, before the
+/// backedge), but any sink that retains it — an escaping/consuming argument, a
+/// container store, an explicit `Free#` — makes the slot somebody else's. The
+/// rules are the pass's own per-parameter modes, so this cannot drift from the
+/// escape summary the rest of the pass uses.
+fn param_escapes_in_body(
+    callable: &HirCallable,
+    param: &str,
+    index: usize,
+    ctx: &TailFactCtx<'_>,
+) -> bool {
+    param_is_stored(&callable.body.statements, param)
+        || param_escapes_through_calls(callable, param, index, ctx)
+}
+
+/// Does the body pin `param` into storage this pass does not track — a
+/// non-local assignment target, an explicit `Free#`, or a keep hint?
+fn param_is_stored(stmts: &[HirStmt], param: &str) -> bool {
+    stmts.iter().any(|s| match &s.kind {
+        HirStmtKind::Assign(l, r) => expr_mentions(l, param) || expr_mentions(r, param),
+        HirStmtKind::ArrowAssign { target, value, .. } => {
+            target.as_ref().is_some_and(|t| expr_mentions(t, param)) || expr_mentions(value, param)
+        }
+        HirStmtKind::FreeHint(n) | HirStmtKind::KeepHint(n) => n == param,
+        HirStmtKind::ReleaseOwned { name, .. } => name == param,
+        _ => false,
+    })
+}
+
+/// Does any call in the body take `param` at a retaining argument position?
+fn param_escapes_through_calls(
+    callable: &HirCallable,
+    param: &str,
+    index: usize,
+    ctx: &TailFactCtx<'_>,
+) -> bool {
+    let mut bad = false;
+    crate::hir::expr_walk::walk_stmts(&callable.body.statements, &mut |e| {
+        bad |= arg_retains_param(e, param, index, callable, ctx);
+    });
+    bad
+}
+
+/// One expression's verdict for `param_escapes_through_calls`.
+fn arg_retains_param(
+    e: &HirExpr,
+    param: &str,
+    index: usize,
+    callable: &HirCallable,
+    ctx: &TailFactCtx<'_>,
+) -> bool {
+    if let HirExprKind::Consume(inner) = &e.kind {
+        return expr_mentions(inner, param);
+    }
+    let HirExprKind::Call { callee, args, .. } = &e.kind else {
+        return false;
+    };
+    // The recursive transfer itself is decided separately: only a pass at a
+    // DIFFERENT index would hand the value to another slot.
+    if *callee == callable.name {
+        return args
+            .iter()
+            .enumerate()
+            .any(|(j, a)| j != index && expr_mentions(a, param));
+    }
+    if callee == "Free#" {
+        return args.iter().any(|a| expr_mentions(a, param));
+    }
+    if ctx.fresh.contains(callee) {
+        return false;
+    }
+    args.iter().enumerate().any(|(j, a)| {
+        let consuming = ctx.consumed.get(callee).is_some_and(|s| s.contains(&j));
+        let escaping = ctx
+            .escapes
+            .get(callee)
+            .map(|s| s.get(j).copied().unwrap_or(true))
+            .unwrap_or(!callee.ends_with('#'));
+        (consuming || escaping) && expr_mentions(a, param)
+    })
+}
+
+fn exit_transfers_map(
+    stmts: &[HirStmt],
+    params: &[super::program::HirParam],
+) -> BTreeMap<usize, bool> {
+    let mut aliases: HashMap<String, usize> = HashMap::new();
+    for (i, p) in params.iter().enumerate() {
+        aliases.insert(p.name.clone(), i);
+    }
+    let mut rets = Vec::new();
+    collect_returns(stmts, &mut rets);
+    let mut out: BTreeMap<usize, bool> = BTreeMap::new();
+    for r in &rets {
+        if let Some(i) = expr_param_identity(r, &aliases) {
+            out.insert(i, true);
+        }
+    }
+    out
+}
+
 fn param_alias_map(
     stmts: &[HirStmt],
     params: &[super::program::HirParam],
@@ -1430,6 +1860,12 @@ struct Pass<'a> {
     /// tions). Used to decide whether a param-return call hands back caller
     /// storage (a borrow) or an unresolved value (undecided).
     param_aliases: &'a HashMap<String, usize>,
+    /// 2026-11-16 (M2): the CURRENT callable's owned tail-loop parameters, as
+    /// decided by `owned_tail_params` before the rewrite. A self-tail call arg
+    /// at a recorded index is fixed by the backend's loop lowering, so the
+    /// pass must NOT report it as undecided; any other owned self-tail temp is
+    /// still a real leak and keeps its census event.
+    fixed_tail: &'a [OwnedTailParam],
     locals: &'a HashSet<String>,
     next: u32,
     function: String,
@@ -1775,14 +2211,24 @@ fn rewrite_list(
                                 &fn_freed,
                             );
                             if inline && owns_storage && owned_temp {
-                                ctx.events.push(OwnedEvent {
-                                    function: ctx.function.clone(),
-                                    name: format!("self-tail arg{i}"),
-                                    kind: OwnedEventKind::UndecidedInit(
-                                        "owned temporary at a self-tail call is freed nowhere "
-                                            .to_string(),
-                                    ),
-                                });
+                                // 2026-11-16 (M2): a recorded owned tail-loop
+                                // parameter is released by the backend's loop
+                                // lowering (free-before-backedge + exit), so
+                                // it is no longer a leak and must not block
+                                // --deny-memory-ambiguity. Anything the loop
+                                // lowering cannot prove stays a real leak and
+                                // keeps its census event.
+                                let fixed = ctx.fixed_tail.iter().any(|p| p.index == i);
+                                if !fixed {
+                                    ctx.events.push(OwnedEvent {
+                                        function: ctx.function.clone(),
+                                        name: format!("self-tail arg{i}"),
+                                        kind: OwnedEventKind::UndecidedInit(
+                                            "owned temporary at a self-tail call is freed nowhere "
+                                                .to_string(),
+                                        ),
+                                    });
+                                }
                             }
                         }
                     }
@@ -2764,12 +3210,13 @@ defn owned() [true][true] -> List<Int> {
         );
     }
 
-    /// A self-tail call passing an owned INLINE temporary leaks it every
-    /// iteration; the census must SAY so (it used to be invisible because the
-    /// temporary has no name). Scalar arguments must NOT be reported — they own
-    /// no storage, and flagging them was a false positive.
+    /// A self-tail call passing an owned INLINE temporary is no longer a leaked
+    /// temporary — the loop lowering frees the slot at every backedge — so the
+    /// census must record the FACT (M2, 2026-11-16) instead of an undecided
+    /// event. The fact is what the backend consumes; the event is what blocks
+    /// `--deny-memory-ambiguity`, so the two must agree.
     #[test]
-    fn self_tail_owned_temporary_is_reported_and_scalars_are_not() {
+    fn self_tail_owned_temporary_becomes_a_loop_release() {
         let mut program = annotated(
             r#"
 import "std/alloc.bv";
@@ -2791,10 +3238,56 @@ defn loop(s: String, n: Int) [true][true] -> String {
                 |e| matches!(&e.kind, OwnedEventKind::UndecidedInit(w) if w.contains("self-tail")),
             )
             .collect();
-        assert_eq!(hits.len(), 1, "one owned temporary at the self-tail call");
-        assert_eq!(hits[0].name, "self-tail arg0");
-        assert_eq!(hits[0].function, "loop");
-        insert_releases(&mut program, &HashMap::new());
+        assert!(
+            hits.is_empty(),
+            "the loop owns and frees the carried temporary: {hits:?}"
+        );
+        let plan = insert_releases(&mut program, &HashMap::new());
+        let params = plan.get("loop").expect("loop must be recorded");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].index, 0);
+        assert_eq!(params[0].storage, StorageKind::Str);
+        // The self-tail site allocates, so the first backedge may free too.
+        assert!(params[0].free_first);
+        // The base case returns `mk(s)`, a value of its own — not the slot.
+        assert!(!params[0].exit_transfers);
+    }
+
+    /// The same recursion entered with a local the CALLER keeps alive stays a
+    /// reported leak: freeing the slot would be a use-after-free in that
+    /// caller, so no fact is recorded and the census keeps blocking.
+    #[test]
+    fn self_tail_owned_temporary_is_reported_when_a_caller_keeps_the_value() {
+        let mut program = annotated(
+            r#"
+import "std/alloc.bv";
+defn mk(s: String) [true][true] -> String {
+    term fresh_string(s);
+};
+defn loop(s: String, n: Int) [true][true] -> String {
+    when n <= 0 {
+        term mk(s);
+    };
+    term loop(mk(s), n - 1);
+};
+defn user(seed: String) [true][true] -> Int {
+    let r: String = loop(seed, 3);
+    term r .^Length + seed .^Length;
+};
+"#,
+        );
+        let plan = insert_releases(&mut program, &HashMap::new());
+        assert!(
+            plan.get("loop").is_none(),
+            "a caller that reads `seed` after the call owns it"
+        );
+        let events = memcheck_owned(&program, &HashMap::new());
+        assert!(
+            events.iter().any(
+                |e| matches!(&e.kind, OwnedEventKind::UndecidedInit(w) if w.contains("self-tail"))
+            ),
+            "the unfixable temporary must stay in the census"
+        );
     }
 
     /// A self-tail call with no owned temporary must stay silent.

@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// 2026-11-16 (M2 tail-loop owned destruction): the loop OWNS its carried
+// String. Every call site hands the value over — the entry call passes a fresh
+// allocation, the recursion passes `rest`, which the body mentions exactly
+// once — so the tail-loop lowering frees the previous iteration's value at
+// each backedge instead of dropping it (that leak was quadratic in the
+// recursion depth; BUGS.md 2026-11-16).
+import "std/io.bv";
+
+defn peel(text: String) [true][CharCount#(term) >= 0] -> String {
+    when text .^Length == 0 { term fresh_string(text); };
+    let rest: String = text[1:text .^Length];
+    term peel(rest);
+};
+
+node entry [beginprogram][true] {
+    let result: String = peel(fresh_string("abcdef"));
+    print_int(result .^Length);
+    print_str("\n");
+    endprogram 0;
+};

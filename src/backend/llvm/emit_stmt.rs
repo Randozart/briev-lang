@@ -1763,6 +1763,12 @@ pub(crate) fn emit_term_value_tail(
         backend.fun.object_return_context = saved_object_ret;
         return;
     }
+    // 2026-11-16 (M2 tail-loop owned destruction): a lowered tail loop that
+    // exits here drops its last loop-carried owned value unless the base case
+    // hands it to the caller. Emitted before the `ret` so the released handle
+    // is never the value being returned (the frontend only licenses an exit
+    // release when the base case does not mention that parameter).
+    backend.emit_tail_owned_exit_release(out, indent, &reg.name);
     backend.fun.enum_return_context = saved_enum_ret;
     backend.fun.expected_enum_type = saved_expected_enum;
     backend.fun.object_return_context = saved_object_ret;

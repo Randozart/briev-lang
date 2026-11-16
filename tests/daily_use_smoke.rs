@@ -194,6 +194,40 @@ fn build_library(name: &str) {
     );
 }
 
+/// 2026-11-16 (M2 tail-loop owned destruction): a self-tail recursion whose
+/// carried String is handed over at EVERY call site must be lowered to a real
+/// loop that frees the previous iteration's value, and must no longer recurse.
+/// Before this gate the value was dropped at each backedge and leaked
+/// quadratically (16k-character input → 128 MB RSS; now flat). The fixture runs
+/// to completion, so a double free or a free of the caller's value shows up as
+/// a crash here as well as in the RSS probe.
+#[test]
+fn owned_tail_transfer_frees_at_every_backedge() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("owned_tail_transfer", "ownedtail", &[]);
+    assert_eq!(out, "0\n", "peel must reduce to an empty string: {out:?}");
+    let out_dir =
+        Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/owned_tail_transfer__ownedtail");
+    let ir =
+        std::fs::read_to_string(out_dir.join("owned_tail_transfer.ll")).expect("read emitted IR");
+    let peel = function_text(&ir, "@peel(");
+    assert!(
+        peel.contains(".tail_header_"),
+        "owned-carrying recursion must be lowered to a loop:\n{peel}"
+    );
+    assert!(
+        !peel.contains("call ptr @peel"),
+        "the lowered loop must not recurse:\n{peel}"
+    );
+    assert!(
+        peel.contains("region_free") || peel.contains("call void @free"),
+        "the loop must destroy the carried value it overwrites:\n{peel}"
+    );
+}
+
 #[test]
 fn tier1_corpus_compiles_links_and_runs() {
     if !has("clang") {

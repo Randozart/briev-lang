@@ -452,8 +452,16 @@ multi-node SSA loop can honor the gate.",
 
         // Pool ABI. The table holds `workers` entries; entry 0 is null because
         // main runs worker 0 itself.
-        writeln!(out, "declare i64 @briev_workers_start(i64, ptr, ptr) local_unnamed_addr").ok();
-        writeln!(out, "declare void @briev_workers_release() local_unnamed_addr").ok();
+        writeln!(
+            out,
+            "declare i64 @briev_workers_start(i64, ptr, ptr) local_unnamed_addr"
+        )
+        .ok();
+        writeln!(
+            out,
+            "declare void @briev_workers_release() local_unnamed_addr"
+        )
+        .ok();
         writeln!(out, "declare void @briev_workers_wait() local_unnamed_addr").ok();
         writeln!(out, "declare void @briev_workers_stop() local_unnamed_addr").ok();
 
@@ -821,6 +829,10 @@ impl crate::backend::llvm::LlvmBackend {
     /// True when no persistent cell exists, so `@cell_persistent_ticks` was
     /// never defined. Mirrors `emit_persistent_cell_ticks`'s own guard.
     pub(crate) fn persistent_cell_ticks_absent(&self) -> bool {
-        !self.ctx.cell_defs.iter().any(|(_, cell)| cell.is_persistent)
+        !self
+            .ctx
+            .cell_defs
+            .iter()
+            .any(|(_, cell)| cell.is_persistent)
     }
 }

@@ -124,21 +124,57 @@ frees the CALLER's argument on the first iteration — the slot is initialised
 from the caller's handle. `use-after-free` (the earlier attempt produced
 `free(): invalid pointer` from a related double release).
 
-**Correct fix (not implemented yet).** In `try_emit_tail_loop_backedge`
-(`src/backend/llvm/emit_llvm/…/emit_expr.rs`), emit an iteration flag per owned
-backedge argument:
+**Correct fix (implemented 2026-11-16, commit in this session).** The fact lives
+in the frontend: `crate::hir::owned_storage::OwnedTailParam` (threaded through
+`AnalysisResults::owned_tail_params`), computed by `owned_tail_params()` from the
+ownership pass's own summaries. The backend consumes it:
 
-1. At loop entry, initialise a hidden `owned` slot to `false` and store the
-   caller's argument in the parameter slot.
-2. Before each backedge store, branch on `owned`: when true, load the current
-   slot value and `free` it; then store the new value and set `owned = true`.
-3. At loop exit, release the final carried value on the base path (the base
-   case already consumes it where it copies).
+1. `tail_loop_enabled` (`emit_toplevel.rs`) admits owned-carrying defns on every
+   target — the plain recursive form has nowhere to release the old value.
+2. `try_emit_tail_loop_backedge` (`emit_expr.rs`) calls
+   `emit_tail_owned_slot_release` before storing: load the slot value, release it
+   through the SAME lane a `ReleaseOwned` statement uses (arena skip for String,
+   `coll_destroy` availability gate for List).
+3. `emit_term_value_tail` (`emit_stmt.rs`) calls `emit_tail_owned_exit_release`
+   so the last carried value is released when the base case returns a value of
+   its own (`exit_transfers == false`).
 
-The "which backedge args are owned" fact belongs in the frontend
-(`RecursiveCarrierValue`, `src/analysis/destination_model.rs`), per the
-frontend-driven-dispatch rule — not a name/type heuristic in the backend.
-Spec: `docs/plans/2026-11-16-memory-and-xpu-finish-grind.md` §M2.
+**The soundness condition — the caller's side.** Freeing the slot at the FIRST
+backedge frees the value the caller passed. That is only safe when the caller
+handed it over, which the pass proves per parameter over EVERY call site in the
+program:
+
+* an inline fresh allocation of a `fresh`-set callee (allocates its own result,
+  lets no argument escape) → handed over outright (`free_first = true`);
+* an identifier the caller's body mentions exactly once, at that argument → the
+  caller cannot observe it again, and the accepted index joins `consumed` so the
+  caller's own release is suppressed (`free_first = false`);
+* a literal (static storage nothing owns) → same, `free_first = false`;
+* anything else (the caller keeps reading the local) → NO fact, and the census
+  keeps reporting the leak so `--deny-memory-ambiguity` still blocks.
+
+Plus `param_escapes_in_body`: the parameter may not reach a retaining sink
+(escape/consume argument, container store, `Free#`, keep-hint).
+
+**Evidence (2026-11-16).** `tests/tier1/owned_tail_transfer.bv`, maxRSS of the
+child process against the carried-string length:
+
+| seed length | pre-fix maxRSS | post-fix maxRSS |
+|---|---|---|
+| 4 000 | 12.9 MB | 12.8 MB |
+| 8 000 | 33.7 MB | 12.8 MB |
+| 16 000 | 127.9 MB | 12.8 MB |
+| 32 000 | (not run) | 13.0 MB |
+
+Post-fix RSS is flat across a 16× range; pre-fix doubles with the input, as the
+quadratic model predicts. The emitted `@peel` contains `.tail_header_`, two
+release calls and no self-call (asserted by
+`daily_use_smoke::owned_tail_transfer_frees_at_every_backedge`).
+
+**Remaining, deliberately unfixed.** A self-tail call whose argument is a
+slice of the parameter (`let rest = text[1:len]; term f(rest)`) is fixed; a
+recursion entered with a caller-held local is still reported, not silently
+freed. Do not relax the transfer proof to make the census look better.
 
 **Workaround today.** Write the recursion non-tail and free explicitly:
 
