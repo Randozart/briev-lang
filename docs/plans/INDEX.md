@@ -63,6 +63,23 @@ actions. References — does not replace — the kiosk program, lane ceilings,
 float formats, H5, verification, stability, lifetime/arena/destination,
 proof-consumption, eternal ABI, Intel G1.5, and doctrine plans.
 
+**Finishing grind — memory to zero + XPU ceilings (2026-11-16, ACTIVE execution plan):**
+`docs/plans/2026-11-16-memory-and-xpu-finish-grind.md` — executes the
+remaining work of the post-re-land memory plan (§B) and the Intel lane
+ceilings plan (§W2c/W3/W4) as one dependency-ordered grind. Records the
+retirement of the HIR escape walker (non-monotone cross-pass summaries; the
+frame leak is fixed by the AST map + `fresh_changed` + nested-call
+attribution — 500-call soak flat 1.9→1.6 MB) and CORRECTS an interim claim:
+the 12 undecided census families are §13 copy discipline (parser chain,
+`packed_ints`, `arg`, `conv_attr4`, `unwrap` source, `dispatch`,
+`select_path`), not syscall-bound — zero is reachable. Tracks: M1 soak truth,
+M2 tail-loop destruction via `RecursiveCarrierValue` owned-arg facts, M3
+census 12→0, M4 deny-at-zero, M5 conservative-drops ratchet; X1 f16 coopmat
+tier (9× regression — fix or fact-gate), X2 NEO residency, X3 GLSL/XMX
+ceilings, X4 `clFinish` hang, X5 Stage F promotion (unblocked by the W1 probe
+fix), X6 dispatch waves, X7 OpenVINO gate on the node; K1 pin bump, K2 stale
+capability ledger, K3 edge budgets. Waves 0–7 with an exit gate each.
+
 **Kiosk native acceptance program (2026-11-10, ACTIVE — capability detail):**
 `docs/plans/2026-11-10-kiosk-native-acceptance-program.md` — make Briev
 capable of the entire `2d-Kiosk-Avatar` stack natively. The fork
@@ -199,11 +216,12 @@ pass `hir::owned_storage`), owned List destruction + temp-transfer (§16:
 `ReleaseOwned`/`TempTransfer` first-class HIR kinds, body-seam two-cursor
 walk, fresh-set gated on zero escaping params, identity-return transfer).
 Kiosk face soak: 144→187 MB pre-slices → flat 171 MB at 200 calls. DONE SINCE: guard-nested seam (§17), owned List + temp-transfer (§16),
-tensor dims owner slot + cached-model session, VAD chunks RPC + slot-keyed
-cache + audio frontend, coll Float-collection fix (strategy args carry
-value_ty; BUGS entry closed). Saltpetre v0 op ledger is canonical
-(docs/architecture/saltpetre.md). NEXT: VAD streaming sessions
-(vad_open/feed/close, plan 2026-11-12-vad-streaming-sessions).
+tensor dims owner slot + cached-model session, VAD chunks RPC + sessions,
+coll Float fix, Saltpetre op ledger, census campaigns 1–2 (undecided
+147→12, releases 58, ratchet live), coll-object owns-check + self-tail fix.
+NEXT: post-re-land hygiene, soak truth, tail-loop-aware destruction, census
+12→0 then deny-at-zero (`2026-11-14-post-reland-hygiene-soak-tailloop.md`).
+STT/TTS/visemes + NPU await owner decisions.
 
 **Lifetime and reclamation — north star (2026-11-03, ACTIVE):**
 `docs/plans/2026-11-03-lifetime-and-reclamation.md` (+ decision-record Part

@@ -1,0 +1,28 @@
+// wasm32 cross-backend parity fixture: equilibrium native sink (2026-11-16).
+//
+// Purpose: exercise a program shape that has NO terminating path — the
+// reactor settles at a fixed point instead of calling endprogram. Per the
+// amended Observability-as-Liveness doctrine the observable is the
+// host-readable state sink: the final %State slots read through the
+// `state_layout` table after the reactor reaches equilibrium.
+//
+// The gate documents the native side as skipped for this shape: a native
+// process with no terminating path idles (never exits), so its final state
+// is not host-readable in the gate's environment. The wasm-side check is
+// against the documented fixed point below (see state_settled.json).
+//
+// Slot layout (state_layout table order): slot 0 = `count` (i32),
+// slot 1 = `active` (flag, i32), slot 2 = a compiler-added i64 word
+// (always 0). Fixed point: count = 3, active = 1. Expected final state:
+// [3, 1, 0] (see state_settled.json).
+let count: Int = 0;
+let active: Int = 0;
+
+node tick [active == 0 || (active == 1 && count < 3)][active == 1 && count == 3] {
+    when active == 0 {
+        active = 1;
+    };
+    when active == 1 && count < 3 {
+        count = count + 1;
+    };
+};

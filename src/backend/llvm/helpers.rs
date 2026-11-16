@@ -955,7 +955,11 @@ impl LlvmBackend {
         let lb = self.emit_load_length(out, indent, &hb, "clq", "clb");
         let total = self.emit_add_const(out, indent, &la, &lb, "ctl");
         let alloc_size = self.compute_alloc_size(out, indent, &total, "chs", "cas");
-        let result_i64 = if self.arena_ptr_idx.is_some() && !self.fun.stateless_body {
+        // 2026-11-16 (thread-lane E3): a partitioned arena has no single
+        // `arena_ptr_idx` — the slots are per worker — so the gate must ask the
+        // accessor, or every allocation in a pinned program silently falls back
+        // to `malloc` and the partition is never used.
+        let result_i64 = if self.arena_slots().is_some() && !self.fun.stateless_body {
             self.emit_arena_alloc(out, indent, &alloc_size)
         } else {
             // 2026-10-25: String headers and compute_alloc_size use i64 on

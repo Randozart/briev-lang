@@ -52,6 +52,12 @@ jobs:
           echo "Corpus: $(wc -l < /tmp/bv_corpus.txt) files"
 
       - name: Run verify-bodies census
+        # Per-file wall-clock bound. Without it a single pathological file
+        # starved the hosted runner (the job died at ~55 min with "the hosted
+        # runner lost communication"), so the census produced no signal at all.
+        # A slow file is now recorded as `timed_out` in the report instead.
+        env:
+          VERIFY_BODIES_TIMEOUT: "120"
         run: |
           export BRIEVC=./target/release/brievc
           bash scripts/verify-bodies-census.sh /tmp/bv_corpus.txt /tmp/verify-bodies-report.json
@@ -76,7 +82,9 @@ jobs:
           print(f'Unproven: {s[\"unproven\"]}')
           print(f'Skipped:  {s[\"skipped\"]}')
           print(f'Violated: {s[\"violated\"]}')
-          print(f'Errors:   {s[\"errors\"]}')
+          print(f'Errors:   {s["errors"]}')
+          if s.get('timed_out', 0):
+              print(f'Timed out: {s["timed_out"]} — per-file bound hit; widen VERIFY_BODIES_TIMEOUT or investigate')
           if s['violated'] > 0:
               print('ERROR: Violated contracts found — false proofs!')
               exit(1)

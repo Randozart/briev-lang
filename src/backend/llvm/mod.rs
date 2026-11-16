@@ -1770,6 +1770,12 @@ pub struct LlvmBackend {
     pub(crate) arena_ptr_idx: Option<usize>,
     pub(crate) arena_end_idx: Option<usize>,
     pub(crate) arena_base_idx: Option<usize>,
+    /// 2026-11-16 (thread-lane E3): one slot triple per worker, populated only
+    /// for pinned programs. Empty = the single-worker triple above is in force
+    /// and every existing arena code path is byte-identical.
+    pub(crate) arena_workers: Vec<ArenaSlots>,
+    /// The worker whose tick function is being emitted. Selects the slots.
+    pub(crate) current_worker: u32,
 
     // ── Dynamic Trigger Safety ─────────────────────────────
     // 2026-07-15: Phase 7i — Controls null-check emission for @ *ptr.
@@ -1926,6 +1932,8 @@ impl LlvmBackend {
             arena_ptr_idx: None,
             arena_end_idx: None,
             arena_base_idx: None,
+            arena_workers: Vec::new(),
+            current_worker: 0,
             analysis_alloc_strategies: None,
             resolved_frgns: None,
             precomputed_analysis: None,
@@ -2633,14 +2641,17 @@ impl LlvmBackend {
             return self.emit_malloc_fallback(out, indent, size_reg);
         }
 
-        let Some(aptr_idx) = self.arena_ptr_idx else {
+        let Some(slots) = self.arena_slots() else {
             return self.emit_malloc_fallback(out, indent, size_reg);
         };
 
         // 2026-07-19: Bump-pointer arena allocation via %State fields.
         // Uses next_reg_with_prefix (no closures — avoids borrow conflicts).
-        let aend_idx = self.arena_end_idx.unwrap();
-        let abase_idx = self.arena_base_idx.unwrap();
+        let (aptr_idx, aend_idx, abase_idx) = (slots.ptr, slots.end, slots.base);
+        // 2026-11-16 (thread-lane E3): a partitioned slice is fixed — growing it
+        // would collide with the next worker's slice (`brk`) or move the region
+        // out from under the worker (`realloc`). Overflow takes `malloc`.
+        let partitioned = self.arena_is_partitioned();
 
         // Helper: emit GEP+load+inttoptr for an arena %State field → returns ptr reg.
         macro_rules! load_state_ptr {
@@ -2739,108 +2750,16 @@ impl LlvmBackend {
         )
         .ok();
 
-        // Grow path
-        writeln!(out, "{}{}:", indent, grow_l).ok();
-        // 2026-08-04 (Phase 4): embedded freestanding has NO realloc — the
-        // static bump heap is fixed-size. A bump past the end yields null
-        // (the allocator contract: null ⇒ allocation failed); the caller's
-        // bounds checks handle it. No @realloc/@free on bare metal.
-        let grow_incoming;
-        if self.ctx.is_embedded {
-            grow_incoming = "null".to_string();
-        } else {
-            // 2026-09-10 (Family E, allocator ownership): libc-free growth.
-            // The brk-backed arena EXTENDS IN PLACE — `brk(end + min_sz)`
-            // moves the break; the base never moves and the copied data
-            // stays put (zero-copy, unlike @realloc). The bump restarts at
-            // base — the same grow contract as the realloc path. Fallback:
-            // @realloc for targets without brk lowering.
-            let end_g = load_state_ptr!(aend_idx, "aaeg");
-            let end_i64g = self.fun.next_reg_with_prefix("aagi");
-            writeln!(
-                out,
-                "{}{} = ptrtoint ptr {} to i64",
-                indent, end_i64g, end_g
-            )
-            .ok();
-            let grow_sz = self.fun.next_reg_with_prefix("aags");
-            writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz, size_reg).ok();
-            let min_sz = self.fun.next_reg_with_prefix("aams");
-            writeln!(
-                out,
-                "{}{} = add i64 {}, {}",
-                indent, min_sz, grow_sz, self.ctx.arena_initial_size
-            )
-            .ok();
-            let want = self.fun.next_reg_with_prefix("aabw");
-            writeln!(out, "{}{} = add i64 {}, {}", indent, want, end_i64g, min_sz).ok();
-            let ok = self.fun.next_reg_with_prefix("aabo");
-            let have_brk = self.emit_brk_syscall(out, &ok, &want, indent);
-            if have_brk {
-                let new_end = self.fun.next_reg_with_prefix("aane");
-                writeln!(
-                    out,
-                    "{}{} = getelementptr i8, ptr {}, i64 {}",
-                    indent, new_end, end_g, min_sz
-                )
-                .ok();
-                store_state_ptr!(aend_idx, "aaes", &new_end);
-                // 2026-11-03 (soundness): grow EXTENDS in place and KEEPS the
-                // bump. Resetting to base would overwrite live arena
-                // allocations. Bounded reuse is provided by scope-lifetime
-                // reset (`emit_arena_reset` at a proven-dead scope boundary),
-                // never by grow.
-                grow_incoming = cur.clone();
-            } else {
-                let base_ptr = load_state_ptr!(abase_idx, "aaob");
-                let grow_sz2 = self.fun.next_reg_with_prefix("aags2");
-                writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz2, size_reg).ok();
-                let min_sz2 = self.fun.next_reg_with_prefix("aams2");
-                writeln!(
-                    out,
-                    "{}{} = add i64 {}, {}",
-                    indent, min_sz2, grow_sz2, self.ctx.arena_initial_size
-                )
-                .ok();
-                let new_base = self.fun.next_reg_with_prefix("aanb");
-                writeln!(
-                    out,
-                    "{}{} = call ptr @realloc(ptr {}, i64 {})",
-                    indent, new_base, base_ptr, min_sz2
-                )
-                .ok();
-                store_state_ptr!(abase_idx, "aabs", &new_base);
-                let new_end = self.fun.next_reg_with_prefix("aane");
-                writeln!(
-                    out,
-                    "{}{} = getelementptr i8, ptr {}, i64 {}",
-                    indent, new_end, new_base, min_sz2
-                )
-                .ok();
-                store_state_ptr!(aend_idx, "aaes", &new_end);
-                // Rebase the bump onto the moved base (preserve live data).
-                let cur_i = self.fun.next_reg_with_prefix("aacurb");
-                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, cur_i, cur).ok();
-                let base_i = self.fun.next_reg_with_prefix("aabasi");
-                writeln!(
-                    out,
-                    "{}{} = ptrtoint ptr {} to i64",
-                    indent, base_i, base_ptr
-                )
-                .ok();
-                let off = self.fun.next_reg_with_prefix("aaoff");
-                writeln!(out, "{}{} = sub i64 {}, {}", indent, off, cur_i, base_i).ok();
-                let nb_i = self.fun.next_reg_with_prefix("aanbi");
-                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, nb_i, new_base).ok();
-                let nc_i = self.fun.next_reg_with_prefix("aanc");
-                writeln!(out, "{}{} = add i64 {}, {}", indent, nc_i, nb_i, off).ok();
-                let nc = self.fun.next_reg_with_prefix("aancp");
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, nc, nc_i).ok();
-                grow_incoming = nc;
-            }
-            writeln!(out, "{}br label %aaok_{}", indent, ok_l_n).ok();
-        }
-
+        let grow_ctx = ArenaGrow {
+            indent,
+            ok_l_n,
+            grow_l: &grow_l,
+            cur: &cur,
+            size_reg,
+            slots,
+            partitioned,
+        };
+        let grow_incoming = self.emit_arena_grow(out, &grow_ctx);
         // OK path
         writeln!(out, "aaok_{}:", ok_l_n).ok();
         // 2026-08-01 (D): the arena realloc-grow inserts control flow (check /
@@ -2878,17 +2797,23 @@ impl LlvmBackend {
         if self.ctx.needs_arena.is_empty() {
             return;
         }
+        // 2026-11-16 (thread-lane E3): a partitioned arena was reserved once by
+        // main before the pool started, so a worker's init is a pure rewind of
+        // its own cursor — no syscall, no shared slot, nothing to grow.
+        if self.arena_is_partitioned() {
+            let slots = self.arena_workers[self.current_worker as usize];
+            let (base_val, _) = self.emit_state_load_i64_by_idx(out, indent, slots.base);
+            self.emit_state_store_i64_by_idx(out, indent, slots.ptr, &base_val);
+            return;
+        }
         let Some(aptr_idx) = self.arena_ptr_idx else {
-            return;
-        };
-        let Some(aend_idx) = self.arena_end_idx else {
-            return;
-        };
-        let Some(abase_idx) = self.arena_base_idx else {
             return;
         };
         // 2026-07-19: Uses next_reg_with_prefix (txn_counter) for unique names.
         // Eliminates arena_counter — consistent with emit_arena_alloc pattern.
+        let (Some(aend_idx), Some(abase_idx)) = (self.arena_end_idx, self.arena_base_idx) else {
+            return;
+        };
         // 2026-11-03 (D35): the vestigial %arena_mutex was removed. It was
         // per-call (an alloca) and never consulted by emit_arena_alloc, so it
         // provided no cross-thread protection. Per-worker arenas are the real
@@ -2972,12 +2897,10 @@ impl LlvmBackend {
         if self.ctx.needs_arena.is_empty() {
             return;
         }
-        let Some(aptr_idx) = self.arena_ptr_idx else {
+        let Some(slots) = self.arena_slots() else {
             return;
         };
-        let Some(abase_idx) = self.arena_base_idx else {
-            return;
-        };
+        let (aptr_idx, abase_idx) = (slots.ptr, slots.base);
         let (base_val, _) = self.emit_state_load_i64_by_idx(out, indent, abase_idx);
         let base_ptr = self.fun.next_reg_with_prefix("arbp");
         writeln!(
@@ -2993,6 +2916,12 @@ impl LlvmBackend {
     pub(crate) fn emit_arena_fini(&mut self, out: &mut String, indent: &str) {
         // 2026-07-27: Global gate — skip if no function needs arena.
         if self.ctx.needs_arena.is_empty() {
+            return;
+        }
+        // 2026-11-16 (thread-lane E3): the partitioned reservation lives for the
+        // process, like @embedded_heap — a worker must never shrink the break,
+        // because another worker's slice sits above it.
+        if self.arena_is_partitioned() {
             return;
         }
         let Some(abase_idx) = self.arena_base_idx else {
@@ -4034,7 +3963,29 @@ impl LlvmBackend {
         // Skipping these saves 24 bytes in %State and eliminates the 64KB malloc
         // for benchmarks with no Alloc# calls. When needs_arena is empty, no function
         // code references these fields so they are safely omitted.
-        if !self.ctx.needs_arena.is_empty() {
+        // 2026-11-16 (thread-lane E3): a pinned program gets one arena triple
+        // per worker, so two workers allocating bump disjoint cursors. The
+        // FieldMode pass below is told to keep them (it eliminates every field
+        // no txn body references, which is all of them), then re-reads their
+        // indices after the rebuild.
+        if !self.ctx.needs_arena.is_empty() && self.ctx.thread_plan.worker_count > 1 {
+            let workers = self.ctx.thread_plan.worker_count as usize;
+            let mut slots = Vec::with_capacity(workers);
+            for worker in 0..workers {
+                let mut push = |backend: &mut Self, name: String| {
+                    let idx = backend.ctx.field_index_map.len();
+                    backend.ctx.field_index_map.insert(name, idx);
+                    backend.ctx.field_types.push("i64".to_string());
+                    backend.ctx.field_briev_types.push(Type::int());
+                    idx
+                };
+                let ptr = push(self, format!("__arena_ptr_w{worker}"));
+                let end = push(self, format!("__arena_end_w{worker}"));
+                let base = push(self, format!("__arena_base_w{worker}"));
+                slots.push(ArenaSlots { ptr, end, base });
+            }
+            self.arena_workers = slots;
+        } else if !self.ctx.needs_arena.is_empty() {
             let aptr = self.ctx.field_index_map.len();
             self.ctx
                 .field_index_map
@@ -9756,6 +9707,22 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                     .insert(arena_name.to_string(), crate::analysis::FieldMode::Always);
             }
         }
+        // 2026-11-16 (thread-lane E3): the per-worker triples are invisible to
+        // txn bodies for the same reason — keep them, or the rebuild drops them
+        // while the emitters still hold their old indices (the failure that
+        // produced the invalid `%State` in the first attempt).
+        let worker_slots: Vec<String> = self
+            .ctx
+            .field_index_map
+            .keys()
+            .filter(|name| name.starts_with("__arena_") && name.contains("_w"))
+            .cloned()
+            .collect();
+        for name in &worker_slots {
+            self.ctx
+                .field_modes
+                .insert(name.clone(), crate::analysis::FieldMode::Always);
+        }
         self.ctx.cache_slots.clear();
 
         // Phase 1: Remove Never fields from field_index_map and field_types.
@@ -9817,6 +9784,27 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         self.arena_ptr_idx = self.ctx.field_index_map.get("__arena_ptr").copied();
         self.arena_end_idx = self.ctx.field_index_map.get("__arena_end").copied();
         self.arena_base_idx = self.ctx.field_index_map.get("__arena_base").copied();
+        // 2026-11-16 (thread-lane E3): same rebind for the per-worker triples.
+        for (worker, slots) in self.arena_workers.iter_mut().enumerate() {
+            slots.ptr = self
+                .ctx
+                .field_index_map
+                .get(&format!("__arena_ptr_w{worker}"))
+                .copied()
+                .unwrap_or(slots.ptr);
+            slots.end = self
+                .ctx
+                .field_index_map
+                .get(&format!("__arena_end_w{worker}"))
+                .copied()
+                .unwrap_or(slots.end);
+            slots.base = self
+                .ctx
+                .field_index_map
+                .get(&format!("__arena_base_w{worker}"))
+                .copied()
+                .unwrap_or(slots.base);
+        }
 
         // Phase 2: Append cache slots — one per (field, projection_target) pair.
         for (name, mode) in &self.ctx.field_modes {
@@ -10399,4 +10387,314 @@ fn build_hir_stmt_bodies(
         })
         .map(|c| (c.name.clone(), c.body.statements.clone()))
         .collect()
+}
+
+
+/// GEP+load+inttoptr for an arena `%State` slot, returning the pointer register.
+///
+/// 2026-11-16 (thread-lane E3): module-scope twin of the closure-based macro
+/// inside `emit_arena_alloc` — the extracted overflow arm lives outside that
+/// scope, so the backend and sink are passed explicitly.
+macro_rules! arena_load_state_ptr {
+    ($self:expr, $out:expr, $indent:expr, $idx:expr, $pfx:expr) => {{
+        let gep = $self.fun.next_reg_with_prefix(concat!($pfx, "g"));
+        ::std::writeln!(
+            $out,
+            "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+            $indent, gep, $idx
+        )
+        .ok();
+        let vi = $self.fun.next_reg_with_prefix(concat!($pfx, "i"));
+        ::std::writeln!($out, "{}{} = load i64, ptr {}", $indent, vi, gep).ok();
+        let vp = $self.fun.next_reg_with_prefix(concat!($pfx, "p"));
+        ::std::writeln!($out, "{}{} = inttoptr i64 {} to ptr", $indent, vp, vi).ok();
+        vp
+    }};
+}
+
+/// GEP+ptrtoint+store for an arena `%State` slot; module-scope twin above.
+macro_rules! arena_store_state_ptr {
+    ($self:expr, $out:expr, $indent:expr, $idx:expr, $pfx:expr, $ptr:expr) => {{
+        let gep = $self.fun.next_reg_with_prefix(concat!($pfx, "g"));
+        ::std::writeln!(
+            $out,
+            "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+            $indent, gep, $idx
+        )
+        .ok();
+        let pi = $self.fun.next_reg_with_prefix(concat!($pfx, "pi"));
+        ::std::writeln!($out, "{}{} = ptrtoint ptr {} to i64", $indent, pi, $ptr).ok();
+        ::std::writeln!($out, "{}store i64 {}, ptr {}, align 8", $indent, pi, gep).ok();
+    }};
+}
+
+/// Everything the arena overflow arms need, bundled so no arm exceeds the
+/// parameter budget: the emission context plus the slots they read and write.
+struct ArenaGrow<'a> {
+    indent: &'a str,
+    ok_l_n: usize,
+    grow_l: &'a str,
+    cur: &'a str,
+    size_reg: &'a str,
+    slots: ArenaSlots,
+    partitioned: bool,
+}
+
+/// The three `%State` slot indices of one bump arena.
+///
+/// 2026-11-16 (thread-lane E3): mirrors the single-worker
+/// `arena_ptr_idx`/`arena_end_idx`/`arena_base_idx` trio, one instance per
+/// worker when the program pins nodes to explicit threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArenaSlots {
+    pub ptr: usize,
+    pub end: usize,
+    pub base: usize,
+}
+
+impl crate::backend::llvm::LlvmBackend {
+    /// The overflow arm of `emit_arena_alloc`: the pointer the allocation
+    /// continues from when the bump cursor would pass its end.
+    ///
+    /// The dispatcher only chooses a backing store; each arm owns one, so no
+    /// single function carries the branches of all four.
+    fn emit_arena_grow(&mut self, out: &mut String, ctx: &ArenaGrow<'_>) -> String {
+        writeln!(out, "{}{}:", ctx.indent, ctx.grow_l).ok();
+        if ctx.partitioned {
+            return self.emit_arena_grow_partitioned(out, ctx);
+        }
+        if self.ctx.is_embedded {
+            // 2026-08-04 (Phase 4): embedded freestanding has NO realloc — the
+            // static bump heap is fixed-size. A bump past the end yields null
+            // (the allocator contract: null ⇒ allocation failed); the caller's
+            // bounds checks handle it. No @realloc/@free on bare metal.
+            return "null".to_string();
+        }
+        let incoming = self.emit_arena_grow_hosted(out, ctx);
+        writeln!(out, "{}br label %aaok_{}", ctx.indent, ctx.ok_l_n).ok();
+        incoming
+    }
+
+    /// A fixed per-worker slice cannot grow: extending the break would collide
+    /// with the next worker's slice and `realloc` would move the region out from
+    /// under the worker. Overflow allocates from `malloc`, so the arena stays a
+    /// fast path rather than a cap.
+    fn emit_arena_grow_partitioned(&mut self, out: &mut String, ctx: &ArenaGrow<'_>) -> String {
+        let fresh = self.fun.next_reg_with_prefix("aamal");
+        writeln!(
+            out,
+            "{}{} = call ptr @malloc(i64 {})",
+            ctx.indent, fresh, ctx.size_reg
+        )
+        .ok();
+        writeln!(out, "{}br label %aaok_{}", ctx.indent, ctx.ok_l_n).ok();
+        fresh
+    }
+
+    /// Hosted growth: extend the break in place (zero-copy, base fixed) or, on
+    /// targets without `brk` lowering, `realloc` the base and rebase the cursor.
+    fn emit_arena_grow_hosted(&mut self, out: &mut String, ctx: &ArenaGrow<'_>) -> String {
+        let (indent, size_reg) = (ctx.indent, ctx.size_reg);
+        let (aend_idx, abase_idx) = (ctx.slots.end, ctx.slots.base);
+        let cur = ctx.cur;
+        let mut grow_incoming = String::new();
+        // 2026-09-10 (Family E, allocator ownership): libc-free growth.
+        // The brk-backed arena EXTENDS IN PLACE — `brk(end + min_sz)`
+        // moves the break; the base never moves and the copied data
+        // stays put (zero-copy, unlike @realloc). The bump restarts at
+        // base — the same grow contract as the realloc path. Fallback:
+        // @realloc for targets without brk lowering.
+        let end_g = arena_load_state_ptr!(self, out, indent, aend_idx, "aaeg");
+        let end_i64g = self.fun.next_reg_with_prefix("aagi");
+        writeln!(
+            out,
+            "{}{} = ptrtoint ptr {} to i64",
+            indent, end_i64g, end_g
+        )
+        .ok();
+        let grow_sz = self.fun.next_reg_with_prefix("aags");
+        writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz, size_reg).ok();
+        let min_sz = self.fun.next_reg_with_prefix("aams");
+        writeln!(
+            out,
+            "{}{} = add i64 {}, {}",
+            indent, min_sz, grow_sz, self.ctx.arena_initial_size
+        )
+        .ok();
+        let want = self.fun.next_reg_with_prefix("aabw");
+        writeln!(out, "{}{} = add i64 {}, {}", indent, want, end_i64g, min_sz).ok();
+        let ok = self.fun.next_reg_with_prefix("aabo");
+        let have_brk = self.emit_brk_syscall(out, &ok, &want, indent);
+        if have_brk {
+            let new_end = self.fun.next_reg_with_prefix("aane");
+            writeln!(
+                out,
+                "{}{} = getelementptr i8, ptr {}, i64 {}",
+                indent, new_end, end_g, min_sz
+            )
+            .ok();
+            arena_store_state_ptr!(self, out, indent, aend_idx, "aaes", &new_end);
+            // 2026-11-03 (soundness): grow EXTENDS in place and KEEPS the
+            // bump. Resetting to base would overwrite live arena
+            // allocations. Bounded reuse is provided by scope-lifetime
+            // reset (`emit_arena_reset` at a proven-dead scope boundary),
+            // never by grow.
+            grow_incoming = cur.to_string();
+        } else {
+            let base_ptr = arena_load_state_ptr!(self, out, indent, abase_idx, "aaob");
+            let grow_sz2 = self.fun.next_reg_with_prefix("aags2");
+            writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz2, size_reg).ok();
+            let min_sz2 = self.fun.next_reg_with_prefix("aams2");
+            writeln!(
+                out,
+                "{}{} = add i64 {}, {}",
+                indent, min_sz2, grow_sz2, self.ctx.arena_initial_size
+            )
+            .ok();
+            let new_base = self.fun.next_reg_with_prefix("aanb");
+            writeln!(
+                out,
+                "{}{} = call ptr @realloc(ptr {}, i64 {})",
+                indent, new_base, base_ptr, min_sz2
+            )
+            .ok();
+            arena_store_state_ptr!(self, out, indent, abase_idx, "aabs", &new_base);
+            let new_end = self.fun.next_reg_with_prefix("aane");
+            writeln!(
+                out,
+                "{}{} = getelementptr i8, ptr {}, i64 {}",
+                indent, new_end, new_base, min_sz2
+            )
+            .ok();
+            arena_store_state_ptr!(self, out, indent, aend_idx, "aaes", &new_end);
+            // Rebase the bump onto the moved base (preserve live data).
+            let cur_i = self.fun.next_reg_with_prefix("aacurb");
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, cur_i, cur).ok();
+            let base_i = self.fun.next_reg_with_prefix("aabasi");
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr {} to i64",
+                indent, base_i, base_ptr
+            )
+            .ok();
+            let off = self.fun.next_reg_with_prefix("aaoff");
+            writeln!(out, "{}{} = sub i64 {}, {}", indent, off, cur_i, base_i).ok();
+            let nb_i = self.fun.next_reg_with_prefix("aanbi");
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, nb_i, new_base).ok();
+            let nc_i = self.fun.next_reg_with_prefix("aanc");
+            writeln!(out, "{}{} = add i64 {}, {}", indent, nc_i, nb_i, off).ok();
+            let nc = self.fun.next_reg_with_prefix("aancp");
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, nc, nc_i).ok();
+            grow_incoming = nc;
+        }
+        grow_incoming
+    }
+
+    /// Reserve one arena region for the whole worker pool and initialise every
+    /// worker's slot triple.
+    ///
+    /// 2026-11-16 (thread-lane E3): the backing store is process-global (`brk`
+    /// on hosted Linux, `realloc` elsewhere, a static region when embedded), so
+    /// it is reserved ONCE — `workers * arena_initial_size` — and sliced. Each
+    /// worker then owns `[base + w*size, base + (w+1)*size)` and every later
+    /// init is a rewind. Main calls this before starting the pool; no worker
+    /// ever touches the backing store.
+    pub(crate) fn emit_arena_reserve_partitioned(&mut self, out: &mut String, indent: &str) {
+        if !self.arena_is_partitioned() || self.ctx.needs_arena.is_empty() {
+            return;
+        }
+        let workers = self.arena_workers.len() as u64;
+        let size = self.ctx.arena_initial_size;
+        let reserved = self.emit_arena_reserve_base(out, indent, size.saturating_mul(workers));
+        self.emit_arena_slice_stores(out, indent, &reserved, size);
+    }
+
+    /// Obtain the single backing region for the pool and return the register
+    /// holding its base address. One reservation for every worker, so no worker
+    /// ever touches the process-global backing store itself.
+    fn emit_arena_reserve_base(&mut self, out: &mut String, indent: &str, total: u64) -> String {
+        if self.ctx.is_embedded {
+            let base = self.fun.next_reg_with_prefix("arpb");
+            writeln!(out, "{}{} = ptrtoint ptr @embedded_heap to i64", indent, base).ok();
+            return base;
+        }
+        if self.arena_uses_brk() {
+            let base = self.emit_arena_reserve_brk(out, indent, total);
+            if let Some(base) = base {
+                return base;
+            }
+        }
+        self.emit_arena_reserve_malloc(out, indent, total)
+    }
+
+    /// The hosted-Linux path: extend the program break once by the whole
+    /// reservation. `None` means this target has no `brk` lowering.
+    fn emit_arena_reserve_brk(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        total: u64,
+    ) -> Option<String> {
+        let b0 = self.fun.next_reg_with_prefix("arp0");
+        if !self.emit_brk_syscall(out, &b0, "0", indent) {
+            return None;
+        }
+        let want = self.fun.next_reg_with_prefix("arpw");
+        writeln!(out, "{}{} = add i64 {}, {}", indent, want, b0, total).ok();
+        let ok = self.fun.next_reg_with_prefix("arpo");
+        self.emit_brk_syscall(out, &ok, &want, indent);
+        let base = self.fun.next_reg_with_prefix("arpb");
+        writeln!(out, "{}{} = add i64 0, {}", indent, base, b0).ok();
+        Some(base)
+    }
+
+    /// The portable path: one `@malloc` for the whole reservation.
+    fn emit_arena_reserve_malloc(&mut self, out: &mut String, indent: &str, total: u64) -> String {
+        let p = self.fun.next_reg_with_prefix("arpm");
+        writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, p, total).ok();
+        let base = self.fun.next_reg_with_prefix("arpb");
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, base, p).ok();
+        base
+    }
+
+    /// Carve the reservation into one triple per worker: `[base + w*size,
+    /// base + (w+1)*size)`. Every later init is a rewind of the cursor to
+    /// `base`.
+    fn emit_arena_slice_stores(&mut self, out: &mut String, indent: &str, reserved: &str, size: u64) {
+        let slots = self.arena_workers.clone();
+        for (worker, slot) in slots.iter().enumerate() {
+            let off = self.fun.next_reg_with_prefix("arwo");
+            writeln!(
+                out,
+                "{}{} = add i64 {}, {}",
+                indent,
+                off,
+                reserved,
+                worker as u64 * size
+            )
+            .ok();
+            let end = self.fun.next_reg_with_prefix("arwe");
+            writeln!(out, "{}{} = add i64 {}, {}", indent, end, off, size).ok();
+            self.emit_state_store_i64_by_idx(out, indent, slot.ptr, &off);
+            self.emit_state_store_i64_by_idx(out, indent, slot.base, &off);
+            self.emit_state_store_i64_by_idx(out, indent, slot.end, &end);
+        }
+    }
+
+    /// The slots of the arena the function currently being emitted may bump.
+    pub(crate) fn arena_slots(&self) -> Option<ArenaSlots> {
+        if let Some(slots) = self.arena_workers.get(self.current_worker as usize) {
+            return Some(*slots);
+        }
+        Some(ArenaSlots {
+            ptr: self.arena_ptr_idx?,
+            end: self.arena_end_idx?,
+            base: self.arena_base_idx?,
+        })
+    }
+
+    /// True when the arena is partitioned per worker (pinned program).
+    pub(crate) fn arena_is_partitioned(&self) -> bool {
+        !self.arena_workers.is_empty()
+    }
 }

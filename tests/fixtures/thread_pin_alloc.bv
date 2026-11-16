@@ -1,0 +1,57 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-16 (thread-lane E3): two nodes pinned to different workers that BOTH
+// allocate from the bump arena.
+//
+// This pair used to be refused, back when the arena cursor was a single shared
+// `%State` slot. The refusal is retired: each worker owns its own triple, so the
+// pair is sound and the arena is genuinely exercised here.
+//
+// The allocation is runtime-sized and its result escapes, so it survives the
+// frontend's folding; `needs_arena` then reports both nodes and the emitter
+// injects `__arena_ptr_w0`/`_w1` and friends. `%State` is an LLVM *type*, so
+// those names never appear in the emitted IR — the test asserts the shape
+// instead: each tick's arena GEPs are exactly its own triple's indices, never
+// a sibling worker's.
+//
+// History worth keeping: an earlier version of this header claimed the arena was
+// unreachable from source. That was a measurement error (searching emitted IR
+// for field names that only exist in `field_index_map`); the retraction with the
+// analysis-level evidence is in BUGS.md, along with the real bug it hid — the
+// allocation gate testing `arena_ptr_idx` and so bypassing partitioned arenas.
+
+import "std/io.bv";
+
+let tally_a: Int = 0;
+let tally_b: Int = 0;
+let armed_a: Bool = false;
+// Escaping pointers: the allocations must survive to codegen.
+let hold_a: Int = 0;
+let armed_b: Bool = false;
+
+// The allocation escapes into a state field: an escaping pointer cannot be
+// constant-folded away (a folded `Store#`/`Load#` pair would leave no
+// allocation at all, which is why earlier drafts of this fixture silently
+// exercised nothing), and a runtime-sized `Alloc#` in a reactively-dispatched
+// body is what selects the bump-arena strategy.
+async on thread 0 node work_a [!armed_a][armed_a] {
+    let n: Int = tally_a + 64;
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 7, 8);
+    hold_a = p;
+    armed_a = true;
+    term;
+};
+
+async on thread 1 node work_b [!armed_b][armed_b] {
+    let n: Int = tally_b + 96;
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 9, 8);
+    // Only this worker's own state is observed: reading worker 0's `tally_a`
+    // here would be a cross-worker read of a concurrently written field, which
+    // the thread gate refuses (rightly — the read would race with work_a's
+    // store in the same tick).
+    Print#(Load#(p, 8));
+    endprogram;
+};

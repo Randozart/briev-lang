@@ -272,9 +272,6 @@ fn cross_worker_conflict(
     if a_effects.both_observe(&b_effects) {
         return Some(sink_message(a, b));
     }
-    if a_effects.both_allocate(&b_effects) {
-        return Some(arena_message(a, b));
-    }
     unclassified_message(a, b)
 }
 
@@ -287,18 +284,6 @@ fn sink_message(a: &PinnedNode<'_>, b: &PinnedNode<'_>) -> String {
          (output, FFI, or a state write through a callee). Concurrent workers \
          cannot be ordered, so the interleaving would be visible. Move both \
          nodes to one worker to keep output deterministic",
-        a.name, a.pin, b.name, b.pin
-    )
-}
-
-/// Both workers need the bump arena. Its cursor is one `%State` slot, so two
-/// allocating workers bump the same pointer. (Per-worker arenas lift this —
-/// `docs/plans/2026-11-16-per-worker-arena-and-resource-effects.md`.)
-fn arena_message(a: &PinnedNode<'_>, b: &PinnedNode<'_>) -> String {
-    format!(
-        "'{}' (worker {}) and '{}' (worker {}) both allocate, and the arena \
-         cursor is a single shared slot. Move one of them to a different worker \
-         with no allocations, or keep both on one worker",
         a.name, a.pin, b.name, b.pin
     )
 }
@@ -576,20 +561,18 @@ mod tests {
     }
 
     #[test]
-    fn two_workers_both_allocating_are_refused_while_the_arena_is_shared() {
-        // The row disappears when per-worker arenas land (Part A).
+    fn two_workers_both_allocating_are_accepted() {
+        // 2026-11-16 (thread-lane E3): each worker bumps its own arena cursor,
+        // so an allocating pair no longer shares a slot and the refusal row is
+        // retired. The mechanical guard for the partition lives in
+        // `emit_threaded_dispatch` (one triple per worker, debug-asserted).
         let gate = gate_with_arena(
             "let a: Int = 0;\nlet b: Int = 0;\n\
-             async on thread 0 node na [a < 1][a == 1] { let p: Ptr = Alloc#(16) as Ptr; term; };\n\
-             async on thread 1 node nb [b < 1][b == 1] { let q: Ptr = Alloc#(16) as Ptr; term; };",
+             async on thread 0 node na [a < 1][a == 1] { let p: Ptr = Alloc#(16) as Ptr; a = a + 1; term; };\n\
+             async on thread 1 node nb [b < 1][b == 1] { let q: Ptr = Alloc#(16) as Ptr; b = b + 1; term; };",
             &["na", "nb"],
         );
-        assert_eq!(gate.errors.len(), 1, "errors: {:?}", gate.errors);
-        assert!(
-            gate.errors[0].contains("both allocate"),
-            "got: {}",
-            gate.errors[0]
-        );
+        assert!(gate.errors.is_empty(), "errors: {:?}", gate.errors);
     }
 
     #[test]

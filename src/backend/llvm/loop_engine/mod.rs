@@ -265,6 +265,9 @@ impl LlvmBackend {
         // ONCE, before the loop. Starting it per tick would re-create the
         // threads and re-initialise the barriers on every iteration.
         if self.ctx.thread_plan.is_pinned() {
+            // The pool's arenas come from ONE reservation made here, so no
+            // worker ever touches the process-global backing store.
+            self.emit_arena_reserve_partitioned(out, "  ");
             writeln!(
                 out,
                 "  call i64 @briev_workers_start(i64 {}, ptr @__briev_worker_fns, ptr %state)",
