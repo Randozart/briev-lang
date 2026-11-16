@@ -9806,33 +9806,25 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         }
 
         // Phase 2: Append cache slots — one per (field, projection_target) pair.
-        for (name, mode) in &self.ctx.field_modes {
-            if let crate::analysis::FieldMode::LazyCached { cache_index: _ } = mode {
-                let targets = projection_usage.get(name);
-                let mut target_map: HashMap<String, (usize, usize)> = HashMap::new();
-                if let Some(targets) = targets {
-                    for target_name in targets {
-                        let cache_idx = self.ctx.field_types.len();
-                        self.ctx.field_types.push("i64".to_string());
-                        self.ctx.field_briev_types.push(Type::int());
-                        let valid_idx = self.ctx.field_types.len();
-                        self.ctx.field_types.push("i8".to_string());
-                        self.ctx.field_briev_types.push(Type::bool_());
-                        target_map.insert(target_name.clone(), (cache_idx, valid_idx));
-                    }
-                }
-                // Fallback: at least one cache slot even if projection_usage is empty
-                if target_map.is_empty() {
-                    let cache_idx = self.ctx.field_types.len();
-                    self.ctx.field_types.push("i64".to_string());
-                    self.ctx.field_briev_types.push(Type::int());
-                    let valid_idx = self.ctx.field_types.len();
-                    self.ctx.field_types.push("i8".to_string());
-                    self.ctx.field_briev_types.push(Type::bool_());
-                    target_map.insert("_".to_string(), (cache_idx, valid_idx));
-                }
-                self.ctx.cache_slots.insert(name.clone(), target_map);
-            }
+        //
+        // 2026-11-16 (IR determinism): `field_modes` and `projection_usage` are
+        // hash containers, so iterating them directly assigned the cache slots'
+        // `%State` indices in SipHash order — a different order in every process.
+        // That is the observed "field at index 8 in one build, 9 in another"
+        // drift (BUGS.md 2026-11-16): the pairs are appended in a random
+        // sequence, so every field registered after them (instance columns,
+        // arena triples, cycle_count) shifts. Sort both levels.
+        let mut cached_fields: Vec<String> = self
+            .ctx
+            .field_modes
+            .iter()
+            .filter(|(_, mode)| matches!(mode, crate::analysis::FieldMode::LazyCached { .. }))
+            .map(|(name, _)| name.clone())
+            .collect();
+        cached_fields.sort_unstable();
+        for name in cached_fields {
+            let targets = projection_usage.get(&name).cloned();
+            self.register_cache_slots(&name, targets.as_ref());
         }
 
         // 2026-08-09 (Bug 1): a base that is ONLY spawned (no top-level
@@ -10004,6 +9996,47 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
             }
         }
         0
+    }
+
+    /// Append one field's LazyCached cache slots (a value + a validity bit per
+    /// projection target) to the `%State` layout.
+    ///
+    /// 2026-11-16 (IR determinism): the target set is a `HashSet`, so the pairs
+    /// must be appended in sorted order — otherwise the same field's cache
+    /// slots land at different `%State` indices in different processes and every
+    /// field registered afterwards shifts with them (BUGS.md 2026-11-16).
+    fn register_cache_slots(
+        &mut self,
+        name: &str,
+        targets: Option<&std::collections::HashSet<String>>,
+    ) {
+        let mut target_names: Vec<String> = targets
+            .map(|targets| targets.iter().cloned().collect())
+            .unwrap_or_default();
+        target_names.sort_unstable();
+        let mut target_map: HashMap<String, (usize, usize)> = HashMap::new();
+        for target_name in target_names {
+            let pair = self.push_cache_slot_pair();
+            target_map.insert(target_name, pair);
+        }
+        // Fallback: at least one cache slot even if projection_usage is empty.
+        if target_map.is_empty() {
+            let pair = self.push_cache_slot_pair();
+            target_map.insert("_".to_string(), pair);
+        }
+        self.ctx.cache_slots.insert(name.to_string(), target_map);
+    }
+
+    /// Reserve one `(i64 value, i8 valid)` cache-slot pair and return its
+    /// indices.
+    fn push_cache_slot_pair(&mut self) -> (usize, usize) {
+        let cache_idx = self.ctx.field_types.len();
+        self.ctx.field_types.push("i64".to_string());
+        self.ctx.field_briev_types.push(Type::int());
+        let valid_idx = self.ctx.field_types.len();
+        self.ctx.field_types.push("i8".to_string());
+        self.ctx.field_briev_types.push(Type::bool_());
+        (cache_idx, valid_idx)
     }
 
     fn register_pool_columns(&mut self, base: &str, slots: &[(String, Type)]) {

@@ -87,6 +87,40 @@ combination of state-field count and interned strings.
 `coll_destroy` calls in varying order. All three now sort. That removed one of
 the three observed diffs; the state-index and `%ip_N` diffs remain.
 
+**Second fix (2026-11-16, M6) — the state-index drift, and the daemon now
+differs by zero bytes.** `%ip_N` is not a second bug: it is the init-store
+register for `%State` field `N`, so any index shift renames it too. Two
+hash-container iterations assigned indices:
+
+1. `LlvmBackend::apply_field_modes` Phase 2 appended LazyCached cache-slot
+   pairs by iterating `field_modes` (HashMap) and `projection_usage` values
+   (HashSet). Every field registered after them — instance columns, arena
+   triples, `cycle_count` — inherited the random offset. Pairs are now appended
+   in sorted field order with sorted targets (`register_cache_slots` /
+   `push_cache_slot_pair`).
+2. `assign_field_modes` (`src/analysis/transition_graph.rs`) handed out
+   `cache_index` while iterating `all_state_fields` (a HashSet). Nothing reads
+   that index today — the backend derives cache slots from sorted field names —
+   but a per-run-varying value inside an analysis result is a trap for the next
+   consumer. The iteration is now sorted.
+
+Verification: the kiosk daemon compiled twice in two separate processes is now
+byte-identical (1 298 331 bytes, `diff` empty; before, the same pair differed in
+the `%State` GEP index and the `%ip_N` stores). A new corpus fixture
+`tests/tier1/state_layout_determinism.bv` (a state-level `obj` instance
+projected onto two members, a dozen scalar fields, six interned const strings)
+compiles byte-identically across three processes and is now part of
+`benchmarks/ll_determinism_check.sh` (full corpus mode).
+
+**Honest scope.** LazyCached fires only when a state field's projection set has
+≥2 targets AND that name is a `%State` key. An unpacked `obj` instance is laid
+out as `base.member` columns, so `projection_usage["base"]` never matches a
+key — the cache path is therefore dormant for the ordinary instance shape, and
+the fixture above exercises the layout surface rather than the cache slots
+specifically. That is why (1) is a latent-vs-live distinction: correct and
+required, but not the sole explanation of the historical observation. The
+daemon reproduction is the load-bearing evidence.
+
 **Next.** Find the unsorted map in the state-layout assignment and in the
 string-interning order, and add a state-heavy fixture with many interned
 strings to the determinism corpus so this class cannot regress.

@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// 2026-11-16 (IR determinism, M6): the `%State` layout must be byte-identical
+// in every process. The recorded drift was "a field at index 8 in one build, 9
+// in the other" (BUGS.md 2026-11-16), which shifts every register name derived
+// from a field index (`%ip_N`) and every GEP past it. The orderings that could
+// do that came from hash containers:
+//
+//   * LazyCached cache-slot pairs were appended in `field_modes` /
+//     `projection_usage` iteration order (now sorted);
+//   * `cache_index` was handed out in `all_state_fields` (HashSet) order (now
+//     sorted).
+//
+// This fixture gives the layout plenty of surface to shift a index across: a
+// state-level `obj` instance projected onto TWO members (the `targets.len() >=
+// 2` condition), a dozen scalar state fields, and six interned const strings.
+// It lives in `benchmarks/ll_determinism_check.sh`'s corpus.
+import "std/io.bv";
+
+obj Probe { alpha: Int; beta: Int; };
+
+const K01: String = "delta-alpha";
+const K02: String = "delta-beta";
+const K03: String = "delta-gamma";
+const K04: String = "delta-delta";
+const K05: String = "delta-epsilon";
+const K06: String = "delta-zeta";
+
+let probe: Probe = Probe { alpha: 1, beta: 2 };
+let a01: Int = 0;
+let a02: Int = 0;
+let a03: Int = 0;
+let a04: Int = 0;
+let a05: Int = 0;
+let a06: Int = 0;
+let a07: Int = 0;
+let a08: Int = 0;
+let done: Bool = false;
+
+node tick [done == false][done == true] {
+    a01 = a01 + probe.alpha;
+    a02 = a02 + probe.beta;
+    a03 = a03 + probe.alpha + probe.beta;
+    a04 = a04 + a01;
+    a05 = a05 + a02;
+    a06 = a06 + a03;
+    a07 = a07 + a04 + a05;
+    a08 = a08 + a06 + a07;
+    print_str(K01); print_str("|");
+    print_str(K02); print_str("|");
+    print_str(K03); print_str("|");
+    print_str(K04); print_str("|");
+    print_str(K05); print_str("|");
+    print_str(K06); print_str("|");
+    print_int(a08);
+    print_str("\n");
+    done = true;
+    term;
+};

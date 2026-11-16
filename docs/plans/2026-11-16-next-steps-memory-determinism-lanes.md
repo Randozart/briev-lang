@@ -133,7 +133,32 @@ conclusion.
 **Gates.** A results file carrying both counters and the trim experiment, with
 the same-geometry correctness gate as every other soak.
 
-## 4. Item D — IR determinism (two orderings still vary)
+## 4. Item D — IR determinism — **DONE 2026-11-16**
+
+**Outcome.** `%ip_N` was never a second bug: it is the init-store register for
+`%State` field `N`, so an index shift renames it. One root cause — hash-container
+iteration in the state layout:
+
+- `apply_field_modes` Phase 2 appended LazyCached cache-slot pairs in
+  `field_modes` / `projection_usage` order (now sorted, via
+  `register_cache_slots` + `push_cache_slot_pair`);
+- `assign_field_modes` (`src/analysis/transition_graph.rs`) handed out
+  `cache_index` in `all_state_fields` (HashSet) order (now sorted; the value has
+  no consumer today, so this is trap-removal).
+
+The kiosk daemon now compiles byte-identically in two separate processes
+(1 298 331 bytes, empty `diff`). New corpus fixture
+`tests/tier1/state_layout_determinism.bv` (state-level `obj` projected onto two
+members, twelve scalar fields, six interned const strings) is byte-identical
+across three processes and joined `benchmarks/ll_determinism_check.sh`.
+
+**Scope note.** The LazyCached path only fires when a projection set has ≥2
+targets AND the name is a `%State` key; an unpacked `obj` instance is laid out
+as `base.member` columns, so the cache path stays dormant for the ordinary
+instance shape. The daemon reproduction — not the fixture — is the load-bearing
+evidence. If a future change makes that path live, the sort is already in place.
+
+The original item follows.
 
 `src/hir/owned_storage.rs` release order is fixed (sorted). Two remain, found by
 building the kiosk daemon twice in separate processes:

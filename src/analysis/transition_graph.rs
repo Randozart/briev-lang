@@ -1495,7 +1495,15 @@ pub fn assign_field_modes(
     let mut modes: HashMap<String, super::FieldMode> = HashMap::new();
     let mut next_cache_index: usize = 0;
 
-    for field in all_state_fields {
+    // 2026-11-16 (IR determinism): `all_state_fields` is a HashSet, so iterating
+    // it directly handed out `cache_index` values in SipHash order — a different
+    // assignment in every process. Nothing reads the index today (the backend
+    // derives cache slots from the sorted field names), but a value that varies
+    // per run inside an analysis result is a trap: the next consumer would
+    // inherit the drift. Sort, so the whole map is a pure function of the input.
+    let mut fields: Vec<&String> = all_state_fields.iter().collect();
+    fields.sort_unstable();
+    for field in fields {
         let usage = projection_usage.get(field);
         if let Some(targets) = usage {
             if targets.len() >= 2 {

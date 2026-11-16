@@ -40,6 +40,11 @@ CORPUS=(
     # 2026-11-05 (H4 slice A): merged vector-group order (sorted SLP merge).
     "nbody_sqrt|benchmarks/nbody_sqrt.bv|"
     "mixed_effect_shape|tests/tier1/mixed_effect_shape.bv|"
+    # 2026-11-16 (M6): state-heavy layout + interned const strings. The
+    # recorded drift was a field index (8 vs 9) shifting every `%ip_N` register
+    # and GEP past it, which came from hash-container iteration in the state
+    # layout. This fixture gives a shift plenty of surface to show.
+    "state_layout|tests/tier1/state_layout_determinism.bv|"
 )
 if [ "${1:-}" = "--quick" ]; then
     CORPUS=(
