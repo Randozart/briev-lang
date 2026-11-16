@@ -51,6 +51,15 @@ impl<'a> BodyTypeModel<'a> {
             .resolve_llvm_type(self.universe, ty, self.int_bits);
         match (category.as_deref(), storage.as_str()) {
             (Some("Int"), "i64") => ScalarModel::SignedWord { bits: 64 },
+            // 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1): Bool is
+            // already fully supported end-to-end inside the prover —
+            // `SymbolicValue::bool_literal` evaluates to `Literal(0|1, "bool")`
+            // and the SMT encoder maps `Expr::Bool` to the native SMT-LIB Boolean
+            // (`(= #b1 #b1)` / `(= #b0 #b1)`) with `==`/`!=` on same-sort operands
+            // and `Not` already encoding correctly. The only thing rejecting
+            // Bool-typed defns was this one gate. Admit it: the symbolic and SMT
+            // layers need no change. This is a gate fix, not a capability fix.
+            (Some("Bool"), _) => ScalarModel::Bool,
             _ => ScalarModel::Unsupported,
         }
     }

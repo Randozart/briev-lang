@@ -8,14 +8,23 @@ use std::collections::HashSet;
 /// Resolved scalar semantics, supplied by the compiler rather than type names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarModel {
-    SignedWord { bits: u64 },
+    SignedWord {
+        bits: u64,
+    },
+    /// 2026-11-15 (plan 2026-11-15-value-summaries.md phase 1): Bool is a
+    /// distinct admitted model, not a 64-bit word. The symbolic evaluator
+    /// (`SymbolicValue::bool_literal`) and the SMT encoder (native SMT-LIB
+    /// Boolean, `==`/`!=` on same-sort operands, `Not`) already handle it
+    /// end-to-end; admitting it here is a gate fix, not a capability fix.
+    Bool,
     Unsupported,
 }
 
 impl ScalarModel {
-    /// The current arithmetic engine models exactly signed wrapping 64-bit words.
+    /// The current arithmetic engine models exactly signed wrapping 64-bit
+    /// words, plus Bool as a distinct admitted sort.
     pub fn admitted(self) -> bool {
-        matches!(self, Self::SignedWord { bits: 64 })
+        matches!(self, Self::SignedWord { bits: 64 } | Self::Bool)
     }
 }
 
