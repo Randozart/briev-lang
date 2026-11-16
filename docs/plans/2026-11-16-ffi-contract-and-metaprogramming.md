@@ -780,3 +780,35 @@ Two ways forward, to pick in S3 rather than here:
 Until this is decided the descriptor carries `version`, `abi`, and the existing
 sections only; the `values`/`discipline`/`errors`/`supports` keys are *accepted and
 validated when flat*, but no shipped adapter uses them yet.
+
+### S3 step 1 — DONE (2026-11-16): flat value classes, one entry
+
+The flattening decision is implemented and the C adapter now carries its first
+real contract datum:
+
+```
+c: { version: 1; abi: "sysv-x86_64";
+     values: { "String": { class: "borrowed_bytes"; zero_copy: true;
+                           to_op: "str_to_c";
+                           from_op: "cstr_to_briev"; from_copy: true } }; … }
+```
+
+**Only `String` gets an entry.** The scalar classes are already determined by the
+protocol plus the ABI core (S2) — writing `Int: { class: scalar; layout:
+"int_bits" }` would restate a fact the compiler derives from the core, which is
+exactly what D5 forbids. `String` is the class with genuine asymmetry: outbound is
+zero-copy (the `[len][bytes]` data region *is* a C string), inbound must copy (a C
+string carries no length prefix).
+
+Validator changes: `values.<Class>` keys are now `class, zero_copy, layout, len,
+len_op, to_op, from_op, from_copy, retain_op, release_op, kind`; the
+nested-direction walker (`values.<Class>.to`) is deleted as dead.
+
+**Second parser finding.** A multi-class `values` block in the shipped adapter
+still failed to parse (`Expected named field`) while the same shape inline in a
+test parses and a single-class block parses. I did not chase it to the byte: the
+one-class form is the better design anyway (see above), and the failing variant is
+no longer in the tree. Recorded so the next author knows that *multi-entry maps
+inside a target entry* have a parser limit worth finding before bulking up a
+descriptor — the same class of surprise as the nesting limit, and the same fix
+(capture the exact offset in a unit test, then decide flatten-vs-extend).
