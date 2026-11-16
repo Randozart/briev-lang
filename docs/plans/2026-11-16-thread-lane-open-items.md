@@ -397,6 +397,34 @@ assertion; the shipped tree passes the full gate.
 | E3 | `tests/thread_pin`, `tests/thread_pin_alloc`, determinism corpus, quick gate |
 | E4 | quick gate; scratch-build assertion check |
 
+## F. Status at close (2026-11-16)
+
+Everything this plan lists is resolved except the explicitly-deferred backlog in
+§C and one decision below.
+
+| Item | State |
+|---|---|
+| A1 `emit_main` async-phase vs threaded | fixed (`4490b8811`) + fixture `thread_pin_async_guard.bv` |
+| A2 per-worker arenas | done (`523e6579f`); injection through the FieldMode pass, rewind init, malloc-on-overflow |
+| A3/A4 guards + untested shapes | done (`523e6579f`, `06b769598`) — wake trigger, 63 workers, worker-side exit |
+| B1 PR #101 | merged (`a981ae79a`) |
+| B2 branch triage | recorded; only `h5-phase-c4` needs an owner rebase (28 hunks/1359 lines, not a merge) |
+| B3 red CI (`exponent_val`/`ascii_lower`) | cleared by #104 + the merge |
+| B4 census runner starvation | fixed (`8935df01e`) — per-file bound; **census green in CI** |
+| B5 counsel verified nothing | fixed (`f4e042ec8`) — real per-file scan; **counsel green in CI** |
+| B6 wasm parity vs toolchain drift | fixed (`ecff87a11`) — harness provides memcpy/memset |
+| Arena "unreachable" report | **retracted** with evidence; the real gate bug found and fixed (`06b769598`) |
+
+**Full CI green on `ecff87a11`** — all 15 jobs, including Workspace tests and
+Counsel, the first fully green run of this workstream.
+
+**One decision still open:** `#!exit <cond>` is dead syntax (no lexer token, no
+parser production) but is referenced by
+`docs/architecture/briev-execution-model.md`, `benchmarks/iir_filter_runtime.bv`
+and two trophies. Restore the directive or sweep its users — that belongs to
+whoever owns the exit-condition surface, and it is the only thing this plan
+leaves without a disposition.
+
 ## D. Suggested order once decisions are made
 
 1. Finish/abort the in-progress merge on `main` (see B1-era work — the merge of
