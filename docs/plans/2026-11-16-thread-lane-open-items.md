@@ -254,6 +254,35 @@ conflicts substantively in HIR lowering (not just docs/INDEX) → close the bran
 with the conflict list recorded in this document, because a stale HIR rewrite is
 not something to reconcile blindly.
 
+### E2-result — `h5-phase-c4` NOT merged (measured, 2026-11-16)
+
+The branch is real, finished work: its last commit is "final to_ast crossing
+audit", and it reduces `to_ast::expr` reconstruction in `emit_expr.rs` by moving
+Reflect/Index/MethodCall dispatch onto HIR views (main still has 8
+`to_ast::expr` crossings there, the branch adds 11 view-dispatch sites).
+
+It cannot be merged as-is. `git merge-tree main h5-phase-c4` reports three
+content conflicts, and they are a full-file divergence rather than a
+reconciliation:
+
+| File | Conflict hunks | Conflict lines |
+|---|---|---|
+| `src/backend/llvm/emit_expr.rs` | 28 | 1359 |
+| `src/backend/llvm/logical.rs` | 6 | 271 |
+| `src/backend/llvm/loop_engine/mod.rs` | 1 | 15 |
+
+`emit_expr.rs` changed on both sides for five weeks; 1359 conflicting lines on a
+567-line branch diff means the two versions no longer share enough structure for
+a 3-way merge to be meaningful. Reconstructing it by hand would silently rewrite
+codegen semantics under a "merge" label — the exact failure mode this document
+exists to prevent.
+
+**Disposition:** left unmerged, branch retained. Whoever owns it should rebase it
+onto current main and re-run `scripts/gate.sh quick`; the useful part (the
+view-dispatch table) may well be re-appliable commit by commit. None of the
+other 28 branches are in this state — they are merged, abandoned, experimental,
+live lanes, or superseded (see B2-triage).
+
 ### E3 — Part A: per-worker arenas, injected through the FieldMode pass (A2)
 
 The reverted attempt injected `__arena_ptr_w<N>` **after** `build_field_index`,
