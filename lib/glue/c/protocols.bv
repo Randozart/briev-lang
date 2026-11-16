@@ -1,0 +1,12 @@
+// GENERATED — do not edit.
+// Source: lib/glue/c/glue.dbv (schema v1, keys: values.String)
+// Regenerate: brievc render <lang>   —   Verify: brievc render <lang> --check
+//
+// Ownership of a specific call is declared per `frgn`, not here (D1).
+
+type CStr: String<C_String> { };
+
+proto C_String: String {
+    axiom CastTo(String<UTF8>) = cstr_to_briev(#Lh);
+    axiom CastFrom(String<UTF8>) = str_to_c(#Lh);
+};

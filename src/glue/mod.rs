@@ -26,5 +26,6 @@ pub mod bridge;
 pub mod briev_pass;
 pub mod config;
 pub mod export;
+pub mod generator;
 pub mod link;
 pub mod web_generator;

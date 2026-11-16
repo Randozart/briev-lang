@@ -75,23 +75,14 @@ defn cstring_concat(a: Int, b: Int) -> Int [true][term >= 0] {
     term buf;
 };
 
-// The C string sub-protocol of String: nul-terminated bytes vs the base's
-// [len][data] encoding. `Concat` is the variant's own operation — a CStr
-// concatenated with + uses it directly (zero cast), not the [len][data]
-// inline concat.
-// 2026-08-28 (axiom facility): the CastTo/CastFrom pair is implemented by
-// the pure-Briev defns above — the round-trip gate skips the proof because
-// the bodies use raw Load#/Copy# (declared trusted, authority ledger).
-proto C_String: String {
-    axiom CastTo(String<UTF8>) = cstr_to_briev(#Lh);
-    axiom CastFrom(String<UTF8>) = str_to_c(#Lh);
-    op Concat(String) = cstring_concat(#Lh, #Rh);
-};
+// 2026-11-16 (S3/G3): the C-string protocol — its axioms and its boundary type —
+// is GENERATED from lib/glue/c/glue.dbv by `brievc render c`. Edit the descriptor,
+// not this file; `brievc render c --check` refuses a stale generated file.
+import "glue/c/protocols.bv";
 
 // Boundary types — the export signature IS the boundary contract. The ABI
 // width and marshalling derive from each type's protocol + metadata.
 
-type CStr:    String<C_String> { };
 type CDouble: Float<C_Double> { };
 
 // ── List<T> ↔ C array zero-copy helpers ────────────────────────────────

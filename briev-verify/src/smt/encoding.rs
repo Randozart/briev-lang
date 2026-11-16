@@ -53,6 +53,14 @@ pub(super) fn encode_with_term_sort(expr: &Expr, term_sort: Option<Sort>) -> Opt
                 sort,
             })
         }
+        // A handle's stored length is a word symbol, matching the symbolic
+        // evaluator's atom (phase 2b). Without it the encoder refuses
+        // `term == CharCount#(s)` as ill-sorted, so a body that *is* its own
+        // postcondition could never be checked.
+        Expr::Reflect(base, target, _) if target == "Length" => length_term(base),
+        Expr::Call(name, args, _) if name == "CharCount#" && args.len() == 1 => {
+            length_term(&args[0])
+        }
         Expr::BinaryOp(op, left, right) => binary(
             *op,
             encode_with_term_sort(left, term_sort)?,
@@ -72,6 +80,30 @@ pub(super) fn encode_with_term_sort(expr: &Expr, term_sort: Option<Sort>) -> Opt
                 sort: Sort::Word,
             })
         }
+        _ => None,
+    }
+}
+
+/// The SMT symbol for a handle's stored length.
+///
+/// Keyed on the structural shape of the base, so two spellings of one handle
+/// denote one symbol while different handles stay distinct. An unrenderable base
+/// yields `None`, leaving the contract unencodable rather than guessing.
+fn length_term(base: &Expr) -> Option<Term> {
+    let key = shape_key(base)?;
+    Some(Term {
+        text: super::symbols::encode(&format!("len#{key}")),
+        sort: Sort::Word,
+    })
+}
+
+/// A stable structural key for an expression, or `None` when it has no
+/// canonical rendering here.
+fn shape_key(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Identifier(name) => Some(name.clone()),
+        Expr::Field(base, f) => Some(format!("{}.{}", shape_key(base)?, f)),
+        Expr::Index(base, idx) => Some(format!("{}[{}]", shape_key(base)?, shape_key(idx)?)),
         _ => None,
     }
 }

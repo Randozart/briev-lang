@@ -381,6 +381,9 @@ pub fn verify_bodies_with_types(
     // C3: value summaries let a body be proved through the helpers it calls.
     // Computed once, up front, so the result never depends on item order.
     let sums = build_summaries(items, resolve, &globals);
+    // Declared postconditions, usable as facts about a call term. Computed once so
+    // a verdict never depends on item order.
+    let contracts = build_call_contracts(items);
     for item in items {
         let (name, contract, body) = match contract_target(item) {
             Some(t) => t,
@@ -396,8 +399,19 @@ pub fn verify_bodies_with_types(
         // unsupported expression". Conversions stay, so they keep being skipped.
         let value_types = declared_value_types(item);
         let normalized_body = normalize_representation_casts(body, &value_types);
-        let body: &[Statement] = &normalized_body;
+        // Contracted calls become opaque atoms and their declared postconditions
+        // become leading facts (`gate`s) on every path. A callee whose body can
+        // never be summarised — a memory read, a recursion — still contributes
+        // what it declares, which is the project's stated source of truth.
+        let (rewritten, call_facts) = substitute_contracted_calls(&normalized_body, &contracts, name);
+        let mut with_facts: Vec<Statement> = call_facts.into_iter().map(Statement::Gate).collect();
+        with_facts.extend(rewritten);
+        let body: &[Statement] = &with_facts;
         if let Some(reason) = crate::domain::unsupported_declaration(item, resolve, &globals) {
+            report.skipped.push(format!("{name}: {reason}"));
+            continue;
+        }
+        if let Some(reason) = unsupported_length_reflection(body, &value_types) {
             report.skipped.push(format!("{name}: {reason}"));
             continue;
         }
@@ -406,9 +420,25 @@ pub fn verify_bodies_with_types(
         // No `mentions_ident` test: a handle postcondition reaches `term` through
         // wrappers (`CharCount#(term)`), which that walker does not descend into —
         // and every trivially-true post is filtered out above anyway.
-        if returns_opaque_handle(item) {
+        let post = &contract.post_condition;
+        // Length *equations* between handles are outside the model too: the
+        // prover knows each length atom and that it is non-negative, not that
+        // `CharCount#(a + b) == CharCount#(a) + CharCount#(b)`.
+        let bases = length_bases(post);
+        let relates_two_lengths = bases.len() > 1;
+        // Nothing about the returned handle is claimed at all (`[i == count]` on a
+        // String-returning txn): examining it proves nothing while its body's
+        // handle semantics stay unmodelled, so it stays a skip.
+        let silent_about_handle = bases.is_empty();
+        let undecidable_length_claim = !length_claim_decidable(post);
+        if returns_opaque_handle(item)
+            && (mentions_term_as_value(post)
+                || relates_two_lengths
+                || silent_about_handle
+                || undecidable_length_claim)
+        {
             report.skipped.push(format!(
-                "{name}: a handle-returning contract is outside the word model (content and length are a separate gate)"
+                "{name}: a handle-returning contract about the value is outside the word model (length claims are modelled)"
             ));
             continue;
         }
@@ -531,6 +561,305 @@ fn contract_target(item: &TopLevel) -> Option<(&str, &crate::ast::Contract, &[St
     }
 }
 
+/// Declared postconditions available as facts about a call term.
+///
+/// Keyed by callee name. Only declarations with an **explicit, non-trivial**
+/// postcondition qualify, and a postcondition that folds to literal `false` is
+/// dropped — an inconsistent declaration must not poison unrelated obligations.
+type CallContracts = HashMap<String, (Vec<String>, Expr)>;
+
+/// Collect the usable postconditions of a body of items.
+///
+/// Contracts are this project's source of truth, so a callee's declared post is a
+/// legitimate fact about the call *term*. This is the same rule the call gate
+/// already applies to preconditions (`post_facts_for_term`), now available to the
+/// body prover — which is what makes memory-reading accessors (`byte_at`,
+/// `byte_raw`) and recursive helpers (`pow2`, `pow10`, `trunc`) usable at call
+/// sites: their bodies can never earn a value summary, but their contracts are
+/// declared.
+fn build_call_contracts(items: &[TopLevel]) -> CallContracts {
+    let mut out: CallContracts = HashMap::new();
+    let mut collect = |name: &str, params: &[(String, Type)], contract: &crate::ast::Contract| {
+        if !contract.explicit || trivially_true(&contract.post_condition) {
+            return;
+        }
+        if matches!(contract.post_condition, Expr::Bool(false)) {
+            return;
+        }
+        // Scope: only contracts that bound the result against a literal. Those are
+        // the ones whose fact a caller can actually use (`byte_at` ->
+        // `[0, 255]`, `task_status` -> `[0, 4]`). A value-relational post
+        // (`term == a + 1`) would replace a call with an atom that says nothing
+        // about the value, turning bodies that used to be skipped into unproven
+        // ones — widening the diagnostic without widening the proof.
+        if !bounds_result_against_literal(&contract.post_condition) {
+            return;
+        }
+        out.insert(
+            name.to_string(),
+            (
+                params.iter().map(|(n, _)| n.clone()).collect(),
+                contract.post_condition.clone(),
+            ),
+        );
+    };
+    for item in items {
+        match item {
+            TopLevel::Definition(d) => collect(&d.name, &d.parameters, &d.contract),
+            TopLevel::Transaction(t) => collect(&t.name, &t.parameters, &t.contract),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Replace contracted calls with opaque atoms and return the facts they carry.
+///
+/// Each occurrence gets its own atom: two identical calls are two evaluations
+/// (memory may differ between them), so sharing an atom would let `a - b` fold to
+/// zero — a false proof. The atom is named after the callee and a counter, which
+/// is stable within one body and never compared across bodies.
+///
+/// A call to the declaration under verification (`self_name`) contributes nothing:
+/// a self-referential contract would be the guess this prover exists to avoid.
+fn substitute_contracted_calls(
+    body: &[Statement],
+    contracts: &CallContracts,
+    self_name: &str,
+) -> (Vec<Statement>, Vec<Expr>) {
+    let mut facts = Vec::new();
+    let mut counter = 0usize;
+    let rewritten = rewrite_stmts(body, contracts, self_name, &mut facts, &mut counter);
+    (rewritten, facts)
+}
+
+fn rewrite_stmts(
+    body: &[Statement],
+    contracts: &CallContracts,
+    self_name: &str,
+    facts: &mut Vec<Expr>,
+    counter: &mut usize,
+) -> Vec<Statement> {
+    body.iter()
+        .map(|stmt| rewrite_stmt(stmt, contracts, self_name, facts, counter))
+        .collect()
+}
+
+fn rewrite_stmt(
+    stmt: &Statement,
+    contracts: &CallContracts,
+    self_name: &str,
+    facts: &mut Vec<Expr>,
+    counter: &mut usize,
+) -> Statement {
+    let mut e = |x: &Expr| rewrite_expr(x, contracts, self_name, facts, counter);
+    match stmt {
+        Statement::Assign(lhs, rhs) => Statement::Assign(lhs.clone(), e(rhs)),
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => Statement::Let {
+            name: name.clone(),
+            names: names.clone(),
+            ty: ty.clone(),
+            expr: expr.as_ref().map(|x| e(x)),
+            modifiers: modifiers.clone(),
+        },
+        Statement::Guarded(c, inner) => Statement::Guarded(
+            e(c),
+            rewrite_stmts(inner, contracts, self_name, facts, counter),
+        ),
+        Statement::Term(Some(x)) => Statement::Term(Some(e(x))),
+        Statement::EndProgram(Some(x)) => Statement::EndProgram(Some(e(x))),
+        Statement::Tail(x) => Statement::Tail(e(x)),
+        Statement::Gate(c) => Statement::Gate(e(c)),
+        Statement::Check(c) => Statement::Check(e(c)),
+        Statement::Expression(x) => Statement::Expression(e(x)),
+        other => other.clone(),
+    }
+}
+
+/// One expression's contracted-call substitution.
+fn rewrite_expr(
+    expr: &Expr,
+    contracts: &CallContracts,
+    self_name: &str,
+    facts: &mut Vec<Expr>,
+    counter: &mut usize,
+) -> Expr {
+    match expr {
+        Expr::Call(name, args, id) => {
+            let args: Vec<Expr> = args
+                .iter()
+                .map(|a| rewrite_expr(a, contracts, self_name, facts, counter))
+                .collect();
+            let usable = name != self_name && contracts.contains_key(name);
+            if !usable {
+                return Expr::Call(name.clone(), args, *id);
+            }
+            let (params, post) = &contracts[name];
+            *counter += 1;
+            let atom = Expr::Identifier(format!("call#{counter}#{name}"));
+            // The declared postcondition, with parameters substituted by the
+            // (already rewritten) arguments and `term` replaced by this call's atom.
+            facts.extend(post_facts_for_atom(params, post, &args, &atom));
+            atom
+        }
+        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
+            *kind,
+            Box::new(rewrite_expr(l, contracts, self_name, facts, counter)),
+            Box::new(rewrite_expr(r, contracts, self_name, facts, counter)),
+        ),
+        Expr::UnaryOp(kind, inner) => Expr::UnaryOp(
+            *kind,
+            Box::new(rewrite_expr(inner, contracts, self_name, facts, counter)),
+        ),
+        Expr::Cast(inner, ty) => Expr::Cast(
+            Box::new(rewrite_expr(inner, contracts, self_name, facts, counter)),
+            ty.clone(),
+        ),
+        Expr::Field(base, f) => Expr::Field(
+            Box::new(rewrite_expr(base, contracts, self_name, facts, counter)),
+            f.clone(),
+        ),
+        Expr::MethodCall(recv, m, args, id) => Expr::MethodCall(
+            Box::new(rewrite_expr(recv, contracts, self_name, facts, counter)),
+            m.clone(),
+            args.iter()
+                .map(|a| rewrite_expr(a, contracts, self_name, facts, counter))
+                .collect(),
+            *id,
+        ),
+        Expr::Index(base, idx) => Expr::Index(
+            Box::new(rewrite_expr(base, contracts, self_name, facts, counter)),
+            Box::new(rewrite_expr(idx, contracts, self_name, facts, counter)),
+        ),
+        Expr::Consume(inner) => Expr::Consume(Box::new(rewrite_expr(
+            inner, contracts, self_name, facts, counter,
+        ))),
+        other => other.clone(),
+    }
+}
+
+/// Postcondition facts for a call whose result is an opaque atom.
+///
+/// Conjuncts of the declared postcondition that speak about the result, with the
+/// callee's parameters substituted by the (already rewritten) arguments and the
+/// result hole replaced by this call site's atom. Only facts over the arguments
+/// and the atom itself are kept, so a callee's contract can never smuggle in one
+/// of the caller's locals.
+///
+/// This is where "contracts are the source of truth" pays off for the body
+/// prover: the callee's *body* is never inspected, so memory-reading accessors
+/// and recursive helpers — which can never earn a value summary — still
+/// contribute what they declare.
+fn post_facts_for_atom(params: &[String], post: &Expr, args: &[Expr], atom: &Expr) -> Vec<Expr> {
+    let mut conjuncts = Vec::new();
+    split_conjuncts(post, &mut conjuncts);
+    let mut allowed = std::collections::BTreeSet::new();
+    for arg in args {
+        allowed.extend(free_idents(arg));
+    }
+    let mut out = Vec::new();
+    for conjunct in conjuncts {
+        if !mentions_ident(&conjunct, "term") {
+            continue;
+        }
+        let substituted = substitute_params(&conjunct, params, args);
+        let replaced = replace_result(&substituted, atom);
+        let only_ours = free_idents(&replaced)
+            .iter()
+            .all(|id| allowed.contains(id) || id.starts_with("call#"));
+        if only_ours {
+            out.push(replaced);
+        }
+    }
+    out
+}
+
+/// Split a postcondition into its top-level `&&` conjuncts.
+fn split_conjuncts(expr: &Expr, out: &mut Vec<Expr>) {
+    match expr {
+        Expr::BinaryOp(BinaryOpKind::And, l, r) => {
+            split_conjuncts(l, out);
+            split_conjuncts(r, out);
+        }
+        other => out.push(other.clone()),
+    }
+}
+
+/// Replace `term` / `__result` with a concrete expression.
+fn replace_result(expr: &Expr, replacement: &Expr) -> Expr {
+    match expr {
+        Expr::Identifier(n) if n == "term" || n == "__result" => replacement.clone(),
+        Expr::BinaryOp(k, l, r) => Expr::BinaryOp(
+            *k,
+            Box::new(replace_result(l, replacement)),
+            Box::new(replace_result(r, replacement)),
+        ),
+        Expr::UnaryOp(k, inner) => Expr::UnaryOp(*k, Box::new(replace_result(inner, replacement))),
+        Expr::Field(base, f) => {
+            Expr::Field(Box::new(replace_result(base, replacement)), f.clone())
+        }
+        Expr::Call(name, args, id) => Expr::Call(
+            name.clone(),
+            args.iter().map(|a| replace_result(a, replacement)).collect(),
+            *id,
+        ),
+        Expr::MethodCall(recv, m, args, id) => Expr::MethodCall(
+            Box::new(replace_result(recv, replacement)),
+            m.clone(),
+            args.iter().map(|a| replace_result(a, replacement)).collect(),
+            *id,
+        ),
+        Expr::Index(base, idx) => Expr::Index(
+            Box::new(replace_result(base, replacement)),
+            Box::new(replace_result(idx, replacement)),
+        ),
+        Expr::Cast(inner, ty) => Expr::Cast(Box::new(replace_result(inner, replacement)), ty.clone()),
+        Expr::Reflect(base, target, kind) => {
+            Expr::Reflect(Box::new(replace_result(base, replacement)), target.clone(), *kind)
+        }
+        Expr::Consume(inner) => Expr::Consume(Box::new(replace_result(inner, replacement))),
+        other => other.clone(),
+    }
+}
+
+
+/// Whether a postcondition bounds the result against a literal.
+///
+/// The only facts a caller can act on without a value model. Anything else
+/// (`term == a + 1`, `CharCount#(term) == 1`) is a relation this prover cannot
+/// use, and substituting the call for an atom would only convert a skip into an
+/// unproven verdict.
+fn bounds_result_against_literal(post: &Expr) -> bool {
+    fn is_term(expr: &Expr) -> bool {
+        matches!(expr, Expr::Identifier(n) if n == "term")
+    }
+    fn literal(expr: &Expr) -> bool {
+        match expr {
+            Expr::Decimal(_) => true,
+            Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
+                matches!(inner.as_ref(), Expr::Decimal(_))
+            }
+            _ => false,
+        }
+    }
+    let mut conjuncts = Vec::new();
+    split_conjuncts(post, &mut conjuncts);
+    conjuncts.iter().any(|c| match c {
+        Expr::BinaryOp(
+            BinaryOpKind::Ge | BinaryOpKind::Le | BinaryOpKind::Gt | BinaryOpKind::Lt,
+            l,
+            r,
+        ) => (is_term(l) && literal(r)) || (literal(l) && is_term(r)),
+        _ => false,
+    })
+}
+
 /// Declared types of an item's parameters and `let` bindings.
 ///
 /// Representation casts are keyed on the *pair* of types, not on the target
@@ -584,6 +913,240 @@ fn protocol_name(ty: &Type) -> Option<&str> {
         Type::Custom(n) => Some(n.as_str()),
         _ => None,
     }
+}
+
+/// Reject length reflection whose base is not a handle.
+///
+/// `.^Length` is modelled only for `String`/`Data` (phase 2b): on those it is the
+/// stored byte count. On anything else the expression stays out of the model, so
+/// the body is skipped with a reason instead of gaining a length fact it has no
+/// right to.
+fn unsupported_length_reflection(
+    body: &[Statement],
+    types: &HashMap<String, Type>,
+) -> Option<String> {
+    fn base_reason(base: &Expr, types: &HashMap<String, Type>) -> Option<String> {
+        let handle = match base {
+            Expr::Identifier(name) => types
+                .get(name)
+                .is_some_and(|ty| matches!(protocol_name(ty), Some("String") | Some("Data"))),
+            // A cast has already been resolved to its target type by now.
+            Expr::Cast(_, target) => {
+                matches!(protocol_name(target), Some("String") | Some("Data"))
+            }
+            _ => false,
+        };
+        (!handle).then(|| "length reflection on a non-handle value".to_string())
+    }
+
+    fn expr_reason(expr: &Expr, types: &HashMap<String, Type>) -> Option<String> {
+        match expr {
+            Expr::Reflect(base, target, _) if target == "Length" => base_reason(base, types),
+            Expr::Call(name, args, _) if name == "CharCount#" && args.len() == 1 => {
+                base_reason(&args[0], types)
+            }
+            Expr::BinaryOp(_, l, r) => {
+                expr_reason(l, types).or_else(|| expr_reason(r, types))
+            }
+            Expr::UnaryOp(_, inner)
+            | Expr::Cast(inner, _)
+            | Expr::Consume(inner)
+            | Expr::Reflect(inner, _, _) => expr_reason(inner, types),
+            Expr::Call(_, args, _) => args.iter().find_map(|a| expr_reason(a, types)),
+            Expr::MethodCall(recv, _, args, _) => expr_reason(recv, types)
+                .or_else(|| args.iter().find_map(|a| expr_reason(a, types))),
+            Expr::Field(base, _) => expr_reason(base, types),
+            Expr::Index(base, idx) => {
+                expr_reason(base, types).or_else(|| expr_reason(idx, types))
+            }
+            _ => None,
+        }
+    }
+
+    fn stmt_reason(stmt: &Statement, types: &HashMap<String, Type>) -> Option<String> {
+        match stmt {
+            Statement::Assign(_, e)
+            | Statement::Term(Some(e))
+            | Statement::EndProgram(Some(e))
+            | Statement::Tail(e)
+            | Statement::Gate(e)
+            | Statement::Check(e)
+            | Statement::Expression(e) => expr_reason(e, types),
+            Statement::Let { expr, .. } => expr.as_ref().and_then(|e| expr_reason(e, types)),
+            Statement::Guarded(c, inner) => {
+                expr_reason(c, types).or_else(|| unsupported_length_reflection(inner, types))
+            }
+            _ => None,
+        }
+    }
+
+    body.iter().find_map(|stmt| stmt_reason(stmt, types))
+}
+
+/// The distinct handle bases whose length a postcondition mentions.
+///
+/// `term.^Length >= 0` names one; `CharCount#(term) == CharCount#(a) +
+/// CharCount#(b)` names three. The prover models a length atom and its
+/// non-negativity, but not the algebra *between* lengths (`op Concat`), so a post
+/// that relates two of them is still a claim outside the model.
+fn length_bases(post: &Expr) -> std::collections::BTreeSet<String> {
+    fn base_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(n) => Some(n.clone()),
+            Expr::Field(b, f) => Some(format!("{}.{}", base_name(b)?, f)),
+            _ => None,
+        }
+    }
+    fn go(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+        match expr {
+            Expr::Reflect(base, target, _) if target == "Length" => {
+                out.extend(base_name(base));
+            }
+            Expr::Call(name, args, _) if name == "CharCount#" => {
+                if let Some(arg) = args.first() {
+                    out.extend(base_name(arg));
+                }
+            }
+            Expr::BinaryOp(_, l, r) => {
+                go(l, out);
+                go(r, out);
+            }
+            Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Consume(inner) => {
+                go(inner, out)
+            }
+            Expr::Field(base, _) => go(base, out),
+            Expr::Index(base, idx) => {
+                go(base, out);
+                go(idx, out);
+            }
+            Expr::Call(_, args, _) => args.iter().for_each(|a| go(a, out)),
+            Expr::MethodCall(recv, _, args, _) => {
+                go(recv, out);
+                args.iter().for_each(|a| go(a, out));
+            }
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    go(post, &mut out);
+    out
+}
+
+/// Whether a handle postcondition is decidable from length non-negativity alone.
+///
+/// The model knows one fact about a handle's length: `len >= 0`. So the only
+/// length claims it can settle are **lower bounds at or below zero** —
+/// `term.^Length >= 0`, `0 <= term.^Length`. An equality (`== 1`), an upper bound,
+/// or a comparison against another length is a real claim about what the body
+/// built, which is content reasoning and stays out of the model.
+fn length_claim_decidable(post: &Expr) -> bool {
+    fn is_term_length(expr: &Expr) -> bool {
+        matches!(expr, Expr::Reflect(base, target, _)
+            if target == "Length" && matches!(base.as_ref(), Expr::Identifier(n) if n == "term"))
+    }
+    fn literal_at_most_zero(expr: &Expr) -> bool {
+        match expr {
+            Expr::Decimal(v) => *v <= 0,
+            Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
+                matches!(inner.as_ref(), Expr::Decimal(v) if *v >= 0)
+            }
+            _ => false,
+        }
+    }
+    let mut conjuncts = Vec::new();
+    split_conjuncts(post, &mut conjuncts);
+    conjuncts.iter().all(|c| {
+        let mentions_length = {
+            let mut bases = std::collections::BTreeSet::new();
+            let mut legacy = std::collections::BTreeSet::new();
+            collect_length_bases(c, &mut bases, &mut legacy);
+            !bases.is_empty()
+        };
+        if !mentions_length {
+            return true;
+        }
+        match c {
+            Expr::BinaryOp(BinaryOpKind::Ge, l, r) => is_term_length(l) && literal_at_most_zero(r),
+            Expr::BinaryOp(BinaryOpKind::Le, l, r) => is_term_length(r) && literal_at_most_zero(l),
+            _ => false,
+        }
+    })
+}
+
+/// Collect the base names of every length atom in an expression.
+fn collect_length_bases(
+    expr: &Expr,
+    out: &mut std::collections::BTreeSet<String>,
+    seen: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        Expr::Reflect(base, target, _) if target == "Length" => {
+            if let Expr::Identifier(n) = base.as_ref() {
+                out.insert(n.clone());
+            }
+        }
+        Expr::Call(name, args, _) if name == "CharCount#" => {
+            if let Some(Expr::Identifier(n)) = args.first() {
+                out.insert(n.clone());
+            }
+        }
+        Expr::BinaryOp(_, l, r) => {
+            collect_length_bases(l, out, seen);
+            collect_length_bases(r, out, seen);
+        }
+        Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Consume(inner) => {
+            collect_length_bases(inner, out, seen)
+        }
+        Expr::Field(base, _) => collect_length_bases(base, out, seen),
+        Expr::Index(base, idx) => {
+            collect_length_bases(base, out, seen);
+            collect_length_bases(idx, out, seen);
+        }
+        Expr::Call(_, args, _) => args.iter().for_each(|a| collect_length_bases(a, out, seen)),
+        Expr::MethodCall(recv, _, args, _) => {
+            collect_length_bases(recv, out, seen);
+            args.iter().for_each(|a| collect_length_bases(a, out, seen));
+        }
+        _ => {}
+    }
+}
+
+/// Whether a postcondition mentions `term` as a *value*.
+///
+/// `term.^Length` / `CharCount#(term)` are length claims, and phase 2b models a
+/// handle's length as a non-negative atom — those posts are answerable. Anything
+/// else that mentions `term` is a claim about the text itself, which the word
+/// model cannot decide. Distinguishing the two is what keeps the handle skip from
+/// also discarding the length-only contracts it was never meant to cover.
+fn mentions_term_as_value(post: &Expr) -> bool {
+    /// The base of a length claim: `term` itself is not a value mention.
+    fn length_base(expr: &Expr) -> bool {
+        !matches!(expr, Expr::Identifier(n) if n == "term") && go(expr)
+    }
+
+    fn go(expr: &Expr) -> bool {
+        match expr {
+            // A length context: `term` there is asked about its length, not its
+            // value, so it is NOT a value mention. A *deeper* base (`f(term)
+            // .^Length`) still is.
+            Expr::Reflect(base, target, _) if target == "Length" => length_base(base),
+            Expr::Call(name, args, _) if name == "CharCount#" => {
+                args.iter().any(|a| length_base(a))
+            }
+            Expr::Identifier(name) => name == "term",
+            Expr::BinaryOp(_, l, r) => go(l) || go(r),
+            Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Consume(inner) => go(inner),
+            Expr::Field(base, _) => go(base),
+            Expr::Index(base, idx) => go(base) || go(idx),
+            Expr::Call(_, args, _) => args.iter().any(go),
+            Expr::MethodCall(recv, _, args, _) => go(recv) || args.iter().any(go),
+            _ => false,
+        }
+    }
+    // `term.^Length` reaches us as `Reflect(term, "Length")`. Inside that node we
+    // must not treat `term` as a value mention, so the walk starts at the node
+    // itself rather than at its base.
+    go(post)
 }
 
 /// Whether the declaration returns a `String`/`Data` handle.
@@ -1551,7 +2114,54 @@ fn rel_verdict(
             }
         }
     }
+// Non-negativity of bit composition, for `x >= 0` goals only.
+    //
+    // `a | b >= 0` holds when both operands are non-negative: the sign bit is
+    // clear in each, so the OR cannot set it. `(x & m) << k >= 0` holds when the
+    // shifted maximum still fits below the sign bit — a *checked* shift, because
+    // wrapping shift can otherwise push a positive value negative.
+    if matches!(op, BinaryOpKind::Ge) {
+        if let Some(limit) = rv.try_to_literal() {
+            if limit <= 0 {
+                if let Some(bound) = non_negative_bound(lv, bounds) {
+                    if bound.lower >= 0 {
+                        return ProofVerdict::Holds;
+                    }
+                }
+            }
+        }
+    }
     ProofVerdict::Undecided
+}
+
+/// An interval for a value built by bit composition, when it is provably
+/// non-negative.
+///
+/// Narrow on purpose: `|` of two non-negative values, and a masked value shifted
+/// by a literal that keeps the result under the sign bit. Anything else stays
+/// undecided rather than assuming the sign bit is clear.
+fn non_negative_bound(value: &SymbolicValue, bounds: &HashMap<String, Bound>) -> Option<Bound> {
+    match value {
+        SymbolicValue::Binary(op, l, r) if op == "|" => {
+            let a = non_negative_bound(l, bounds)?;
+            let b = non_negative_bound(r, bounds)?;
+            (a.lower >= 0 && b.lower >= 0).then_some(Bound { lower: 0, upper: a.upper.max(b.upper) })
+        }
+        SymbolicValue::Binary(op, l, r) if op == "<<" => {
+            let shift = r.try_to_literal()?;
+            if !(0..63).contains(&shift) {
+                return None;
+            }
+            let inner = non_negative_bound(l, bounds)?;
+            if inner.lower < 0 {
+                return None;
+            }
+            let factor = 1_i64.checked_shl(shift as u32)?;
+            let upper = inner.upper.checked_mul(factor)?;
+            (upper < i64::MAX).then_some(Bound { lower: 0, upper })
+        }
+        other => value_bound(other, bounds).filter(|b| b.lower >= 0),
+    }
 }
 
 /// The best interval known for one symbolic operand.
@@ -2270,7 +2880,8 @@ fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
             // is a zero-extended word, so the prover can bound it. Everything
             // else still needs a summary (or stays out of reach).
             let modelled_load = name == "Load#" && crate::symbolic::load_width(args).is_some();
-            if !modelled_load && !sums.contains_key(name) {
+            let modelled_length = name == "CharCount#" && args.len() == 1;
+            if !modelled_load && !modelled_length && !sums.contains_key(name) {
                 return Some(format!("a call to `{name}`, which has no value summary"));
             }
             args.iter().find_map(|a| expr_reason(a, sums))
@@ -2279,6 +2890,12 @@ fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
         Expr::Index(..) => Some("indexing".to_string()),
         Expr::MethodCall(..) => Some("a method call".to_string()),
         Expr::List(_) | Expr::Tuple(_) => Some("a list or tuple literal".to_string()),
+        // Length reflection on a handle is modelled (phase 2b); the *base* type
+        // is checked by `unsupported_length_reflection`, which can see the
+        // declared types this expression-level gate cannot.
+        Expr::Reflect(_, target, _) if target == "Length" => {
+            None
+        }
         Expr::Reflect(..) => Some("reflection".to_string()),
         _ => Some("an unsupported expression".to_string()),
     }
@@ -2460,6 +3077,12 @@ fn inline_expr(expr: &Expr, sums: &HashMap<String, Summary>, depth: usize) -> Re
             // A modelled intrinsic keeps its call form: it has no summary to
             // inline, but `eval_symbolic` gives it an interval directly.
             if name == "Load#" && crate::symbolic::load_width(args).is_some() {
+                return Ok(expr.clone());
+            }
+            // `CharCount#` is a handle's length atom (phase 2b). Without this the
+            // body fails as "a call could not be inlined" even though the call is
+            // modelled — the two gates have to agree on what is in the model.
+            if name == "CharCount#" && args.len() == 1 {
                 return Ok(expr.clone());
             }
             let Some(sum) = sums.get(name) else {
