@@ -76,8 +76,15 @@ keywords "the lexer recognizes" — no such tokens exist. Passes only because
 punctuation/identifier fragments. Confirmed by lexer tests (`lexer.rs:914-930,
 1052-1068`).
 
-- `#!exit` — comment-only in LLVM/analysis (`llvm/mod.rs:3090,3856,…`;
-  `loop_shape.rs:61` "Mirrors the old synthetic-exit construction").
+- `#!exit` — **removed 2026-11-16, with a diagnostic.** The parser rejects it
+  by name (`parser/definitions.rs`, "`#!exit` was removed — a program's exit
+  condition is no longer a source directive. The reactor derives it from the
+  node preconditions, or the node that reaches the end calls `endprogram`.").
+  The derived-exit machinery it used to feed survives
+  (`loop_shape.rs` "Mirrors the old synthetic-exit construction") and is reached
+  through node contracts, not this directive. All live users were swept: 8
+  trophies and one benchmark comment. `tests/compile_fail/exit_directive_removed.bv`
+  pins the diagnostic.
 - `#nowake`/`#wake` — gone; `is_wake` survives as name heuristic
   `trg.name.starts_with("__wake")` (`llvm/mod.rs:2706`).
 - `#dispatch`, `#io` — zero hits (except old plans).
@@ -131,7 +138,7 @@ document `endprogram` as the rename of `term!`.
 ## 7. Removed pragmas
 
 - `#pragma` — removed (C headers in `lib/glue/c/` only).
-- `#!exit` — comment-only (§4).
+- `#!exit` — removed with a diagnostic (§4).
 - `#dispatch`, `#io` — gone.
 - `#nowake`/`#wake` — `is_wake` heuristic remnant (§4).
 - `#on_exit` — lexer comment (`lexer.rs:186`, defer replaced it); **still

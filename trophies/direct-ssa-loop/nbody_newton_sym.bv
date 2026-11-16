@@ -6,7 +6,6 @@
 //   ./target/release/briev-compiler llvm benchmarks/nbody_newton_sym.bv \
 //       --out benchmarks --optimize-budget 256
 
-#!exit count == bound;
 
 import { get_env_int } from "std/env.bv";
 import "link/briev_rt.c";

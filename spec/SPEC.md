@@ -927,18 +927,17 @@ Top-level `let` declares reactive program state. Local `let` declares a local bi
 storage classes, decided by the compiler and disclosed via an `info:` line:
 
 - **state** — machine state. The variable lives in the machine's state
-  struct; contracts, watchdogs, `#!exit` conditions, result expressions,
-  and view bindings may reference it; the transition graph, liveness, and
-  dead-field elimination govern it.
+  struct; contracts, watchdogs, result expressions, and view bindings may
+  reference it; the transition graph, liveness, and dead-field elimination
+  govern it.
 - **plain** — an ordinary variable. Same name, type, initializer, and
   read/write behavior, but the machine does not reason about it: no
   contract may reference it, it is not part of the transition graph, and
   defns that touch only plain lets do not carry machine state.
 
 **Inference.** A bare top-level `let` is **state** when the proof surface
-(contracts, watchdog conditions and on-fire arguments, `#!exit`
-conditions, out-pragmas, result expressions, view bindings) references
-it, and **plain** otherwise. Node and defn *bodies* never affect the
+(contracts, watchdog conditions and on-fire arguments, out-pragmas, result
+expressions, view bindings) references it, and **plain** otherwise. Node and defn *bodies* never affect the
 classification — reading or writing a plain let from a body compiles to
 ordinary access to its storage.
 

@@ -1,5 +1,3 @@
-#!exit count == bound;
-
 frgn __get_env_int(name: String) -> Int;
 frgn #out print_float(val: Float) -> Bool;
 

@@ -14,7 +14,6 @@
 //
 // C reference: cancel_math_c.c
 
-#!exit count == N && acc >= 0;
 
 import { get_env_int } from "std/env.bv";
 import "link/briev_rt.c";

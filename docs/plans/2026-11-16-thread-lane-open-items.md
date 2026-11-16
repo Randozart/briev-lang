@@ -418,12 +418,32 @@ Everything this plan lists is resolved except the explicitly-deferred backlog in
 **Full CI green on `ecff87a11`** — all 15 jobs, including Workspace tests and
 Counsel, the first fully green run of this workstream.
 
-**One decision still open:** `#!exit <cond>` is dead syntax (no lexer token, no
-parser production) but is referenced by
-`docs/architecture/briev-execution-model.md`, `benchmarks/iir_filter_runtime.bv`
-and two trophies. Restore the directive or sweep its users — that belongs to
-whoever owns the exit-condition surface, and it is the only thing this plan
-leaves without a disposition.
+**`#!exit` decision: killed (2026-11-16).** The directive was removed from the
+surface, not restored:
+
+- **Diagnostic instead of a mystery.** `#` lexes as an identifier, so
+  `#!exit true;` used to fail with "unknown top-level item '#'". The parser now
+  recognises the directive by name and says what happened and what to do:
+  *"`#!exit` was removed — a program's exit condition is no longer a source
+  directive. The reactor derives it from the node preconditions, or the node that
+  reaches the end calls `endprogram`. Delete the `#!exit` line; if the program
+  must stop at a specific point, put `endprogram` in the node that gets there."*
+  Pinned by `tests/compile_fail/exit_directive_removed.bv` and a parser unit test.
+- **Live users swept.** 8 trophies and one benchmark comment; `spec/SPEC.md`
+  (two passages presented it as part of the proof surface) and
+  `docs/reference/LEGACY-SURFACE-INDEX.md` (now records the removal).
+  `docs/reference/MASTER-SYNTAX-REFERENCE.md` already listed it as removed.
+- **What survives is the machinery, reached differently.** `exit_condition` is
+  still set by the natural-exit derivation (`loop_shape.rs`), and
+  `endprogram`/node contracts are the authored surface. Only the source
+  directive died.
+
+**Trophies are stale for unrelated reasons** (found while sweeping): they also
+use the removed `#frgn` pragma form, `frgn` without `from <source>`, and
+top-level `term`. They were unparseable before this change too — `#!exit` was
+just one of several dead surfaces they carry — so removing it neither fixed nor
+broke them. Whoever owns the showcase should decide between porting them and
+moving them to `archive/`; that is out of scope here.
 
 ## D. Suggested order once decisions are made
 

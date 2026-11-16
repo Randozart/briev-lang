@@ -1,7 +1,7 @@
 // Biquad IIR Filter — Runtime-variable bound via __get_env_int
 // Bound is a state field, compiler cannot constant-fold.
 // Float delay-line state is still subject to dead-field elimination
-// (only count is in #!exit).
+// (only count is read by the node contract).
 //
 // Build:
 //   ./target/release/briev-compiler build --llvm benchmarks/iir_filter_runtime.bv \

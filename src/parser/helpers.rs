@@ -854,6 +854,29 @@ impl<'a> Parser<'a> {
             .map_or(false, |t| matches!(t, Token::Identifier(s) if s == name))
     }
 
+    /// Is the current token an identifier whose text is exactly `text`?
+    ///
+    /// 2026-11-16: `#` lexes as `Identifier("#")`, so recognising a removed
+    /// `#`-directive needs a text match rather than a token variant.
+    pub fn peek_identifier_text(&self, text: &str) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(s)) if s == text)
+    }
+
+    /// Look past the `#` identifier for the removed `#!exit` directive, so the
+    /// diagnostic only fires for that directive and not for every stray `#`.
+    ///
+    /// `#!exit` lexes as `Identifier("#")`, `Not`, `Identifier("exit")` — the
+    /// bang is its own token, not part of the word.
+    pub fn next_is_exit_directive(&self) -> bool {
+        matches!(
+            self.tokens.get(self.pos + 1).map(|(t, _)| t),
+            Some(Token::Not)
+        ) && matches!(
+            self.tokens.get(self.pos + 2).map(|(t, _)| t),
+            Some(Token::Identifier(s)) if s == "exit"
+        )
+    }
+
     /// Check if the token AFTER the current one is an identifier with a
     /// specific name (the `bootstrap bad` disambiguation).
     pub fn lookahead_is_identifier(&self, name: &str) -> bool {
