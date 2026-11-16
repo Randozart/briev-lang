@@ -101,6 +101,56 @@ Not yet tested at all:
 "Make compiler correctness gates complete and independently observable", open
 since 2026-11-15. **Decision needed:** merge, re-scope, or close.
 
+### B1-result. PR #101 landed
+
+`fix/compiler-correctness` was green on its own head but CONFLICTING with main
+in two files. Resolved and landed as `a981ae79a`:
+`.github/workflows/ci.yml` (kept the PR's independent `counsel` job) and
+`BUGS.md` (union of both sides' 2026-11-15 entries). Post-merge `cargo build
+--lib` clean and `bash scripts/gate.sh quick` → `gate: pass`.
+
+### B2-triage. Branch inventory (2026-11-16)
+
+Measured with `git cherry main <branch>` (commits whose patch is NOT in main).
+Buckets, so the decision below is per bucket rather than per branch:
+
+**Already in main (content-wise merged) — nothing to do:**
+`val92`, `val93`, `main-prep`, `fix/wasm-tuple-abi`, `feat/tail-loop-lowering`,
+`feat/counsel-contracts`, `experiment/task-board-structured`,
+`experiment/struct-collection-each`, `electronics-hir-port2`,
+`integrate/pr31`, `integrate/pr32`.
+
+The last two were verified by hand, not just by `git cherry`: main already has
+`src/typechecker/call_literals.rs` (200 lines, superset of the branch's 152 —
+merging would regress) and `src/backend/llvm/match_termination_tests.rs`.
+Their features arrived through different commits, which is why the patch-ids
+differ. `fix/aggregate-arg-handle-abi` is 551 files *behind* main; merging the
+branch would revert main, so its single fix must be cherry-picked if wanted.
+
+**Intentionally abandoned / experimental — do not merge:**
+`feat/canonical-effect-abi` (head commit: "abandon canonical EffectCtx branch
+with findings"), `experiment/effect-state-carry`, `experiment/nested-sret`,
+`experiment/nested-enum-b3`, `experiment/nested-b3-hoist`,
+`feat/ptr-provenance-fence-retirement`, `recovery-branch` (July, superseded).
+
+**Live lanes referenced by INDEX.md — do not touch from main-side:**
+`feat/e14a-intent-synthesis`, `feat/bad-dialect`.
+
+**Needs an owner decision (real, recent, unmerged):**
+| Branch | Unmerged / total | Last commit |
+|---|---|---|
+| `feat/counsel-lab` | 51 / 51 | 2026-11-14 counsel campaign |
+| `intel-xpu-harvest` | 10 / 13 | 2026-11-16 GPU grind waves 0–2 |
+| `feat/verify-mask-offset-kernel` | 8 / 9 | 2026-11-16 CI position for PR #104 |
+| `feat/counsel-expand` | 4 / 5 | 2026-11-16 counsel Phase 2–3 checklist |
+| `h5-phase-c4` | 6 / 6 | 2026-11-13 HIR phase C4 final audit |
+| `feat/counsel-merge-test` | 6 / 7 | PR #104's own commit (already on main as `e215d341a`) |
+
+`feat/counsel-merge-test` looks superseded by #104 and can likely be deleted;
+`feat/verify-mask-offset-kernel` may be the same story. `h5-phase-c4` is the
+most likely candidate for a genuine "finished but unmerged" branch — it needs a
+build+gate run before anyone merges it.
+
 ### B2. 29 local branches are ahead of `main`
 
 Names include `feat/counsel-lab` (51), `recovery-branch` (35),
@@ -117,7 +167,15 @@ work**: `feat/e14a-intent-synthesis` (`../briev-e14a`) and `feat/bad-dialect`
 **Decision needed:** an explicit keep/merge/delete list. Without it, "merge
 everything ahead of main" would land half-finished experiments.
 
-### B3. CI has been red on `main` for unrelated reasons
+### B3 (RESOLVED 2026-11-16). CI red on `main` cleared
+
+The `exponent_val` / `ascii_lower` failures were fixed by the mask-interval
+modelling in #104 (`e215d341a`), now merged. Verified after the merge:
+`import_resolver::test_rbv_edge_declared_surface`,
+`packages::dependency_module_is_importable_by_name` and the full
+`conformance_sweep` all pass.
+
+Historical note (keep for the pattern, not for action):
 
 `gh run view`: `import_resolver::test_rbv_edge_declared_surface` and
 `packages::dependency_module_is_importable_by_name` fail on
