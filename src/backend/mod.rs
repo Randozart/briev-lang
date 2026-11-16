@@ -8,7 +8,6 @@ pub mod capabilities;
 pub mod circt;
 pub mod electronics;
 pub mod gpu_lowering;
-pub mod lean;
 pub mod llvm;
 pub mod metadata;
 pub mod normalizer;

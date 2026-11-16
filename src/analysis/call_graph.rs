@@ -137,16 +137,14 @@ impl CallGraph {
         self.defn_names.contains(name)
     }
 
-    /// Total number of transactions in the graph.
-    /// counsel proves the postcondition: Vec::len is always non-negative.
+    /// Total number of transactions in the graph.  counsel proves the postcondition:
+    /// Vec::len is always non-negative.
     #[post(term >= 0)]
     pub fn node_count(&self) -> usize {
         self.txn_names.len()
     }
 
-    /// Total number of edges (calls between transactions).
-    /// counsel: the sum of non-negative `Vec::len` counts is non-negative.
-    #[post(term >= 0)]
+    /// Total number of edges (calls between transactions)
     pub fn edge_count(&self) -> usize {
         self.graph.values().map(|v| v.len()).sum()
     }

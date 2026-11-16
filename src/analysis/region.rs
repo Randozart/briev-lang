@@ -81,8 +81,6 @@ impl Interval {
     }
 
     /// Number of integers in the closed interval [lo, hi].
-    /// counsel: the result is non-negative (0 for an empty interval, or the
-    /// u64 width of [lo, hi] otherwise).
     #[post(term >= 0)]
     pub fn size(&self) -> u64 {
         if self.hi < self.lo {
