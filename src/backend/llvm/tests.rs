@@ -15246,20 +15246,11 @@ async on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };
     // Force arena need: no program in the corpus naturally reaches the bump
     // arena (the frontend folds or heap-allocates them all), so the injection
     // path is driven directly.
+    // Force arena need: the injection path is driven directly because no
+    // source program reaches the bump arena today (BUGS.md, "bump arena
+    // unreachable"). The pin comes from the source annotations, which is where
+    // `generate` recomputes the plan from.
     backend.ctx.needs_arena.insert("na".to_string());
-    backend.ctx.thread_plan = crate::analysis::thread_plan::ThreadPlan {
-        assignments: [("na".to_string(), 0u32), ("nb".to_string(), 1u32)]
-            .into_iter()
-            .collect(),
-        workers: [(
-            0u32,
-            vec!["na".to_string()],
-        ), (1u32, vec!["nb".to_string()])]
-            .into_iter()
-            .collect(),
-        worker_count: 2,
-        explicit_any: Vec::new(),
-    };
     let ir = backend.generate(&items, None);
 
     assert_eq!(
@@ -15314,3 +15305,105 @@ async on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };
         "3 user fields + 6 arena slots expected, got {state}"
     );
 }
+
+/// 2026-11-16 (thread-lane A4a): the wake-trigger convergence path with a pool
+/// running.
+///
+/// A wake trigger is only reachable through the `__wake*` naming rule
+/// (`mod.rs`, the trigger registration), never from `.bv` source, so this is the
+/// level at which the shape can be exercised. The pin comes from source, the way
+/// the pipeline builds the plan (`generate` recomputes it from the AST, so an
+/// injected plan would be overwritten). What must hold: main stays on the wake
+/// path (`@llvm.wake.any()`), every tick is still bracketed by the worker
+/// barriers, and `.end` stops the pool — a worker cannot be left parked when the
+/// wake path decides the program is done.
+#[test]
+fn pinned_wake_trigger_program_brackets_ticks_and_stops_the_pool() {
+    use crate::ast::{Expr, TopLevel, Trigger};
+    let src = r#"
+let a: Int = 0;
+let b: Int = 0;
+async on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };
+async on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };
+"#;
+    let mut items = parse_bv_source(src);
+    items.push(TopLevel::Trigger(Trigger {
+        name: "__wake_trg".to_string(),
+        instance: Expr::Identifier(String::new()),
+        span: None,
+    }));
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let main = {
+        let i = ir.find("define i32 @main(").expect("@main");
+        let j = ir[i..].find("\ndefine ").map_or(ir.len(), |k| i + k);
+        &ir[i..j]
+    };
+
+    assert!(
+        ir.contains("@__briev_worker_fns = internal constant [2 x ptr]"),
+        "the source pins must reach the emitter — otherwise the rest of this \
+         test asserts nothing"
+    );
+    assert!(
+        main.contains("@llvm.wake.any()"),
+        "the wake path must be taken, or this test is not covering it:\n{main}"
+    );
+    assert!(
+        main.contains("call void @briev_workers_release()")
+            && main.contains("call void @briev_workers_wait()"),
+        "the wake path must still bracket ticks with the worker barriers"
+    );
+    assert!(
+        main.contains("call void @briev_workers_stop()"),
+        "the wake path's .end must release and join the parked workers"
+    );
+}
+
+/// 2026-11-16 (thread-lane A4d): the scale boundary — `MAX_THREADS` workers.
+///
+/// 63 is the declared maximum, so the emission must produce a tick per worker
+/// and a 63-entry pool table rather than silently truncating. The plan comes from
+/// source (`on thread 62`), the way the pipeline builds it. The binary is
+/// deliberately not run: 63 OS threads in CI is a flakiness source, and the
+/// runtime's own bound (`BRIEV_MAX_WORKERS`) is checked in C.
+#[test]
+fn sixty_three_workers_emit_a_tick_each_and_a_full_table() {
+    // Two async nodes, the second pinned to the highest allowed worker, so the
+    // plan spans 0..=62 and the other 61 slices are emitted empty. Async keeps
+    // the program out of the fully-precomputed fold, which emits no dispatch.
+    let src = r#"
+let a: Int = 0;
+let b: Int = 0;
+async on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };
+async on thread 62 node nz [b < 1][b == 1] { b = b + 1; term; };
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+
+    let table_line = ir
+        .lines()
+        .find(|l| l.contains("@__briev_worker_fns"))
+        .unwrap_or("<no table>");
+    assert!(
+        ir.contains("@__briev_worker_fns = internal constant [63 x ptr]"),
+        "the pool table must carry one entry per declared worker, got: {table_line}"
+    );
+    assert!(ir.contains("define void @reactor_tick("), "worker 0's tick");
+    assert!(
+        ir.contains("define void @reactor_tick_w62("),
+        "the last worker's tick must be emitted, not truncated"
+    );
+    assert!(
+        !ir.contains("@reactor_tick_w63"),
+        "no tick beyond the declared maximum"
+    );
+}
+

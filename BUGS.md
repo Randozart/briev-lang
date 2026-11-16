@@ -1,41 +1,50 @@
-## 2026-11-16 — bump arena unreachable: `AllocStrategy::Arena` never fires
+## 2026-11-16 — RETRACTED: "bump arena unreachable" (and the real bug it hid)
 
-**Observed while building a per-worker arena fixture.** No program in the tree
-reaches the bump arena: `grep -rl "__arena_ptr" --include="*.ll" .` finds
-nothing outside hand-written IR, and `needs_arena` stayed empty for every
-candidate fixture I wrote. `AllocStrategy::Arena` is reachable in the strategy
-unit tests (`allocation.rs` `strategies()` cases) but not from source that also
-survives to codegen.
+**Retracted the same day.** The report claimed `AllocStrategy::Arena` never
+fires from source and that no program reaches the bump arena. Both claims were
+wrong, and the way they were wrong is worth recording.
 
-**Reproduction attempts** (each compiled with `brievc build --llvm`, then the
-`.ll` inspected for `__arena_ptr`/`@malloc` inside the tick):
+**What was actually measured.** A diagnostic pass over four allocation shapes
+(`analysis::allocation::arena_reachability_probe`, `#[ignore]`d, run with
+`--ignored`) shows the strategy fires for all of them:
 
-| Shape | Outcome |
-|---|---|
-| `let p: Int = Alloc#(32) as Int;` in a node | `AllocStrategy::Inline` → stack, no arena, no `@malloc` |
-| `let n: Int = tally + 64; let p: Int = Alloc#(n) as Int; Store#(p, 7, 8); term Load#(p, 8);` | folded to the constant `7`; no allocation emitted |
-| same, pointer escaping into a state field (`hold = p`) | `@malloc` in the tick — heap strategy, not arena |
-| allocation inside a `defn` called from a node (the shape `helper_alloc_called_from_node_uses_arena` asserts is Arena) | folded or heap; `needs_arena` empty |
+```
+literal size in a node:                  strategies=["Arena"] needs_arena=["entry"]
+runtime size, folded store/load:         strategies=["Arena"] needs_arena=["entry"]
+runtime size, pointer escaping to state: strategies=["Arena"] needs_arena=["entry"]
+helper defn called from a node:          strategies=["Arena"] needs_arena=["entry", "grab"]
+```
 
-**Why it matters beyond tidiness.** The bump arena is the compiler's fast
-allocation path and the only allocation mechanism that carries per-tick
-structure; per-worker arena partitioning (`docs/plans/2026-11-16-per-worker-arena-and-resource-effects.md`)
-exists precisely so that path stays sound once workers run concurrently. If the
-strategy is dead, either (a) the strategy selection rejects every reachable
-shape — a selection bug, or (b) the whole `Arena` path is vestigial and should be
-removed rather than kept as untested machinery. Both are decisions, so this is
-recorded rather than guessed at.
+In the real pipeline the fixture `tests/fixtures/thread_pin_alloc.bv` reports
+`needs_arena={"work_a","work_b"}` with two `Arena` allocations.
 
-**Interim guards (in place, 2026-11-16):**
-`backend::llvm::tests::pinned_arena_injects_one_slot_triple_per_worker` drives
-the injection path directly (the FieldMode pass used to drop the injected slots,
-which produced an invalid `%State`), and `emit_threaded_dispatch` carries a
-debug assertion that a program needing the arena has one triple per worker — so
-whichever shape eventually reaches the arena cannot silently share a cursor.
+**Why the wrong conclusion was drawn.** Two mistakes, both mine:
 
-**Next step:** instrument `analyze_alloc_strategies` on the third shape above and
-find which condition demotes `Arena` to `Heap`/`Inline`; then either fix the
-selection or delete the path with its `needs_arena` plumbing.
+1. The check was `grep -rl "__arena_ptr" --include="*.ll"`. `%State` is an LLVM
+   *type*, so the injected field **names** never appear in emitted IR — only
+   their types and indices do. Zero matches proved nothing about the arena.
+2. An earlier fixture allocated with a constant-sized `Alloc#` whose
+   `Store#`/`Load#` pair the frontend folds away, so that program genuinely had
+   no allocation; the observation was generalised from it.
+
+**The real defect the investigation exposed (fixed).** With per-worker arenas
+(thread lane E3) a pinned program has no single `arena_ptr_idx` — its slots are
+per worker — but the allocation gate in `helpers.rs` (`emit_string_concat`) and
+`intrinsics.rs` (`Alloc#`) still tested `arena_ptr_idx.is_some()`. So in a pinned
+program every allocation silently fell back to `malloc` and the partition was
+never used. Both gates now ask `arena_slots().is_some()`, and the fixture shows
+each tick touching exactly its own triple:
+
+```
+reactor_tick:    arena GEPs [4,5,6]   (worker 0's ptr/end/base)
+reactor_tick_w1: arena GEPs [7,8,9]   (worker 1's)
+main:            initialises 4..9     (the single reservation)
+```
+
+**Lesson for the next measurement.** Absence of a name in emitted IR is not
+absence of a field, and one folded fixture is not the program space. Any future
+"X is unreachable" claim needs the analysis-level decision in the evidence, not
+an IR grep.
 
 ## 2026-11-15 — rebound fields read another variable's old value
 

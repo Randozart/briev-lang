@@ -1447,3 +1447,70 @@ node entry [beginprogram][true] { Print#(make(16)); endprogram; };
         }
     }
 }
+
+#[cfg(test)]
+mod arena_reachability_probe {
+    use crate::analysis::allocation::{analyze_alloc_strategies, analyze_arena_need, AllocStrategy};
+    use crate::ast::TopLevel;
+
+    /// Parse a source string into top-level items.
+    fn items(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        p.parse_program().unwrap()
+    }
+
+    /// 2026-11-16: characterise the "bump arena unreachable" report (BUGS.md).
+    ///
+    /// Diagnostics only — it prints what the two passes decide for each shape so
+    /// the demotion can be located. Kept as `#[ignore]` until the decision
+    /// (fix the selection or delete the path) is made.
+    #[test]
+    #[ignore = "diagnostic: run with --ignored to inspect arena selection"]
+    fn probe_arena_selection_shapes() {
+        let shapes: [(&str, &str); 4] = [
+            (
+                "literal size in a node",
+                r#"node entry [beginprogram][true] { let p: Int = Alloc#(32) as Int; Store#(p, 7, 8); Print#(Load#(p, 8)); endprogram; };"#,
+            ),
+            (
+                "runtime size, folded store/load",
+                r#"node entry [beginprogram][true] { let n: Int = 32; let p: Int = Alloc#(n) as Int; Store#(p, 7, 8); Print#(Load#(p, 8)); endprogram; };"#,
+            ),
+            (
+                "runtime size, pointer escaping to state",
+                r#"let sink_ptr: Int = 0;
+node entry [beginprogram][true] {
+    let n: Int = 32;
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 7, 8);
+    sink_ptr = p;
+    Print#(Load#(p, 8));
+    endprogram;
+};"#,
+            ),
+            (
+                "helper defn called from a node",
+                r#"defn grab(n: Int) -> Int [n > 0][term >= 0] {
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 7, 8);
+    term Load#(p, 8);
+};
+node entry [beginprogram][true] { Print#(grab(16)); endprogram; };"#,
+            ),
+        ];
+        for (label, src) in shapes {
+            let mut it = items(src);
+            let strategies = analyze_alloc_strategies(&mut it);
+            let mut arena_need = analyze_arena_need(&mut it);
+            let strategies: Vec<String> = strategies.values().map(|s| format!("{s:?}")).collect();
+            let mut needed: Vec<String> = arena_need.drain().collect();
+            needed.sort();
+            let saw_arena = strategies.iter().any(|s| s == "Arena");
+            println!(
+                "{label}: strategies={strategies:?} needs_arena={needed:?} saw_arena_strategy={saw_arena}"
+            );
+        }
+        let _ = AllocStrategy::Arena;
+    }
+}

@@ -187,7 +187,34 @@ nothing from the thread work is red.
 **Owner work:** establish the guard at those call sites (`when` guard or a
 `Result` boundary in `lib/std/float_fmt.bv` / `lib/std/net/http.bv`).
 
-### B4. `Verify Bodies Census` workflow fails on infrastructure
+### B4-result. Census bounded per file (2026-11-16)
+
+Root cause of "the hosted runner lost communication" after ~55 min: one
+pathological file (or the accumulated cost of a few) ran unbounded inside the
+census loop, so the runner starved instead of the job recording anything.
+
+Fix: `scripts/verify-bodies-census.sh` now runs each file under
+`timeout --kill-after=10 ${VERIFY_BODIES_TIMEOUT:-120}`, counts a hit as
+`timed_out` (a new per-file field and summary counter) instead of letting it kill
+the job, and warns on stderr. The workflow sets the bound explicitly (120 s) and
+prints the count. Verified both paths locally: a normal file reports
+`timed_out: 0`; forcing `VERIFY_BODIES_TIMEOUT=1` reports `timed_out: 1` and
+still exits 0 with a valid JSON report.
+
+Reversible: set `VERIFY_BODIES_TIMEOUT: "0"` to disable the bound.
+
+### B5-result. Counsel job was red without verifying anything (2026-11-16)
+
+`scripts/counsel-check.sh` documented "per-file over src/" — and so did the CI
+step — but ran `counsel-check --format json src/`, a whole-tree scan. That scan
+stops at the first unadmittable file and emits nothing, so the job has been
+failing on `src/backend/llvm/emit_expr.rs` (counsel cannot parse its
+`#[post(...)]` attribute) while producing **no census at all**. The script now
+walks `find src -name '*.rs'`, runs counsel per file, and merges the per-file
+`files` arrays: 432 files with a census entry, `violated: 0`, exit 0 locally.
+The stray duplicated `EOF` tail it had been executing as a command is gone too.
+
+### B4 (historical). `Verify Bodies Census` workflow fails on infrastructure
 
 Last run: *"the hosted runner lost communication with the server"* after 55
 minutes. Looks like a resource-exhaustion timeout, not a code failure.
@@ -319,6 +346,21 @@ worker's tick touches only its own slots and that neither emits `brk`.
 **Verify.** `%State` for a pinned allocating program lists `__arena_ptr_w0` and
 `__arena_ptr_w1`; both ticks write only their own; the linked program runs;
 **unpinned** corpus `.ll` stays byte-identical (`ll_determinism_check`).
+
+### A4 — the untested shapes (DONE 2026-11-16)
+
+| Shape | Disposition |
+|---|---|
+| pinned + wake trigger | **unit test** `pinned_wake_trigger_program_brackets_ticks_and_stops_the_pool` — a wake trigger only exists through the `__wake*` naming rule, never source, so the trigger is synthesised and the pin comes from the fixture text. Asserts the wake path is taken, ticks stay bracketed, `.end` stops the pool |
+| worker-side `endprogram` | already covered by `thread_pin_async_guard.bv` (worker 1 prints and exits) |
+| `MAX_THREADS` scale | **unit test** `sixty_three_workers_emit_a_tick_each_and_a_full_table` — 63-entry table, `@reactor_tick_w62` present, nothing beyond the max. Not run: 63 OS threads is a CI flakiness source |
+| zero-tick exit | **not expressible from source.** The `#!exit` directive is referenced by the execution-model doc, several benchmarks and trophies, but the parser has no production for it (`bvc` rejects `#!exit true;` at line 1, and `trophies/bracket-universal/example.bv` fails the same way). The `.end` pool stop it would exercise is asserted by `threaded_main_starts_once_and_balances_the_barriers`. Filed below |
+
+**New finding (documentation gap, not fixed here):** `#!exit <cond>` is dead
+syntax — no lexer token, no parser production, yet `docs/architecture/briev-execution-model.md`,
+`benchmarks/iir_filter_runtime.bv`, `benchmarks/…` and two trophies still use it.
+Either the directive was removed without sweeping its users or the sweep missed
+them; whoever owns the exit-condition surface should decide restore-vs-delete.
 
 ### E4 — cross-worker write-mask assertion (A3/D.2)
 
