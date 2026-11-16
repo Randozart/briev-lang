@@ -135,14 +135,40 @@ assumption that memory ops were the cheap win.
 
 ## 5. Verification plan (phase 1)
 
-1. Before/after `scripts/verify_bodies_corpus.sh --full lib/std` summaries
-   (baseline saved at `a754b25fd`).
-2. `cargo test -p briev-verify` (SMT roundtrip, Bool literals already tested).
-3. `cargo test --lib` for the type-gate change.
-4. `bash scripts/gate.sh quick`.
-5. Praetor on `src/analysis`.
-6. Commit with the before/after numbers in the message.
+Phase 1 splits into 1a (type gate, done) and 1b (SMT encoding, deferred):
+
+### 5.1 Phase 1a — type-gate admission (DONE, commits `e9aeea8da`, `af24dbc27`)
+
+1. Before/after `scripts/verify_bodies_corpus.sh --full lib/std` summaries.
+   - Baseline (at `a754b25fd`): SKIPPED 14 690, UNPROVEN 187, PROVEN 0.
+   - After: SKIPPED 14 685, UNPROVEN 192, PROVEN 0.
+   - Delta: 5 fewer skips, 5 more unproven. The 5 Bool-typed defns that
+     pass the type gate now reach the SMT admission gate and are reported as
+     "unsupported or ill-sorted word-model contract" — an honest unproven
+     verdict, not a false proof.
+2. `cargo test -p briev-verify`: 50/50 pass.
+3. `cargo test --lib`: 3804 pass, 1 pre-existing failure (`conformance_sweep`
+   — caused by the `ascii_lower` precondition in `1504b3da6`, not by this
+   change; verified by stashing the Bool commit and re-running).
+4. Praetor on `briev-verify/src` and `src/analysis`: clean.
+
+### 5.2 Phase 1b — SMT encoding (DEFERRED)
+
+Declaring `term` as `Bool` rather than `(_ BitVec 64)` in the SMT query
+requires threading the defn's return type through the encoding pipeline,
+because `term` is used in both Int and Bool defns. Attempting it
+unconditionally breaks 7 tests (`mask_bound`, `structural_derivation`,
+`prover_api`) because Int postconditions compare `term` against BitVec
+values. The sound fix is to thread `OutputType` from `contract_target` into
+`verify_one` → `smt_discharge` → `build_vc_query` → `query_header`, so only
+Bool-defn queries declare `term` as `Bool`. This is a separate commit with
+its own before/after measurement.
+
+Expected payoff when 1b lands: the ~364 Bool-typed defns currently rejected
+at the SMT gate move to Proven/Violated/Unproven (real verdicts) — the
+largest single class of honest skips in the corpus after String.
 
 ## 6. Undo
 
-Reverting the phase-1 commit restores the gate; nothing else is touched.
+Reverting the phase-1a commits (`e9aeea8da`, `af24dbc27`) restores the gate;
+nothing else is touched. Phase 1b is not started.
