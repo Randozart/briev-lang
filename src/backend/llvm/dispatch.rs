@@ -35,7 +35,7 @@ impl LlvmBackend {
         txns: &[(String, &crate::ast::Transaction)],
         fusable: &[(String, String)],
     ) {
-        self.emit_reactor_named(out, txns, fusable, "reactor_tick");
+        self.emit_reactor_named(out, txns, fusable, "reactor_tick", 0);
     }
 
     /// Emit one reactor tick function under an explicit name.
@@ -52,7 +52,12 @@ impl LlvmBackend {
         txns: &[(String, &crate::ast::Transaction)],
         fusable: &[(String, String)],
         fn_name: &str,
+        worker: u32,
     ) {
+        // 2026-11-16 (thread-lane E3): select this worker's arena slots for the
+        // whole body — `emit_arena_init/alloc/fini` read `current_worker`.
+        let saved_worker = self.current_worker;
+        self.current_worker = worker;
         self.fused_to_first.clear();
         for (a, b) in fusable {
             let fn_ = format!("{}_{}_fused", a, b);
@@ -217,6 +222,7 @@ multi-node SSA loop can honor the gate.",
         }
         writeln!(out, "}}").ok();
         writeln!(out).ok();
+        self.current_worker = saved_worker;
     }
 
     // ── RANGE EXTRACTION ──────────────────────────────────────
@@ -426,6 +432,17 @@ multi-node SSA loop can honor the gate.",
     ) {
         let plan = self.ctx.thread_plan.clone();
         let workers = plan.worker_count.max(1);
+        // 2026-11-16 (thread-lane E4): the partition must be total. If the
+        // program needs the arena, every worker must own a triple — a missing
+        // one means the injection was dropped (the invalid-`%State` failure) or
+        // that a future field injection was forgotten. Failing here turns that
+        // class of mistake into a test-time error instead of a wrong program.
+        debug_assert!(
+            self.ctx.needs_arena.is_empty() || self.arena_workers.len() == workers as usize,
+            "threaded dispatch with {} workers but {} arena triples — every              worker needs its own arena slots",
+            workers,
+            self.arena_workers.len()
+        );
         let mut slices: Vec<Vec<(String, &crate::ast::Transaction)>> =
             (0..workers).map(|_| Vec::new()).collect();
         for (name, txn) in txns {
@@ -445,7 +462,7 @@ multi-node SSA loop can honor the gate.",
         for (worker, slice) in slices.iter().enumerate() {
             let fn_name = tick_name(worker);
             let slice_fusable = slice_fusable_pairs(fusable, slice);
-            self.emit_reactor_named(out, slice, &slice_fusable, &fn_name);
+            self.emit_reactor_named(out, slice, &slice_fusable, &fn_name, worker as u32);
         }
         self.ctx.has_reactor_tick = true;
         self.emit_worker_table(out, &slices);

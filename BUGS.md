@@ -1,3 +1,42 @@
+## 2026-11-16 — bump arena unreachable: `AllocStrategy::Arena` never fires
+
+**Observed while building a per-worker arena fixture.** No program in the tree
+reaches the bump arena: `grep -rl "__arena_ptr" --include="*.ll" .` finds
+nothing outside hand-written IR, and `needs_arena` stayed empty for every
+candidate fixture I wrote. `AllocStrategy::Arena` is reachable in the strategy
+unit tests (`allocation.rs` `strategies()` cases) but not from source that also
+survives to codegen.
+
+**Reproduction attempts** (each compiled with `brievc build --llvm`, then the
+`.ll` inspected for `__arena_ptr`/`@malloc` inside the tick):
+
+| Shape | Outcome |
+|---|---|
+| `let p: Int = Alloc#(32) as Int;` in a node | `AllocStrategy::Inline` → stack, no arena, no `@malloc` |
+| `let n: Int = tally + 64; let p: Int = Alloc#(n) as Int; Store#(p, 7, 8); term Load#(p, 8);` | folded to the constant `7`; no allocation emitted |
+| same, pointer escaping into a state field (`hold = p`) | `@malloc` in the tick — heap strategy, not arena |
+| allocation inside a `defn` called from a node (the shape `helper_alloc_called_from_node_uses_arena` asserts is Arena) | folded or heap; `needs_arena` empty |
+
+**Why it matters beyond tidiness.** The bump arena is the compiler's fast
+allocation path and the only allocation mechanism that carries per-tick
+structure; per-worker arena partitioning (`docs/plans/2026-11-16-per-worker-arena-and-resource-effects.md`)
+exists precisely so that path stays sound once workers run concurrently. If the
+strategy is dead, either (a) the strategy selection rejects every reachable
+shape — a selection bug, or (b) the whole `Arena` path is vestigial and should be
+removed rather than kept as untested machinery. Both are decisions, so this is
+recorded rather than guessed at.
+
+**Interim guards (in place, 2026-11-16):**
+`backend::llvm::tests::pinned_arena_injects_one_slot_triple_per_worker` drives
+the injection path directly (the FieldMode pass used to drop the injected slots,
+which produced an invalid `%State`), and `emit_threaded_dispatch` carries a
+debug assertion that a program needing the arena has one triple per worker — so
+whichever shape eventually reaches the arena cannot silently share a cursor.
+
+**Next step:** instrument `analyze_alloc_strategies` on the third shape above and
+find which condition demotes `Arena` to `Heap`/`Inline`; then either fix the
+selection or delete the path with its `needs_arena` plumbing.
+
 ## 2026-11-15 — rebound fields read another variable's old value
 
 **Reproduced against incoming main 052cf5e03.** The standalone word AST body

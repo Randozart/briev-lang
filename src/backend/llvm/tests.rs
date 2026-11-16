@@ -15225,3 +15225,92 @@ fn test_arithmetic_const_expr_folds_into_global() {
             .join("\n")
     );
 }
+
+/// 2026-11-16 (thread-lane E3): a pinned program that needs the bump arena gets
+/// one slot triple per worker, and those slots survive the FieldMode promotion
+/// pass (the pass eliminates every field no txn body references, which is all of
+/// them — the omission that produced an invalid `%State` in the first attempt).
+#[test]
+fn pinned_arena_injects_one_slot_triple_per_worker() {
+    let src = r#"
+let a: Int = 0;
+let b: Int = 0;
+async on thread 0 node na [a < 1][a == 1] { a = a + 1; term; };
+async on thread 1 node nb [b < 1][b == 1] { b = b + 1; term; };
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    // Force arena need: no program in the corpus naturally reaches the bump
+    // arena (the frontend folds or heap-allocates them all), so the injection
+    // path is driven directly.
+    backend.ctx.needs_arena.insert("na".to_string());
+    backend.ctx.thread_plan = crate::analysis::thread_plan::ThreadPlan {
+        assignments: [("na".to_string(), 0u32), ("nb".to_string(), 1u32)]
+            .into_iter()
+            .collect(),
+        workers: [(
+            0u32,
+            vec!["na".to_string()],
+        ), (1u32, vec!["nb".to_string()])]
+            .into_iter()
+            .collect(),
+        worker_count: 2,
+        explicit_any: Vec::new(),
+    };
+    let ir = backend.generate(&items, None);
+
+    assert_eq!(
+        backend.arena_workers.len(),
+        2,
+        "one arena triple per worker, got {:?}",
+        backend.arena_workers
+    );
+
+    // The injection survived the FieldMode promotion pass. That pass rebuilds
+    // `field_types` from scratch and eliminates every field no txn body
+    // references — which is precisely what dropped these slots in the first
+    // attempt, leaving `%State` shorter than the indices the emitters held.
+    for worker in 0..2 {
+        for slot in ["ptr", "end", "base"] {
+            let name = format!("__arena_{slot}_w{worker}");
+            assert!(
+                backend.ctx.field_index_map.contains_key(&name),
+                "`{name}` was eliminated by the FieldMode pass; surviving                  arena fields: {:?}",
+                backend
+                    .ctx
+                    .field_index_map
+                    .keys()
+                    .filter(|k| k.starts_with("__arena"))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // Each worker indexes a disjoint cursor: sharing one would be the race the
+    // per-worker partition exists to remove.
+    let w0 = backend.arena_workers[0];
+    let w1 = backend.arena_workers[1];
+    assert_ne!(w0.ptr, w1.ptr, "workers must not share a bump cursor");
+    assert_ne!(w0.end, w1.end);
+    assert_ne!(w0.base, w1.base);
+
+    // `%State` carries the user fields plus every injected slot: a shorter type
+    // with these indices still in play is the invalid-module failure.
+    let state = ir
+        .lines()
+        .find(|l| l.starts_with("%State = type {"))
+        .expect("%State type definition");
+    let field_count = state.matches(',').count() + 1;
+    assert_eq!(
+        field_count,
+        backend.ctx.field_types.len(),
+        "emitted %State must list every field: {state}"
+    );
+    assert!(
+        field_count >= 9,
+        "3 user fields + 6 arena slots expected, got {state}"
+    );
+}
