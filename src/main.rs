@@ -38,6 +38,9 @@ fn main() {
         "export" => run_export(&args[2..]),
         "bindings" => run_bindings(&args[2..]),
         "extension" => run_extension(&args[2..]),
+        // 2026-11-16 (S3/G2): render a language adapter's boundary protocols from
+        // its descriptor. `--check` refuses a stale file without writing.
+        "render" => run_render(&args[2..]),
         "doc" => run_doc(&args[2..]),
         "link" => run_link(&args[2..]),
         "audit" => run_audit_cmd(&args[2..]),
@@ -2370,6 +2373,42 @@ fn run_config(args: &[String]) -> Result<(), String> {
 
 /// `briev export <file.bv> <language> [--out <dir>]`
 /// 2026-07-22: Generate a GLUE bridge for the target language.
+/// `brievc render <lang> [--check]` — write (or verify) the generated boundary
+/// protocols for one language adapter.
+fn run_render(args: &[String]) -> Result<(), String> {
+    let mut lang: Option<String> = None;
+    let mut check = false;
+    for arg in args {
+        if arg == "--check" {
+            check = true;
+        } else if lang.is_none() {
+            lang = Some(arg.clone());
+        } else {
+            return Err(format!("render: unexpected argument `{arg}`"));
+        }
+    }
+    let lang = lang.ok_or_else(|| {
+        "render: usage `brievc render <lang> [--check]`".to_string()
+    })?;
+    let target = briev_compiler::glue::config::load_glue_language(&lang)?;
+    let descriptor = format!("lib/glue/{lang}/glue.dbv");
+    let out = std::path::PathBuf::from(format!("lib/glue/{lang}/protocols.bv"));
+    let fresh = briev_compiler::glue::generator::render_and_write(
+        &target,
+        &descriptor,
+        &out,
+        check,
+    )?;
+    if check {
+        println!("render: {lang} protocols fresh");
+    } else if fresh {
+        println!("render: {lang} protocols already up to date");
+    } else {
+        println!("render: wrote {}", out.display());
+    }
+    Ok(())
+}
+
 fn run_export(args: &[String]) -> Result<(), String> {
     let file_path = args
         .first()

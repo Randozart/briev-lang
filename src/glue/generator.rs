@@ -71,10 +71,44 @@ pub fn render_protocols(target: &GlueTarget, descriptor_path: &str) -> String {
         sources.join(", ")
     ));
     header.push_str(
-        "// Regenerate: brievc glue render <lang>   —   Verify: brievc glue render <lang> --check\n",
+        "// Regenerate: brievc render <lang>   —   Verify: brievc render <lang> --check\n",
     );
     header.push_str("//\n// Ownership of a specific call is declared per `frgn`, not here (D1).\n\n");
     format!("{header}{declarations}\n{protocols}")
+}
+
+/// Write (or check) one language's generated protocol file.
+///
+/// 2026-11-16 (S3/G2): `check == false` writes the rendered text; `check == true`
+/// compares it with what is on disk and reports staleness **without writing**, so
+/// CI can refuse a descriptor change that was not regenerated. Returns whether the
+/// file on disk already matched.
+pub fn render_and_write(
+    target: &GlueTarget,
+    descriptor_path: &str,
+    out_path: &std::path::Path,
+    check: bool,
+) -> Result<bool, String> {
+    let rendered = render_protocols(target, descriptor_path);
+    let existing = std::fs::read_to_string(out_path).ok();
+    let fresh = existing.as_deref() == Some(rendered.as_str());
+    if fresh {
+        return Ok(true);
+    }
+    if check {
+        return Err(format!(
+            "{} is stale — regenerate it with `brievc render <lang>` (the \
+             descriptor changed and the generated protocols did not)",
+            out_path.display()
+        ));
+    }
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(out_path, &rendered)
+        .map_err(|e| format!("cannot write {}: {e}", out_path.display()))?;
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -167,6 +201,30 @@ mod tests {
         let first = forward.find("CStr").unwrap_or(usize::MAX);
         let second = forward.find("BStr").unwrap_or(usize::MAX);
         assert!(first < second, "sorted by Briev protocol name:\n{forward}");
+    }
+
+    #[test]
+    fn check_mode_refuses_a_stale_file_without_writing() {
+        let dir = std::env::temp_dir().join(format!("glue_gen_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("protocols.bv");
+        let target = target_with(&[("String", str_class())]);
+
+        // Missing file: not fresh, check refuses, and nothing is created.
+        assert!(render_and_write(&target, "d", &out, true).is_err());
+        assert!(!out.exists(), "check mode must not write");
+
+        // Write, then check: fresh.
+        assert!(!render_and_write(&target, "d", &out, false).unwrap());
+        assert!(render_and_write(&target, "d", &out, true).unwrap());
+
+        // Stale file: check refuses and leaves the bytes alone.
+        std::fs::write(&out, "// stale\n").unwrap();
+        assert!(render_and_write(&target, "d", &out, true).is_err());
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "// stale\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
