@@ -467,9 +467,8 @@ defn float_format(f: Float, precision: Int)
 defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
     [term >= 1 && term < 1 << 24]
     -> Int {
-    when exp8 == 0 {
-        term mant;
-    };
+    when exp8 == 0 && mant == 0 { term 1; };
+    when exp8 == 0 && mant > 0 { term mant; };
     term mant + 0x800000;
 };
 
@@ -480,7 +479,7 @@ defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
 // [-149, 105] — exp8 == 255 is NaN/Inf and never reaches the formatter — so
 // the correct fix is to tighten THIS precondition to `exp8 <= 254`, which is
 // its own pass over the call sites rather than a one-line bound change.
-defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 255][term >= -149 && term <= 104] -> Int {
+defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 254][term >= -149 && term <= 104] -> Int {
     when exp8 == 0 {
         term 1 - 150;
     };
