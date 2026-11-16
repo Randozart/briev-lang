@@ -1,0 +1,23 @@
+// 2026-11-16 (per-worker arena plan): two nodes pinned to different workers that
+// BOTH allocate. The arena cursor is a single shared `%State` slot, so this is a
+// data race on the bump pointer — the thread gate refuses it and names the fix.
+//
+// This refusal is the retirement gate for per-worker arenas: when that lands,
+// this fixture becomes a positive test (each worker bumps its own slice).
+// EXPECT-ERROR: both allocate, and the arena cursor is a single shared slot
+let tally_a: Int = 0;
+let tally_b: Int = 0;
+
+async on thread 0 node work_a [tally_a < 3][tally_a == 3] {
+    let buf: Ptr = Alloc#(32) as Ptr;
+    Store#(buf as Int, 7, 8);
+    tally_a = tally_a + 1;
+    term;
+};
+
+async on thread 1 node work_b [tally_b < 3][tally_b == 3] {
+    let buf: Ptr = Alloc#(64) as Ptr;
+    Store#(buf as Int, 9, 8);
+    tally_b = tally_b + 1;
+    term;
+};

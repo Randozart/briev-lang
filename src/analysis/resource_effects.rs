@@ -264,6 +264,13 @@ fn externally_observable(body: &[crate::ast::Statement], user_names: &HashSet<St
 /// (`Alloc#`, arithmetic, casts, atomics, `Load#`/`Store#` on program memory)
 /// stay inside the program's own state and are not ordering hazards.
 fn leaves_the_process(name: &str, user_names: &HashSet<String>) -> bool {
+    // Compiler-generated casting lanes (`Cast.Int`, `Cast.Ptr`, the protocol
+    // `CastFrom`/`CastTo` helpers) are pure representation changes — they
+    // allocate nothing and touch nothing outside the value being converted.
+    // They are not user callables, so without this they would read as imports.
+    if name.starts_with("Cast.") || name.starts_with("CastFrom.") || name.starts_with("CastTo.") {
+        return false;
+    }
     if !name.ends_with('#') {
         return !user_names.contains(name);
     }
@@ -360,12 +367,17 @@ fn merge_callees(
     let Some(callees) = graph.get(name) else {
         return false;
     };
+    let user_names: HashSet<String> = effects.keys().cloned().collect();
     let merged = callees
         .iter()
         .fold(ResourceEffects::default(), |mut acc, callee| {
             let Some(e) = effects.get(callee) else {
-                // Unknown callee = intrinsic or import: observable.
-                acc.observable = true;
+                // Unknown callee: an intrinsic or an import. Only the ones that
+                // cross the process boundary count (the same rule the direct
+                // scan uses), so `Alloc#`/`Store#` do not read as output.
+                if leaves_the_process(callee, &user_names) {
+                    acc.observable = true;
+                }
                 return acc;
             };
             acc.writes.extend(e.writes.iter().cloned());
@@ -468,6 +480,15 @@ mod tests {
             map.of("quiet").observable,
             "a printing callee must make the caller observable"
         );
+    }
+
+    #[test]
+    fn alloc_and_store_are_not_observable() {
+        let map = summarize(
+            "node n [true][true] { let p: Ptr = Alloc#(32) as Ptr; Store#(p as Int, 7, 8); term; };",
+        );
+        let e = map.of("n");
+        assert!(!e.observable, "effects: {e:?}");
     }
 
     #[test]

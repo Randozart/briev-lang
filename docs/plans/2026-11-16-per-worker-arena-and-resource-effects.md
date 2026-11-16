@@ -351,6 +351,43 @@ Part C+D stand alone. Reverting C+D restores today's gate exactly.
 
 ---
 
+## 7b. Implementation status (2026-11-16)
+
+**Part C — DONE** (commit `1b13bc45b`): `analysis::resource_effects`, the
+fixpoint over `CallGraph`, `allocates` taken from `analyze_arena_need`, 11 unit
+tests including the equality assertion.
+
+**Part D.1 — DONE** (commit `1b13bc45b`): the thread gate consumes the summary;
+transitive write/write and write/read, both-observable and both-allocate rows;
+the gate moved next to `needs_arena` so one definition of both summaries exists.
+
+Refinement found while wiring it: "observable" must NOT reuse
+`analysis::purity`'s effect predicate — that one counts plain assigns (it answers
+"is this callable doing anything at all?"), and a write to *disjoint* state is
+not an ordering hazard. The summary therefore has its own narrower predicate
+("leaves the process": Print#, syscalls, volatile/MMIO, asm, termination, the
+env/dl/http/shell family, imports), and unknown callees are judged by the same
+rule — otherwise `Alloc#` and `Store#` would read as output. Compiler-generated
+`Cast.*` lanes are pure by construction and excluded.
+
+**Part A — NOT LANDED.** Attempted and reverted: injecting one arena triple per
+worker (`__arena_ptr_w<N>`/`__arena_end_w<N>`/`__arena_base_w<N>`) plus a single
+reservation sliced by main produced an invalid module — the emitted `%State`
+type still had only the user fields while the emitters referenced the injected
+indices. Root cause: `ctx.field_types` is rebuilt by the `FieldMode` promotion
+pass (`src/backend/llvm/mod.rs`, the `FieldMode::Always | LazyCached` arm that
+re-pushes `old_types`), so slots appended by the arena injection are dropped
+while `field_index_map` keeps them. Per-worker arenas must therefore inject
+*through* that pass (or before it and be carried by it), not after it.
+
+Until then the both-allocate refusal stands, and it is now a retirement gate:
+`tests/compile_fail/thread_pin_alloc_shared_arena.bv` asserts the refusal and
+flips to a positive test when Part A lands.
+
+**Part B / D.2 — NOT LANDED** (the `current_worker` plumbing was part of the
+reverted Part A attempt; the debug write-mask assertion needs injected slots to
+be visible in the masks, which is the same prerequisite).
+
 ## 8. Order and estimates
 
 | Step | Content | Estimate |
