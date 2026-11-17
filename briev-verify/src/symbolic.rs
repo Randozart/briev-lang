@@ -225,8 +225,11 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         // the base's saved entry atom would read another variable's older field.
         Expr::Field(base, field) => {
             if let Expr::Identifier(name) = base.as_ref() {
+                // A multi-value result binds its fields as `term.0`, `term.1` when
+                // the path returned; a tracked struct field resolves the other way.
                 return state
                     .get_field(name, field)
+                    .or_else(|| state.assignments.get(&format!("{name}.{field}")).cloned())
                     .unwrap_or(SymbolicValue::Unknown);
             }
             SymbolicValue::Unknown
