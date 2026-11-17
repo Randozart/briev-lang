@@ -18,6 +18,10 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
         (
             "python".to_string(),
             GlueTarget {
+                // 2026-11-16 (S3/G1): `values` (boundary value classes) joined
+                // GlueTarget; a fixture that omits it fails the whole
+                // `cargo test` build, exactly as `host_fns` did in 2026-10-06.
+                values: HashMap::new(),
                 abi: None,
                 version: 1,
                 language: "python".to_string(),
@@ -47,6 +51,10 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
         (
             "rust".to_string(),
             GlueTarget {
+                // 2026-11-16 (S3/G1): `values` (boundary value classes) joined
+                // GlueTarget; a fixture that omits it fails the whole
+                // `cargo test` build, exactly as `host_fns` did in 2026-10-06.
+                values: HashMap::new(),
                 abi: None,
                 version: 1,
                 language: "rust".to_string(),
