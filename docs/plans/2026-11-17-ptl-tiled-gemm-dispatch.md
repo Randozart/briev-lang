@@ -151,3 +151,35 @@ against a CPU reference) so a zero-vs-zero pass can never again look like a pass
 Start at 1. If the fixture does not fail today, my reading of `emit_tiled` is wrong
 and that is worth knowing before any of the rest — the fastest possible refutation,
 which is the point of doing it first.
+
+## Night 2, addendum — why the correctness gate is not a fixture (it is three compiler gaps)
+
+Attempted the self-checking GEMM that would have caught the 16× bug on day one. It
+cannot be written against today's accel surface, for four measured reasons — each a
+finding in its own right, recorded so the next attempt starts here:
+
+1. **`when` is rejected in an accel kernel body** — `SPIR-V lowering: unsupported
+   statement in kernel body (Discriminant(11))`, and the kernel *silently stays on
+   the CPU lane* with only a warning. A data-dependent branch (the natural way to
+   write an identity matrix or a compare) is therefore unavailable, and a silent CPU
+   fallback makes any "GPU" number for that program meaningless. **Recorded in
+   BUGS.md.**
+2. **An f16 element store from a `Float` expression emits invalid IR on the fallback
+   path** — `store half %t35` with `%t35` of type `float`. Host code is fine; the
+   accel CPU-fallback re-emission is not. **Recorded in BUGS.md.**
+3. **`foreach` plus local `let`s in an accel body is outside the runner surface** —
+   `error: host body statement (Discriminant(0)) outside the runner v1 surface`. So
+   the *naive reference kernel* (the honest differential baseline: same inputs, same
+   device, two implementations) cannot be expressed. Without it the only available
+   expectation is analytic, which needs (1).
+4. **A `.bv` with accel nodes emits no `_runner.c`**, so the build → link → run
+   measurement path requires `.abv`. Worth stating in the lane guide.
+
+So the correctness gate is **a compiler-surface workstream, not a test-writing
+task**: (a) allow or explicitly reject-with-error the statements accel bodies can't
+lower, never silently fall back; (b) fix the f16 fallback store; (c) widen the runner
+v1 statement surface so a reference kernel can live beside the kernel under test.
+Until then the honest gate for GEMM correctness remains the *dispatch assertion*:
+the four grids in the results file are the exact tile geometry, and a 16× error there
+is a hard failure rather than a silent one.
+
