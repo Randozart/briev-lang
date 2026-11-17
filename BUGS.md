@@ -14742,3 +14742,65 @@ address in a `ptr`-typed global and load that.
 (they get `define`d in the IR), so the IR verifies and links. The segfault is a
 separate defect in the fn-pointer *value* emission path — the address is loaded
 as data instead of being used as a callable pointer.
+
+## 2026-11-17 — `i64` register used as a GEP base (node bridge, CI red) — FIXED
+
+**Symptom.** `tests/c_driver_node.rs::python_node_cross_language_bridge` failed on
+`main` from `4ba5fe2b` until this fix, taking `Workspace tests` and `Default gates`
+down with it:
+
+```
+opt: /tmp/briev_py_node_bridge/node/node_bridge.ll:8248:33:
+     error: '%t61' defined with type 'i64' but expected 'ptr'
+```
+
+Emitted IR (`node_bridge.ll:8246-8250`):
+
+```llvm
+%t60 = load ptr, ptr %t59
+%t61 = ptrtoint ptr %t60 to i64                  ; t61 IS an i64
+%t64 = getelementptr i64, ptr %t61, i64 %t63     ; used as a pointer base
+```
+
+**Root cause: a per-register width map outliving the register namespace.**
+`reg_value_ll` records "the actual LLVM width this register holds" so width
+adapters do not guess from the stamped Briev type (a `Ptr<…>` stamp covers both a
+real pointer and an i64 handle). It is keyed by SSA register **name**, and
+`gen_reg()` derives names from `txn_counter`, which every function body resets:
+
+```rust
+pub fn gen_reg(&mut self) -> String { let n = self.txn_counter; … format!("%t{}", n) }
+```
+
+The callable-txn driver reset the counter and cleared its other per-register
+caches (`reg_float_cache`, `reg_type_cache`, `expr_dedup_cache`) but **not**
+`reg_value_ll`. So `iter_chain_loop` (`lib/std/iterator.bv`) began again at `%t0`
+while the map still held `%t61 = ptr` from the body emitted before it — a body
+where `%t61` really had been a pointer. `canonical_ptr` then saw "already a
+pointer", skipped its `inttoptr`, and the element GEP used the fresh *i64*
+`%t61` as a pointer base.
+
+**This corrects the diagnosis in issue #119.** The first write-up assumed the
+mirror of `2da3ed8b` (slice C) — a `ptrtoint` result recorded as `ptr` by the
+cast lane — and named two candidate fixes in the emitters. Measurement refuted
+that: instrumenting the cast-lane recorder showed **no** width record for `%t61`
+inside the failing function at all, and a generation counter showed the entry
+coming from the *same* generation at a different buffer length (222 122 →
+372 bytes). The emitters were right; the cache lifetime was wrong.
+
+**Fix.** `LlvmFunction::reset_register_names()` sets `txn_counter = 0` **and**
+clears `reg_value_ll`, and every site that reset the counter now calls it
+(`dispatch.rs`, four drivers in `emit_toplevel.rs`). One invariant instead of two
+half-invariants: a name-keyed cache resets with the names.
+
+Regression test: `backend::llvm::tests::a_new_function_body_does_not_inherit_register_widths`
+— verified to fail without the clear and pass with it. The end-to-end node-bridge
+test covers the real IR.
+
+Gates: `c_driver_node` 1 passed, `daily_use_smoke` 44 passed (slice C's own
+suite, no regression), lib suite 3916 passed, census on 92 files unchanged
+(2192 / 100 / 13162 / 0 / 2 debug-baseline; 2216 / 101 / 13308 / 0 / 1 release).
+
+**Not this bug:** the daily `Verification nightly` red (`AST opt-out suite
+(BRIEV_HIR_EMIT=0)`) is older — it fails on 2026-11-14, 15 and 16 as well, and is
+the HIR/AST defn-liveness drift already tracked in this file.
