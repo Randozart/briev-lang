@@ -6,15 +6,14 @@ use super::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
-    HirBody, HirCallable, HirCallableKind, HirCastDirection, HirCastEdge, HirContract,
-    HirEnumVariant, HirField, HirForeign, HirProtocol,
-    HirGlobal, HirInit, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
-    HirWatchdogOnFire, ThreadPin,
+    HirBody, HirBoundary, HirCallable, HirCallableKind, HirCastDirection, HirCastEdge, HirContract,
+    HirEnumVariant, HirField, HirForeign, HirFromSpec, HirGlobal, HirInit, HirOutput, HirParam,
+    HirProgram, HirProtocol, HirTypeDef, HirTypeDefKind, HirWatchdog, HirWatchdogOnFire, ThreadPin,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use crate::ast::{
-    Annotation, Contract, Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm,
-    TopLevel, Transaction, Type,
+    Annotation, Contract, Definition, Expr, FromSpec, MatchArm, OutputType, Pattern, Statement,
+    StmtMatchArm, TopLevel, Transaction, Type,
 };
 
 pub fn lower_program(items: &[TopLevel]) -> HirProgram {
@@ -135,10 +134,7 @@ struct LowerOutputs<'a> {
 /// roots; mirrors the AST index).
 /// Lower one `proto` into a `HirProtocol` **and** keep its binding-fn names for
 /// the liveness consumer (2026-11-16, H1).
-fn lower_protocol_item_full(
-    pd: &crate::ast::top::ProtocolDef,
-    out: &mut LowerOutputs<'_>,
-) {
+fn lower_protocol_item_full(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOutputs<'_>) {
     let mut casts = Vec::new();
     for edge in &pd.cast_edges {
         let Some(binding) = &edge.binding else {
@@ -479,8 +475,27 @@ fn lower_typedef_top(
     }
 }
 
+/// Lower one `frgn` into a `HirForeign` **and** its `HirBoundary`
+/// (2026-11-16, H2).
 fn lower_foreign_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
     if let TopLevel::ForeignBinding(fb) = item {
+        let from = match &fb.from {
+            FromSpec::Literal(p) => HirFromSpec::Literal(p.to_string_lossy().to_string()),
+            FromSpec::CompilerRegistry(name) => HirFromSpec::Registry(name.clone()),
+            FromSpec::Protocol(name) => HirFromSpec::Protocol(name.clone()),
+            FromSpec::Linked(name) => HirFromSpec::Linked(name.clone()),
+        };
+        let boundary = HirBoundary {
+            from,
+            buffer_mode: fb.buffer_mode.clone(),
+            precondition: fb.precondition.clone(),
+            postcondition: fb.postcondition.clone(),
+            error_type: Some(fb.error_type.clone()),
+            is_optional: fb.is_optional,
+            is_fire_forget: fb.is_fire_forget,
+            is_delivery: fb.is_delivery,
+            is_variadic: fb.is_variadic,
+        };
         out.foreign.push(HirForeign {
             name: fb
                 .briev_name
@@ -489,6 +504,7 @@ fn lower_foreign_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
             link_symbol: fb.foreign_name.clone(),
             params: fb.inputs.clone(),
             ret: fb.success_output.first().map(|(_, t)| t.clone()),
+            boundary,
         });
     }
 }
@@ -1655,7 +1671,11 @@ mod protocol_lowering_tests {
         let program = lower(
             "proto C_String: String {\n    axiom CastTo(String<UTF8>) = cstr_to_briev(#Lh);\n    axiom CastFrom(String<UTF8>) = str_to_c(#Lh);\n};\n",
         );
-        assert_eq!(program.protocols.len(), 1, "one proto must lower to one node");
+        assert_eq!(
+            program.protocols.len(),
+            1,
+            "one proto must lower to one node"
+        );
         let proto = &program.protocols[0];
         assert_eq!(proto.name, "C_String");
         assert_eq!(proto.category, "String");
@@ -1673,6 +1693,71 @@ mod protocol_lowering_tests {
             .find(|c| c.direction == HirCastDirection::From)
             .expect("CastFrom lane");
         assert_eq!(from.binding, "str_to_c");
-        assert!(program.protocol_binding_fns.contains(&"str_to_c".to_string()));
+        assert!(
+            program
+                .protocol_binding_fns
+                .contains(&"str_to_c".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod boundary_lowering_tests {
+    use super::*;
+
+    /// Parse and lower a program with one `frgn`.
+    ///
+    /// NOTE (H2 scope, 2026-11-16): the frgn parser accepts **no** clause
+    /// surface — `buffer:`, `precondition`/`postcondition` on a frgn, and
+    /// `errors:` are AST fields whose only population site is the constructor
+    /// defaults. H2 mirrors what the AST *can* carry; the clause surface is
+    /// separate parser work (queued in the handoff plan) and must not be
+    /// invented here, or HIR would model facts no source can produce.
+    fn lower(src: &str) -> crate::hir::HirProgram {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let items = p.parse_program().expect("parse");
+        lower_program(&items)
+    }
+
+    /// The literal-path `from` is the shape the C adapter's `types_module`
+    /// lane uses; it must survive to HIR.
+    #[test]
+    fn frgn_literal_from_survives() {
+        let program = lower(
+            "frgn stbi_image_free(data: Int) -> Void from \"std/c/stb_image/stb_image.c\";\n",
+        );
+        assert_eq!(program.foreign.len(), 1, "one frgn must lower to one node");
+        let boundary = &program.foreign[0].boundary;
+        assert!(
+            matches!(
+                &boundary.from,
+                HirFromSpec::Literal(p) if p == "std/c/stb_image/stb_image.c"
+            ),
+            "literal from must survive lowering"
+        );
+        // The defaults the parser assigns must travel too — HIR reflects the
+        // AST, it does not decide for it.
+        assert_eq!(boundary.error_type.as_deref(), Some("Error"));
+        assert!(boundary.precondition.is_none() && boundary.postcondition.is_none());
+    }
+
+    /// `#Link` is the lane the FFI contract rides on; its name must survive.
+    #[test]
+    fn frgn_linked_from_link_survives() {
+        let program = lower("frgn c_strlen(s: CStr) -> Int from #Link<libc>;");
+        assert_eq!(program.foreign.len(), 1);
+        assert!(
+            matches!(&program.foreign[0].boundary.from, HirFromSpec::Linked(l) if l == "libc"),
+            "#Link<libc> must lower to HirFromSpec::Linked(\"libc\")"
+        );
+    }
+
+    /// The flags default to off in the parser and must travel as off.
+    #[test]
+    fn frgn_flags_default_off() {
+        let program = lower("frgn plain(x: Int) -> Int from #Link<libc>;");
+        let b = &program.foreign[0].boundary;
+        assert!(!b.is_optional && !b.is_fire_forget && !b.is_delivery && !b.is_variadic);
     }
 }

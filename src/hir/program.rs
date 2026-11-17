@@ -225,6 +225,48 @@ pub enum HirTypeDefKind {
 
 /// 2026-11-04 (H3.3b): a `frgn` foreign binding — the FFI boundary surface
 /// boundary-ownership inference classifies.
+/// 2026-11-16 (H2, FFI contract plan): where the symbol comes from.
+/// Mirrors the AST `FromSpec` with the path flattened to a string so HIR
+/// stays self-contained (no filesystem types).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HirFromSpec {
+    /// `from "path"` — literal path (empty = the current module).
+    Literal(String),
+    /// `from <name>` — compiler-registry lookup.
+    Registry(String),
+    /// `from #System` — the base protocol.
+    Protocol(String),
+    /// `from #Link<name>` — link against `-l<name>`.
+    Linked(String),
+}
+
+/// The boundary facts of one `frgn`: the contract the AST already carries and
+/// HIR previously dropped. 2026-11-16 (H2): without these, a boundary's
+/// preconditions, error handling and ownership conventions are unrecoverable
+/// from HIR — the same class of loss as the protocol surface (H1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirBoundary {
+    pub from: HirFromSpec,
+    /// `buffer:` clause, by name.
+    pub buffer_mode: Option<String>,
+    /// Rendered contract text (the AST keeps it as a string; HIR keeps it so —
+    /// no re-parsing in HIR).
+    pub precondition: Option<String>,
+    pub postcondition: Option<String>,
+    /// The error type name (`frgn … errors: T`), empty string when absent.
+    pub error_type: Option<String>,
+    /// `frgn?` — optional, must check `fn?` before calling.
+    pub is_optional: bool,
+    /// `frgn!` — fire-and-forget, non-blocking, void return.
+    pub is_fire_forget: bool,
+    /// `frgn?!` — fire-and-forget with `Bool(delivered)` return.
+    pub is_delivery: bool,
+    /// `variadic` foreign signature.
+    pub is_variadic: bool,
+}
+
+/// 2026-11-04 (H3.3b): a `frgn` foreign binding — the FFI boundary surface
+/// boundary-ownership inference classifies.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirForeign {
     /// Effective Briev name (`as <name>` or the foreign symbol).
@@ -235,6 +277,8 @@ pub struct HirForeign {
     pub link_symbol: String,
     pub params: Vec<(String, Type)>,
     pub ret: Option<Type>,
+    /// 2026-11-16 (H2): the boundary facts (from, flags, contracts, discipline).
+    pub boundary: HirBoundary,
 }
 
 #[derive(Debug, Clone, PartialEq)]
