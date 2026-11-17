@@ -46,12 +46,21 @@ pub fn unsupported_counts(program: &HirProgram) -> UnsupportedCounts {
 }
 
 fn count_protocols(program: &HirProgram, counts: &mut UnsupportedCounts) {
-    // A proto lowers to a HirProtocol node (H1), which carries name,
-    // category and cast lanes. What it does NOT carry yet is op bindings
-    // (cross_ops) — lowering does not populate `ops`. The audit counts
-    // each proto until S4 populates them.
-    for _proto in &program.protocols {
-        counts.protocols += 1;
+    // 2026-11-17 (S4): a proto lowers to a HirProtocol carrying name,
+    // category, cast lanes (with their `trusted_axiom` markers, SPEC §8.7)
+    // and op bindings (with theirs, SPEC §8.8) — the lowering populates
+    // `ops` from `cross_ops` and both authority flags. What HIR does NOT
+    // carry is the protocol `contract` (the AST's `ProtocolDef::contract`):
+    // a protocol-level contract has no HIR node. The audit counts exactly
+    // that gap — a proto is one unsupported fact iff it declares a
+    // contract HIR cannot represent, and zero otherwise. (The ops/casts/
+    // trusted surface is certified by the lowering.) To undo: restore the
+    // `for _proto in &program.protocols { counts.protocols += 1; }` that
+    // counted every proto until the surface was fully represented.
+    for proto in &program.protocols {
+        if proto.has_unrepresentable_contract {
+            counts.protocols += 1;
+        }
     }
 }
 
@@ -270,23 +279,56 @@ mod boundary_audit_tests {
         super::super::lower::lower_program(&items)
     }
 
-    /// 2026-11-16 (H3): a `proto` must be counted as an unsupported gap
-    /// until `cross_ops` is populated by lowering (S4). The BUGS.md fixture
-    /// must stop reporting `unsupported=0` while the protocol surface is
-    /// only partially represented.
+    /// 2026-11-17 (S4): a `proto` with cast lanes but NO protocol contract
+    /// is fully represented — the lowering populates `casts` (with their
+    /// authority markers) and `ops` from `cross_ops`, so the audit counts
+    /// zero gaps. Supersedes the H3
+    /// `proto_is_counted_until_cross_ops_populated` test: the ops surface is
+    /// now represented; the only remaining gap is a contract HIR has no node
+    /// for.
     #[test]
-    fn proto_is_counted_until_cross_ops_populated() {
+    fn proto_ops_populated_and_certified() {
         let program = lower(
             "proto TestProto: String {\n    axiom CastTo(String<UTF8>) = to_briev(#Lh);\n    axiom CastFrom(String<UTF8>) = to_c(#Lh);\n};\n",
         );
         assert_eq!(program.protocols.len(), 1, "one proto lowers to one node");
-        assert!(program.protocols[0].ops.is_empty(),
-                "cross_ops are not yet populated by lowering — this is the gap H3 reports");
+        let proto = &program.protocols[0];
+        assert_eq!(
+            proto.casts.len(),
+            2,
+            "two cast lanes lower in declaration order"
+        );
+        assert!(
+            !proto.has_unrepresentable_contract,
+            "this proto declares no protocol contract — no gap"
+        );
         let counts = unsupported_counts(&program);
-        assert_eq!(counts.protocols, 1,
-                "the protocol must be counted as an unsupported gap");
-        assert!(counts.total() > 0,
-                "total must be non-zero while the protocol gap exists");
+        assert_eq!(
+            counts.protocols, 0,
+            "a contract-less proto is fully represented — no gap"
+        );
+        assert_eq!(counts.total(), 0, "no unsupported facts");
+    }
+
+    /// A `proto` that declares a protocol-level contract (HIR has no node
+    /// for it) is exactly one unsupported fact — the audit counts that gap
+    /// and nothing else.
+    #[test]
+    fn proto_with_contract_is_one_gap() {
+        let program = lower(
+            "proto TestProto: String [true] {\n    axiom CastTo(String<UTF8>) = to_briev(#Lh);\n};\n",
+        );
+        assert_eq!(program.protocols.len(), 1, "one proto lowers to one node");
+        assert!(
+            program.protocols[0].has_unrepresentable_contract,
+            "the protocol contract has no HIR node — the recorded gap"
+        );
+        let counts = unsupported_counts(&program);
+        assert_eq!(
+            counts.protocols, 1,
+            "a contract-bearing proto is exactly one unsupported fact"
+        );
+        assert_eq!(counts.total(), 1);
     }
 
     /// A program with no `proto` and no `frgn` should have zero boundary

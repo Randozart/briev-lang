@@ -383,7 +383,16 @@ pub struct HirProtocol {
     /// The cast lanes, in declaration order.
     pub casts: Vec<HirCastEdge>,
     /// Operator bindings (`op Concat(String) = …`), by operator name.
+    /// 2026-11-17 (S4): populated by lowering from `cross_ops` (previously
+    /// always empty — the H3 audit had to count every proto as a gap until
+    /// this was represented).
     pub ops: Vec<HirProtocolOp>,
+    /// 2026-11-17 (S4): the AST protocol declares a contract HIR has no node
+    /// for (`ProtocolDef::contract`). The lowering records its presence here
+    /// so the audit can count exactly that gap — a contract with no HIR home
+    /// is the one remaining unsupported protocol fact. Always `true` today
+    /// (no HIR node exists yet); becomes `false` when a contract is lowered.
+    pub has_unrepresentable_contract: bool,
 }
 
 /// One `axiom CastTo/CastFrom(…) = binding(#Lh)` lane.
@@ -404,6 +413,10 @@ pub struct HirCastEdge {
     pub target_variant: String,
     /// The defn implementing the lane (`cstr_to_briev`).
     pub binding: String,
+    /// 2026-11-17 (S4): authority marker — the equivalence proof is taken on
+    /// trust (SPEC §8.7). The audit counts a proto as fully represented only
+    /// when this fact is carried (a missing flag is a gap).
+    pub trusted_axiom: bool,
 }
 
 /// One `op <Name>(<Category>) = <binding>(#Lh, #Rh)` binding.
@@ -411,6 +424,10 @@ pub struct HirCastEdge {
 pub struct HirProtocolOp {
     pub op: String,
     pub binding: String,
+    /// 2026-11-17 (S4): authority marker (SPEC §8.8) — the op binding is
+    /// taken on authority instead of derived. Carried so the audit can
+    /// distinguish trusted from derived ops (a missing flag is a gap).
+    pub trusted_axiom: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
