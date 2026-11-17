@@ -1,3 +1,63 @@
+## 2026-11-17 — an `obj` member body cannot see outer or imported names (main is red on one gate)
+
+**Symptom.** `tests/rbv_router.rs::router_smoke_gate` fails, and it has been the
+only failing test on `main` for at least three commits — including `eccd3799`, the
+`v0.2.0` release (4421 passed / 1 failed):
+
+```
+error: type errors:
+  invalid operation 'call to 'navigate'' on type 'navigate' is not defined in this
+  program — import the module that defines it (e.g. `import "std/…"`) or remove the call
+build failed: tests/fixtures/obj_router.rbv
+```
+
+**Minimal reproduction** (fails on the released `0.2.0` binary):
+
+```briev
+import "std/web/router.bv";
+
+obj R {
+    path: String;
+    txn go(url: String) [path != url][path == url] { path = url; navigate(url); term; };
+};
+
+let r: R = R { path: current_path() };
+```
+
+Two errors, and the second is the tell:
+
+```
+call to 'navigate' … is not defined in this program
+call to 'go'      … is not defined in this program
+```
+
+`go` is the member itself — so a **member body resolves no outer names at all**:
+not the imported `frgn navigate`, not its own sibling/member name. A top-level
+`defn` calling the very same imported `frgn` compiles fine:
+
+```briev
+import "std/web/router.bv";
+defn probe(u: String) [true][term >= 0] -> Int { navigate(u); term 0; };   // OK
+```
+
+So the fault is member-body call resolution, not `frgn`, not imports.
+
+**Scope of the damage.** Confined to member bodies, which is why the full suite
+still reports 4421 passing — the router fixture is the only test that exercises a
+member txn calling an imported function. That also means the `v0.2.0` artifact was
+published while this gate was red; the release itself is unaffected (it is a
+source-level resolution bug, not a codegen one), but the CI signal was not.
+
+**Not caused by** the verification campaign: the same failure reproduces with the
+pre-campaign packaged binary, so it predates PRs #104–#115.
+
+**Where to look.** Member-body elaboration — the environment in which a member
+`txn`/`defn` body is type-checked appears to lack the file-level scope chain
+(top-level defns, imported `frgn` names, and the member's own variant name). The
+recent member-txn work (`d2dd3205`, "member txn on a plain top-level obj var is now
+emitted/bound") is the obvious starting point.
+
+
 ## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
 
 **Symptom.** Building any program that touches the C glue layer from a
