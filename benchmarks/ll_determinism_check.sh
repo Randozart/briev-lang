@@ -37,6 +37,14 @@ CORPUS=(
     "pp-types|pp-types.bv|"
     # 2026-11-05: two object instances' Init blocks (sorted emission).
     "test_collections|tests/tier1/test_collections.bv|"
+    # 2026-11-16 (F1v): the corpus passed while BUGS.md:112 shipped because no
+    # program here combined many state fields, interned strings and
+    # owned-storage destruction. These two do:
+    #   cstr_str_to_c_meld — string lane + interned literals + coll_* helpers
+    #   list_ffi_zero_copy — coll destruction sites (the unsorted `owned.keys()`
+    #                        iteration that F1's first fix repaired)
+    "cstr_str_to_c_meld|tests/fixtures/cstr_str_to_c_meld.bv|"
+    "list_ffi_zero_copy|tests/fixtures/list_ffi_zero_copy.bv|"
     # 2026-11-05 (H4 slice A): merged vector-group order (sorted SLP merge).
     "nbody_sqrt|benchmarks/nbody_sqrt.bv|"
     "mixed_effect_shape|tests/tier1/mixed_effect_shape.bv|"
@@ -51,6 +59,10 @@ if [ "${1:-}" = "--quick" ]; then
         "recommender|benchmarks/recommender.bv|"
         "multinode|benchmarks/recommender_corpus/recommender_multinode.bv|"
         "pp-types|pp-types.bv|"
+        # 2026-11-16 (F1v): the per-commit lane must also cross the shapes that
+        # BUGS.md:112 shipped through — interned strings + coll destruction.
+        "cstr_str_to_c_meld|tests/fixtures/cstr_str_to_c_meld.bv|"
+        "list_ffi_zero_copy|tests/fixtures/list_ffi_zero_copy.bv|"
     )
 fi
 
