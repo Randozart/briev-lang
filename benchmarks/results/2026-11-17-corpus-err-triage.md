@@ -128,3 +128,54 @@ is already `ptr`) is the next slice; it should clear C for all six files.
 
 Do this as one slice, with `examples/pointer-trickery.bv` as the fixture and the
 floor line re-measured — not as a batch with D/E/F.
+
+## 7. Slice C, partial — and two stdlib bugs the broken runner had hidden
+
+The audit's own warning came true: fixing the instrument changed what the
+instrument could see.
+
+**Floor after slice C:** 243 files / **60** PROVEN / 207 UNPROVEN / 0 VIOLATED /
+**21** ERR (from 25). Two files became fully clean
+(`examples/pointer-trickery.bv`, `examples/volatile-io.bv`); two more lost their
+first error and advanced to a deeper site.
+
+**The fixes.** `Type::Ptr(_)`-stamped values can be an i64 handle *or* a real
+pointer, and several adapters assumed the handle:
+
+* `canonical_ptr` inttoptr'd unconditionally. It now passes a register through
+  when `reg_value_ll` records it as `ptr` (the width channel the cast lane
+  maintains).
+* The user-call argument chain did the same for `Ptr`-stamped arguments.
+* The constant loader records `reg_value_ll = "ptr"` when it emits `load ptr`.
+
+The trap, recorded because it cost three regressed fixtures: **`reg_llvm_ty` must
+not be trusted for this.** It can be stale after a re-material step, and routing
+the same check through it made `ptr_field_smoke`, and two others, pass an i64
+register where a `ptr` was expected (`call i64 @make(ptr %t14)`). Only
+`reg_value_ll` — "the ACTUAL register width this step produced" — is sound here.
+
+**What the fixed runner revealed: two stdlib files were never clean.**
+
+| file | error |
+|---|---|
+| `lib/std/posix/io.bv` | `use of undefined value '@FD_STDOUT'` |
+| `lib/std/posix/process.bv` | `redefinition of global '@SYS_CLONE'` |
+
+Both were previously attributed to `examples/wildcard_lift.bv`, which merely
+imports them — the shared `--out` collision meant the owning files looked clean.
+This corrects §3's claim that the ERR surface was examples-only: it is
+examples-DOMINATED, and two real stdlib IR bugs were sitting underneath it.
+They are class D (undefined/redefined globals) and are now the highest-value
+remaining slice, because stdlib is production code.
+
+**Remaining (21 ERR).** Class C survivors: `ptr-arithmetic` (a `ptr` register fed
+to an i64-consuming site at `%t0`), `ptr-swap` (`ptrtoint` result then used as a
+`ptr`), `sig_as_type`. Class B survivor: `defn-composite` (a different const
+shape than the plain numeric one). Class D: `import-forms` (`@val`),
+`sync-group` (`@i`), `lib/std/posix/io.bv`, `lib/std/posix/process.bv`. Class E:
+`ptr-runtime` + `wildcard_lift` (link). Class F: `mmap-demo`, `networking`,
+`process-spawn` (source-level type errors).
+
+**Next slice recommendation changed:** do class D next, not the rest of C — it is
+stdlib, it is two files, and both look like one mechanism (a global declared in an
+imported module not reaching the module that uses it).

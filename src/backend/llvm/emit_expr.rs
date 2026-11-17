@@ -1991,6 +1991,17 @@ impl LlvmBackend {
                 // hardcoded i64 load made comparisons invalid.
                 let llvm_ty = self.llvm_type(ty);
                 writeln!(out, "{}{} = load {}, ptr @{}", indent, v, llvm_ty, name).ok();
+                // 2026-11-17 (corpus slice C): record the ACTUAL width. A
+                // `const BASE: Ptr<Int>` loads as `ptr`, but every adapter that
+                // sees the stamped `Ptr` type assumes an i64 handle and emits
+                // `inttoptr i64 <ptr>` — invalid IR. `reg_value_ll` is the
+                // width channel the cast lane already maintains for precisely
+                // this "stamped type lies about the register width" problem
+                // (reg_llvm_ty is NOT used: it can be stale after a re-material
+                // step and trusting it regressed three tier1 fixtures).
+                if llvm_ty == "ptr" {
+                    self.fun.reg_value_ll.insert(v.to_string(), "ptr".to_string());
+                }
                 TypedRegister {
                     name: v.to_string(),
                     ty: ty.clone(),
@@ -9831,7 +9842,19 @@ impl LlvmBackend {
                     .and_then(|tys| tys.get(i))
                     .map(|pt| self.call_param_llvm_type(pt))
                     .unwrap_or_else(|| actual_ty.clone());
-                if matches!(reg.ty, Type::Ptr(_)) {
+                let reg_is_ptr = self
+                    .fun
+                    .reg_value_ll
+                    .get(&reg.name)
+                    .map(|w| w == "ptr")
+                    .unwrap_or(false);
+                if matches!(reg.ty, Type::Ptr(_)) && !reg_is_ptr {
+                    // 2026-11-17 (corpus slice C): a `Ptr`-stamped argument is
+                    // normally an i64 handle, and `canonical_ptr` inttoptrs it.
+                    // But a value loaded from a ptr-typed global (`const BASE:
+                    // Ptr<Int> = …`) is already a pointer — inttoptr then
+                    // emitted `inttoptr i64 %ptr to ptr`, invalid IR. When the
+                    // register is actually ptr, fall through and pass it as-is.
                     let conv = self.canonical_ptr(out, indent, &reg.name);
                     call_args.push(format!("ptr {}", conv));
                 } else if expected_ty == "i64" && actual_ty.starts_with('i') && actual_ty != "i64" {

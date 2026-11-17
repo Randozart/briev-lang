@@ -2406,6 +2406,23 @@ impl LlvmBackend {
         if let Some(p) = self.fun.canonical_ptrs.get(int_reg) {
             return p.clone();
         }
+        // 2026-11-17 (corpus slice C): the argument is USUALLY an i64 handle that
+        // has to become a pointer, but a value read from a ptr-typed global
+        // (`const BASE: Ptr<Int> = …`) is already a pointer. `inttoptr i64 <ptr>`
+        // is invalid IR (`'%t1' defined with type 'ptr' but expected 'i64'`), so
+        // a register recorded as ptr passes through unchanged. The width is read
+        // from the two channels the emitters already maintain — `reg_value_ll`
+        // (cast lanes) and `reg_llvm_ty` (loads) — never guessed from the stamped
+        // Briev type, which is `Ptr` for both shapes.
+        let already_ptr = self
+            .fun
+            .reg_value_ll
+            .get(int_reg)
+            .map(|w| w == "ptr")
+            .unwrap_or(false);
+        if already_ptr {
+            return int_reg.to_string();
+        }
         let p = self.fun.gen_reg();
         self.emit_inttoptr(out, indent, &p, &int_reg);
         // Do NOT cache here: an arbitrary i64 value may be defined in a
