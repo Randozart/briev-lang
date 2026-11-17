@@ -149,7 +149,7 @@ printf '%s\0' "${FILES[@]}" \
         { printf "FILE: %s\n" "$f"
           "$0" build "$f" --verify-bodies --verify-report "$2/goals-$key.json" \
               --out "$2/build-$key" 2>&1 \
-              | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|error:"
+              | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|verify-bodies: [0-9]|error:"
           # 2026-11-17 (units): the line-grep above counts GOALS for the
           # unproven/skipped/violated buckets but FILES for proven. Rather than
           # guess a unit, publish the goal counts explicitly from the report the
@@ -193,6 +193,22 @@ done
 # unreconcilable. `skipped`/`violated`/`errors` line counts are kept as
 # *_lines because they always were line counts.
 counts=$(awk '
+    # 2026-11-17 (skip-origin reporting, from main): "25 proven (1 own), 166
+    # skipped (25 own)". The raw figures count one entry per declaration PER
+    # COMPILATION UNIT — the prelude re-contributes 25 generics from
+    # std/iterator.bv to every native file — so the `own` figures describe
+    # unmodelled PROGRAM surface. Both are reported; neither replaces the other.
+    # 2026-11-17 (units, this branch): files_* are per corpus file, goals_* are per
+    # obligation from --verify-report JSON. Both units, both labelled.
+    function num(s) { gsub(/[^0-9]/, "", s); return s + 0 }
+    /--verify-bodies: [0-9]/ {
+        n = split($0, p, " ")
+        for (i = 1; i < n; i++) {
+            if (p[i+1] == "proven")  { obl_proven  += p[i]; own_proven  += num(p[i+2]) }
+            if (p[i+1] == "skipped") { obl_skipped += p[i]; own_skipped += num(p[i+2]) }
+        }
+        next
+    }
     /^FILE: / {
         if (seen) { if (!bad) files_proven++; if (file_err) files_failing++; if (file_unprov) files_unproven++ }
         seen=1; bad=0; file_err=0; file_unprov=0; next
@@ -205,13 +221,15 @@ counts=$(awk '
     /^GOALS: / { gp += $2; gu += $3; gs += $4; gv += $5; next }
     END {
         if (seen) { if (!bad) files_proven++; if (file_err) files_failing++; if (file_unprov) files_unproven++ }
-        printf "%d %d %d %d %d %d %d %d %d %d", files_proven, files_failing, files_unproven,
-            gp, gu, gs, gv, no_post, skipped_lines, errors_lines
+        printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+            files_proven, files_failing, files_unproven, gp, gu, gs, gv,
+            no_post, skipped_lines, errors_lines, obl_proven, own_proven, obl_skipped, own_skipped
     }
 ' "$raw")
 
 read -r files_proven files_failing files_unproven goals_proven goals_unproven \
-    goals_skipped goals_violated no_post skipped_lines errors_lines <<<"$counts"
+    goals_skipped goals_violated no_post skipped_lines errors_lines \
+    obl_proven own_proven obl_skipped own_skipped <<<"$counts"
 violated_lines=$(awk '/verify-bodies violation:/' "$raw")
 error_lines=$(awk '/error:/' "$raw")
 
@@ -238,6 +256,14 @@ lines (diagnostic occurrences):
 Every number states its unit. Compare like with like: a per-file PROVEN can never
 be set against a per-goal unproven, which is how the old summary became
 unreconcilable (see docs/plans/2026-11-17-three-open-threads.md §3).
+
+obligation entries (as the compiler reports them, one per declaration per unit):
+  proven_entries:    $obl_proven     # includes the prelude's re-contributions
+  skipped_entries:   $obl_skipped
+
+own surface (what the corpus files themselves declare):
+  proven_own:        $own_proven
+  skipped_own:       $own_skipped
 EOF
 
 if [ -n "$violated_lines" ]; then

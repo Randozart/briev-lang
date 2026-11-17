@@ -183,6 +183,33 @@ fn top_level_name(item: &TopLevel) -> Option<String> {
     item_name(item).map(|s| s.to_string())
 }
 
+impl ImportResolver {
+    /// Declaration names contributed by the modules loaded for this unit.
+    ///
+    /// 2026-11-17 (skip-origin reporting): the body prover is handed the MERGED
+    /// item vector, so its report names prelude and imported declarations
+    /// beside the file's own. `std/iterator.bv` is prelude-injected into every
+    /// native unit, so its 25 generic declarations appear in ~80 reports and a
+    /// corpus total read as 80x more unmodelled surface than exists.
+    ///
+    /// The prover cannot recover the split itself: `item_origins` is indexed
+    /// against this resolver's OUTPUT, and `compile.rs` mutates the item vector
+    /// five times afterwards (inline stage blocks, comptime evaluation, the
+    /// Resolved stage, comptime refs, composite expansion). Names survive those
+    /// passes, so the split is done by name.
+    pub fn imported_decl_names(&self) -> std::collections::HashSet<String> {
+        // One flat pass over every loaded module's items; the naming rule lives
+        // in `briev_verify::verify::report_name` so the split cannot drift from
+        // the names the report prints.
+        self.loaded_modules
+            .values()
+            .flat_map(|(items, _, _)| items)
+            .filter_map(|item| briev_verify::verify::report_name(item))
+            .map(str::to_string)
+            .collect()
+    }
+}
+
 /// The Custom/Applied type names referenced by an item's slots/fields.
 /// 2026-08-01 (D3): used by the named-import dependency closure — `List`
 /// references `ListBuffer<T>` in its slots, which must be imported too.
@@ -3603,5 +3630,47 @@ mod tests {
             names.contains(&"U8_MAX"),
             "a const read by a retained trait default must ride the closure: {names:?}"
         );
+    }
+}
+
+/// Origin attribution accessor (2026-11-17, skip-origin reporting).
+#[cfg(test)]
+mod origin_accessor_tests {
+    use super::*;
+
+    /// The accessor must report exactly the names the prover reports on —
+    /// defn/txn, wrappers unwrapped — not every named item. A wider set would let
+    /// an imported type name claim a defn entry and hide the file's own work.
+    #[test]
+    fn collects_only_reportable_module_declarations() {
+        let (items, _universe) = crate::library::parse_and_check(
+            "<module>",
+            r#"
+defn from_module(a: Int) [a >= 0][term == a] { term a; };
+txn from_module_txn(a: Int) [a >= 0][term == a] { term a; };
+obj Shape { w: Int; };
+"#,
+        )
+        .expect("parse_and_check");
+
+        let mut resolver = ImportResolver::new();
+        resolver
+            .loaded_modules
+            .insert("helper.bv".to_string(), (items, vec![], vec![]));
+
+        let names = resolver.imported_decl_names();
+        assert!(names.contains("from_module"), "{names:?}");
+        assert!(names.contains("from_module_txn"), "{names:?}");
+        assert!(
+            !names.contains("Shape"),
+            "a type is not a report entry: {names:?}"
+        );
+    }
+
+    /// A resolver that loaded nothing must claim nothing, so attribution falls
+    /// back to `own` rather than labelling every entry as imported.
+    #[test]
+    fn empty_resolver_claims_no_names() {
+        assert!(ImportResolver::new().imported_decl_names().is_empty());
     }
 }

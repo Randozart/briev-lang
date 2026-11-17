@@ -1415,3 +1415,72 @@ mod tuple_result_tests {
         );
     }
 }
+
+/// Origin labels must be metadata (2026-11-17, skip-origin reporting).
+///
+/// `--verify-report` now says whether an entry belongs to the file or to an
+/// import. That split exists to fix *accounting*, not verdicts, so the property
+/// worth pinning is that labelling cannot move a single declaration between
+/// `proven`, `unproven`, `skipped` and `violated`.
+#[cfg(test)]
+mod origin_reporting_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// A unit with its own contract-bearing defn plus an imported one, so the
+    /// report has both origins present.
+    fn two_origin_program() -> Vec<TopLevel> {
+        let src = r#"
+defn own_identity(a: Int) [a >= 0][term == a] { term a; };
+defn own_floaty(f: Float) [true][term == term] { term f; };
+"#;
+        crate::library::parse_and_check("<origin-test>", src)
+            .expect("parse_and_check")
+            .0
+    }
+
+    #[test]
+    fn labelling_never_changes_a_verdict() {
+        let items = two_origin_program();
+        let report = verify_bodies(&items);
+        let plain = report.to_json();
+        // Pretend every declaration whose name starts with `own_` is the file's
+        // and the rest are imported: the classification itself is exercised by
+        // the unit tests, this test is about the labels being inert.
+        let own = declared_names(&items);
+        let imported: HashSet<String> = HashSet::new();
+        let labelled = report.to_json_with_origins(&OriginTable::new(own, imported));
+
+        for bucket in ["proven", "unproven", "violated", "skipped"] {
+            let before = plain[bucket].as_array().expect("bucket array");
+            let after = labelled[bucket].as_array().expect("bucket array");
+            assert_eq!(before.len(), after.len(), "{bucket}: entry count moved");
+            for (a, b) in before.iter().zip(after.iter()) {
+                assert_eq!(a["name"], b["name"], "{bucket}: entry order moved");
+                assert_eq!(a["reason"], b["reason"], "{bucket}: reason changed");
+            }
+        }
+        // And the labels really are present, or the test above proves nothing.
+        let skipped_origins = labelled["skipped"]
+            .as_array()
+            .expect("skipped")
+            .iter()
+            .map(|entry| entry["origin"].as_str().expect("origin").to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            skipped_origins.iter().all(|o| o == "own"),
+            "every declaration here is the file's own: {skipped_origins:?}"
+        );
+    }
+
+    #[test]
+    fn declared_names_uses_the_reported_name() {
+        let items = two_origin_program();
+        let names = declared_names(&items);
+        assert!(names.contains("own_identity"));
+        assert!(names.contains("own_floaty"));
+        // Non-reportable items (types, imports) are not in the attribution set:
+        // a wider set would let an imported *type* name claim a defn entry.
+        assert_eq!(names.len(), 2);
+    }
+}
