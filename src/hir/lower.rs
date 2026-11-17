@@ -333,6 +333,51 @@ fn lower_global_statement(
     });
 }
 
+/// Lower an exported top-level `let` into `globals` as a state declaration.
+/// An exported let is host-visible storage and is never plain (the AST
+/// `classify_plain_lets` 2026-11-17 refuses to call it plain, and
+/// `export_abi::index_program` registers it in `state_fields` unconditionally).
+/// Marking it `is_state_decl = true` in HIR makes the HIR plain walk skip it
+/// (parity with the AST plain set) while the HIR `needs_state` walk — which
+/// does not filter on `is_state_decl` — still counts it as a state field
+/// (parity with the AST state set).
+fn lower_global_statement_as_state_decl(
+    stmt: &crate::ast::Statement,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+) {
+    let crate::ast::Statement::Let {
+        name,
+        ty,
+        expr,
+        modifiers,
+        ..
+    } = stmt
+    else {
+        return;
+    };
+    let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
+        "state" => Some("state".to_string()),
+        "plain" => Some("plain".to_string()),
+        _ => None,
+    });
+    out.globals.push(HirGlobal {
+        node: ids.node(),
+        item: ids.item(),
+        name: name.clone(),
+        ty: ty.clone(),
+        expr: expr.as_ref().map(|e| lower_expr(e, ids)),
+        declared_storage,
+        is_state_decl: true,
+        modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
+        annotations: modifiers
+            .iter()
+            .map(|m| (m.name.clone(), m.value.as_ref().map(|v| lower_expr(v, ids))))
+            .collect(),
+        span: None,
+    });
+}
+
 /// Top-level `const`: the name set, initializer, and declared type.
 fn lower_constant_item(
     c: &crate::ast::top::Constant,
@@ -437,15 +482,36 @@ fn lower_item(item: &TopLevel, ctx: ItemCtx, ids: &mut IdSupply, out: &mut Lower
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
         //
-        // 2026-11-17: exported top-level lets stay OUT of `globals`. They are
-        // host-visible storage the AST-backed registration declares (the
-        // exported-let bug was fixed in `analysis::storage_class`, not here),
-        // and the AST `needs_state` analysis — still authoritative — does not
-        // count them as members either. Adding them here made HIR the sole
-        // dissenter in `hir_needs_state_parity`.
-        TopLevel::Statement(_) | TopLevel::StateDecl(_) if !exported => {
-            lower_global_item(item, ids, out)
+        // 2026-11-17: exported top-level lets ARE globals. They are
+        // host-visible storage the AST-backed registration declares, and the
+        // AST `needs_state` analysis counts them as state fields
+        // (`export_abi::index_program` registers an exported `Statement::Let`
+        // in `state_fields`, complementing the `classify_plain_lets` fix that
+        // keeps them out of `plain`). HIR must agree on both sides or the
+        // parity gate sees a dissenter; putting them in `globals` while
+        // `compute_defn_needs_state` filters them by `!plain` gives the same
+        // answer as the AST walk. (An earlier version kept them out of
+        // `globals` because the AST side was still stateless at the time —
+        // the AST fix and this change land together.)
+        //
+        // Exported lets lower as `is_state_decl = true` so the HIR plain walk
+        // (`classify_plain_lets`) skips them — an exported let is host-visible
+        // storage and is never plain (matching the AST `classify_plain_lets`
+        // 2026-11-17). The HIR `needs_state` walk does NOT filter on
+        // `is_state_decl`, so they are still counted as state fields there,
+        // matching `export_abi::index_program` which registers an exported
+        // `Statement::Let` in `state_fields` unconditionally. Bare lets keep
+        // `is_state_decl = false`: a bare plain let is register-resident SSA
+        // and must land in the HIR plain set, and `needs_state` excludes it
+        // via the `!plain` filter — exactly the AST behaviour.
+        TopLevel::Statement(stmt) => {
+            if exported {
+                lower_global_statement_as_state_decl(stmt, ids, out);
+            } else {
+                lower_global_item(item, ids, out);
+            }
         }
+        TopLevel::StateDecl(_) => lower_global_item(item, ids, out),
         TopLevel::ForeignBinding(_) => lower_foreign_item(item, out),
         TopLevel::Constant(c) => lower_constant_item(c, ids, out),
         TopLevel::Init(i) => lower_init_item(i, ids, out),
@@ -580,11 +646,7 @@ fn lower_electrical_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOut
     }
 }
 
-fn lower_global_item(
-    item: &TopLevel,
-    ids: &mut IdSupply,
-    out: &mut LowerOutputs<'_>,
-) {
+fn lower_global_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
     match item {
         TopLevel::Statement(stmt) => lower_global_statement(stmt, ids, out),
         TopLevel::StateDecl(s) => out.globals.push(HirGlobal {

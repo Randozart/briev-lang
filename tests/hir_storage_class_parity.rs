@@ -137,13 +137,21 @@ fn exported_let_parity_and_never_plain() {
         "an exported let must never be classified plain, got {ast:?}"
     );
 
-    // An exported let is NOT a HIR global: the AST-backed registration owns
-    // its storage slot, and the AST `needs_state` analysis (still
-    // authoritative) does not count it as a member either. Adding it here made
-    // HIR the sole dissenter in `hir_needs_state_parity`.
+    // 2026-11-17 (reconciled with the export_abi fix): an exported let IS a
+    // HIR global, lowered as `is_state_decl = true`. The AST `needs_state`
+    // analysis (`export_abi::index_program`) registers an exported
+    // `Statement::Let` in `state_fields` unconditionally, so HIR must see it
+    // in `globals` too — but the HIR plain walk must skip it (an exported let
+    // is never plain), which `is_state_decl = true` achieves. The
+    // `hir_needs_state_parity` gate confirms both sides agree.
     let program = lower_program(&items);
+    let k = program
+        .globals
+        .iter()
+        .find(|g| g.name == "K")
+        .expect("an exported top-level let is a HIR global");
     assert!(
-        !program.globals.iter().any(|g| g.name == "K"),
-        "an exported top-level let stays out of HirProgram::globals"
+        k.is_state_decl,
+        "an exported let lowers as a state declaration so the HIR plain walk skips it"
     );
 }
