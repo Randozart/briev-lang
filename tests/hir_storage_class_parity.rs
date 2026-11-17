@@ -137,13 +137,13 @@ fn exported_let_parity_and_never_plain() {
         "an exported let must never be classified plain, got {ast:?}"
     );
 
-    // The HIR node must CARRY the export marker — the classification cannot
-    // infer it, and a consumer that loses it re-introduces the divergence.
+    // An exported let is NOT a HIR global: the AST-backed registration owns
+    // its storage slot, and the AST `needs_state` analysis (still
+    // authoritative) does not count it as a member either. Adding it here made
+    // HIR the sole dissenter in `hir_needs_state_parity`.
     let program = lower_program(&items);
-    let k = program
-        .globals
-        .iter()
-        .find(|g| g.name == "K")
-        .expect("an exported top-level let must be a HIR global");
-    assert!(k.exported, "HirGlobal must record the export marker");
+    assert!(
+        !program.globals.iter().any(|g| g.name == "K"),
+        "an exported top-level let stays out of HirProgram::globals"
+    );
 }

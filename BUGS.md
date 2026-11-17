@@ -25,17 +25,25 @@ register the name), but excluded from `HirProgram::globals` by HIR lowering's
 `plain_lets` then said "plain" while nothing had declared the symbol: the read
 took a `load … ptr @K` and the declaration never existed.
 
-**Fix — decide once and make every walk say it.** An exported top-level `let`
-is host-visible storage, therefore **never register-resident**:
+**Fix — one walk was wrong, and it was the classification.** An exported
+top-level `let` is host-visible storage, therefore **never register-resident**:
+`analysis::storage_class::classify_plain_lets` now iterates bare
+`TopLevel::Statement` lets (its own `storage_assertion_errors` already did), so
+`export let K` is not plain. The AST-backed registration then treats it as the
+state field it is, and the declaration exists.
 
-- `analysis::storage_class::classify_plain_lets` iterates bare
-  `TopLevel::Statement` lets only (matching its own `storage_assertion_errors`),
-  so an exported let is never plain;
-- HIR lowering drops the `!exported` guard for `let`/`StateDecl` — the export
-  marker is transparent everywhere else in the compiler, here too;
-- `HirGlobal` gains `exported: bool` (lowering is the only place that knows it)
-  and `hir::storage_class::classify_plain_lets` skips exported globals, so the
-  AST and HIR classifications agree by construction rather than by coincidence.
+The other two walks are deliberately left alone, and the parity tests are what
+keep that honest:
+
+- **HIR keeps exported lets out of `HirProgram::globals`.** They are declared
+  through the AST registration path, and the AST `needs_state` analysis (still
+  authoritative) does not count them as members either — putting them in HIR
+  globals made HIR the sole dissenter in `hir_needs_state_parity`
+  (`print_char: ast=false hir=Some(true)`). Tried and reverted; recorded here so
+  the next reader does not repeat it.
+- **`HirGlobal` deliberately carries no `exported` flag.** With exported lets
+  out of `globals` the field could only ever be false; a fact that is always
+  false is noise, not a model.
 
 **Effect.** `export let K` now becomes a `%State` field, the module validates
 (`clang -x ir -c` → 0 errors), and `lib/std/posix/io.bv` + `process.bv` emit
@@ -44,9 +52,10 @@ program's emission can change — and `benchmarks/ll_determinism_check.sh
 --quick` stayed byte-identical.
 
 **Tests.** `tests/hir_storage_class_parity.rs::exported_let_parity_and_never_plain`
-pins all three: both walks agree, the AST set excludes `K`, and `HirGlobal`
-carries `exported` (a consumer that loses the marker re-introduces the
-divergence).
+pins the contract from both sides: the two walks agree, the classification
+excludes `K`, and `HirProgram::globals` excludes it too — so a future "fix" that
+puts exported lets back into HIR globals fails here and in
+`hir_needs_state_parity`.
 
 ## 2026-11-17 — `obj` member bodies could not call a **void** callee (FIXED)
 

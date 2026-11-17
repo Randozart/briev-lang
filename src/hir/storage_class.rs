@@ -27,11 +27,6 @@ pub fn classify_plain_lets(
         if g.is_state_decl {
             continue;
         }
-        // 2026-11-17: an exported symbol is host-visible storage, never a
-        // register-resident SSA value. The AST walk says the same.
-        if g.exported {
-            continue;
-        }
         if let_lowers_plain(
             g.declared_storage.as_deref(),
             surface.contains(&g.name),

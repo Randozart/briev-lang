@@ -350,11 +350,6 @@ pub struct HirGlobal {
     pub declared_storage: Option<String>,
     /// `state name: T;` (vs a top-level `let`).
     pub is_state_decl: bool,
-    /// 2026-11-17: `export let …` — a host-visible symbol, so never
-    /// register-resident. The storage classification reads this; without it
-    /// HIR and the AST disagreed about exported lets (and the exported name
-    /// reached the read path undeclared).
-    pub exported: bool,
     /// Declared modifier names (`out`, `vol`, `state`, `plain`, …).
     pub modifiers: Vec<String>,
     /// Declared modifier payloads (`net: "…"`, `stdnet: "…"`) in declaration

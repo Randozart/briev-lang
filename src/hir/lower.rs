@@ -298,7 +298,6 @@ fn lower_sync_group(ctx: &SyncGroupCtx<'_>, ids: &mut IdSupply, out: &mut LowerO
 /// the storage classification refuses to call an exported symbol plain).
 fn lower_global_statement(
     stmt: &crate::ast::Statement,
-    exported: bool,
     ids: &mut IdSupply,
     out: &mut LowerOutputs<'_>,
 ) {
@@ -325,7 +324,6 @@ fn lower_global_statement(
         expr: expr.as_ref().map(|e| lower_expr(e, ids)),
         declared_storage,
         is_state_decl: false,
-        exported,
         modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
         annotations: modifiers
             .iter()
@@ -439,15 +437,14 @@ fn lower_item(item: &TopLevel, ctx: ItemCtx, ids: &mut IdSupply, out: &mut Lower
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
         //
-        // 2026-11-17: the `!exported` guard was wrong for `let`/`StateDecl`.
-        // `export let FD_STDIN: Int = 0;` is a top-level let whose storage the
-        // AST classification already sees (`storage_class::let_of_item` is
-        // export-transparent), so HIR excluding it left the two sides
-        // disagreeing — the parity test caught it, and the exported name then
-        // reached the read path with no declaration at all. The export marker
-        // is transparent everywhere else in the compiler; here too.
-        TopLevel::Statement(_) | TopLevel::StateDecl(_) => {
-            lower_global_item(item, exported, ids, out)
+        // 2026-11-17: exported top-level lets stay OUT of `globals`. They are
+        // host-visible storage the AST-backed registration declares (the
+        // exported-let bug was fixed in `analysis::storage_class`, not here),
+        // and the AST `needs_state` analysis — still authoritative — does not
+        // count them as members either. Adding them here made HIR the sole
+        // dissenter in `hir_needs_state_parity`.
+        TopLevel::Statement(_) | TopLevel::StateDecl(_) if !exported => {
+            lower_global_item(item, ids, out)
         }
         TopLevel::ForeignBinding(_) => lower_foreign_item(item, out),
         TopLevel::Constant(c) => lower_constant_item(c, ids, out),
@@ -585,12 +582,11 @@ fn lower_electrical_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOut
 
 fn lower_global_item(
     item: &TopLevel,
-    exported: bool,
     ids: &mut IdSupply,
     out: &mut LowerOutputs<'_>,
 ) {
     match item {
-        TopLevel::Statement(stmt) => lower_global_statement(stmt, exported, ids, out),
+        TopLevel::Statement(stmt) => lower_global_statement(stmt, ids, out),
         TopLevel::StateDecl(s) => out.globals.push(HirGlobal {
             node: ids.node(),
             item: ids.item(),
@@ -599,7 +595,6 @@ fn lower_global_item(
             expr: None,
             declared_storage: None,
             is_state_decl: true,
-            exported,
             modifiers: Vec::new(),
             annotations: Vec::new(),
             span: s.span,
