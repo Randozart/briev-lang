@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.2.0 — body verification (2026-11-17)
+
+`brievc build <file> --verify-bodies` is substantially more capable. Measured on
+`lib/std` (92 files): **proven 952 → 2192**, unproven 187 → 100 (one distinct
+defn), **violated 0** throughout.
+
+### Added — decided exactly, never heuristically
+
+- **Mask intervals**: `x & M ∈ [0, M]` for a literal non-negative mask, and
+  masked-plus-offset `(x & M) + n ∈ [n, M+n]`.
+- **Literal-shift folding**: pure-literal shift/bitwise subtrees (`1 << 24`) fold
+  to their exact value, so a shift bound is encodable instead of being refused as
+  ill-sorted.
+- **`Load#` width ranges**: `Load#(addr, w) ∈ [0, 2^(8w)-1]` for literal `w` in
+  `1..=3` (the backend zero-extends). Stops at 3 bytes on purpose: at 4 the load
+  equals the word width on wasm32, where the value may read negative.
+- **Bit composition**: `a | b >= 0` when both operands are; `(x & m) << k >= 0`
+  only when the shifted maximum stays below the sign bit (checked — wrapping shift
+  can push a positive value negative).
+- **Opaque handles**: `String`/`Data` are admitted as word handles; representation
+  casts (`String ↔ Data ↔ Int`) are identity, while conversions (`String as Int`
+  parses, `Int as String` formats) are never modelled as identity. `s.^Length` /
+  `CharCount#(s)` are non-negative integer atoms.
+- **Per-field results**: tuple results are proved component-wise (`term.N`; a bare
+  `term` names component 0). A contradicting field still refutes.
+
+### Added — contracts as facts at call sites
+
+- A callee's **declared postcondition** is usable as a fact about an inline call
+  term, in both the type checker and the body prover. This reaches memory-reading
+  accessors (`byte_at`, `byte_raw`) and recursive helpers (`pow2`, `pow10`), which
+  can never earn a value summary. Admission stays conservative: declared posts
+  only, one level, no `false` posts, no self-recursion, one atom per call site.
+- `--verify-report <path>` writes machine-readable verdicts; `--no-link` produces a
+  byte-identical report without linking.
+
+### Changed
+
+- `unproven` and `skipped` remain distinct verdicts; only `violated` fails a build.
+- Length-only `String`-returning contracts are admitted (they were skipped
+  wholesale before); value claims about a handle still skip, with a reason.
+
+### Known gaps, stated
+
+`ip_v4` (disjoint-bit OR), `sha1_padded_len` (modular arithmetic),
+`is_alpha_loop`/`is_numeric_loop` (counter-vs-length), `pf_exp` (a path returns a
+recursive tuple call whose post bounds only component 0 — a precondition fix was
+tried, rebuilt, measured, and does not work). `Store#`/`SysCall#`/`Asm#`/`Argc#`
+stay opaque by doctrine. String content, string length algebra, `Capacity#`,
+`Float` (822 skips) and generics (2007) remain out of model.
+
 ## Unreleased — stabilization (2026-11-02)
 
 ### Fixes
