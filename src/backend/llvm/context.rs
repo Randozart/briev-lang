@@ -1523,6 +1523,22 @@ pub struct FunctionContext {
 
 impl FunctionContext {
     /// Generate a unique SSA register name: %tN
+    /// Start a new SSA register namespace for a function body.
+    ///
+    /// 2026-11-17 (issue #119): `gen_reg()` derives `%t{n}` from `txn_counter`,
+    /// so every map keyed by register NAME must reset with it. `reg_value_ll`
+    /// did not, and that leak was a false claim about width: `iter_chain_loop`
+    /// (`lib/std/iterator.bv`) starts again at `%t0` while the map still held
+    /// `%t61 = ptr` from the previous body — so `canonical_ptr` passed an i64
+    /// handle through un-converted and the element GEP emitted
+    /// `getelementptr i64, ptr %t61`, invalid IR (`c_driver_node`:
+    /// `'%t61' defined with type 'i64' but expected 'ptr'`). A register name is
+    /// only meaningful within one body, so the width channel resets with it.
+    pub fn reset_register_names(&mut self) {
+        self.txn_counter = 0;
+        self.reg_value_ll.clear();
+    }
+
     pub fn gen_reg(&mut self) -> String {
         let n = self.txn_counter;
         self.txn_counter += 1;

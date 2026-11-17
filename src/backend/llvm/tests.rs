@@ -15406,3 +15406,34 @@ async on thread 62 node nz [b < 1][b == 1] { b = b + 1; term; };
         "no tick beyond the declared maximum"
     );
 }
+
+/// A new function body must not inherit the previous body's register widths.
+///
+/// 2026-11-17 (issue #119): `reg_value_ll` is keyed by SSA register NAME, and
+/// `gen_reg()` restarts at `%t0` for every body — so a record left behind claims
+/// a width for a register whose definition has changed. `iter_chain_loop`
+/// (`lib/std/iterator.bv`) inherited `%t61 = ptr` from the previously emitted
+/// body, `canonical_ptr` therefore skipped its `inttoptr`, and the element GEP
+/// emitted `getelementptr i64, ptr %t61`: invalid IR, which made
+/// `c_driver_node`'s node-bridge test — and with it CI — fail.
+#[test]
+fn a_new_function_body_does_not_inherit_register_widths() {
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    backend
+        .fun
+        .reg_value_ll
+        .insert("%t61".to_string(), "ptr".to_string());
+    backend.fun.reset_register_names();
+    assert!(
+        backend.fun.reg_value_ll.is_empty(),
+        "a stale width record would be applied to the NEXT body's %t61"
+    );
+    // The two are one invariant: names restart, so the records keyed by them must
+    // restart too. Asserting both keeps a future refactor from splitting them.
+    assert_eq!(
+        backend.fun.gen_reg(),
+        "%t0",
+        "register names restart per body"
+    );
+}
