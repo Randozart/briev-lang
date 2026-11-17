@@ -53,6 +53,14 @@ landmine: the audit's "ok" actively certifies the loss.
 `lower_program_checked` must report boundary facts it cannot represent instead of
 returning `unsupported=0`. The fixture above is the acceptance test: it must stop
 being "ok" while the contract is unrepresented.
+
+**Status (2026-11-16):** H1 (`HirProtocol`) and H2 (`HirBoundary`) landed. H3
+makes the audit count the remaining gap: `cross_ops` (protocol operator
+bindings) are not yet populated by lowering (S4), so each `proto` is counted as
+one unsupported fact until S4 lands. The fixture now reports
+`unsupported=1 (protocols=1 boundary=0)` instead of `unsupported=0`.
+Remaining: S4 populates `HirProtocol::ops`, which will drive `protocols` to 0.
+H4 then moves the destination model to read `HirBoundary` directly.
 ## 2026-11-16 — HIR/AST defn-liveness drift on lib/std/os/dir.bv (debug-only assert; release ships the smaller set)
 
 **Symptom.** A debug build of `lib/std/os/dir.bv` panics:

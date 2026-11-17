@@ -491,6 +491,7 @@ fn lower_foreign_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
             precondition: fb.precondition.clone(),
             postcondition: fb.postcondition.clone(),
             error_type: Some(fb.error_type.clone()),
+            error_fields: fb.error_fields.clone(),
             is_optional: fb.is_optional,
             is_fire_forget: fb.is_fire_forget,
             is_delivery: fb.is_delivery,
