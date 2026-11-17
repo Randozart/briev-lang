@@ -52,6 +52,14 @@ patch one and the failure moves. Each attempt was measured and reverted, so
 So the unit is three consumers: the `term` adaptation, `adapt_to_i64`, and the
 `Ptr → Int64` cast lane.
 
+**Ruled out on the way, so the next attempt does not repeat it.** The cast
+dispatch (`emit_expr.rs`, "3. i64 target + Ptr<T> source → ptrtoint") is already
+an identity return for `Ptr → i64`, and `coerce_register_value` already maps
+`%ac` registers to i64 — so neither is where the stray `zext i32` is born. It
+comes from a site between the cast and the `term` adaptation that the next
+attempt has to find by bisecting the emission of `defn wide_address`, not by
+reading the cast lane.
+
 **Prime suspect, for whoever takes this next.**
 `helpers.rs::coerce_register_value` *already* knows this bug class: it computes
 `have_ll` as `"i64" if boxed_scalar_regs.contains(&val.name) || val.name.starts_with("%ac")`.
