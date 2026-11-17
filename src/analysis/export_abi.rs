@@ -155,8 +155,27 @@ fn index_program<'a>(
             // it would default to `true` and every export would be
             // stateful). `compute_export_needs_state` reads the subset.
             TopLevel::Export(e) => {
-                if let TopLevel::Definition(d) = e.inner.as_ref() {
-                    regular.insert(d.name.clone(), d);
+                match e.inner.as_ref() {
+                    TopLevel::Definition(d) => {
+                        regular.insert(d.name.clone(), d);
+                    }
+                    // 2026-11-17 (follow-up to dc14aa27): an exported top-level
+                    // `let` is host-visible storage, never register-resident —
+                    // `classify_plain_lets` and HIR lowering both say so, but
+                    // this walk still ignored it. So a body reading one
+                    // (`lib/std/posix/io.bv::print_char` → `FD_STDOUT`) stayed
+                    // stateless in the AST analysis while HIR called it stateful,
+                    // and `tests/hir_needs_state_parity.rs` caught the drift:
+                    // "print_char: ast=false hir=Some(true)".
+                    //
+                    // No `plain` check: an exported let must never be plain — that
+                    // is exactly what dc14aa27 established.
+                    TopLevel::Statement(stmt) => {
+                        if let crate::ast::Statement::Let { name, .. } = stmt.as_ref() {
+                            state_fields.insert(name.clone());
+                        }
+                    }
+                    _ => {}
                 }
             }
             TopLevel::AsmFn(a) => {
