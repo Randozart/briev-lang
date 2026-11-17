@@ -46,11 +46,18 @@ the handle's width, `reg_llvm_ty`/`reg_value_ll`, and BOTH consumers must agree;
 patch one and the failure moves. Each attempt was measured and reverted, so
 `main` carries no half-change.
 
-**Next step.** Pick the handle width by what the ABI actually is on the target
-(i64 handle everywhere, per the 2026-11-13 decision), then make both consumers
-convert from the register's ACTUAL width (`reg_llvm_ty`) instead of from
-`llvm_type(reg.ty)` — with `test/rbv_list_each_wasm` and
-`test/hir_storage_class_parity` green as the exit condition.
+**A third site, found the same way.** The fixture's `wide_address` is
+`defn wide_address(p: Ptr<Bit<8>>) -> Int64 { term p as Int64; };` — an explicit
+**cast**, and the cast-lane emitter zexts from i32 (`zext i32 %ac0 to i64`) too.
+So the unit is three consumers: the `term` adaptation, `adapt_to_i64`, and the
+`Ptr → Int64` cast lane.
+
+**Next step.** Keep the i64 handle (the 2026-11-13 decision), then make all
+three consumers convert from the register's ACTUAL width (`reg_llvm_ty`) instead
+of from `llvm_type(reg.ty)`. Exit condition: `test/rbv_list_each_wasm` and
+`test/hir_storage_class_parity` green together, with the x86_64 corpus IR
+byte-identical (int_bits == 64 makes every conversion a no-op, so any change
+there is a bug).
 ## 2026-11-17 — `export let` emitted a load of a symbol nothing declared (FIXED)
 
 **Symptom.** A four-line program produced IR that clang rejects:
