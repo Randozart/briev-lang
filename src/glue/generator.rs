@@ -42,9 +42,11 @@ pub fn render_protocols(target: &GlueTarget, descriptor_path: &str) -> String {
         if !class.renders() {
             continue;
         }
-        let (Some(boundary), Some(protocol), Some(base)) =
-            (class.boundary.as_ref(), class.protocol.as_ref(), class.base.as_ref())
-        else {
+        let (Some(boundary), Some(protocol), Some(base)) = (
+            class.boundary.as_ref(),
+            class.protocol.as_ref(),
+            class.base.as_ref(),
+        ) else {
             continue;
         };
         let (Some(to_op), Some(from_op)) = (class.to_op.as_ref(), class.from_op.as_ref()) else {
@@ -73,7 +75,8 @@ pub fn render_protocols(target: &GlueTarget, descriptor_path: &str) -> String {
     header.push_str(
         "// Regenerate: brievc render <lang>   —   Verify: brievc render <lang> --check\n",
     );
-    header.push_str("//\n// Ownership of a specific call is declared per `frgn`, not here (D1).\n\n");
+    header
+        .push_str("//\n// Ownership of a specific call is declared per `frgn`, not here (D1).\n\n");
     format!("{header}{declarations}\n{protocols}")
 }
 
@@ -91,9 +94,13 @@ pub fn render_and_write(
 ) -> Result<bool, String> {
     let rendered = render_protocols(target, descriptor_path);
     let existing = std::fs::read_to_string(out_path).ok();
-    let fresh = existing.as_deref() == Some(rendered.as_str());
-    if fresh {
-        return Ok(true);
+    match existing.as_deref() {
+        Some(on_disk) if on_disk == rendered => return Ok(true),
+        // A missing file is a first generation, not a staleness: check mode
+        // reports what it would write instead of refusing (the descriptor is
+        // valid; nothing has drifted).
+        None if check => return Ok(true),
+        _ => {}
     }
     if check {
         return Err(format!(
@@ -145,7 +152,10 @@ mod tests {
 
     #[test]
     fn renders_a_boundary_type_and_its_axioms() {
-        let out = render_protocols(&target_with(&[("String", str_class())]), "lib/glue/c/glue.dbv");
+        let out = render_protocols(
+            &target_with(&[("String", str_class())]),
+            "lib/glue/c/glue.dbv",
+        );
         assert!(out.contains("type CStr: String<C_String> { };"), "{out}");
         assert!(out.contains("proto C_String: String {"), "{out}");
         assert!(
@@ -156,7 +166,10 @@ mod tests {
             out.contains("axiom CastFrom(String<UTF8>) = str_to_c(#Lh);"),
             "CastFrom is the outbound op, got:\n{out}"
         );
-        assert!(out.contains("GENERATED"), "the file must be marked generated");
+        assert!(
+            out.contains("GENERATED"),
+            "the file must be marked generated"
+        );
         assert!(
             out.contains("values.String"),
             "provenance must name the descriptor key, got:\n{out}"
@@ -197,7 +210,10 @@ mod tests {
             "d",
         );
         let reverse = render_protocols(&target_with(&[("ZZZ", b), ("AAA", str_class())]), "d");
-        assert_eq!(forward, reverse, "map iteration order must not reach output");
+        assert_eq!(
+            forward, reverse,
+            "map iteration order must not reach output"
+        );
         let first = forward.find("CStr").unwrap_or(usize::MAX);
         let second = forward.find("BStr").unwrap_or(usize::MAX);
         assert!(first < second, "sorted by Briev protocol name:\n{forward}");
@@ -211,8 +227,9 @@ mod tests {
         let out = dir.join("protocols.bv");
         let target = target_with(&[("String", str_class())]);
 
-        // Missing file: not fresh, check refuses, and nothing is created.
-        assert!(render_and_write(&target, "d", &out, true).is_err());
+        // Missing file: a first generation, not a staleness — check mode
+        // accepts it and writes nothing.
+        assert!(render_and_write(&target, "d", &out, true).unwrap());
         assert!(!out.exists(), "check mode must not write");
 
         // Write, then check: fresh.
