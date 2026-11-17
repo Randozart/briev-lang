@@ -1,0 +1,20 @@
+// S3/G4' parity pair — variant B: the same declarations written by hand.
+import "std/io.bv";
+import "./handwritten_glue.bv";
+
+// The foreign signature takes the boundary type, so the meld fires the protocol's
+// CastFrom (str_to_c, zero-copy) at the call site — no explicit cast needed.
+frgn c_strlen(s: CStr) -> Int from #Link<libc>;
+
+let done: Bool = false;
+
+node main [!done][done] {
+    // Direction 1 (Briev -> C): the zero-copy view lane.
+    let s: String = "hi";
+    let n: Int = c_strlen(s);
+    // Direction 2 (C -> Briev): the copying lane through the same protocol.
+    let back: String = "yo" as CStr as String;
+    Print#(n + (back .^Length));
+    done = true;
+    endprogram;
+};

@@ -12,6 +12,9 @@
 import { fs_open, fs_close } from "std/os/fs.bv";
 import { rand_range } from "std/os/rand.bv";
 import { is_ok, is_err, unwrap_err } from "std/result.bv";
+// 2026-11-16 (undefined-name typecheck gap): to_c_string lives in
+// string_c.bv — the module needs the import to resolve the call.
+import "std/string_c.bv";
 
 // open(2) flags/mode — kept local so this module splices standalone (the
 // values mirror fs.bv's; O_EXCL is the one fs.bv does not declare).

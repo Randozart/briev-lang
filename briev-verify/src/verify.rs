@@ -1759,6 +1759,26 @@ fn step_assign(lhs: &Expr, expr: &Expr, st: SymbolicState, next: &mut Vec<Symbol
 /// Evaluate a terminating value and bind it as the function's result.
 fn bind_output(st: SymbolicState, expr: &Expr) -> SymbolicState {
     let mut s = st;
+    // A multi-value result (`term (acc, k)`) has no single scalar, so each field
+    // is bound separately under `term.N`. The whole-value spelling is deliberately
+    // left unbound: `term` alone is not a word, and binding it would let a
+    // contract about the tuple as a value appear decidable when it is not.
+    if let Expr::Tuple(elements) = expr {
+        for (index, element) in elements.iter().enumerate() {
+            let sym = eval_symbolic(element, &s);
+            if sym != SymbolicValue::Unknown {
+                // A bare `term` names the FIRST component of a multi-value result
+                // (the convention `post_facts_components` already uses), so a
+                // contract may speak either of `term` or of `term.N`.
+                if index == 0 {
+                    s.assignments.insert("term".to_string(), sym.clone());
+                    s.assignments.insert("__result".to_string(), sym.clone());
+                }
+                s.assignments.insert(format!("term.{index}"), sym);
+            }
+        }
+        return s;
+    }
     let sym = eval_symbolic(expr, &s);
     if sym != SymbolicValue::Unknown {
         // The postcondition names the result `term`; bind both spellings.
@@ -2889,7 +2909,11 @@ fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
         Expr::Field(..) => Some("field access".to_string()),
         Expr::Index(..) => Some("indexing".to_string()),
         Expr::MethodCall(..) => Some("a method call".to_string()),
-        Expr::List(_) | Expr::Tuple(_) => Some("a list or tuple literal".to_string()),
+        // A tuple *literal* is the shape a multi-value result returns; its
+        // components are checked individually and the result is bound per field
+        // (`term.N`). Lists stay out of the model.
+        Expr::Tuple(items) => items.iter().find_map(|item| expr_reason(item, sums)),
+        Expr::List(_) => Some("a list or tuple literal".to_string()),
         // Length reflection on a handle is modelled (phase 2b); the *base* type
         // is checked by `unsupported_length_reflection`, which can see the
         // declared types this expression-level gate cannot.

@@ -1,0 +1,9 @@
+// C boundary types — the descriptor's `types_module`, resolved.
+//
+// 2026-11-16 (S3/G5): this path was named by `lib/glue/c/glue.dbv`
+// (`types_module: "glue/c/types.bv"`) but did not exist, so the descriptor
+// pointed at nothing. The boundary declarations themselves are *generated*
+// (`brievc render c` → protocols.bv) — this module exists to resolve the path and
+// to give the module a place for hand-written C-specific helpers, not to restate
+// the generated protocols.
+import "glue/c/protocols.bv";

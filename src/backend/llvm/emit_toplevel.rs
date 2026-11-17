@@ -8293,6 +8293,24 @@ impl LlvmBackend {
     //   Complex patterns fall back to @llvm.assume, which is correct (the
     //   optimizer still gets the info) but slightly slower (barrier cost).
     pub(super) fn emit_precondition_check(&mut self, out: &mut String, pre: &Expr, indent: &str) {
+        // 2026-11-16 (async-events undefined-value fix): the guard is the first
+        // place in a fresh function that resolves field identifiers to SSA
+        // registers. The loop register maps (phi_field_regs, backedge_field_regs,
+        // pending_phi_backedge, last_val_temps) may still hold entries from a
+        // PREVIOUS function's loop (the single-node main fold populates them
+        // at counter.rs:249; the per-txn clears at mod.rs:8336 only run at the
+        // END of the next emission — too late). A stale entry resolves the
+        // guard's field to a register defined only in the other function
+        // (`%flc8` in `txn_run`'s `[i < 1]` → `use of undefined value`). Clear
+        // here, before any identifier read: the body emission below re-populates
+        // the maps for this function's loop (counter.rs registers the header
+        // phis AFTER the guard), so the guard correctly falls back to the %State
+        // load — the entry-block value.
+        self.fun.phi_field_regs.clear();
+        self.fun.backedge_field_regs.clear();
+        self.fun.pending_phi_backedge.clear();
+        self.fun.last_val_temps.clear();
+        self.fun.last_val_types.clear();
         let cond = self.emit_expr(out, pre, indent);
         let i1 = format!("%pi{}", self.fun.txn_counter);
         self.fun.txn_counter += 1;

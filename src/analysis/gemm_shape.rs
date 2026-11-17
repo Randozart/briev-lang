@@ -142,16 +142,30 @@ pub fn fold_consts(e: &Expr, consts: &HashMap<String, i64>) -> Expr {
             Box::new(fold_consts(l, consts)),
             Box::new(fold_consts(r, consts)),
         ),
+        // 2026-11-16 (corpus-hygiene RC(3), Group B): `const P: Ptr<Int> =
+        // 0x40011000 as Ptr<Int>;` parses as `Expr::Cast(Decimal, Ptr(Int))`.
+        // The constant emitter (`backend/llvm/mod.rs`) folds the expr and
+        // emits `constant <llvm_ty> <val>`; a Ptr-typed constant cannot be
+        // a bare `0` (LLVM: `constant ptr 0` is malformed — a pointer
+        // constant must be `null` or a named global). Unwrapping the cast
+        // here yields `Expr::Decimal(0x40011000)`, which the emitter prints
+        // as an integer literal — the correct value for the address.
+        // (The emitter's `llvm_type(Ptr(_)) = "ptr"` keeps the declaration
+        // type; the address is a constant integer, not a pointer-to-
+        // pointer.)
+        Expr::Cast(inner, _) => fold_consts(inner, consts),
         other => other.clone(),
     }
 }
 
-/// Resolve a literal expression: Decimal, a const identifier, or a pure
-/// arithmetic combination of those (`M * N` bounds, `0..K` ends).
+/// Resolve a literal expression: Decimal, a const identifier, a cast of a
+/// literal (`0x40011000 as Ptr<Int>` — 2026-11-16 corpus-hygiene RC(3)), or a
+/// pure arithmetic combination of those (`M * N` bounds, `0..K` ends).
 pub fn lit(e: &Expr, consts: &HashMap<String, i64>) -> Option<i64> {
     match e {
         Expr::Decimal(d) => Some(*d),
         Expr::Identifier(name) => consts.get(name).copied(),
+        Expr::Cast(inner, _) => lit(inner, consts),
         Expr::BinaryOp(kind, l, r) => {
             let (a, b) = (lit(l, consts)?, lit(r, consts)?);
             match kind {

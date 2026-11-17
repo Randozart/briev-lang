@@ -319,6 +319,52 @@ pub struct HirInit {
     pub body: Vec<HirStmt>,
 }
 
+/// One `proto` declaration: the protocol surface the casting graph consumes.
+///
+/// 2026-11-16 (H1, FFI contract plan): HIR used to keep only the *names* of
+/// protocol binding functions (`protocol_binding_fns`), which is enough for
+/// liveness and nothing else — the protocol, its direction and its target were
+/// unrecoverable from HIR. An FFI contract expressed as protocol axioms is
+/// therefore not representable, and the audit could not report the loss
+/// (BUGS.md "HIR drops the FFI boundary surface").
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirProtocol {
+    pub name: String,
+    /// The category the protocol specialises (`String` for `C_String`).
+    pub category: String,
+    /// The cast lanes, in declaration order.
+    pub casts: Vec<HirCastEdge>,
+    /// Operator bindings (`op Concat(String) = …`), by operator name.
+    pub ops: Vec<HirProtocolOp>,
+}
+
+/// One `axiom CastTo/CastFrom(…) = binding(#Lh)` lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirCastDirection {
+    /// Boundary → Briev (the `CastTo` axiom).
+    To,
+    /// Briev → boundary (the `CastFrom` axiom).
+    From,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirCastEdge {
+    pub direction: HirCastDirection,
+    /// The category the lane converts to (`String`).
+    pub target_category: String,
+    /// The variant name the lane targets (`UTF8`), empty when unnamed.
+    pub target_variant: String,
+    /// The defn implementing the lane (`cstr_to_briev`).
+    pub binding: String,
+}
+
+/// One `op <Name>(<Category>) = <binding>(#Lh, #Rh)` binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirProtocolOp {
+    pub op: String,
+    pub binding: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HirProgram {
     pub callables: Vec<HirCallable>,
@@ -326,6 +372,9 @@ pub struct HirProgram {
     pub globals: Vec<HirGlobal>,
     /// `frgn` foreign bindings (effective Briev name → params/result).
     pub foreign: Vec<HirForeign>,
+    /// 2026-11-16 (H1): `proto` declarations with their cast lanes and op
+    /// bindings. `protocol_binding_fns` remains for the liveness consumer.
+    pub protocols: Vec<HirProtocol>,
     /// Top-level `const` names (boundary state-field set includes them).
     pub constants: Vec<String>,
     /// Top-level `const` initializers (name, value) for surface walks.

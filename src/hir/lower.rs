@@ -6,7 +6,8 @@ use super::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
-    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField, HirForeign,
+    HirBody, HirCallable, HirCallableKind, HirCastDirection, HirCastEdge, HirContract,
+    HirEnumVariant, HirField, HirForeign, HirProtocol,
     HirGlobal, HirInit, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
     HirWatchdogOnFire, ThreadPin,
 };
@@ -23,6 +24,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut globals = Vec::new();
     let mut always_stateful = Vec::new();
     let mut foreign = Vec::new();
+    let mut protocols = Vec::new();
     let mut constants = Vec::new();
     let mut const_exprs = Vec::new();
     let mut const_types = Vec::new();
@@ -46,6 +48,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             types: &mut type_defs,
             globals: &mut globals,
             foreign: &mut foreign,
+            protocols: &mut protocols,
             constants: &mut constants,
             const_exprs: &mut const_exprs,
             const_types: &mut const_types,
@@ -80,6 +83,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         type_defs,
         globals,
         foreign,
+        protocols,
         constants,
         const_exprs,
         const_types,
@@ -106,6 +110,7 @@ struct LowerOutputs<'a> {
     types: &'a mut Vec<HirTypeDef>,
     globals: &'a mut Vec<HirGlobal>,
     foreign: &'a mut Vec<HirForeign>,
+    protocols: &'a mut Vec<HirProtocol>,
     constants: &'a mut Vec<String>,
     const_exprs: &'a mut Vec<(String, HirExpr)>,
     const_types: &'a mut Vec<(String, Type)>,
@@ -128,6 +133,38 @@ struct LowerOutputs<'a> {
 
 /// Cast-edge / cross-op bindings named by a protocol definition (emission
 /// roots; mirrors the AST index).
+/// Lower one `proto` into a `HirProtocol` **and** keep its binding-fn names for
+/// the liveness consumer (2026-11-16, H1).
+fn lower_protocol_item_full(
+    pd: &crate::ast::top::ProtocolDef,
+    out: &mut LowerOutputs<'_>,
+) {
+    let mut casts = Vec::new();
+    for edge in &pd.cast_edges {
+        let Some(binding) = &edge.binding else {
+            continue;
+        };
+        let direction = match edge.direction {
+            crate::ast::CastDirection::CastTo => HirCastDirection::To,
+            crate::ast::CastDirection::CastFrom => HirCastDirection::From,
+        };
+        casts.push(HirCastEdge {
+            direction,
+            target_category: edge.target_category.clone(),
+            target_variant: edge.target_variant.clone(),
+            binding: binding.fn_name.clone(),
+        });
+    }
+    let ops = Vec::new();
+    out.protocols.push(HirProtocol {
+        name: pd.name.clone(),
+        category: pd.category.clone(),
+        casts,
+        ops,
+    });
+    lower_protocol_bindings(pd, out);
+}
+
 fn lower_protocol_bindings(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOutputs<'_>) {
     for edge in &pd.cast_edges {
         if let Some(b) = &edge.binding {
@@ -458,7 +495,7 @@ fn lower_foreign_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
 
 fn lower_protocol_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
     if let TopLevel::ProtocolDef(pd) = item {
-        lower_protocol_bindings(pd, out);
+        lower_protocol_item_full(pd, out);
     }
 }
 
@@ -1597,4 +1634,45 @@ fn is_intercept(e: &crate::hir::expr::HirExpr) -> bool {
         e.kind,
         crate::hir::expr::HirExprKind::PluginIntercept { .. }
     )
+}
+
+#[cfg(test)]
+mod protocol_lowering_tests {
+    use super::*;
+
+    /// Parse and lower a program with one `proto`.
+    fn lower(src: &str) -> crate::hir::HirProgram {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let items = p.parse_program().expect("parse");
+        lower_program(&items)
+    }
+
+    /// 2026-11-16 (H1): a `proto` must survive lowering *with its structure* — the
+    /// loss that made the FFI contract unreachable from HIR (BUGS.md).
+    #[test]
+    fn proto_lowers_with_direction_and_binding() {
+        let program = lower(
+            "proto C_String: String {\n    axiom CastTo(String<UTF8>) = cstr_to_briev(#Lh);\n    axiom CastFrom(String<UTF8>) = str_to_c(#Lh);\n};\n",
+        );
+        assert_eq!(program.protocols.len(), 1, "one proto must lower to one node");
+        let proto = &program.protocols[0];
+        assert_eq!(proto.name, "C_String");
+        assert_eq!(proto.category, "String");
+        assert_eq!(proto.casts.len(), 2, "both axioms must be kept");
+        let to = proto
+            .casts
+            .iter()
+            .find(|c| c.direction == HirCastDirection::To)
+            .expect("CastTo lane");
+        assert_eq!(to.binding, "cstr_to_briev");
+        assert_eq!(to.target_category, "String");
+        let from = proto
+            .casts
+            .iter()
+            .find(|c| c.direction == HirCastDirection::From)
+            .expect("CastFrom lane");
+        assert_eq!(from.binding, "str_to_c");
+        assert!(program.protocol_binding_fns.contains(&"str_to_c".to_string()));
+    }
 }
