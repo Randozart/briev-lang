@@ -125,6 +125,53 @@ from that pass:
   names which gap it skipped. CI never had the package, so CI's redness was the
   typecheck bug alone.
 
+## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
+
+**Symptom.** A `Float` accumulator written inside a `foreach` emits an `fadd`
+whose operand is an i64 register, so LLVM refuses the module:
+
+```llvm
+%pbf14 = fadd fast float 0.0, %t36    ; %t36 is i64
+```
+
+Repro: `examples/syntax/meta/defn-composite.bv` (`$defn accumulate` accumulates
+into a `Float` local over `foreach k in 0..n`). Found while fixing the
+uninitialised-float-slot zero initialiser (`4e38abc6a`) — that fix moved the file
+past its first error and exposed this one, so it is a long-standing defect, not a
+regression.
+
+**Why it matters beyond the example.** Any `Float` accumulator carried by a
+`foreach` takes the per-field-phi path (`%pbf<N>`), and the carry register is the
+i64 state word rather than the unboxed float. Float accumulators are ordinary
+code, so the reach is wider than one example file.
+
+**Trace (2026-11-17, second pass).** A plain `let acc: Float = 0;` accumulated in
+a `foreach` inside a *node* compiles fine, so the trigger is the composite
+expansion, not float accumulation as such. In the generated IR the header phi and
+the backedge disagree on width:
+
+```llvm
+.cm_header:
+  %ppf18 = phi float [ %t11, %entry ], [ %pbf14, %.cm_latch ]   ; float phi
+  ...
+  %t36 = load i64, ptr %t20, align 8                            ; body read: i64
+  %pbf14 = fadd fast float 0.0, %t36                            ; ← width clash
+```
+
+So the per-field phi for this field is `float` (the loop engine's
+`field_types[idx]` lookup says so), while the *body's* read of the same field
+returned the i64 state word instead of the native float. The read path has a
+native-float branch for exactly this ("with native float types, the load already
+returns float/double — check field_types[idx] to skip the conversion"), so the
+open question is which read route the expanded body takes and why it misses that
+branch. `%t20` is an alloca, not the `%State` slot, which points at the phi's
+spill rather than the field.
+
+**Not fixed.** Every float benchmark rides this loop engine, so the fix needs its
+own session with the local A/B runbook (Rule 20: measure before building). The
+trace above is the starting point; the repro is
+`examples/syntax/meta/defn-composite.bv`, one file, no device.
+
 ## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
 
 **Symptom.** Building any program that touches the C glue layer from a
