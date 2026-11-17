@@ -540,6 +540,34 @@ pub(crate) fn emit_tiled(
     let tile_n = i64_binop(builder, spirv::Op::SRem, int_ty, wgid_x, tiles_x_c);
     let tile_m = i64_binop(builder, spirv::Op::SDiv, int_ty, wgid_x, tiles_x_c);
 
+    // 2026-11-17 (PTL): a kernel must not trust its launcher. `tile_m` is
+    // `wgid_x / tiles_x` with no bound of its own, and the launcher HAS been
+    // wrong: `briev_dev_vulkan.c` read only `LocalSize.x` as the workgroup size,
+    // so this kernel's `LocalSize 16 16 1` was dispatched with 16x the workgroups
+    // it can use — 16x the work, and stores 16x outside the output with
+    // `robustBufferAccess` off, i.e. undefined behaviour rather than a clamped
+    // write. The parse is fixed; this guard means the next launcher bug is a
+    // no-op instead of memory corruption.
+    // `tile_n` needs no guard: it is `wgid_x % tiles_x`, always in range.
+    {
+        let tiles_m_c = i64_const(builder, int_ty, (plan.m / (TILE as i64)) as u64);
+        let in_range = builder.gen_id();
+        builder.emit(Instruction::new(
+            spirv::Op::SLessThan,
+            Some(bool_ty),
+            Some(in_range),
+            vec![Operand::IdRef(tile_m), Operand::IdRef(tiles_m_c)],
+        ));
+        let body_bb = builder.gen_id();
+        builder
+            .builder
+            .selection_merge(ctx.exit_bb, rspirv::spirv::SelectionControl::NONE);
+        builder
+            .builder
+            .branch_conditional(in_range, body_bb, ctx.exit_bb, [] as [u32; 0]);
+        builder.begin_block(Some(body_bb));
+    }
+
     // tid = ly*16 + lx in U32 (shared addressing); the SSBO-side index math
     // stays i64 (widened from the u32 pieces).
     let lx_u = builtin_comp_u(builder, ctx.lid, 0);

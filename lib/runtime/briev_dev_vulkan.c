@@ -799,6 +799,12 @@ typedef struct {
     // global constant — cooperative row kernels declare LocalSize 32 while
     // flat kernels declare 256; a wrong divisor yields 8x too few workgroups.
     size_t local_x;
+    /* 2026-11-17 (PTL): INVOCATIONS PER WORKGROUP = X*Y*Z. `local_x` is only the
+     * X axis; using it as the dispatch divisor over-dispatches every 2D/3D local
+     * size by Y*Z. The tiled GEMM declares LocalSize 16 16 1, so it has been
+     * launched with 16x the workgroups it can use since it landed — 16x the work,
+     * and (with no tile guard in the kernel) writes outside its output. */
+    size_t local_total;
     // 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): image-
     // resident arrays (set 0, binding 1+). Download = image -> host-visible
     // scratch -> host %State (the runtime's memcpy target).
@@ -869,6 +875,7 @@ static int briev_dev_vulkan_create_kernel(const uint8_t* spirv, size_t size, voi
     // shader's declared local size — flat kernels use 256, cooperative row
     // kernels use 32.
     k->local_x = VK_LOCAL_SIZE_X;
+    k->local_total = VK_LOCAL_SIZE_X;
     {
         const uint32_t* w = (const uint32_t*)spirv;
         size_t nw = size / 4;
@@ -877,8 +884,13 @@ static int briev_dev_vulkan_create_kernel(const uint8_t* spirv, size_t size, voi
             while (i < nw) {
                 uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
                 if (wc == 0) { break; }
+                // OpExecutionMode <id> LocalSize W H D
                 if (op == 16 && wc >= 4 && i + wc <= nw && w[i + 2] == 17) {
-                    k->local_x = w[i + 3];
+                    size_t lx = w[i + 3];
+                    size_t ly = (wc >= 5) ? w[i + 4] : 1;
+                    size_t lz = (wc >= 6) ? w[i + 5] : 1;
+                    k->local_x = lx ? lx : 1;
+                    k->local_total = (lx ? lx : 1) * (ly ? ly : 1) * (lz ? lz : 1);
                     break;
                 }
                 i += wc;
@@ -956,7 +968,7 @@ static int briev_dev_vulkan_launch(void* handle, const void* proj, size_t proj_b
                                   size_t global_n, void* proj_out) {
     int verbose = g_verbose;
     BrievVulkanKernel* k = (BrievVulkanKernel*)handle;
-    size_t local_n = k->local_x ? k->local_x : VK_LOCAL_SIZE_X;
+    size_t local_n = k->local_total ? k->local_total : VK_LOCAL_SIZE_X;
 
     if (k->buffer == VK_NULL_HANDLE || k->bytes < proj_bytes) {
         // First launch (or the projection grew): allocate the persistent
@@ -1122,7 +1134,7 @@ static int briev_dev_vulkan_launch(void* handle, const void* proj, size_t proj_b
     if (k->query_pool != VK_NULL_HANDLE) {
         vkCmdWriteTimestamp(vk_cmd_buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, k->query_pool, 0);
     }
-    // Dispatch ceil(n/local_x) workgroups, local_x parsed from the
+    // Dispatch ceil(n/local_total) workgroups, local_total = X*Y*Z parsed from the
     // module's OpExecutionMode (256 flat, 32 cooperative row kernels).
     size_t groups = (global_n + local_n - 1) / local_n;
     if (groups == 0) { groups = 1; }
@@ -1440,7 +1452,7 @@ static int briev_dev_vulkan_launch_core(void* handle, size_t nx, size_t ny,
                                         uint32_t n_dirty) {
     BrievVulkanKernel* k = (BrievVulkanKernel*)handle;
     int verbose = g_verbose;
-    size_t local_n = k ? (k->local_x ? k->local_x : VK_LOCAL_SIZE_X) : VK_LOCAL_SIZE_X;
+    size_t local_n = k ? (k->local_total ? k->local_total : VK_LOCAL_SIZE_X) : VK_LOCAL_SIZE_X;
     if (!k || k->buffer == VK_NULL_HANDLE || times == 0) {
         return 0;
     }

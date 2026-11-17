@@ -1659,10 +1659,20 @@ pub fn prepare_run(
                 )
             })?;
 
+        // 2026-11-17 (PTL): these two formulas must mirror
+        // `spirv_dispatch_geometry_stmt` EXACTLY, or `brievc run` measures a
+        // different launch than the artifact ships. They did not: the tensor lane
+        // launched `count/8` items where the emitter passes `count/128` (16x the
+        // workgroups), and the tiled lane launched `count/256` where the emitter
+        // passes `count/16` (16x too few — only 1/16 of the output written). Both
+        // were calibrated against a runtime that mis-read `LocalSize.x` as the
+        // whole workgroup size; that parse is fixed, so the mirror is literal.
         let dispatch = if k.tensor {
-            RunDispatch::Items((count as u64 / 256).max(1) * 32)
+            let r = k.tensor_tile_rows.max(1) as u64;
+            RunDispatch::Items((count as u64 / (16 * r * 64)).max(1) * 32)
         } else if k.tiled {
-            RunDispatch::Items((count as u64 / 4096).max(1) * 16)
+            let local = (gemm::THREADS * gemm::THREADS) as u64;
+            RunDispatch::Items((count as u64 / (64 * 64)).max(1) * local)
         } else if k.cooperative {
             RunDispatch::Coop { rows: count as u64 }
         } else if let Some(cols) = k.work_cols {
