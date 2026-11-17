@@ -276,6 +276,19 @@ starts before M3 lands, except X5 (a cheap record pulled into wave 0).
 
 ### X1. f16 coopmat tier: fix or gate it (highest measured leverage)
 
+**2026-11-17 (evening, on the device) — X1's PREMISE IS WITHDRAWN.** The 9x
+"regression" was a harness artefact: `brievc run` links a generic driver that
+launches the coopmat tier with 16x the tile grid. Measured the way a program ships
+(build → link the emitted `_runner.c` → run), 4096³ f16 is **26.23 ms
+(5.24 TFLOP/s)** for the shipped coopmat+f16acc arm, against 38.36 ms for f32
+accumulation, ~459 ms for the non-coopmat tier, 802 ms for f32 storage, and the
+CL-C hand-written reference's 84.4 ms. Coopmat is **3.2x faster than the AL-C
+reference at 4096³** and 1.46x behind it at 512³ (0.340 vs 0.233 ms). Nothing to
+fix in the microkernel; nothing to fact-gate. Full evidence and the harness defect:
+`benchmarks/results/2026-11-17-ptl-f16-tier.md` §0.
+
+The original text follows.
+
 **2026-11-17 — the denominator is settled (device-free).** Record:
 `benchmarks/results/2026-11-17-x1-denominator-audit.md`; run
 `bash benchmarks/gpu_workcount_audit.sh`. The dispatch geometry now lives in one
