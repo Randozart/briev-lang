@@ -137,10 +137,20 @@ printf '%s\0' "${FILES[@]}" \
         # clean. A measurement tool that cross-attributes failures cannot
         # produce a trustworthy floor.
         mkdir -p "$2/build-$key"
+        # 2026-11-17: a `.s.` source writes its strict-profile report BESIDE
+        # itself (compile.rs `with_extension("report.txt")`) — by design for a
+        # real build, but this runner measures the tree and must not leave
+        # artifacts in it (the same rule that put `--out` in the scratch dir
+        # after a run dropped 85 untracked executables into lib/std). Snapshot,
+        # then remove only what this build created.
+        side="${f%.*}.report.txt"
+        had_side=0
+        [ -f "$side" ] && had_side=1
         { printf "FILE: %s\n" "$f"
           "$0" build "$f" --verify-bodies --out "$2/build-$key" 2>&1 \
               | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|error:"
         } > "$out" 2>&1
+        [ "$had_side" -eq 0 ] && rm -f "$side"
     ' "$BRIEVC" {} "$workdir" "$workdir"
 
 for file in "${FILES[@]}"; do
