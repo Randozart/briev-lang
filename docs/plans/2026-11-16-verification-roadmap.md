@@ -151,6 +151,32 @@ gate, so the vocabulary exists.
 proving the wrong field, so tests must pin that a deliberately wrong `term.1`
 refutes.
 
+## Phase C result (tuples) — measured 2026-11-17
+
+```
+proven   2012 -> 2192  (+180)
+skipped 13436 -> 13166 (-270)
+unproven   10 -> 100   (+90)
+violated    0 -> 0
+errors      2 -> 2
+```
+
+The `+90` unproven is **one defn**: `pf_exp`, reported once per file that pulls in
+the prelude. Inspected, not a prover gap — its postcondition claims
+`term.1 >= 0` while its precondition never states `i >= 0`:
+
+```briev
+defn pf_exp(s: String, i: Int, len: Int, acc: Int)
+    [acc >= 0 && acc <= 1000]                      // no `i >= 0`
+    [term.0 >= -1000 && term.0 <= 1000 && term.1 >= 0]
+```
+
+Contract-first says state the domain (`i >= 0`, `len >= 0`) rather than weaken the
+post. That edit was attempted and **reverted**: `cast_lanes.bv` is *prelude-baked*
+into `brievc`, so the change cannot be verified without rebuilding the prelude and
+auditing every call site. Left as an inspected unproven, to be done as its own
+contract change rather than smuggled into a verifier PR.
+
 ## 6. Phase D: generic / variadic declarations (2007 lines)
 
 `defn map<K, V>`, `iter_*`. These are outside the model because their parameters

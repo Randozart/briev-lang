@@ -128,6 +128,16 @@ pub(crate) fn unsupported_declaration(
                     return Some(reason);
                 }
             }
+            // 2026-11-17 (phase C): a tuple result is admitted field-by-field.
+            // Each component must be a modelled scalar; the whole value is never
+            // treated as one word, so a contract may only speak of `term.N`.
+            OutputType::Tuple(elements) => {
+                for element in elements {
+                    if let Some(reason) = check_output(element, resolve) {
+                        return Some(reason);
+                    }
+                }
+            }
             _ => return Some("structured result is outside the scalar model".into()),
         }
     }
@@ -188,9 +198,31 @@ fn check_type(ty: &Type, resolve: &TypeResolver<'_>) -> Option<String> {
     if resolve(ty).admitted() {
         return None;
     }
+    // 2026-11-17 (phase C): a tuple of modelled scalars is admitted field-by-field.
+    // The whole value is never treated as one word, so a contract may only speak
+    // of `term.N`, and a body may only build tuples from admissible components.
+    if let Type::Tuple(elements) = ty {
+        return elements
+            .iter()
+            .find_map(|element| check_type(element, resolve));
+    }
     Some(format!(
         "type {ty:?} is outside the signed 64-bit word model"
     ))
+}
+
+/// Admit one component of a structured result.
+///
+/// Only scalars are modelled, so a tuple of scalars is admitted (each field gets
+/// its own obligation) while a nested union or array is not.
+fn check_output(output: &OutputType, resolve: &TypeResolver<'_>) -> Option<String> {
+    match output {
+        OutputType::Single(ty) => check_type(ty, resolve),
+        OutputType::Tuple(elements) => elements
+            .iter()
+            .find_map(|element| check_output(element, resolve)),
+        _ => Some("structured result is outside the scalar model".into()),
+    }
 }
 
 fn local_types(body: &[Statement], resolve: &TypeResolver<'_>) -> Option<String> {
