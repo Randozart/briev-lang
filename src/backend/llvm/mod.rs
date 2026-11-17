@@ -9331,8 +9331,12 @@ impl LlvmBackend {
             // 2026-07-14: Top-level `let name: Type = expr;` — register as state field.
             // The initializer expr is stored in field_initializers so emit_init_state
             // can evaluate and store the runtime value at startup.
-            } else if let TopLevel::Statement(stmt) = item {
-                if let crate::ast::Statement::Let { name, ty, expr, .. } = stmt.as_ref() {
+            } else if let Some(stmt) = crate::analysis::storage_class::let_of_item(item) {
+                // 2026-11-17 (class D): unwrap `export let` here too. Both this
+                // walk and `classify_plain_lets` must see the same items; a name
+                // classified plain but never registered emitted a load of a
+                // symbol nothing declared (`@FD_STDOUT`).
+                if let crate::ast::Statement::Let { name, ty, expr, .. } = stmt {
                     // 2026-10-17 (plain storage): plain lets are module-scope
                     // globals, not %State fields — same name/type/init/
                     // read/write semantics, no machine membership. Emitted as
@@ -9968,6 +9972,28 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         for (i, name) in plain_names.into_iter().enumerate() {
             self.ctx.plain_index_map.insert(name.clone(), i);
         }
+        // 2026-11-17 (class D invariant): every name classified plain MUST have a
+        // registered global. When the two walks disagreed, the name was plain for
+        // the read path (`load … ptr @name`) and registered nowhere, which is how
+        // `export let` produced an undeclared symbol. A divergence is a compiler
+        // bug; fail in CI rather than after `opt`.
+        debug_assert!(
+            self.ctx
+                .plain_lets
+                .iter()
+                .all(|n| self.ctx.plain_global_types.contains_key(n)),
+            "plain_lets and plain_global_types diverged (unregistered: {:?})",
+            {
+                let mut missing: Vec<&String> = self
+                    .ctx
+                    .plain_lets
+                    .iter()
+                    .filter(|n| !self.ctx.plain_global_types.contains_key(*n))
+                    .collect();
+                missing.sort();
+                missing
+            }
+        );
     }
 
     /// 2026-08-07 (object instance pools): register a base's allocator counter

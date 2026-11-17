@@ -18,12 +18,14 @@ export let O_CREAT:  Int = 64;
 export let O_TRUNC:  Int = 512;
 
 // Linux x86_64 syscall numbers (asm/unistd.h)
-export let SYS_READ:       Int = 0;
-export let SYS_WRITE:      Int = 1;
-export let SYS_OPEN:       Int = 2;
-export let SYS_CLOSE:      Int = 3;
-export let SYS_LSEEK:      Int = 8;
-export let SYS_EXIT_GROUP: Int = 231;
+//
+// 2026-11-17 (class D): these six used to be re-declared here as
+// `export let SYS_*`, while `syscall.bv` — imported two lines above — already
+// exports them as `export const SYS_*`. Both declarations reached the module, so
+// it emitted `@SYS_CLOSE = constant i64 3` AND `@SYS_CLOSE = global i64 3`:
+// "redefinition of global". The import already makes them visible; re-declaring
+// them is the bug. Consumers import them from `syscall.bv` (see
+// `lib/std/os/fs.bv`), which stays the single home for syscall numbers.
 export let O_APPEND: Int = 1024;
 
 // ── Print ─────────────────────────────────────────────────────────────────

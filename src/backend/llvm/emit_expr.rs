@@ -2000,7 +2000,9 @@ impl LlvmBackend {
                 // (reg_llvm_ty is NOT used: it can be stale after a re-material
                 // step and trusting it regressed three tier1 fixtures).
                 if llvm_ty == "ptr" {
-                    self.fun.reg_value_ll.insert(v.to_string(), "ptr".to_string());
+                    self.fun
+                        .reg_value_ll
+                        .insert(v.to_string(), "ptr".to_string());
                 }
                 TypedRegister {
                     name: v.to_string(),
@@ -2040,12 +2042,76 @@ impl LlvmBackend {
                 }
             }
         } else {
+            // 2026-11-17 (class D): the last resort. A name that is not a phi, a
+            // plain let, a %State field, or an `init` global is NOT
+            // automatically a module global — assuming so emits `load … ptr
+            // @name` for a symbol nothing declares, and the failure surfaces
+            // kilometres away as an LLVM verifier dump (`use of undefined value
+            // '@FD_STDOUT'`, from an `export let` that both storage walks
+            // skipped). Say what is wrong here instead, and only fall back to a
+            // global when the name IS one.
+            if !self.ident_is_module_global(name) {
+                // Not a symbol this module defines. Emitting `load … ptr @name`
+                // produced invalid IR that surfaced only at `opt` (class D:
+                // `export let` was skipped by both storage walks). Warn with the
+                // cause and materialise a zero instead: the module stays valid,
+                // nothing references an undeclared symbol, and the build says
+                // what happened. A placeholder *declaration* would be worse —
+                // it would look intentional and silently carry 0.
+                self.warnings.push(format!(
+                    "warning: `{name}` is read but has no storage in this module — it is not a \
+                     local, a `%State` field, a plain global, a constant, or an init global. It \
+                     is treated as 0. If it is declared at module scope, the declaration is not \
+                     reaching the backend (an `export`-wrapped `let` is the known shape); if it \
+                     is meant to be imported, add the import."
+                ));
+                writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
+                return TypedRegister {
+                    name: v.to_string(),
+                    ty: Type::int(),
+                };
+            }
             writeln!(out, "{}{} = load i64, ptr @{}", indent, v, name).ok();
             TypedRegister {
                 name: v.to_string(),
                 ty: Type::int(),
             }
         }
+    }
+
+    /// Is `name` a symbol this module actually emits a global for?
+    ///
+    /// Used only by the identifier read's last resort: a `true` answer means the
+    /// `load … ptr @name` is well-formed, a `false` answer is a compiler bug (or
+    /// a program the frontend should have rejected) and must not become IR.
+    fn ident_is_module_global(&self, name: &str) -> bool {
+        if self.ctx.constants.contains_key(name)
+            || self.ctx.inits.contains_key(name)
+            || self.ctx.plain_global_types.contains_key(name)
+            || self.ctx.mmio_fields.contains_key(name)
+            || self.ctx.component_initializers.contains_key(name)
+        {
+            return true;
+        }
+        // Synthetic and runtime-provided symbols never reach the maps above.
+        const SYNTHETIC_PREFIXES: &[&str] = &[
+            "str.",
+            "chan_val_",
+            "briev_",
+            "__briev_",
+            "cell$",
+            "arg",
+            "coll_arena_",
+            "__arena_",
+            "__spawn_next_",
+        ];
+        if SYNTHETIC_PREFIXES.iter().any(|p| name.starts_with(p)) {
+            return true;
+        }
+        // A `Type.member` name is an unpacked instance column, registered as a
+        // %State field — reaching here means the instance was not unpacked, which
+        // the field map has already reported.
+        name.contains('.')
     }
 
     pub(crate) fn emit_expr_inner(

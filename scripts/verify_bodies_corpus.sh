@@ -147,8 +147,29 @@ printf '%s\0' "${FILES[@]}" \
         had_side=0
         [ -f "$side" ] && had_side=1
         { printf "FILE: %s\n" "$f"
-          "$0" build "$f" --verify-bodies --out "$2/build-$key" 2>&1 \
+          "$0" build "$f" --verify-bodies --verify-report "$2/goals-$key.json" \
+              --out "$2/build-$key" 2>&1 \
               | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|error:"
+          # 2026-11-17 (units): the line-grep above counts GOALS for the
+          # unproven/skipped/violated buckets but FILES for proven. Rather than
+          # guess a unit, publish the goal counts explicitly from the report the
+          # verifier already writes. The summary then has two labelled columns
+          # instead of one mixed one.
+          if [ -f "$2/goals-$key.json" ]; then
+              printf "GOALS: "
+              python3 - "$2/goals-$key.json" <<'"'"'PY'"'"'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("0 0 0 0")
+    raise SystemExit(0)
+print(len(d.get("proven", [])), len(d.get("unproven", [])),
+      len(d.get("skipped", [])), len(d.get("violated", [])))
+PY
+          else
+              printf "GOALS: 0 0 0 0\n"
+          fi
         } > "$out" 2>&1
         [ "$had_side" -eq 0 ] && rm -f "$side"
     ' "$BRIEVC" {} "$workdir" "$workdir"
@@ -162,32 +183,61 @@ done
 # Tally. Done in awk: one pass, per-file PROVEN (a file with no failure
 # bucket), and NO_POSTCONDITION counted separately so it never inflates the
 # unproven denominator.
+# 2026-11-17 (units): two columns, two units, no ambiguity.
+#   files_*  — one per corpus file. files_proven = no failure line at all;
+#              files_failing = the build emitted `error:`; files_unproven = the
+#              body prover left at least one goal undecided.
+#   goals_*  — from `--verify-report` JSON, summed across files.
+# The old summary printed files_proven next to goals_unproven and nobody could
+# tell — which is how "242 files / 210 PROVEN / 18 UNPROVEN" became
+# unreconcilable. `skipped`/`violated`/`errors` line counts are kept as
+# *_lines because they always were line counts.
 counts=$(awk '
-    /^FILE: / { if (seen && !bad) proven++; seen=1; bad=0; next }
+    /^FILE: / {
+        if (seen) { if (!bad) files_proven++; if (file_err) files_failing++; if (file_unprov) files_unproven++ }
+        seen=1; bad=0; file_err=0; file_unprov=0; next
+    }
     /body has no terminating value path/ { no_post++; next }
-    /could not prove:/ { unproven++; bad=1; next }
-    /verify-bodies skipped:/ { skipped++; next }
-    /verify-bodies violation:/ { violated++; bad=1; violations = violations $0 "\n"; next }
-    /error:/ { errors++; bad=1; errlines = errlines $0 "\n"; next }
+    /could not prove:/ { unproven_lines++; bad=1; file_unprov=1; next }
+    /verify-bodies skipped:/ { skipped_lines++; next }
+    /verify-bodies violation:/ { violated_lines++; bad=1; violations = violations $0 "\n"; next }
+    /error:/ { errors_lines++; bad=1; file_err=1; errlines = errlines $0 "\n"; next }
+    /^GOALS: / { gp += $2; gu += $3; gs += $4; gv += $5; next }
     END {
-        if (seen && !bad) proven++
-        printf "%d %d %d %d %d %d", proven, unproven, no_post, skipped, violated, errors
+        if (seen) { if (!bad) files_proven++; if (file_err) files_failing++; if (file_unprov) files_unproven++ }
+        printf "%d %d %d %d %d %d %d %d %d %d", files_proven, files_failing, files_unproven,
+            gp, gu, gs, gv, no_post, skipped_lines, errors_lines
     }
 ' "$raw")
 
-read -r proven unproven no_post skipped violated errors <<<"$counts"
+read -r files_proven files_failing files_unproven goals_proven goals_unproven \
+    goals_skipped goals_violated no_post skipped_lines errors_lines <<<"$counts"
 violated_lines=$(awk '/verify-bodies violation:/' "$raw")
 error_lines=$(awk '/error:/' "$raw")
 
 cat <<EOF
 === VERIFY-BODIES CORPUS ===
-Files:            ${#FILES[@]}
-PROVEN:           $proven
-UNPROVEN:         $unproven
-NO_POSTCONDITION: $no_post
-SKIPPED:          $skipped
-VIOLATED:         $violated
-ERR:              $errors
+Files:              ${#FILES[@]}
+
+files (one per corpus file):
+  files_proven:      $files_proven      # no failure of any kind
+  files_failing:     $files_failing     # the build emitted an error
+  files_unproven:    $files_unproven    # >= 1 goal the prover could not decide
+
+goals (one per obligation, from --verify-report):
+  goals_proven:      $goals_proven
+  goals_unproven:    $goals_unproven
+  goals_skipped:     $goals_skipped
+  goals_violated:    $goals_violated    # a contract falsely proved - GATE
+
+lines (diagnostic occurrences):
+  no_postcondition:  $no_post
+  skipped_lines:     $skipped_lines
+  error_lines:       $errors_lines      # > files_failing when a file emits several
+
+Every number states its unit. Compare like with like: a per-file PROVEN can never
+be set against a per-goal unproven, which is how the old summary became
+unreconcilable (see docs/plans/2026-11-17-three-open-threads.md §3).
 EOF
 
 if [ -n "$violated_lines" ]; then
