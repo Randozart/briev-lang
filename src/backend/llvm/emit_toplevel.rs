@@ -4056,12 +4056,23 @@ impl LlvmBackend {
                         writeln!(out, "{}store i64 {}, ptr {}", indent, n, first).ok();
                     }
                 } else {
+                    // 2026-11-17 (class B survivor): `store float 0, ptr …` is
+                    // invalid IR — a float slot needs a floating constant
+                    // ("integer/byte constant must have integer/byte type"). A
+                    // Decimal initializer for a float-typed field is a
+                    // whole-number value; print it in the slot's own form.
+                    let literal = match ty {
+                        "float" | "double" => {
+                            super::float_to_llvm_str(n as f64, ty)
+                        }
+                        _ => n.to_string(),
+                    };
                     writeln!(
                         out,
                         "{}store {} {}, ptr {}, align {}",
                         indent,
                         ty,
-                        n,
+                        literal,
                         gep,
                         self.align_of(ty)
                     )
