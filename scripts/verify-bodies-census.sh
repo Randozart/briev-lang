@@ -11,6 +11,9 @@
 # Exit 0 unless a VIOLATED contract is found (false proof).
 set -euo pipefail
 
+# Resolve the helper beside this script, so the census works from any cwd (CI
+# runs it from the repo root; a developer may not).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORPUS="${1:?Usage: verify-bodies-census.sh <file-list> [output.json]}"
 JSON_OUT="${2:-/tmp/verify-bodies-report.json}"
 BRIEVC="${BRIEVC:-/home/randozart/.cache/counsel/brievc-v0.1.4-brievc-linux-x86_64/bin/brievc}"
@@ -28,6 +31,11 @@ PROVEN=0
 UNPROVEN=0
 SKIPPED=0
 VIOLATED=0
+# Own-surface tallies (2026-11-17): the declarations belonging to the file being
+# compiled, excluding everything its imports and the prelude contributed.
+PROVEN_OWN=0
+UNPROVEN_OWN=0
+SKIPPED_OWN=0
 ERRORS=0
 ENTRY_COUNT=0
 
@@ -68,16 +76,20 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       || { rc=$?; [[ $rc -eq 124 || $rc -eq 137 ]] && f_timed_out=1 || f_error=1; }
   fi
 
-  if [[ $f_error -eq 0 && -f "$TMP_JSON" ]]; then
-    f_proven=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('proven',[])))" 2>/dev/null || echo 0)
-    f_unproven=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('unproven',[])))" 2>/dev/null || echo 0)
-    f_skipped=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('skipped',[])))" 2>/dev/null || echo 0)
-    f_violated=$(python3 -c "import json; d=json.load(open('$TMP_JSON')); print(len(d.get('violated',[])))" 2>/dev/null || echo 0)
+  if [[ $f_error -eq 0 && -f "$TMP_JSON" ]] && COUNT_ASSIGN="$(python3 "$SCRIPT_DIR/verify_report_counts.py" "$TMP_JSON")"; then
+    # One helper, both tallies: `*_own` counts the declarations that belong to
+    # the file being compiled. The raw totals repeat every prelude declaration
+    # in every unit (std/iterator.bv: 25 generics x ~80 files), so both are
+    # reported and neither is silently substituted for the other.
+    eval "$COUNT_ASSIGN"
   else
     f_proven=0
     f_unproven=0
     f_skipped=0
     f_violated=0
+    f_proven_own=0
+    f_unproven_own=0
+    f_skipped_own=0
   fi
   # A timeout can land *after* brievc has written the report (verification is
   # earlier in the pipeline than codegen), in which case the verdicts are real
@@ -92,6 +104,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   UNPROVEN=$((UNPROVEN + f_unproven))
   SKIPPED=$((SKIPPED + f_skipped))
   VIOLATED=$((VIOLATED + f_violated))
+  PROVEN_OWN=$((PROVEN_OWN + f_proven_own))
+  UNPROVEN_OWN=$((UNPROVEN_OWN + f_unproven_own))
+  SKIPPED_OWN=$((SKIPPED_OWN + f_skipped_own))
   ERRORS=$((ERRORS + f_error))
   TIMED_OUT=$((TIMED_OUT + f_timed_out))
 
@@ -102,8 +117,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   ENTRY_COUNT=$((ENTRY_COUNT + 1))
 
   # Write per-file entry
-  printf '    {"file": "%s", "proven": %d, "unproven": %d, "skipped": %d, "violated": %d, "error": %d, "timed_out": %d}' \
-    "$f" "$f_proven" "$f_unproven" "$f_skipped" "$f_violated" "$f_error" "$f_timed_out" >> "$ENTRIES"
+  printf '    {"file": "%s", "proven": %d, "unproven": %d, "skipped": %d, "violated": %d, "proven_own": %d, "unproven_own": %d, "skipped_own": %d, "error": %d, "timed_out": %d}' \
+    "$f" "$f_proven" "$f_unproven" "$f_skipped" "$f_violated" \
+    "$f_proven_own" "$f_unproven_own" "$f_skipped_own" "$f_error" "$f_timed_out" >> "$ENTRIES"
 
   # Progress every 100 files
   if (( TOTAL % 100 == 0 )); then
@@ -115,14 +131,24 @@ done < "$CORPUS"
 # buffered per-file entries. No post-hoc `sed` over the whole file.
 {
   printf '{\n  "total_files": %d,\n' "$TOTAL"
-  printf '  "summary": {\n    "proven": %d,\n    "unproven": %d,\n    "skipped": %d,\n    "violated": %d,\n    "errors": %d,\n    "timed_out": %d\n  },\n' \
-    "$PROVEN" "$UNPROVEN" "$SKIPPED" "$VIOLATED" "$ERRORS" "$TIMED_OUT"
+  # Raw counts stay where they were: a consumer that already reads
+  # `summary.skipped` keeps working. `own` sits beside them and is the number to
+  # quote for unmodelled PROGRAM surface, because a raw count repeats every
+  # prelude declaration once per compilation unit.
+  printf '  "summary": {\n    "proven": %d,\n    "unproven": %d,\n    "skipped": %d,\n    "violated": %d,\n    "errors": %d,\n    "timed_out": %d,\n    "own": {\n      "proven": %d,\n      "unproven": %d,\n      "skipped": %d\n    }\n  },\n' \
+    "$PROVEN" "$UNPROVEN" "$SKIPPED" "$VIOLATED" "$ERRORS" "$TIMED_OUT" \
+    "$PROVEN_OWN" "$UNPROVEN_OWN" "$SKIPPED_OWN"
   printf '  "files": [\n'
   cat "$ENTRIES"
   printf '\n  ]\n}\n'
 } > "$JSON_OUT"
 
 echo "Summary: total=$TOTAL proven=$PROVEN unproven=$UNPROVEN skipped=$SKIPPED violated=$VIOLATED errors=$ERRORS timed_out=$TIMED_OUT" >&2
+# Own-surface line (2026-11-17): what belongs to the corpus files themselves.
+# Quote this one for unmodelled program surface; the raw line above counts every
+# prelude declaration once per compilation unit (`std/iterator.bv` alone adds 25
+# generics to each native file).
+echo "Summary (own): proven=$PROVEN_OWN unproven=$UNPROVEN_OWN skipped=$SKIPPED_OWN" >&2
 if [[ $TIMED_OUT -gt 0 ]]; then
   echo "WARNING: $TIMED_OUT file(s) had no verdict: the ${PER_FILE_TIMEOUT}s per-file bound cut verification short." >&2
 fi

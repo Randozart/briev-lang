@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.0 — skip-origin reporting (2026-11-17)
+
+`--verify-report` now says **whose declaration** each entry is. No verdict moves:
+the same `lib/std` corpus reports the same 2 216 proven / 101 unproven / 13 308
+skipped / 0 violated as 0.2.0, verified byte-for-byte on the same 92 files.
+
+What changes is what those numbers mean. An entry exists once per declaration
+**per compilation unit**, and the prelude injects `std/iterator.bv` — 25 generic
+declarations — into every native unit. The 13 308 was therefore 13 308
+(examinations), not 13 308 (declarations): the corpus files' own surface is
+**404 skipped, 40 proven, 6 unproven**.
+
+### Added
+
+- **`origin` per finding**: `"own"` (declared in the file being compiled) or
+  `"imported"` (declared by a module it pulled in, prelude included). Computed
+  after every verdict is decided — labels cannot move a declaration between
+  buckets, and a test asserts exactly that.
+- **`summary` per report**: `own` / `imported` / `total` for each of the four
+  arrays, with `own + imported == total == len(array)`.
+- **A one-line stderr summary**: `info: --verify-bodies: 25 proven (1 own),
+  166 skipped (25 own)` — worded so it does not match the corpus runner's
+  `verify-bodies skipped:` prefix, because a summary that silently doubles a
+  downstream count is the bug this release exists to fix.
+- **`scripts/verify_report_counts.py`**: one report → both tallies. Census and
+  corpus runners now print raw **and** own figures side by side.
+
+Backwards compatible: without attribution the JSON keeps its original four-key
+shape byte-for-byte, and a report from an older `brievc` still parses (own counts
+fall back to the bucket totals, never understating a file's own surface).
+
+### Attribution, honestly
+
+`own` wins when a name appears on both sides. Not a guess: a legal program cannot
+have a genuine cross-file name clash — the import-conflict rule rejects it. The
+case that occurs is a file re-loaded as its own module (the prelude's `cast_lanes`
+imports `float_fmt`, so compiling `float_fmt.bv` sees itself again), where the
+reported declaration is the file's own.
+
+The split also surfaced a gap that had been invisible for three releases:
+`read32le` (`std/ffi/xxhash.bv`) is unproven and had never been named.
+
 ## 0.2.0 — body verification (2026-11-17)
 
 `brievc build <file> --verify-bodies` is substantially more capable. Measured on
