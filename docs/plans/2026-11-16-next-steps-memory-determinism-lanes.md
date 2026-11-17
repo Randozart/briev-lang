@@ -108,7 +108,27 @@ counter or freed-count golden); a new fixture for the `term f(concat(...))`
 shape; `cargo test --lib`; kiosk gates + soak; the leak probe
 (`get_env_int!` bound, maxRSS at two Ns) recorded in a results file.
 
-## 3. Item R — RSS step-growth: arena retention or true leak?
+## 3. Item R — RSS step-growth: arena retention or true leak? — **ANSWERED 2026-11-17**
+
+**Verdict: arena retention, not a leak.** Record:
+`briev-kiosk-avatar/docs/results/2026-11-17-kiosk-rss-truth.md` (harness:
+`harness/soak.py` now splits VmRSS into `RssAnon`/`RssFile`; driver:
+`harness/soak_rss_truth.sh`, three arms).
+
+| arm | first | last | max | min | final Δ |
+|---|---|---|---|---|---|
+| A glibc defaults (600 calls) | 150.1 | 183.1 | 183.1 | 150.1 | +33.0 |
+| B `MALLOC_ARENA_MAX=1` (600) | 150.1 | 155.2 | 170.6 | 150.1 | +5.1 |
+| C glibc defaults (1350) | 150.0 | 154.9 | 184.2 | **147.5** | +4.9 |
+
+A leak is monotone non-decreasing; C drops 36.7 MB between call 1200 and 1350 and
+A drops 7.9 MB between 150 and 200. `RssFile` is constant at 1.9–2.2 MB (the
+model is parsed into anonymous heap, not mmapped) and `RssAnon` tracks VmRSS, so
+the whole budget in play is heap. With one arena the drift collapses 6.5× and
+the process returns to ~150 MB repeatedly: the "steps" are per-thread arenas
+holding freed chunks resident. No daemon change is warranted.
+
+The original item follows.
 
 **Why it matters.** Every soak conclusion depends on this. Current evidence:
 three builds (oldest `4aed72809`, pre-merge `751c66932`, merged) all walk
