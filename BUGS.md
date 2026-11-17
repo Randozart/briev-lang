@@ -1,3 +1,80 @@
+## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
+
+**Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture
+`tests/fixtures/pointer_cast_wasm.rbv`):
+
+```
+opt: pointer_cast_wasm.ll:188:11: error: '%ac0' defined with type 'i64' but expected 'i32'
+  ret i32 %ac0
+```
+
+The emitted functions:
+
+```llvm
+define i32 @address(ptr %arg0) #8 {
+  entry:
+  %ac0 = ptrtoint ptr %arg0 to i64     ; handle is i64, always
+  ret i32 %ac0                          ; <- function returns i32 on wasm32
+}
+define i64 @wide_address(ptr %arg0) #8 {
+  entry:
+  %ac0 = ptrtoint ptr %arg0 to i64
+  %t0 = zext i32 %ac0 to i64            ; <- also assumes %ac0 is i32
+  ret i64 %t0
+}
+```
+
+**Two sites, one assumption.** The `%ac{i}` handle conversion
+(`emit_toplevel.rs`, the `param_llvm_ty == "ptr"` arm) hardcodes `to i64`, and
+its documented rationale (2026-11-13, #96) is deliberate: a later outbound-call
+marshalling reads `reg_llvm_ty` and must see a genuine i64. But the two
+*consumers* on the return path assume the handle is target-width —
+`emit_stmt.rs`'s `term` adaptation compares `llvm_type(reg.ty)` (`"ptr"`) against
+`fn_ret_ty` (`"i32"`), and `adapt_to_i64` (`helpers.rs`) widens from `i32`.
+
+**Not the exported-let change.** Verified by A/B: with
+`git show origin/main:src/analysis/storage_class.rs` in place (i.e. without the
+exported-let classification fix), the same failure reproduces identically. It is
+independent of that work, and it also fails before/after on `origin/main`.
+
+**Attempted, reverted — do not repeat naively.** Changing the `ptrtoint` to
+`i{int_bits}` fixes `address` but breaks `list_int_each_wasm.ll:190`
+(`'%ac0' defined with type 'i32' but expected 'i64'`) — some consumer genuinely
+wants i64. Adding a width-aware conversion at the `term` site fixes `address`
+but `wide_address` still emits `zext i32 %ac0 to i64`. **The fix is a unit:**
+the handle's width, `reg_llvm_ty`/`reg_value_ll`, and BOTH consumers must agree;
+patch one and the failure moves. Each attempt was measured and reverted, so
+`main` carries no half-change.
+
+**A third site, found the same way.** The fixture's `wide_address` is
+`defn wide_address(p: Ptr<Bit<8>>) -> Int64 { term p as Int64; };` — an explicit
+**cast**, and the cast-lane emitter zexts from i32 (`zext i32 %ac0 to i64`) too.
+So the unit is three consumers: the `term` adaptation, `adapt_to_i64`, and the
+`Ptr → Int64` cast lane.
+
+**Ruled out on the way, so the next attempt does not repeat it.** The cast
+dispatch (`emit_expr.rs`, "3. i64 target + Ptr<T> source → ptrtoint") is already
+an identity return for `Ptr → i64`, and `coerce_register_value` already maps
+`%ac` registers to i64 — so neither is where the stray `zext i32` is born. It
+comes from a site between the cast and the `term` adaptation that the next
+attempt has to find by bisecting the emission of `defn wide_address`, not by
+reading the cast lane.
+
+**Prime suspect, for whoever takes this next.**
+`helpers.rs::coerce_register_value` *already* knows this bug class: it computes
+`have_ll` as `"i64" if boxed_scalar_regs.contains(&val.name) || val.name.starts_with("%ac")`.
+But it returns early — `if is_handle_ty(want_ty) || is_handle_ty(&val.ty) { return val.clone(); }`
+— and `is_handle_ty` is true for `Type::Ptr(_)`. So a `Ptr → Int64` coercion
+never reaches the width logic, and the `zext i32 %ac0 to i64` in the emitted IR
+comes from a *different* site further along the cast lane. Start there: the
+`%ac` awareness exists already; the handle early-return is what bypasses it.
+
+**Next step.** Keep the i64 handle (the 2026-11-13 decision), then make all
+three consumers convert from the register's ACTUAL width (`reg_llvm_ty`) instead
+of from `llvm_type(reg.ty)`. Exit condition: `test/rbv_list_each_wasm` and
+`test/hir_storage_class_parity` green together, with the x86_64 corpus IR
+byte-identical (int_bits == 64 makes every conversion a no-op, so any change
+there is a bug).
 ## 2026-11-17 — `export let` emitted a load of a symbol nothing declared (FIXED)
 
 **Symptom.** A four-line program produced IR that clang rejects:
