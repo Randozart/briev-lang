@@ -1,3 +1,33 @@
+## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
+
+**Symptom.** Building any program that touches the C glue layer from a
+directory outside the compiler checkout fails outright:
+
+```
+error: glue descriptor for `c` names ABI core `sysv-x86_64`, which is not
+shipped. Known cores: <none found>. Each core is `config/abi/<name>.dbvl`;
+write the descriptor against one of them or add the core.
+```
+
+The files are present (`config/abi/sysv-x86_64.dbvl`, `aapcs64`, `ptx`,
+`riscv64`, `wasm32`, `win64`) and the binary is the one from that same tree.
+Hit immediately by the kiosk daemon build (`briev-kiosk-avatar`,
+`brievc build briev/service/daemon.bv`), i.e. by every downstream project.
+
+**Cause.** `glue::abi::abi_dir()` walked up from `std::env::current_dir()` and
+stopped there. Compiler-SHIPPED data resolved relative to the caller's cwd is
+invisible to any build started elsewhere; `BRIEV_HOME` and the location of the
+executable were both ignored.
+
+**Fix.** Resolution order is now: explicit `BRIEV_HOME` (the documented install
+root), then the tree the BINARY lives in (`current_exe`, walking up), then the
+caller's cwd (development builds run from the repo root). Test:
+`glue::abi::tests::abi_dir_resolves_from_the_binary_tree`.
+
+**Lesson.** Shipped data must be resolved from the installation, never from the
+caller's working directory. The same question applies to `lib/glue` and the
+stdlib search path; they already take an explicit path or `BRIEV_HOME`.
+
 ## 2026-11-16 — HIR drops the FFI boundary surface, and the audit does not notice
 
 **Reproduced.** A program with a generated boundary protocol, a `frgn` carrying

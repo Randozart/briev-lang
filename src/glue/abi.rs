@@ -57,11 +57,35 @@ const KNOWN_KEYS: &[&str] = &[
     "temporaries_caller_frees",
 ];
 
-
 /// Directory holding the cores. Resolved like `lib/glue`: relative to the
 /// project root that owns the compiler build.
+///
+/// 2026-11-16 (found building the kiosk daemon from its own repository): the
+/// cores are COMPILER-SHIPPED data, so resolution must not depend on where the
+/// caller happens to stand. The old version only walked up from the current
+/// directory, so `brievc build` from any tree outside the compiler repo failed
+/// with "Known cores: <none found>" even though the data sits beside the
+/// binary. Order is now: explicit `BRIEV_HOME` (the documented install root),
+/// then the tree the binary itself lives in, then the caller's cwd (a
+/// development build run from the repo root).
 fn abi_dir() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
+    if let Some(dir) = std::env::var_os("BRIEV_HOME") {
+        let candidate = PathBuf::from(dir).join("config").join("abi");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = walk_up_for_abi_dir(exe.parent()?) {
+            return Some(dir);
+        }
+    }
+    walk_up_for_abi_dir(&std::env::current_dir().ok()?)
+}
+
+/// Nearest `config/abi/` at or above `start`.
+fn walk_up_for_abi_dir(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     loop {
         let candidate = dir.join("config").join("abi");
         if candidate.is_dir() {
@@ -141,7 +165,10 @@ pub fn parse_core(source: &str, origin: &str) -> Result<AbiCore, String> {
             .unwrap_or("none")
             .to_string(),
         aggregate_hidden_ptr_threshold: int_of(&db, origin, "aggregate_hidden_ptr_threshold")?,
-        symbol_prefix: db.field_string("symbol_prefix", 0).unwrap_or("").to_string(),
+        symbol_prefix: db
+            .field_string("symbol_prefix", 0)
+            .unwrap_or("")
+            .to_string(),
         symbol_mangling: db
             .field_string("symbol_mangling", 0)
             .unwrap_or("none")
@@ -234,5 +261,26 @@ mod tests {
         )
         .expect_err("missing pointer_bits must be refused");
         assert!(err.contains("pointer_bits"), "got: {err}");
+    }
+
+    /// The cores are compiler-shipped data, so they must resolve from where the
+    /// BINARY lives, not only from where the caller happens to stand. Found
+    /// 2026-11-16: building the kiosk daemon from its own repository reported
+    /// "Known cores: <none found>" while the data sat beside the compiler.
+    #[test]
+    fn abi_dir_resolves_from_the_binary_tree() {
+        let root = std::env::temp_dir().join(format!("briev-abi-dir-{}", std::process::id()));
+        let abi = root.join("config").join("abi");
+        std::fs::create_dir_all(&abi).expect("create synthetic tree");
+        std::fs::write(abi.join("x.dbvl"), "name: \"x\";").expect("write core");
+        let deep_bin = root.join("target").join("release");
+        std::fs::create_dir_all(&deep_bin).expect("create bin dir");
+        assert_eq!(walk_up_for_abi_dir(&deep_bin), Some(abi.clone()));
+        // A nested directory deeper than the tree still resolves to the same
+        // root, and the walk is bounded by the filesystem root.
+        let deeper = deep_bin.join("deps").join("nested");
+        std::fs::create_dir_all(&deeper).expect("create nested dir");
+        assert_eq!(walk_up_for_abi_dir(&deeper), Some(abi));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
