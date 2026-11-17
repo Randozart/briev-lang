@@ -122,3 +122,35 @@ for *this* file set. Combined with the script's own header note (an accident onc
 appended the report three times, tripling every per-goal count), the honest
 conclusion is that the historical sentence is not attributable to any reproducible
 invocation of either tool. It is superseded, not corrected.
+
+## 6. The example lane, triaged (2026-11-17, third pass)
+
+`files_failing` was 5. The example-side failures are not one class; each needed a
+different answer, and two of them turned out to be examples documenting
+capabilities that do not exist yet.
+
+| file | cause | outcome |
+|---|---|---|
+| `examples/ptr-runtime.bv` | declared `frgn __get_env_int(...) from #System` — that C symbol was deleted by the frgn-elimination work, so it linked against a name nothing defines | **fixed**: migrated to `get_env_int!("BOUND")` from `std/env.bv`, and `txn` → `node` (plain top-level txns are never dispatched, so the demo was dead even before the link error). It now builds, runs and prints the count. |
+| `examples/mmap-demo.bv` | calls `mmap`/`munmap`, which no module defines. `lib/std/os/mem.bv` is a **planning stub** ("needs the mmap(2) lane; the allocator-ownership work decides the shape") | **left failing, truthfully**: the example demonstrates a capability the stdlib has not built. A local `frgn mmap(...)` is not a rescue — the C ABI wants a 32-bit `fd`, so a Briev-typed `frgn` would be an ABI bug dressed as a demo. |
+| `examples/networking.bv` | calls the C-level `socket()`, not the stdlib's `sock_*` wrappers (`lib/std/net/`) | needs a rewrite onto the Briev-level API, not an import |
+| `examples/process-spawn.bv` | calls C-level `getpid`/`getcwd`; `lib/std/process.bv` owns process ops now | needs a rewrite |
+
+So the example lane is: one repaired, one honestly blocked on a stdlib stub, two
+awaiting a rewrite onto the Briev-level APIs. None of them is a codegen bug, which
+means `files_failing` after this pass reflects only `defn-composite` (the
+loop-carry float, BUGS.md) and the two rewrites above.
+
+### A diagnostic defect found on the way
+
+The undefined-name error said *"import the module that defines it (e.g. `import
+"std/…"`) or remove the call"* — unactionable for `mmap`/`socket`/`getpid`, where
+**no module defines the name**. It now also names the third option, which is the
+real fix for a C function the stdlib does not wrap:
+
+```
+'X' is not defined in this program — import the module that defines it
+(e.g. `import "std/…"`), declare it as a foreign function
+(`frgn X(...) from #System;`) if it is one the stdlib does not wrap, or remove
+the call
+```

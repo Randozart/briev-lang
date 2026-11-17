@@ -1,21 +1,32 @@
 // ptr-runtime.bv — Demonstrates & and * with observable output
 //
-// Uses print_int# to produce output, and __get_env_int to make the
+// 2026-11-17: `txn` -> `node`. Plain top-level txns are never dispatched, so the
+// program was dead (the compiler said so: "transaction 'count_up' is never
+// dispatched"); it now fires and prints the count.
+//
+// Uses print_int# to produce output, and a runtime env read to make the
 // loop bound runtime-determined (prevents compile-time precomputation).
+//
+// 2026-11-17: migrated off `frgn __get_env_int(...) from #System` — that C symbol
+// was deleted by the frgn-elimination work, so the example linked against a name
+// nothing defines (`undefined reference to '__get_env_int'`). The stdlib owns
+// environment access now (lib/std/env.bv), and `get_env_int!` is the documented
+// way to read a runtime-determined Int.
 
-frgn __get_env_int(name: Ptr<Byte>) -> Int from #System;
+import "std/env.bv";
 
-let limit: Int = __get_env_int("LIMIT");
+// The daily-use corpus sets BOUND, so the demo prints a real count there too.
+let limit: Int = get_env_int!("BOUND");
 let counter: Int = 0;
 
 // Uses & to write to state field through a pointer
-txn count_up [counter < limit][counter == limit] {
+node count_up [counter < limit][counter == limit] {
   counter = counter + 1;
   term;
 };
 
 // Uses * to read value through pointer and print it
-txn done [counter >= limit][[counter >= limit]] {
+node done [counter >= limit][[counter >= limit]] {
   let val = counter;
   endprogram Print#(val);
 };

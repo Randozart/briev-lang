@@ -2338,8 +2338,11 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
         return Err(TypeError::InvalidOperation {
             operation: format!("call to '{}'", name),
             type_name: format!(
-                "'{}' is not defined in this program — import the module that defines it (e.g. `import \"std/…\"`) or remove the call",
-                name
+                "'{}' is not defined in this program — import the module that defines it \
+                 (e.g. `import \"std/…\"`), declare it as a foreign function \
+                 (`frgn {}(...) from #System;`) if it is one the stdlib does not wrap, \
+                 or remove the call",
+                name, name
             ),
         });
     }
