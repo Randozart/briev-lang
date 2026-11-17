@@ -6468,6 +6468,13 @@ pub fn check_program_with_target(
         mctx.type_params = all_type_params.clone();
         mctx.fn_param_types = fn_param_types.clone();
         mctx.fn_contracts = fn_contracts.clone();
+        // 2026-11-17: a member body must see the same callable-name set as a
+        // top-level body. Without this, `defined_fns` was empty in a member
+        // context, so any call that is not resolved through a return type —
+        // notably a **void** imported `frgn` such as `navigate(url)` — failed
+        // the unknown-name gate with "is not defined in this program", which
+        // was simply false: the name is defined by an import.
+        mctx.defined_fns = defined_fns.clone();
         mctx.type_protocols = all_type_protocols.clone();
         mctx.type_max_bits = all_type_max_bits.clone();
         for (name, ty) in &fn_return_types {
@@ -9212,6 +9219,35 @@ fn type_byte_size(ty: &Type) -> u64 {
         Type::Ptr(_) => 8,
         _ => 8, // default for unknown types
     }
+}
+
+#[cfg(test)]
+mod member_scope_tests {
+    use super::*;
+
+    /// A member body must resolve callables the file defines — including a
+    /// **void** one, which has no return-type entry to fall back on.
+    ///
+    /// 2026-11-17: the shared member-context builder copied every table except
+    /// `defined_fns`, so a member body saw an empty callable-name set. Any call
+    /// not resolved through a return type then hit the unknown-name gate with
+    /// "is not defined in this program" — false, because the name is defined.
+    /// In practice this broke every `obj` member calling a void imported `frgn`
+    /// (`navigate(url)` in the router fixture), which was the only failing test
+    /// on `main` for several commits.
+    #[test]
+    fn member_body_resolves_a_void_top_level_callee() {
+        let src = r#"
+defn ping() { term; };
+obj R {
+    path: String;
+    txn go(url: String) [path != url][path == url] { path = url; ping(); term; };
+};
+"#;
+        crate::library::parse_and_check("member_void_call.bv", src)
+            .expect("a member body must see top-level callees, void included");
+    }
+
 }
 
 #[cfg(test)]

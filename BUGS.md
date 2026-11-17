@@ -1,62 +1,51 @@
-## 2026-11-17 — an `obj` member body cannot see outer or imported names (main is red on one gate)
+## 2026-11-17 — `obj` member bodies could not call a **void** callee (FIXED)
 
-**Symptom.** `tests/rbv_router.rs::router_smoke_gate` fails, and it has been the
-only failing test on `main` for at least three commits — including `eccd3799`, the
+**Symptom.** `tests/rbv_router.rs::router_smoke_gate` failed, and it was the only
+failing test on `main` for at least three commits — including `eccd3799`, the
 `v0.2.0` release (4421 passed / 1 failed):
 
 ```
 error: type errors:
   invalid operation 'call to 'navigate'' on type 'navigate' is not defined in this
-  program — import the module that defines it (e.g. `import "std/…"`) or remove the call
+  program — import the module that defines it
 build failed: tests/fixtures/obj_router.rbv
 ```
 
-**Minimal reproduction** (fails on the released `0.2.0` binary):
+**Cause.** The shared member-context builder (`build_member_ctx`, used by both
+`obj` members and cells) copied every table from the file-level environment
+*except* `defined_fns`. Call resolution tries `fn_return_types` first, so any
+callee with a return type still resolved — which is why imported `defn`s worked
+and the bug looked like an import problem. A **void** callee has no return-type
+entry, so it fell through to the unknown-name gate against an empty set:
 
 ```briev
-import "std/web/router.bv";
-
-obj R {
-    path: String;
-    txn go(url: String) [path != url][path == url] { path = url; navigate(url); term; };
-};
-
-let r: R = R { path: current_path() };
+defn ping() { term; };                                  // void
+obj R { path: String;
+        txn go(url: String) [path != url][path == url] { path = url; ping(); term; }; };
 ```
 
-Two errors, and the second is the tell:
-
 ```
-call to 'navigate' … is not defined in this program
-call to 'go'      … is not defined in this program
+call to 'ping' … is not defined in this program        // false: it is defined
 ```
 
-`go` is the member itself — so a **member body resolves no outer names at all**:
-not the imported `frgn navigate`, not its own sibling/member name. A top-level
-`defn` calling the very same imported `frgn` compiles fine:
+`frgn navigate(url: String) from "…";` is void too, which is why the router
+fixture was the only test that caught it.
 
-```briev
-import "std/web/router.bv";
-defn probe(u: String) [true][term >= 0] -> Int { navigate(u); term 0; };   // OK
-```
+**Fix.** `mctx.defined_fns = defined_fns.clone();` — one line, so a member body
+sees the same callable-name set as a top-level body. Regression test:
+`typechecker::member_scope_tests::member_body_resolves_a_void_top_level_callee`,
+verified to fail without the fix and pass with it.
 
-So the fault is member-body call resolution, not `frgn`, not imports.
+**Correcting an earlier claim in this file.** The first version of this entry said
+a member body "resolves no outer names at all", based on a fuller repro where the
+member's own name was also rejected. That was an over-generalisation: same-file
+`defn`s and imported `defn`s resolved fine (through `fn_return_types`); the failure
+is specific to callees with **no return type**.
 
-**Scope of the damage.** Confined to member bodies, which is why the full suite
-still reports 4421 passing — the router fixture is the only test that exercises a
-member txn calling an imported function. That also means the `v0.2.0` artifact was
-published while this gate was red; the release itself is unaffected (it is a
-source-level resolution bug, not a codegen one), but the CI signal was not.
-
-**Not caused by** the verification campaign: the same failure reproduces with the
-pre-campaign packaged binary, so it predates PRs #104–#115.
-
-**Where to look.** Member-body elaboration — the environment in which a member
-`txn`/`defn` body is type-checked appears to lack the file-level scope chain
-(top-level defns, imported `frgn` names, and the member's own variant name). The
-recent member-txn work (`d2dd3205`, "member txn on a plain top-level obj var is now
-emitted/bound") is the obvious starting point.
-
+**Unrelated, found while fixing:** running the gate with an out-of-tree
+`CARGO_TARGET_DIR` fails at the `brievc web` step, because `resolve_stdlib_root`
+probes `<exe>/../../lib`. Not a compiler bug — CI builds in-tree — but it costs a
+debugging cycle if you work with an external target dir; set `BRIEV_STDLIB_PATH`.
 
 ## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
 
