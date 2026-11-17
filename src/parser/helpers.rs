@@ -954,7 +954,18 @@ impl<'a> Parser<'a> {
     pub fn error_unknown_item<T>(&self, name: &str, position: &str) -> Result<T, SyntaxError> {
         static VOCAB: std::sync::OnceLock<crate::vocab::LanguageVocab> = std::sync::OnceLock::new();
         let vocab = VOCAB.get_or_init(crate::vocab::LanguageVocab::canonical);
-        let reason = if vocab.is_canonical_keyword(name) {
+        let reason = if vocab.is_removed_keyword(name) {
+            // 2026-11-16 (D1, removed-surface gate): a name the vocab
+            // records as removed gets its own diagnostic path — the
+            // `#!exit` pattern generalised. The message names the keyword,
+            // says it is gone, and points at what replaced it.
+            format!(
+                "'{name}' was removed from Briev — it is no longer part of the \
+                 language. Check `spec/SPEC.md` for what replaced it; the \
+                 vocabulary (`src/vocab.rs`) records the removal so the \
+                 compiler can say so instead of silently mis-parsing."
+            )
+        } else if vocab.is_canonical_keyword(name) {
             format!(
                 "'{name}' is not valid at this position ({position}) — check the \
                  surrounding syntax"

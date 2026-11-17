@@ -1,0 +1,7 @@
+// 2026-11-16 (D1): `syscall` was removed from the vocabulary. The D1 gate
+// gives removed keywords their own diagnostic path — the `#!exit` pattern
+// generalised through `error_unknown_item`.
+// EXPECT-ERROR: 'syscall' was removed
+syscall 231;
+let x: Int = 0;
+node main [!x][x] { x = 1; endprogram; };

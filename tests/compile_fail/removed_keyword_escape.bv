@@ -1,0 +1,5 @@
+// 2026-11-16 (D1): `escape` was removed. Same diagnostic path as `syscall`.
+// EXPECT-ERROR: 'escape' was removed
+escape x = 1;
+let x: Int = 0;
+node main [!x][x] { x = 1; endprogram; };
