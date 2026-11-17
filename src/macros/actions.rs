@@ -309,7 +309,31 @@ pub fn wrap_selection(
 // untyped nodes.
 
 /// Check that all new nodes are valid for insertion at the given stage.
+/// 2026-11-16 (S5): a top-level item whose presence changes the type surface.
+/// `defn`s are deliberately excluded — their bodies face `verify_bodies`, not
+/// the stage guard.
+fn structural_toplevel(item: &TopLevel) -> bool {
+    matches!(
+        item,
+        TopLevel::ProtocolDef(_) | TopLevel::TypeDef(_) | TopLevel::ForeignBinding(_)
+    )
+}
+
 fn validate_nodes_for_stage(nodes: &[TopLevel], stage: StageKind) -> Result<(), String> {
+    // 2026-11-16 (S5): structural declarations — protocol variants, type
+    // definitions, and foreign bindings — fix the type surface. Synthesising
+    // one after `Resolved` would change what later stages see, so the guard
+    // is at the stage boundary itself, not downstream. `defn` bodies are NOT
+    // structural: they face `verify_bodies`, which is the correct gate for
+    // them.
+    for node in nodes {
+        if structural_toplevel(node) && stage > StageKind::Resolved {
+            return Err(format!(
+                "stage {:?}: cannot synthesize a structural declaration                  (protocol, type definition, or foreign binding) after                  `Resolved` — the type surface is frozen at that stage;                  body-bearing `defn`s are still allowed (they face                  `verify_bodies`)",
+                stage
+            ));
+        }
+    }
     // Before Typed stage: all nodes are acceptable (no type info required yet).
     if stage <= StageKind::Typed {
         return Ok(());
@@ -565,5 +589,162 @@ mod tests {
         let node = TopLevel::Import(Import::literal("std/io.bv", vec![]));
         let result = validate_structural_toplevel(&items, &node);
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod stage_guard_tests {
+    use super::*;
+    use crate::ast::top::*;
+    use crate::ast::{Contract, Expr, Type};
+
+    /// Build a minimal `proto` node for the stage guard test.
+    fn proto_node() -> TopLevel {
+        TopLevel::ProtocolDef(ProtocolDef {
+            name: "TestProto".into(),
+            category: "String".into(),
+            contract: None,
+            cast_edges: vec![],
+            cross_ops: vec![],
+            span: None,
+        })
+    }
+
+    /// Build a minimal `TypeDef` node.
+    fn typedef_node() -> TopLevel {
+        TopLevel::TypeDef(Box::new(TypeDef {
+            name: "TestType".into(),
+            type_params: vec![],
+            parent: None,
+            protocol: Some("Int".into()),
+            traits: vec![],
+            bit_range: None,
+            body: TypeDefBody {
+                slots: vec![],
+                pins: vec![],
+                reference: None,
+                metadata: std::collections::HashMap::new(),
+                projections: vec![],
+                bindings: vec![],
+                operators: vec![],
+                op_bindings: vec![],
+                constraints: vec![],
+                members: vec![],
+                hold_laws: vec![],
+                modes: vec![],
+                span: None,
+            },
+            ports_in: vec![],
+            ports_out: vec![],
+            coll: false,
+            seq: false,
+            span: None,
+        }))
+    }
+
+    /// Build a minimal `defn` node — must NOT be blocked by the stage guard.
+    fn defn_node() -> TopLevel {
+        TopLevel::Definition(Definition {
+            variadic_param: None,
+            name: "test_fn".into(),
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![Type::Custom("Int".into())],
+            contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
+            body: vec![],
+            metadata: std::collections::HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            annotations: vec![],
+            span: None,
+            doc: None,
+        })
+    }
+
+    /// 2026-11-16 (S5): a `proto` inserted after `Resolved` must be rejected.
+    #[test]
+    fn proto_after_resolved_is_rejected() {
+        let node = proto_node();
+        let result = validate_nodes_for_stage(&[node], StageKind::Typed);
+        assert!(
+            result.is_err(),
+            "a protocol synthesized after Resolved must be rejected"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("structural declaration"),
+            "error should mention the structural-declaration guard, got: {err}"
+        );
+    }
+
+    /// A `typedef` inserted after `Resolved` must also be rejected.
+    #[test]
+    fn typedef_after_resolved_is_rejected() {
+        let node = typedef_node();
+        let result = validate_nodes_for_stage(&[node], StageKind::Typed);
+        assert!(
+            result.is_err(),
+            "a typedef synthesized after Resolved must be rejected"
+        );
+    }
+
+    /// A `frgn` inserted after `Resolved` must also be rejected.
+    #[test]
+    fn frgn_after_resolved_is_rejected() {
+        let node = TopLevel::ForeignBinding(ForeignBinding {
+            foreign_name: "test_fn".into(),
+            briev_name: None,
+            from: FromSpec::Linked("libc".into()),
+            target: ForeignTarget::C,
+            inputs: vec![],
+            success_output: vec![],
+            error_type: "Error".into(),
+            error_fields: vec![],
+            input_layout: None,
+            output_layout: None,
+            precondition: None,
+            postcondition: None,
+            buffer_mode: None,
+            default_watchdog: None,
+            wasm_impl: None,
+            wasm_setup: None,
+            span: None,
+            doc: None,
+            is_optional: false,
+            is_fire_forget: false,
+            is_delivery: false,
+            is_variadic: false,
+        });
+        let result = validate_nodes_for_stage(&[node], StageKind::Typed);
+        assert!(
+            result.is_err(),
+            "a frgn synthesized after Resolved must be rejected"
+        );
+    }
+
+    /// A `defn` inserted after `Resolved` must be ALLOWED — body-bearing
+    /// definitions face `verify_bodies`, not the stage guard.
+    #[test]
+    fn defn_after_resolved_is_allowed() {
+        let node = defn_node();
+        let result = validate_nodes_for_stage(&[node], StageKind::Typed);
+        assert!(
+            result.is_ok(),
+            "a defn synthesized after Resolved must be allowed (it faces verify_bodies), got: {:?}",
+            result.err()
+        );
+    }
+
+    /// A `proto` inserted at `Resolved` (not after) must be allowed.
+    #[test]
+    fn proto_at_resolved_is_allowed() {
+        let node = proto_node();
+        let result = validate_nodes_for_stage(&[node], StageKind::Resolved);
+        assert!(
+            result.is_ok(),
+            "a proto synthesized at Resolved must be allowed, got: {:?}",
+            result.err()
+        );
     }
 }
