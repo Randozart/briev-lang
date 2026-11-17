@@ -2406,6 +2406,23 @@ impl LlvmBackend {
         if let Some(p) = self.fun.canonical_ptrs.get(int_reg) {
             return p.clone();
         }
+        // 2026-11-17 (corpus slice C): the argument is USUALLY an i64 handle that
+        // has to become a pointer, but a value read from a ptr-typed global
+        // (`const BASE: Ptr<Int> = …`) is already a pointer. `inttoptr i64 <ptr>`
+        // is invalid IR (`'%t1' defined with type 'ptr' but expected 'i64'`), so
+        // a register recorded as ptr passes through unchanged. The width is read
+        // from the two channels the emitters already maintain — `reg_value_ll`
+        // (cast lanes) and `reg_llvm_ty` (loads) — never guessed from the stamped
+        // Briev type, which is `Ptr` for both shapes.
+        let already_ptr = self
+            .fun
+            .reg_value_ll
+            .get(int_reg)
+            .map(|w| w == "ptr")
+            .unwrap_or(false);
+        if already_ptr {
+            return int_reg.to_string();
+        }
         let p = self.fun.gen_reg();
         self.emit_inttoptr(out, indent, &p, &int_reg);
         // Do NOT cache here: an arbitrary i64 value may be defined in a
@@ -5367,6 +5384,24 @@ impl LlvmBackend {
                         "0".to_string()
                     }
                 }
+            };
+            // 2026-11-17 (corpus triage, largest ERR class): a pointer-typed
+            // const with an INTEGER initialiser (`const UART_DR: Ptr<Bits<8>> =
+            // 0x40001000;`) emitted `@UART_DR = constant ptr 1073811456`, and
+            // LLVM refuses it: "integer/byte constant must have integer/byte
+            // type". A pointer constant needs the inttoptr form. Affected
+            // examples/pointer-trickery, ptr-arithmetic, defn-composite,
+            // volatile-io — one cause, four files.
+            let val_str = if llvm_ty == "ptr"
+                && !val_str.is_empty()
+                && val_str
+                    .trim_start_matches('-')
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+            {
+                format!("inttoptr (i64 {} to ptr)", val_str)
+            } else {
+                val_str
             };
             // 2026-09-06 (Phase 8): the section(".name") placement on the
             // global constant (a define attribute on data — where the bytes
@@ -9296,8 +9331,12 @@ impl LlvmBackend {
             // 2026-07-14: Top-level `let name: Type = expr;` — register as state field.
             // The initializer expr is stored in field_initializers so emit_init_state
             // can evaluate and store the runtime value at startup.
-            } else if let TopLevel::Statement(stmt) = item {
-                if let crate::ast::Statement::Let { name, ty, expr, .. } = stmt.as_ref() {
+            } else if let Some(stmt) = crate::analysis::storage_class::let_of_item(item) {
+                // 2026-11-17 (class D): unwrap `export let` here too. Both this
+                // walk and `classify_plain_lets` must see the same items; a name
+                // classified plain but never registered emitted a load of a
+                // symbol nothing declared (`@FD_STDOUT`).
+                if let crate::ast::Statement::Let { name, ty, expr, .. } = stmt {
                     // 2026-10-17 (plain storage): plain lets are module-scope
                     // globals, not %State fields — same name/type/init/
                     // read/write semantics, no machine membership. Emitted as
@@ -9933,6 +9972,28 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
         for (i, name) in plain_names.into_iter().enumerate() {
             self.ctx.plain_index_map.insert(name.clone(), i);
         }
+        // 2026-11-17 (class D invariant): every name classified plain MUST have a
+        // registered global. When the two walks disagreed, the name was plain for
+        // the read path (`load … ptr @name`) and registered nowhere, which is how
+        // `export let` produced an undeclared symbol. A divergence is a compiler
+        // bug; fail in CI rather than after `opt`.
+        debug_assert!(
+            self.ctx
+                .plain_lets
+                .iter()
+                .all(|n| self.ctx.plain_global_types.contains_key(n)),
+            "plain_lets and plain_global_types diverged (unregistered: {:?})",
+            {
+                let mut missing: Vec<&String> = self
+                    .ctx
+                    .plain_lets
+                    .iter()
+                    .filter(|n| !self.ctx.plain_global_types.contains_key(*n))
+                    .collect();
+                missing.sort();
+                missing
+            }
+        );
     }
 
     /// 2026-08-07 (object instance pools): register a base's allocator counter

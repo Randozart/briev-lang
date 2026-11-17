@@ -513,14 +513,15 @@ impl LlvmBackend {
         indent: &str,
     ) -> TypedRegister {
         let ptr_reg = self.emit_expr(out, inner, indent);
-        // 2026-07-30: Ptr values are stored as i64 internally (see
-        // ptrtoint at emit_toplevel.rs:1188). Convert back to actual
-        // LLVM ptr before loading.
-        let load_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
-            self.canonical_ptr(out, indent, &ptr_reg.name)
-        } else {
-            ptr_reg.name.clone()
-        };
+        // 2026-11-17 (class C3): a dereference operand is ALWAYS an address, so
+        // it must always be canonicalised. The old gate
+        // `matches!(ptr_reg.ty, Type::Ptr(_))` never fired for `&state_field`,
+        // because `emit_addr_of_identifier` stamps the resulting i64 handle as
+        // `Int` (it emits `ptrtoint ptr <gep> to i64`). The handle then went
+        // straight into `load i64, ptr %handle` — invalid IR. `canonical_ptr`
+        // already does the right thing for both shapes: pass a recorded pointer
+        // through, inttoptr an i64 handle.
+        let load_ptr = self.canonical_ptr(out, indent, &ptr_reg.name);
         let pointee_ty = match &ptr_reg.ty {
             Type::Ptr(inner_ty) => inner_ty.as_ref().clone(),
             _ => Type::int(), // fallback
@@ -1991,6 +1992,19 @@ impl LlvmBackend {
                 // hardcoded i64 load made comparisons invalid.
                 let llvm_ty = self.llvm_type(ty);
                 writeln!(out, "{}{} = load {}, ptr @{}", indent, v, llvm_ty, name).ok();
+                // 2026-11-17 (corpus slice C): record the ACTUAL width. A
+                // `const BASE: Ptr<Int>` loads as `ptr`, but every adapter that
+                // sees the stamped `Ptr` type assumes an i64 handle and emits
+                // `inttoptr i64 <ptr>` — invalid IR. `reg_value_ll` is the
+                // width channel the cast lane already maintains for precisely
+                // this "stamped type lies about the register width" problem
+                // (reg_llvm_ty is NOT used: it can be stale after a re-material
+                // step and trusting it regressed three tier1 fixtures).
+                if llvm_ty == "ptr" {
+                    self.fun
+                        .reg_value_ll
+                        .insert(v.to_string(), "ptr".to_string());
+                }
                 TypedRegister {
                     name: v.to_string(),
                     ty: ty.clone(),
@@ -2017,6 +2031,11 @@ impl LlvmBackend {
                 }
             } else if self.is_string_operand(ty) || matches!(ty, Type::Ptr(_)) {
                 writeln!(out, "{}{} = load ptr, ptr @{}", indent, v, name).ok();
+                // 2026-11-17 (class C1): record the ACTUAL width. A `Ptr`-typed
+                // constant loads as a real `ptr`, but the stamped type maps to
+                // the i64 handle domain, so every consumer that trusts the stamp
+                // treats this pointer as an i64 (`store i64 %t0` into a slot).
+                self.fun.reg_value_ll.insert(v.to_string(), "ptr".to_string());
                 TypedRegister {
                     name: v.to_string(),
                     ty: ty.clone(),
@@ -2029,12 +2048,76 @@ impl LlvmBackend {
                 }
             }
         } else {
+            // 2026-11-17 (class D): the last resort. A name that is not a phi, a
+            // plain let, a %State field, or an `init` global is NOT
+            // automatically a module global — assuming so emits `load … ptr
+            // @name` for a symbol nothing declares, and the failure surfaces
+            // kilometres away as an LLVM verifier dump (`use of undefined value
+            // '@FD_STDOUT'`, from an `export let` that both storage walks
+            // skipped). Say what is wrong here instead, and only fall back to a
+            // global when the name IS one.
+            if !self.ident_is_module_global(name) {
+                // Not a symbol this module defines. Emitting `load … ptr @name`
+                // produced invalid IR that surfaced only at `opt` (class D:
+                // `export let` was skipped by both storage walks). Warn with the
+                // cause and materialise a zero instead: the module stays valid,
+                // nothing references an undeclared symbol, and the build says
+                // what happened. A placeholder *declaration* would be worse —
+                // it would look intentional and silently carry 0.
+                self.warnings.push(format!(
+                    "warning: `{name}` is read but has no storage in this module — it is not a \
+                     local, a `%State` field, a plain global, a constant, or an init global. It \
+                     is treated as 0. If it is declared at module scope, the declaration is not \
+                     reaching the backend (an `export`-wrapped `let` is the known shape); if it \
+                     is meant to be imported, add the import."
+                ));
+                writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
+                return TypedRegister {
+                    name: v.to_string(),
+                    ty: Type::int(),
+                };
+            }
             writeln!(out, "{}{} = load i64, ptr @{}", indent, v, name).ok();
             TypedRegister {
                 name: v.to_string(),
                 ty: Type::int(),
             }
         }
+    }
+
+    /// Is `name` a symbol this module actually emits a global for?
+    ///
+    /// Used only by the identifier read's last resort: a `true` answer means the
+    /// `load … ptr @name` is well-formed, a `false` answer is a compiler bug (or
+    /// a program the frontend should have rejected) and must not become IR.
+    fn ident_is_module_global(&self, name: &str) -> bool {
+        if self.ctx.constants.contains_key(name)
+            || self.ctx.inits.contains_key(name)
+            || self.ctx.plain_global_types.contains_key(name)
+            || self.ctx.mmio_fields.contains_key(name)
+            || self.ctx.component_initializers.contains_key(name)
+        {
+            return true;
+        }
+        // Synthetic and runtime-provided symbols never reach the maps above.
+        const SYNTHETIC_PREFIXES: &[&str] = &[
+            "str.",
+            "chan_val_",
+            "briev_",
+            "__briev_",
+            "cell$",
+            "arg",
+            "coll_arena_",
+            "__arena_",
+            "__spawn_next_",
+        ];
+        if SYNTHETIC_PREFIXES.iter().any(|p| name.starts_with(p)) {
+            return true;
+        }
+        // A `Type.member` name is an unpacked instance column, registered as a
+        // %State field — reaching here means the instance was not unpacked, which
+        // the field map has already reported.
+        name.contains('.')
     }
 
     pub(crate) fn emit_expr_inner(
@@ -9831,7 +9914,19 @@ impl LlvmBackend {
                     .and_then(|tys| tys.get(i))
                     .map(|pt| self.call_param_llvm_type(pt))
                     .unwrap_or_else(|| actual_ty.clone());
-                if matches!(reg.ty, Type::Ptr(_)) {
+                let reg_is_ptr = self
+                    .fun
+                    .reg_value_ll
+                    .get(&reg.name)
+                    .map(|w| w == "ptr")
+                    .unwrap_or(false);
+                if matches!(reg.ty, Type::Ptr(_)) && !reg_is_ptr {
+                    // 2026-11-17 (corpus slice C): a `Ptr`-stamped argument is
+                    // normally an i64 handle, and `canonical_ptr` inttoptrs it.
+                    // But a value loaded from a ptr-typed global (`const BASE:
+                    // Ptr<Int> = …`) is already a pointer — inttoptr then
+                    // emitted `inttoptr i64 %ptr to ptr`, invalid IR. When the
+                    // register is actually ptr, fall through and pass it as-is.
                     let conv = self.canonical_ptr(out, indent, &reg.name);
                     call_args.push(format!("ptr {}", conv));
                 } else if expected_ty == "i64" && actual_ty.starts_with('i') && actual_ty != "i64" {
@@ -9983,13 +10078,19 @@ impl LlvmBackend {
         writeln!(out, "{}{} = load i64, ptr {}", indent, fp, env_p).ok();
         let fp_p = self.fun.gen_reg();
         writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fp_p, fp).ok();
-        let arg_regs: Vec<String> = args
-            .iter()
-            .map(|a| {
-                let r = self.emit_expr(out, a, indent);
-                format!("i64 {}", r.name)
-            })
-            .collect();
+        // 2026-11-17 (class C2): the closure ABI boxes every argument to i64, so
+        // every argument must actually BE an i64. Annotating the raw register
+        // (`format!("i64 {}", r.name)`) lied whenever the value was a pointer —
+        // `apply_function("hello", my_printer)` passed the String's ptr as
+        // `i64 %t5`, and `opt` rejected the module. `adapt_to_i64` is the
+        // adapter that knows: it ptrtoints a pointer, boxes floats, and passes an
+        // i64 handle through.
+        let mut arg_regs: Vec<String> = Vec::with_capacity(args.len());
+        for a in args {
+            let r = self.emit_expr(out, a, indent);
+            let boxed = self.adapt_to_i64(out, indent, &r);
+            arg_regs.push(format!("i64 {boxed}"));
+        }
         let result = self.fun.gen_reg();
         writeln!(
             out,
@@ -12602,7 +12703,47 @@ impl LlvmBackend {
                             )
                             .ok();
                         }
+                    } else if cur_ll.starts_with('i') && dst_ll == "float" {
+                        // 2026-11-17 (BUGS 2026-11-15, Data→Float width
+                        // mismatch): the Bitcast lane is a REINTERPRETATION, so
+                        // `i64 → float` is the exact inverse of the existing
+                        // float → Data → Int lane above — narrow to the 32-bit
+                        // pattern, then bitcast. Without this the final `else`
+                        // emitted `bitcast i64 ... to float`, which LLVM
+                        // rejects (a bitcast may not change width).
+                        let cw = cur_ll[1..].parse::<u64>().unwrap_or(64);
+                        let w32 = if cw == 32 {
+                            cur.clone()
+                        } else {
+                            let r = self.fun.gen_reg();
+                            writeln!(out, "{}{} = trunc {} {} to i32", indent, r, cur_ll, cur).ok();
+                            r
+                        };
+                        writeln!(out, "{}{} = bitcast i32 {} to float", indent, dst, w32).ok();
+                    } else if cur_ll.starts_with('i') && dst_ll == "double" {
+                        // Same reinterpretation one width up: the pattern must
+                        // reach i64 before the bitcast.
+                        let cw = cur_ll[1..].parse::<u64>().unwrap_or(64);
+                        let w64 = if cw == 64 {
+                            cur.clone()
+                        } else {
+                            let r = self.fun.gen_reg();
+                            writeln!(out, "{}{} = zext {} {} to i64", indent, r, cur_ll, cur).ok();
+                            r
+                        };
+                        writeln!(out, "{}{} = bitcast i64 {} to double", indent, dst, w64).ok();
                     } else {
+                        // Every cross-kind and cross-width route is handled
+                        // above, so the catch-all is, by the lane's own
+                        // contract (`LaneKind::Bitcast`: "same-width
+                        // reinterpretation"), same-width only. Assert it: an
+                        // unequal-width bitcast is invalid IR, and emitting it
+                        // made the failure visible only as an LLVM verifier
+                        // dump after `opt` (BUGS.md 2026-11-15).
+                        debug_assert_eq!(
+                            cur_ll, dst_ll,
+                            "Bitcast lane must be same-width: {cur_ll} → {dst_ll}"
+                        );
                         writeln!(
                             out,
                             "{}{} = bitcast {} {} to {}",

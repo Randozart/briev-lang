@@ -1,56 +1,70 @@
-## 2026-11-17 — a free call in an obj/cell MEMBER body was refused as undefined (FIXED)
+## 2026-11-17 — `obj` member bodies could not call a **void** callee (FIXED)
 
-**Symptom.** `tests/fixtures/obj_router.rbv` (the `obj_router` step of
-`benchmarks/rbv_gate.sh`, hence `tests/rbv_router.rs`, hence CI) failed to
-compile:
+**Symptom.** `tests/rbv_router.rs::router_smoke_gate` failed, and it was the only
+failing test on `main` for at least three commits — including `eccd3799`, the
+`v0.2.0` release (4421 passed / 1 failed):
 
 ```
 error: type errors:
-  invalid operation 'call to 'navigate'' on type 'navigate' is not defined in
-  this program — import the module that defines it (e.g. `import "std/…"`) or
-  remove the call
+  invalid operation 'call to 'navigate'' on type 'navigate' is not defined in this
+  program — import the module that defines it
 build failed: tests/fixtures/obj_router.rbv
 ```
 
-The *identical* body at top level compiled. Minimal reproduction:
+**Cause.** The shared member-context builder (`build_member_ctx`, used by both
+`obj` members and cells) copied every table from the file-level environment
+*except* `defined_fns`. Call resolution tries `fn_return_types` first, so any
+callee with a return type still resolved — which is why imported `defn`s worked
+and the bug looked like an import problem. A **void** callee has no return-type
+entry, so it fell through to the unknown-name gate against an empty set:
 
 ```briev
-import "std/web/router.bv";
-obj R {
-    path: String;
-    txn go(url: String) [path != url][path == url] { path = url; navigate(url); term; };
-};
-let r: R = R { path: current_path() };   // fails
+defn ping() { term; };                                  // void
+obj R { path: String;
+        txn go(url: String) [path != url][path == url] { path = url; ping(); term; }; };
 ```
-removing the `obj` wrapper (a top-level `txn go`) compiles.
 
-**Root cause.** The 2026-11-16 undefined-name typecheck gap made
-`TypecheckContext::defined_fns` load-bearing: `resolve_free_call`
-(`src/typechecker/mod.rs:2334`) REFUSES a call whose name is not in the set,
-instead of guessing `Int`. Top-level bodies receive the full set
-(`ctx.defined_fns = env.defined_fns.clone()`, `:7399`). Member bodies are
-typechecked through `build_member_ctx`, which builds a fresh
-`TypecheckContext::new(universe)` and copied a dozen fields — but never
-`defined_fns`, which `TypecheckContext::new` initialises empty (`:232`). So
-every free call in a member body (obj AND cell — the builder is shared) saw an
-empty set. The bug predates the fixtures: it landed with the 2026-11-16 gate and
-was invisible until the web-surface gate next ran against a member txn.
+```
+call to 'ping' … is not defined in this program        // false: it is defined
+```
 
-**Fix.** `build_member_ctx` now sets `mctx.defined_fns = defined_fns.clone();`
-— the same set, one construction path per context kind.
+`frgn navigate(url: String) from "…";` is void too, which is why the router
+fixture was the only test that caught it.
 
-**Tests.** `typechecker::member_free_call_tests`: member txn → frgn, member txn
-→ defn, top-level txn → frgn (the always-worked control), and member txn →
-unknown name **still refused** (the fix populates the set, it does not disable
-the gate).
+**Fix.** `mctx.defined_fns = defined_fns.clone();` — one line, so a member body
+sees the same callable-name set as a top-level body. Regression test:
+`typechecker::member_scope_tests::member_body_resolves_a_void_top_level_callee`,
+verified to fail without the fix and pass with it.
 
-**Also.** `benchmarks/rbv_gate.sh` step 6 guarded on the *playwright package*
-being importable, not on the *chromium binary* existing — a machine with the npm
-package but no `npx playwright install chromium` ran the browser smoke and
-failed with "Executable doesn't exist", reporting an environment gap as a page
-bug. The guard now probes `chromium.executablePath()` and skips with which gap
-it skipped. CI never had the package, so CI's redness was the typecheck bug
-alone.
+**Correcting an earlier claim in this file.** The first version of this entry said
+a member body "resolves no outer names at all", based on a fuller repro where the
+member's own name was also rejected. That was an over-generalisation: same-file
+`defn`s and imported `defn`s resolved fine (through `fn_return_types`); the failure
+is specific to callees with **no return type**.
+
+**Unrelated, found while fixing:** running the gate with an out-of-tree
+`CARGO_TARGET_DIR` fails at the `brievc web` step, because `resolve_stdlib_root`
+probes `<exe>/../../lib`. Not a compiler bug — CI builds in-tree — but it costs a
+debugging cycle if you work with an external target dir; set `BRIEV_STDLIB_PATH`.
+
+**Same bug, independently diagnosed (2026-11-17, second session).** Found via
+the same CI symptom and fixed with the same line before the two sessions
+reconciled — which is a useful confirmation, not a disagreement. Two additions
+from that pass:
+
+- **Regression coverage widened.** `typechecker::member_free_call_tests` pins
+  four shapes: member txn → `frgn` (void), member txn → `defn`, top-level txn →
+  `frgn` (the always-worked control), and member txn → **unknown name still
+  refused** (the fix populates the set; it does not disable the gate). The last
+  one matters: without it a future "fix" that simply removed the check would
+  pass.
+- **`benchmarks/rbv_gate.sh` step 6** guarded on the *playwright package*
+  importing, not on the *chromium binary* existing. A machine with the npm
+  package but no `npx playwright install chromium` ran the browser smoke and
+  failed with "Executable doesn't exist" — an environment gap reported as a page
+  bug, on the same test. The guard now probes `chromium.executablePath()` and
+  names which gap it skipped. CI never had the package, so CI's redness was the
+  typecheck bug alone.
 
 ## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
 
@@ -81,6 +95,22 @@ caller's cwd (development builds run from the repo root). Test:
 **Lesson.** Shipped data must be resolved from the installation, never from the
 caller's working directory. The same question applies to `lib/glue` and the
 stdlib search path; they already take an explicit path or `BRIEV_HOME`.
+
+**Follow-up (2026-11-17): `--config-dir` must mean the same thing to every
+loader.** `ConfigResolver` (`src/config_resolver.rs`) already owns the chain
+`--config-dir` → `BRIEV_CONFIG_DIR` → `./.briev/config` → user profile → baked,
+but `run_build` applied the flag to only two consumers (`config_tuning`,
+`load_target_config`), so `config/abi/` ignored it. Now: `abi_dir()` consults the
+resolver first, and `run_build` publishes the flag as `BRIEV_CONFIG_DIR` for the
+process. Every rung is a FALL-THROUGH — a `--config-dir` holding only
+`ir-lowering.dbvl` (the `benchmarks/deferred_ab_gate.sh` shape) still resolves
+cores from the installation, and a dir that DOES hold a core is authoritative.
+Both directions are covered by tests and were verified by hand.
+
+The same exercise exposed a second, smaller defect: `validate_abi_core` reported
+"not shipped, known cores: …" for a core that exists but does not parse. It now
+reports the path and the parse error (`ABI core X at <path> cannot be used:
+needs an integer `int_bits` …`).
 
 ## 2026-11-16 — HIR drops the FFI boundary surface, and the audit does not notice
 
@@ -577,7 +607,7 @@ through the existing `Sqrt#` intrinsic, preserving both signs and all existing
 golden output lines. Keep division-trap regressions as the division oracle.
 Validation is recorded in the [CI split plan](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
 
-## 2026-11-15 — Data-to-Float width mismatch emits an invalid bitcast (OPEN)
+## 2026-11-15 — Data-to-Float width mismatch emits an invalid bitcast (FIXED 2026-11-17)
 
 An alternative exceptional-value probe, `(0x7F800000 as Data) as Float`, emits
 `bitcast i64 ... to float`, rejected by LLVM verification. Narrowing the input
@@ -587,6 +617,19 @@ it cannot emit invalid IR. Reproduced with the release compiler at `2b64e8c8`;
 diagnostics are in `/tmp/opencode/briev-ci-split-validation/float-special-values-build.log`
 and `float-special-values-build-int32.log`. The formatting corpus uses the
 existing intrinsic/literal construction instead of this cast route.
+
+**Fixed.** The Bitcast lane already narrowed float→int (via i32) and handled
+ptr↔int and unequal integer widths; the int→float direction fell through to the
+catch-all `else`. Both directions are now explicit and symmetric: int→float does
+`trunc` to i32 then `bitcast` to float, int→double does `zext` to i64 then
+`bitcast` to double. The catch-all carries a `debug_assert_eq!(cur_ll, dst_ll)`
+— the lane's own contract is "same-width reinterpretation", so any future route
+that reaches it with mismatched widths fails in CI instead of after `opt`.
+
+Semantics pinned by `tests/tier1/float_bit_reinterpret.bv`: `(0x40490FDB as
+Data) as Float` prints `3.14159274`. The three lowerings are distinguishable in
+the output — correct reinterpretation = 3.14159274, a `sitofp` value conversion
+= 1078530011, and the old behaviour did not build at all.
 
 ## 2026-11-15 — a library failure suppresses unrelated required CI evidence
 

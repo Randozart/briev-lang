@@ -63,6 +63,14 @@ cat >"$HOST_EXCLUDES" <<'EOF'
 examples/bad/boot_mps2.bv
 examples/bad/boot_rv64.bv
 examples/bad/boot_stage1.bv
+# 2026-11-17 (corpus triage): the `.bad` dialect is the BARE-METAL dialect
+# (docs/architecture/bad-dialect.md), not "invalid source". These are valid
+# multi-target bootloaders — `bootloader.bv` boots riscv64 and `typed_boot.bv`
+# is its typed end-to-end proof — and they have no host build path. Leaving them
+# in the corpus charged the floor for a Verifier verdict on a program that is
+# not host-buildable, the same reason the three above are excluded.
+examples/bad/bootloader.bv
+examples/bad/typed_boot.bv
 examples/kernel_rv64.b.bv
 examples/timer_arm.b.bv
 examples/timer_rv64.b.bv
@@ -119,11 +127,51 @@ trap 'rm -f "$raw"; rm -rf "$workdir"' EXIT
 printf '%s\0' "${FILES[@]}" \
     | xargs -0 -P "$(nproc)" -I{} sh -c '
         f="$1"
-        out="$2/$(printf "%s" "$f" | tr "/" "_")"
+        key="$(printf "%s" "$f" | tr "/" "_")"
+        out="$2/$key"
+        # 2026-11-17 (corpus triage): every file needs its OWN --out dir. The
+        # runner used to share "$3/out", so parallel builds overwrote each
+        # other"s `<name>.ll` and `opt` then verified one file against another
+        # — `examples/wildcard_lift.bv` came back carrying a dozen unrelated
+        # verifier errors while the files that actually owned them looked
+        # clean. A measurement tool that cross-attributes failures cannot
+        # produce a trustworthy floor.
+        mkdir -p "$2/build-$key"
+        # 2026-11-17: a `.s.` source writes its strict-profile report BESIDE
+        # itself (compile.rs `with_extension("report.txt")`) — by design for a
+        # real build, but this runner measures the tree and must not leave
+        # artifacts in it (the same rule that put `--out` in the scratch dir
+        # after a run dropped 85 untracked executables into lib/std). Snapshot,
+        # then remove only what this build created.
+        side="${f%.*}.report.txt"
+        had_side=0
+        [ -f "$side" ] && had_side=1
         { printf "FILE: %s\n" "$f"
-          "$0" build "$f" --verify-bodies --out "$3/out" 2>&1 \
-              | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|error:"
+          "$0" build "$f" --verify-bodies --verify-report "$2/goals-$key.json" \
+              --out "$2/build-$key" 2>&1 \
+              | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|verify-bodies: [0-9]|error:"
+          # 2026-11-17 (units): the line-grep above counts GOALS for the
+          # unproven/skipped/violated buckets but FILES for proven. Rather than
+          # guess a unit, publish the goal counts explicitly from the report the
+          # verifier already writes. The summary then has two labelled columns
+          # instead of one mixed one.
+          if [ -f "$2/goals-$key.json" ]; then
+              printf "GOALS: "
+              python3 - "$2/goals-$key.json" <<'"'"'PY'"'"'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("0 0 0 0")
+    raise SystemExit(0)
+print(len(d.get("proven", [])), len(d.get("unproven", [])),
+      len(d.get("skipped", [])), len(d.get("violated", [])))
+PY
+          else
+              printf "GOALS: 0 0 0 0\n"
+          fi
         } > "$out" 2>&1
+        [ "$had_side" -eq 0 ] && rm -f "$side"
     ' "$BRIEVC" {} "$workdir" "$workdir"
 
 for file in "${FILES[@]}"; do
@@ -135,32 +183,87 @@ done
 # Tally. Done in awk: one pass, per-file PROVEN (a file with no failure
 # bucket), and NO_POSTCONDITION counted separately so it never inflates the
 # unproven denominator.
+# 2026-11-17 (units): two columns, two units, no ambiguity.
+#   files_*  — one per corpus file. files_proven = no failure line at all;
+#              files_failing = the build emitted `error:`; files_unproven = the
+#              body prover left at least one goal undecided.
+#   goals_*  — from `--verify-report` JSON, summed across files.
+# The old summary printed files_proven next to goals_unproven and nobody could
+# tell — which is how "242 files / 210 PROVEN / 18 UNPROVEN" became
+# unreconcilable. `skipped`/`violated`/`errors` line counts are kept as
+# *_lines because they always were line counts.
 counts=$(awk '
-    /^FILE: / { if (seen && !bad) proven++; seen=1; bad=0; next }
+    # 2026-11-17 (skip-origin reporting, from main): "25 proven (1 own), 166
+    # skipped (25 own)". The raw figures count one entry per declaration PER
+    # COMPILATION UNIT — the prelude re-contributes 25 generics from
+    # std/iterator.bv to every native file — so the `own` figures describe
+    # unmodelled PROGRAM surface. Both are reported; neither replaces the other.
+    # 2026-11-17 (units, this branch): files_* are per corpus file, goals_* are per
+    # obligation from --verify-report JSON. Both units, both labelled.
+    function num(s) { gsub(/[^0-9]/, "", s); return s + 0 }
+    /--verify-bodies: [0-9]/ {
+        n = split($0, p, " ")
+        for (i = 1; i < n; i++) {
+            if (p[i+1] == "proven")  { obl_proven  += p[i]; own_proven  += num(p[i+2]) }
+            if (p[i+1] == "skipped") { obl_skipped += p[i]; own_skipped += num(p[i+2]) }
+        }
+        next
+    }
+    /^FILE: / {
+        if (seen) { if (!bad) files_proven++; if (file_err) files_failing++; if (file_unprov) files_unproven++ }
+        seen=1; bad=0; file_err=0; file_unprov=0; next
+    }
     /body has no terminating value path/ { no_post++; next }
-    /could not prove:/ { unproven++; bad=1; next }
-    /verify-bodies skipped:/ { skipped++; next }
-    /verify-bodies violation:/ { violated++; bad=1; violations = violations $0 "\n"; next }
-    /error:/ { errors++; bad=1; errlines = errlines $0 "\n"; next }
+    /could not prove:/ { unproven_lines++; bad=1; file_unprov=1; next }
+    /verify-bodies skipped:/ { skipped_lines++; next }
+    /verify-bodies violation:/ { violated_lines++; bad=1; violations = violations $0 "\n"; next }
+    /error:/ { errors_lines++; bad=1; file_err=1; errlines = errlines $0 "\n"; next }
+    /^GOALS: / { gp += $2; gu += $3; gs += $4; gv += $5; next }
     END {
-        if (seen && !bad) proven++
-        printf "%d %d %d %d %d %d", proven, unproven, no_post, skipped, violated, errors
+        if (seen) { if (!bad) files_proven++; if (file_err) files_failing++; if (file_unprov) files_unproven++ }
+        printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+            files_proven, files_failing, files_unproven, gp, gu, gs, gv,
+            no_post, skipped_lines, errors_lines, obl_proven, own_proven, obl_skipped, own_skipped
     }
 ' "$raw")
 
-read -r proven unproven no_post skipped violated errors <<<"$counts"
+read -r files_proven files_failing files_unproven goals_proven goals_unproven \
+    goals_skipped goals_violated no_post skipped_lines errors_lines \
+    obl_proven own_proven obl_skipped own_skipped <<<"$counts"
 violated_lines=$(awk '/verify-bodies violation:/' "$raw")
 error_lines=$(awk '/error:/' "$raw")
 
 cat <<EOF
 === VERIFY-BODIES CORPUS ===
-Files:            ${#FILES[@]}
-PROVEN:           $proven
-UNPROVEN:         $unproven
-NO_POSTCONDITION: $no_post
-SKIPPED:          $skipped
-VIOLATED:         $violated
-ERR:              $errors
+Files:              ${#FILES[@]}
+
+files (one per corpus file):
+  files_proven:      $files_proven      # no failure of any kind
+  files_failing:     $files_failing     # the build emitted an error
+  files_unproven:    $files_unproven    # >= 1 goal the prover could not decide
+
+goals (one per obligation, from --verify-report):
+  goals_proven:      $goals_proven
+  goals_unproven:    $goals_unproven
+  goals_skipped:     $goals_skipped
+  goals_violated:    $goals_violated    # a contract falsely proved - GATE
+
+lines (diagnostic occurrences):
+  no_postcondition:  $no_post
+  skipped_lines:     $skipped_lines
+  error_lines:       $errors_lines      # > files_failing when a file emits several
+
+Every number states its unit. Compare like with like: a per-file PROVEN can never
+be set against a per-goal unproven, which is how the old summary became
+unreconcilable (see docs/plans/2026-11-17-three-open-threads.md §3).
+
+obligation entries (as the compiler reports them, one per declaration per unit):
+  proven_entries:    $obl_proven     # includes the prelude's re-contributions
+  skipped_entries:   $obl_skipped
+
+own surface (what the corpus files themselves declare):
+  proven_own:        $own_proven
+  skipped_own:       $own_skipped
 EOF
 
 if [ -n "$violated_lines" ]; then

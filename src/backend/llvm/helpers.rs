@@ -2723,6 +2723,27 @@ impl LlvmBackend {
         indent: &str,
         reg: &TypedRegister,
     ) -> String {
+        // 2026-11-17 (class C1): a `Ptr`-stamped value is USUALLY an i64 handle,
+        // but not when it came from a ptr-typed global (`const UART_RX:
+        // Ptr<Int>`), which loads as a real `ptr`. Returning the register
+        // unchanged then stored a pointer into an i64 slot
+        // (`store i64 %t0, ptr %ip_0`). The recorded width decides.
+        if self
+            .fun
+            .reg_value_ll
+            .get(&reg.name)
+            .map(|w| w == "ptr")
+            .unwrap_or(false)
+        {
+            let converted = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{indent}{converted} = ptrtoint ptr {} to i64",
+                reg.name
+            )
+            .ok();
+            return converted;
+        }
         if self.ctx.int_bits == 64 {
             return reg.name.clone();
         }

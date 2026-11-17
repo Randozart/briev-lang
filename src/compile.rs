@@ -377,8 +377,14 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     {
         resolver.add_search_path(root);
     }
-    items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
-    // 2026-07-24: Extract stage blocks from imported files. The first
+    // 2026-11-17 (skip-origin reporting): capture the root file's own
+    // declaration names BEFORE the merge. After `resolve_imports` this vector is
+    // the whole program — prelude included — and nothing downstream can tell the
+    // file's declarations from its imports (`item_origins` is indexed against
+    // the resolver's output and five later passes mutate the vector; `Span`
+    // carries no file identity). Names are the one thing that survives.
+    let own_decl_names = briev_compiler::analysis::verify_bodies::declared_names(&items);
+    items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?; // 2026-07-24: Extract stage blocks from imported files. The first
     // extract_inline_stage_blocks ran before import resolution, so stage
     // blocks in imported modules were not captured.
     extract_inline_stage_blocks(&mut items, &mut pm);
@@ -861,6 +867,22 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         let report = briev_compiler::analysis::verify_bodies::verify_bodies_in_universe(
             &items, &universe, proof_bits,
         );
+        // 2026-11-17 (skip-origin reporting): the report is emitted once per
+        // declaration **per compilation unit**, and `std/iterator.bv` is
+        // prelude-injected into every native unit. So a corpus total counts 25
+        // prelude declarations ~80 times, and reading it as "unmodelled program
+        // surface" overstated the work by two orders of magnitude. Attribute
+        // every entry to the file or to an import so the numbers can be read
+        // honestly.
+        //
+        // Name-based on purpose: `resolver.item_origins` is indexed against the
+        // resolver's OUTPUT and `items` is mutated five times afterwards, and
+        // `Span` carries no file identity. The root's own names must be captured
+        // before `resolve_imports` — see the capture above.
+        let origin_table = briev_compiler::analysis::verify_bodies::OriginTable::new(
+            own_decl_names,
+            resolver.imported_decl_names(),
+        );
         // Advisory: supported bodies the prover could not decide. Never a
         // failure — only concrete counterexamples fail the build.
         for line in &report.unproven {
@@ -870,11 +892,26 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         for line in &report.skipped {
             eprintln!("info: --verify-bodies skipped: {line}");
         }
+        // Say how much of the above is this file's own surface. The wording is
+        // deliberately `--verify-bodies: … skipped`, NOT `--verify-bodies
+        // skipped:` — the corpus runner counts the per-declaration lines by that
+        // exact prefix, and a summary that silently matched it would double every
+        // downstream count. That is the bug class this reporting change exists to
+        // fix, so it must not introduce one.
+        let (own_proven, _) = origin_table.count(&report.proven);
+        let (own_skipped, _) = origin_table.count(&report.skipped);
+        eprintln!(
+            "info: --verify-bodies: {} proven ({} own), {} skipped ({} own)",
+            report.proven.len(),
+            own_proven,
+            report.skipped.len(),
+            own_skipped
+        );
         // 2026-11-12 (standalone roadmap C1): a machine-readable report. Written
         // before the failure return so a violating build still produces one —
         // that is exactly when a tool needs the detail.
         if let Some(path) = &opts.verify_report {
-            let json = serde_json::to_string_pretty(&report.to_json())
+            let json = serde_json::to_string_pretty(&report.to_json_with_origins(&origin_table))
                 .map_err(|e| format!("cannot serialise the verify report: {e}"))?;
             std::fs::write(path, json)
                 .map_err(|e| format!("cannot write verify report '{path}': {e}"))?;

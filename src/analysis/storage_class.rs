@@ -288,6 +288,27 @@ fn let_lowers_plain(
 /// and unreferenced by the proof surface AND unwritten by any node body
 /// AND scalar-initialized. Declared `state` lets are never plain here (a
 /// contradiction is the caller's error to report).
+/// The `let` a top-level item declares, unwrapping the `export` marker.
+///
+/// 2026-11-17 (class D): `export let X: Int = 1;` binds a module-scope value
+/// exactly like a bare `let`, but `TopLevel::Export` is unwrapped in seven places
+/// in the LLVM backend and in none here — so an exported let was classified by
+/// neither this function nor `build_field_index`. Its every read then fell to the
+/// identifier read's last resort and emitted a load of a symbol nothing
+/// declared (`use of undefined value '@FD_STDOUT'`). Both walks must see the same
+/// items, or a name can end up plain without being registered.
+pub fn let_of_item(item: &TopLevel) -> Option<&Statement> {
+    let stmt = match item {
+        TopLevel::Statement(stmt) => stmt.as_ref(),
+        TopLevel::Export(e) => match e.inner.as_ref() {
+            TopLevel::Statement(stmt) => stmt.as_ref(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    matches!(stmt, Statement::Let { .. }).then_some(stmt)
+}
+
 pub fn classify_plain_lets(
     items: &[TopLevel],
     exit_condition: Option<&Expr>,
@@ -297,8 +318,8 @@ pub fn classify_plain_lets(
     let written = body_written_names(items);
     let mut plain = HashSet::new();
     for item in items {
-        if let TopLevel::Statement(stmt) = item {
-            if let Statement::Let { name, ty, expr, .. } = stmt.as_ref() {
+        if let Some(stmt) = let_of_item(item) {
+            if let Statement::Let { name, ty, expr, .. } = stmt {
                 let declared = let_annotation(name, items);
                 if let_lowers_plain(
                     declared.as_deref(),

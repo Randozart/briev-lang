@@ -2492,8 +2492,8 @@ declarations, `defn`s that are *members* of a type, and `cell` declarations. The
 verifier's entry point is the top-level declaration, so these never reach it.
 
 **Supported inside a candidate body.** Integer arithmetic and comparisons, `let`,
-`when` guards, `check` / `gate` facts, calls to callees that carry a value
-summary, and `foreach` over a range — with an invariant (§10.4) or one inferred —
+`when` guards, `check` / `gate` facts, calls to callees that carry a value summary
+or an explicit postcondition (§10.7.2), and `foreach` over a range — with an invariant (§10.4) or one inferred —
 plus the invariant and variant clauses of §10.5 and §10.6.
 
 Since 2026-11-16 the model also decides three interval families and one
@@ -2519,11 +2519,13 @@ one conjunct is taken — no transitive expansion, no result-free postcondition,
 no literal-`false` postcondition, no self-recursion.
 
 **Skipped, with a named reason.** Field access, indexing, buffers, floats,
-strings, *conversion* casts (§15.6), `match`, and intrinsics without a summary.
-The reason names the construct and the declaration:
+*conversion* casts (§15.6), `match`, unsummarised intrinsics, and — since handles
+are admitted (§10.7.2) — claims *about* a handle's content, cross-handle length
+algebra, and handle-returning contracts that speak about the value. The reason
+names the construct and the declaration:
 
 ```
-info: --verify-bodies skipped: byte_at: type Custom("String") is outside the signed 64-bit word model
+info: --verify-bodies skipped: float_to_str: type Custom("Float") is outside the signed 64-bit word model
 ```
 
 Skips are advisory. They mean *nothing was proved here*, which is different from
@@ -2538,14 +2540,111 @@ census numbers must be read per reason, not in aggregate.
 
 **Consequence.** Compile-time metaprogramming and type members are never
 candidates (measured: `lib/std/numeric.bv` holds 6 `$defn` and 0 plain `defn`),
-but the library is no longer "not paid for": the full `lib/std` corpus (92 files)
-now reports **925 proven obligations**, **5 unproven**, **14 528 skipped** and
-**0 violated**. The whole unproven set is two goals — `ip_v4` (needs
-disjoint-bit OR reasoning) and `sha1_padded_len` (needs modular arithmetic). What
-remains skipped is dominated by strings and by host/memory intrinsics; widening
-those means a length model for handles, and index/alias reasoning, which the
-prover does not yet have — and which also gates parallelism, since independence
-is a claim about disjoint writes.
+but the library is no longer "not paid for": on `brievc 0.2.0` the full `lib/std`
+corpus (92 files) reports **2216 proven obligations**, **101 unproven**,
+**13 308 skipped** and **0 violated**.
+
+**Read that as work done, not as surface — and the difference is two orders of
+magnitude.** Those totals count one entry per declaration **per compilation unit**
+(§10.7.1), and the prelude injects `std/iterator.bv` into every native unit. The
+same corpus at 0.3.0, with each entry attributed to the file or to an import:
+
+| | proven | unproven | skipped |
+|---|---|---|---|
+| entries (declaration × unit) | 2 216 | 101 | 13 308 |
+| **own** (declared in the corpus file) | **40** | **6** | **404** |
+
+So **97% of the reported skip surface is imported code re-examined per unit**, and
+99% of the proven entries are the same. The library's own verified surface is 40
+proven obligations and 404 declarations outside the model — a target one can
+actually plan against, and the reason a skip count must never be quoted without
+its origin split.
+
+The six own unproven entries are the whole gap, named:
+
+| declaration | file | blocker |
+|---|---|---|
+| `ip_v4` | `std/net/socket.bv` | needs disjoint-bit OR reasoning |
+| `sha1_padded_len` | `std/net/sha1.bv` | needs modular arithmetic |
+| `is_alpha_loop`, `is_numeric_loop` | `std/string.bv` | postcondition `i == s.^Length` — counter-versus-length |
+| `pf_exp` | `std/cast_lanes.bv` | a path returns a call to the recursive `pf_exp_digits`, whose declared post bounds only its first component; stating the domain in the precondition was tried and does not close it |
+| `read32le` | `std/ffi/xxhash.bv` | **newly visible**: before attribution it was one of 101 indistinguishable entries |
+
+The remaining 95 `unproven` entries are `pf_exp` again, once per unit, because
+`cast_lanes.bv` is prelude-baked.
+
+### 10.7.2 What 0.2.0 decides that §10.7 did not (2026-11-17)
+
+Six families below were admitted for the `0.2.0` release. Each is *exact* — a
+statement about the program the compiler emits, not a heuristic — and each names
+what it refuses as carefully as what it decides.
+
+**Opaque handles.** `String` and `Data` are word-sized handles with **no value
+semantics**: passable, reinterpretable, never ordered, never compared for content.
+Admitting them cannot produce a proof about text, which is why it is safe at all.
+
+A **representation** cast is identity on that word and is erased before the walk;
+a **conversion** is never modelled. The pair decides, not the direction (§15.6):
+
+| Pair | Kind | Modelled as |
+|---|---|---|
+| `String ↔ Data`, `Data ↔ Int` | representation | identity on the word |
+| `String → Int`, `Int → String` | conversion (parses / formats) | never |
+
+**Length atoms.** `s.^Length` and `CharCount#(s)` evaluate to one integer atom per
+handle, known non-negative. The atom is keyed on the base's *symbolic value*, not
+its text, so `s.^Length` in two places is one quantity, `a.^Length` and
+`b.^Length` stay distinct, and a rebinding yields a new atom instead of carrying
+the old length across. Only **lower bounds at or below zero** are decidable from
+it: `term.^Length >= 0` proves; `== 1`, an upper bound, or a comparison against
+another handle's length is content/length-algebra reasoning and stays out.
+
+**Per-field results.** A tuple result is proved component-wise: each element is
+bound as `term.N`, and a bare `term` names the **first** component (the same
+convention the call gate uses). A field that contradicts the body still refutes —
+the split must not let a wrong component hide behind a true one. A tuple *value*
+is never treated as one word.
+
+**Relational values** are self-identical atoms keyed by operator and both symbolic
+operands, so a Bool body that *is* its own postcondition (`term == (CharCount#(s) == 0)`)
+decides structurally — while two different comparisons stay distinct.
+
+**Bit composition.** `a | b >= 0` when both operands are non-negative (the sign bit
+is clear in each, so the OR cannot set it), and `(x & m) << k >= 0` only when the
+shifted maximum stays below the sign bit — a *checked* shift, because wrapping
+shift can otherwise push a positive value negative.
+
+**Contracted calls carry their declarations.** A call to a callee with an explicit
+postcondition becomes an opaque atom carrying that postcondition's facts. This is
+what reaches memory-reading accessors (`byte_at`, `byte_raw`) and recursive helpers
+(`pow2`, `pow10`), which can never earn a value summary — the callee's *body* is
+never inspected, only what it declares. Five restrictions keep it sound:
+
+1. **declared** postconditions only — never a body;
+2. only posts that **bound the result against a literal** are substituted (a value
+   relation such as `term == a + 1` would replace a call with an atom that says
+   nothing about the value, converting a skip into an unproven verdict);
+3. one atom per **call site** — two identical calls are two evaluations, and
+   sharing an atom would let `a - b` fold to zero across a possible store;
+4. **no self-recursion**, and a post folding to literal `false` is dropped;
+5. facts may mention only the call's **arguments** and its own atom, so a callee's
+   contract cannot smuggle in one of the caller's locals.
+
+Example — the shape this unlocks, in the stdlib today:
+
+```briev
+defn byte_raw(s: String, i: Int) [true][term >= 0] -> Int {
+    term Load#((s as Data) as Int + 8 + i, 1);
+};
+
+defn first_byte(s: String) [true][term >= 0] -> Int {
+    term byte_raw(s, 0);
+};
+```
+
+`byte_raw` reads memory, so it can never earn a value summary; `first_byte` still
+proves, because `byte_raw`'s declared post supplies `term >= 0` and the `Load#`
+width range (§10.7) supplies the rest.
 
 ### 10.7.1 Running it, and reading the verdict (2026-11-16)
 
@@ -2570,9 +2669,49 @@ refutation. `--no-link` produces a byte-identical report to a normal build (the
 link step is downstream of verification) and exists so corpus-wide verification
 does not pay to link hundreds of programs.
 
+#### One entry per declaration per compilation unit (2026-11-17)
+
+Each array has one entry per declaration **per compilation unit**, and a unit is
+the whole imported program, not just the file named on the command line. The
+prelude injects `std/iterator.bv` and twelve other modules into every native unit,
+so their declarations are re-examined for every file compiled. Summing an array
+across a corpus therefore counts each prelude declaration once per file — 25
+generic declarations from `std/iterator.bv` become ~2000 entries over 92 files.
+
+That number answers "how much verification work did the corpus do", not "how much
+unmodelled surface does the library contain". Since 0.3.0 every entry also carries
+`"origin"` and the document carries a `summary`:
+
+```json
+{ "name": "iter_map_loop", "reason": "generic or variadic declaration …", "origin": "imported" }
+```
+
+| Key | Meaning |
+|---|---|
+| `origin: "own"` | declared by the file being compiled (or synthesized for it by a comptime/macro stage) |
+| `origin: "imported"` | declared by an imported module, prelude included |
+| `summary.<array>.own` / `.imported` / `.total` | the same split as counts; `own + imported == total == len(array)` |
+
+`own` wins when a name appears on both sides, because a legal program cannot have
+a genuine cross-file clash — the import-conflict rule rejects it. The case that
+actually occurs is a file re-loaded as its own module (the prelude imports
+`std/cast_lanes.bv`, which imports `std/float_fmt.bv`, so compiling
+`float_fmt.bv` sees itself again), and there the reported declaration is the
+file's own.
+
+The labels are metadata: they are computed after every verdict is decided, so they
+cannot move a declaration between buckets. Quoting `summary.*.own` is what
+describes program surface; the raw totals describe work done.
+
+When attribution is unavailable — a report written by a pre-0.3.0 `brievc`, or a
+caller that passes no table — the document keeps the original four-key shape,
+byte-identical, so consumers written against it keep working.
+
 Corpus measurement has its own runners — `scripts/verify_bodies_corpus.sh`
-(per-file text tally) and `scripts/verify-bodies-census.sh` (JSON artifact). Both
-count a *failed build* separately from a proof outcome; a build error is not a
+(per-file text tally) and `scripts/verify-bodies-census.sh` (JSON artifact), both
+of which now report raw and own figures side by side, and
+`scripts/verify_report_counts.py` (one report → both tallies). Both count a
+*failed build* separately from a proof outcome; a build error is not a
 verification result.
 
 ### 10.8 How convergence is established — three mechanisms
@@ -3511,12 +3650,18 @@ as Int` loaded a byte, the `+ 8 + i` above would be meaningless and no
 compiler could type it; a "load disguised as a cast" also has no defined
 address or width. When a raw byte value is wanted, it is spelled as a load.
 
-Both accessors above compile today. They are **not yet proved**, and the reason
-is the type gate, not this section: `--verify-bodies` reports
-`skipped: byte_raw: type Custom("String") is outside the signed 64-bit word
-model`. Admitting `String` as an opaque handle *and* the representation cast
-above, together, is what would let their `[term >= 0]` follow from the
-`Load#` width range (§10.7) — neither half suffices alone.
+**Outcome (2026-11-17): both are proved, by exactly the two halves this section
+predicted.** Admitting `String`/`Data` as opaque handles alone only moved them
+from *"type String is outside the signed 64-bit word model"* to *"an unsupported
+expression"* — the representation cast was still refused. With the cast erased as
+identity (§10.7.2) **and** the `Load#` width range in the model (§10.7), their
+`[term >= 0]` discharges. Neither half sufficed alone, as stated here before the
+work was done.
+
+The split this section draws is therefore load-bearing for the verifier, not just
+for codegen: a **representation** is modelled as identity on the word, and a
+**conversion** is never modelled at all. Modelling `s as Int` as identity would
+"prove" claims about parsed text.
 
 **Conversions are not representations, and the *pair* decides which is which.**
 The compiler resolves every `as` through the casting graph (§8.7) and the

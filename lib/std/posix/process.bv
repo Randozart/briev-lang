@@ -19,6 +19,9 @@ export defn wait4(pid: Int, wstatus: Int, options: Int) -> Int {
 };
 
 // Linux x86_64 syscall numbers (asm/unistd.h)
-let SYS_CLONE:   Int = 56;
-let SYS_EXECVE:  Int = 59;
-let SYS_WAIT4:   Int = 61;
+//
+// 2026-11-17 (class D): `syscall.bv` (imported above) already exports
+// SYS_CLONE, SYS_EXECVE and SYS_WAIT4. Re-declaring the first two here emitted a
+// second definition of the same symbol (`redefinition of global '@SYS_CLONE'`).
+// The import makes them visible; syscall.bv remains the one home for syscall
+// numbers.

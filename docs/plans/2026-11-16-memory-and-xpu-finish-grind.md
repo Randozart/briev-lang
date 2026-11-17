@@ -276,6 +276,30 @@ starts before M3 lands, except X5 (a cheap record pulled into wave 0).
 
 ### X1. f16 coopmat tier: fix or gate it (highest measured leverage)
 
+**2026-11-17 — the denominator is settled (device-free).** Record:
+`benchmarks/results/2026-11-17-x1-denominator-audit.md`; run
+`bash benchmarks/gpu_workcount_audit.sh`. The dispatch geometry now lives in one
+place (`GemmPlan::dispatch_geometry`, consumed by the tier gate too) and shows
+`workgroups · tile_m · tile_n == m·n` at both shapes — 64 workgroups at 512³,
+4096 at 4096³. The grid is full: **no folded or short dispatch**, so the
+"suspect denominator" branch below is refuted.
+
+The *baseline* was the thing that was wrong. Implied rates from the recorded
+timings: 512³ coopmat 0.256 / tiled 2.237 TFLOP/s; 4096³ coopmat 0.370 / tiled
+3.462 TFLOP/s. Both arms beat both "ceilings" (1.46 f32-SIMD, 1.63 f16-storage)
+at 512³, in a 0.12 ms window where a launch artefact cannot manufacture a 9×
+gap — so those two figures are REFERENCE-KERNEL achievements, not hardware
+bounds, and comparing against them is what made a correct denominator look
+impossible. Both arms also scale the same way (1.45×/1.55× from 512³→4096³); a
+folded dispatch would collapse at the larger shape instead.
+
+Consequence: coopmat's target is the **tiled arm's own rate** (2.24 TFLOP/s at
+512³, 3.46 at 4096³), not 1.63. Whether the recorded wall clocks measure
+completion is still the device's question (X4 / `clFinish`) — but it is now the
+only open one in that comparison.
+
+The original text follows.
+
 **A/B recipe (needs only the device, no code change).** The tier is already
 policy-gated by a config fact consumed at BOTH decision points
 (`src/backend/spirv/kernel.rs:309` pair-view fields and `:450` tensor kernel):

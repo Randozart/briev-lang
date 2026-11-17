@@ -63,20 +63,38 @@ actions. References — does not replace — the kiosk program, lane ceilings,
 float formats, H5, verification, stability, lifetime/arena/destination,
 proof-consumption, eternal ABI, Intel G1.5, and doctrine plans.
 
-**Next steps + lane protocol (2026-11-16, ACTIVE):**
+**Next steps + lane protocol (2026-11-16, ACTIVE — M2/R/D now CLOSED):**
 `docs/plans/2026-11-16-next-steps-memory-determinism-lanes.md` — the four open
-engineering items in priority order (M2 tail-loop destruction: measured
-12.6 MB/4.8 GB/23.7 GB at 1k/100k/400k iterations, shape now reported so it
-blocks `--deny-memory-ambiguity`; R RSS step-growth: 150→204 MB over 400 calls
-on all three builds incl. the pre-campaign one — read main's A4 arena retraction
-first; D IR determinism: `%State` index and interned-string order still vary and
-the determinism corpus does not cover the shape; X six XPU items blocked on PTL
-node access, K3 edge budgets blocked on owner numbers). Also records the
+engineering items in priority order. **Status 2026-11-17:** M2 (tail-loop owned
+destruction) landed with a flat-RSS proof across a 16× carried-length range
+(`benchmarks/results/2026-11-16-tailloop-owned-destruction.md`); R (RSS
+step-growth) is answered — arena retention, not a leak, by a three-arm A/B
+(`briev-kiosk-avatar/docs/results/2026-11-17-kiosk-rss-truth.md`); D (IR
+determinism) is closed — the daemon compiles byte-identically across processes
+and `tests/tier1/state_layout_determinism.bv` joined the corpus. Only X (six XPU
+items blocked on PTL node access) and K3 (edge budgets blocked on owner numbers)
+remain. Also records the
 binding worktree/branch protocol (own worktree `briev-intel-xpu` on
 `intel-xpu-harvest`; `main` is a shared trunk never checked out here;
 fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
+
+**Device-free work queue (2026-11-17, ACTIVE):**
+`docs/plans/2026-11-17-device-free-work-queue.md` — what to do while the PTL node
+stays unreachable. Five items with gates: (1) corpus ERR triage, because the
+recorded "34 ERR / groups A–E" has **no written taxonomy anywhere** and
+`verify_bodies_corpus.sh` loses the file association for its `error:` bucket, so
+triage is one run and one table before any fix; (2) make `--config-dir`
+authoritative for data lookups (yesterday's `config/abi/` fix honours
+`BRIEV_HOME` and the binary tree but not the flag, while `config_resolver.rs`
+already owns the chain and `deferred_ab_gate.sh` depends on the partial-dir
+shape); (3) X1's *first action* — verify the work count of both GEMM arms —
+which is a property of the emitted dispatch geometry (`spirv/gemm.rs:60`) and
+hence device-free, plus the provisional fact-gate row; (4) a cgroup
+constrained-runner harness for K3 with the budgets as data (`UNMEASURED` is
+never a pass); (5) the Data→Float invalid-width bitcast (F2). Lane note: the
+FFI session owns F1–F11, so item 1 is scoped to triage plus unclaimed slices.
 
 **Finishing grind — memory to zero + XPU ceilings (2026-11-16, ACTIVE execution plan):**
 `docs/plans/2026-11-16-memory-and-xpu-finish-grind.md` — executes the

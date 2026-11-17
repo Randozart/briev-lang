@@ -4056,12 +4056,23 @@ impl LlvmBackend {
                         writeln!(out, "{}store i64 {}, ptr {}", indent, n, first).ok();
                     }
                 } else {
+                    // 2026-11-17 (class B survivor): `store float 0, ptr …` is
+                    // invalid IR — a float slot needs a floating constant
+                    // ("integer/byte constant must have integer/byte type"). A
+                    // Decimal initializer for a float-typed field is a
+                    // whole-number value; print it in the slot's own form.
+                    let literal = match ty {
+                        "float" | "double" => {
+                            super::float_to_llvm_str(n as f64, ty)
+                        }
+                        _ => n.to_string(),
+                    };
                     writeln!(
                         out,
                         "{}store {} {}, ptr {}, align {}",
                         indent,
                         ty,
-                        n,
+                        literal,
                         gep,
                         self.align_of(ty)
                     )
@@ -4149,7 +4160,16 @@ impl LlvmBackend {
                 // 2026-07-19: Store with native type when possible. Skip
                 // adapt_to_i64 boxing when the value's LLVM type matches the
                 // field's LLVM type (float→"float", double→"double").
-                let val_ty = self.llvm_type(&val_reg.ty);
+                // 2026-11-17 (class C1): the stamped type says i64 for a `Ptr`
+                // value, but the register may hold a real pointer (a load from a
+                // ptr-typed global). Trust the recorded width when there is one,
+                // or the store writes `ptr` into an i64 slot.
+                let val_ty = self
+                    .fun
+                    .reg_value_ll
+                    .get(&val_reg.name)
+                    .cloned()
+                    .unwrap_or_else(|| self.llvm_type(&val_reg.ty));
                 if val_ty == *ty {
                     writeln!(
                         out,

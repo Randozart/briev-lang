@@ -364,7 +364,15 @@ const KNOWN_TARGET_KEYS: &[&str] = &[
 fn known_keys_for(section: &str) -> Option<&'static [&'static str]> {
     match section {
         "values" => Some(&[
-            "class", "zero_copy", "layout", "to", "from", "len", "retain_op", "release_op", "kind",
+            "class",
+            "zero_copy",
+            "layout",
+            "to",
+            "from",
+            "len",
+            "retain_op",
+            "release_op",
+            "kind",
             "copy",
         ]),
         "discipline" => Some(&["blocking", "reentrant", "needs_main_thread"]),
@@ -413,8 +421,19 @@ fn validate_abi_core(lang: &str, entry: &HashMap<String, DataValue>) -> Result<(
     let Some(DataValue::String(name)) = entry.get("abi") else {
         return Ok(());
     };
-    if crate::glue::abi::load_core(name).is_ok() {
+    let Err(load_err) = crate::glue::abi::load_core(name) else {
         return Ok(());
+    };
+    // 2026-11-17: "cannot find" and "found but cannot read it" are different
+    // repairs. The old message reported both as "not shipped" and listed the
+    // existing cores — which says the core is absent while the file sits right
+    // there. Found by pointing `--config-dir` at a deliberately broken core.
+    if let Some(path) = crate::glue::abi::core_path(name) {
+        return Err(format!(
+            "ABI core `{name}` at `{}` cannot be used: {load_err}. Fix the core, \
+             or point the glue descriptor at a core that loads.",
+            path.display()
+        ));
     }
     let known = crate::glue::abi::core_names();
     Err(format!(
@@ -1102,7 +1121,10 @@ rust: { version: 1; types_module: "glue/rust/types.bv"; extension: "rs"; bridge_
             );
             checked += 1;
         }
-        assert!(checked > 0, "expected at least one adapter with a types_module");
+        assert!(
+            checked > 0,
+            "expected at least one adapter with a types_module"
+        );
     }
 
     #[test]
