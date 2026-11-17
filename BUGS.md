@@ -202,6 +202,41 @@ from that pass:
   names which gap it skipped. CI never had the package, so CI's redness was the
   typecheck bug alone.
 
+## 2026-11-17 — writing a `Float16` array element from a `Float` expression emits invalid IR
+
+**Symptom.** `store half %t35, ptr %t40` where `%t35` is `float` — LLVM rejects the
+module (`'%t35' defined with type 'float' but expected 'half'`). Repro (found while
+writing a self-checking GPU GEMM fixture):
+
+```briev
+let a: Float16[4096];
+async accel node fill [i < 4096][i == 4096] {
+    a[i] = 1.0 as Float16;      // value stays `float`; the store wants `half`
+    i = i + 1;
+    term;
+};
+```
+
+**Cause (not yet fixed).** The `as Float16` cast does not narrow: the register keeps
+its `float` LLVM type, and the element store then writes it into a `half` slot. The
+`FloatWidth` lane exists for exactly this (`fptrunc`/`fpext` between Float variants),
+so the open question is whether `Float16` resolves as a member of the `Float`
+protocol in this universe at all — if it does not, the cast falls through to
+identity and never narrows.
+
+**Impact.** Any program that writes an `f16` element from a `Float` expression fails
+to compile — which is the ordinary way to produce f16 output (the ceiling GEMMs
+avoid it only because `matmul_f16!` writes through its own path). Combined with the
+note below, f16 storage is currently hard to exercise from source.
+
+**Also found, same fixture:** accel kernel bodies reject `when`
+(`SPIR-V lowering: unsupported statement in kernel body (Discriminant(11))` and the
+kernel silently stays on CPU). The fixture language for GPU bodies is
+let/assign/expression/term over integer expressions; a data-dependent branch means
+falling back to the CPU lane with only a warning. Worth documenting in the accel
+guide, because a silent CPU fallback is exactly the class of thing that makes a
+"GPU" measurement meaningless.
+
 ## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
 
 **Symptom.** A `Float` accumulator written inside a `foreach` emits an `fadd`
