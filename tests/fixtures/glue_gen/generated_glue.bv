@@ -1,0 +1,5 @@
+// Variant A of the S3/G4' parity pair: the protocols come from the file
+// `brievc render c` produced. Same import position and depth as variant B, so
+// the two builds differ only in *how* the declarations were written — which is
+// the only thing the parity gate is allowed to be sensitive to.
+import "glue/c/protocols.bv";
