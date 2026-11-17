@@ -14735,3 +14735,23 @@ suite, no regression), lib suite 3916 passed, census on 92 files unchanged
 **Not this bug:** the daily `Verification nightly` red (`AST opt-out suite
 (BRIEV_HIR_EMIT=0)`) is older — it fails on 2026-11-14, 15 and 16 as well, and is
 the HIR/AST defn-liveness drift already tracked in this file.
+
+**Correction (same day): the first fix was too broad and broke wasm32.** The
+committed version (`b453b8e4`, PR #120) cleared `reg_value_ll` at *every* site
+that reset `txn_counter` (six of them). Only one of those is a function-body
+entry; `emit_inline_member` and the reactive drivers reuse `txn_counter`
+mid-body, so clearing there dropped width records for registers still in use —
+`tests/rbv_list_each_wasm.rs` failed with `'%ac0' defined with type 'i64' but
+expected 'i32'` (wasm32 wants i32 pointer handles, and the recorded width is what
+told the adapter so). Verified by A/B: the test passes on the pre-fix tree and
+fails on the too-broad tree.
+
+The clear therefore lives at the callable-txn driver only — the one site the
+trace evidence indicted. `reset_register_names()` keeps the coupling in one
+place; the other five counter resets are untouched. Both suites then pass:
+`rbv_list_each_wasm` 1 passed, `c_driver_node` 1 passed, `daily_use_smoke` 44
+passed, `hir_storage_class_parity` 2 passed, lib suite 3916 passed.
+
+The lesson is worth keeping: "reset the cache with the namespace" is the right
+invariant, but the namespace reset is not the same event as "a new function
+body" in this backend.

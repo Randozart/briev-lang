@@ -5271,7 +5271,7 @@ impl LlvmBackend {
                 self.fun.let_binding_types.insert(n.clone(), t.clone());
             }
         }
-        self.fun.reset_register_names();
+        self.fun.txn_counter = 0;
         self.fun.terminated = false;
         // 2026-06-26: in_callable_txn must be true so Statement::Term in the
         // defn body emits a ret instruction (emit_stmt.rs line 78). Without
@@ -7884,6 +7884,13 @@ impl LlvmBackend {
         // 2026-11-01: entry allocas and body registers share one namespace.
         // Reset before emitting either; a later reset can reuse entry names.
         // Retire when function construction owns a dedicated register allocator.
+        //
+        // 2026-11-17 (issue #119): the reset also has to drop the widths recorded
+        // for those names — see `reset_register_names`. It is NOT cleared at every
+        // counter reset: `emit_inline_member` and the reactive drivers reuse
+        // `txn_counter` mid-body, and clearing there dropped widths for registers
+        // still in use (it broke `rbv_list_each_wasm`: `%ac0` i64 where wasm32
+        // wants i32).
         self.fun.reset_register_names();
         // 2026-07-27: Set txn_name for per-function arena gating.
         self.fun.txn_name = name.to_string();
@@ -8476,7 +8483,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.reset_register_names();
+        self.fun.txn_counter = 0;
         self.fun.clear_locals();
         // 2026-06-27: Clear ssa_old int/float regs so identifier lookups fall
         // through to GEP+load from %state. Without this, stale entries from a
@@ -8542,7 +8549,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.reset_register_names();
+        self.fun.txn_counter = 0;
         self.fun.clear_locals();
         // 2026-06-27: Clear ssa_old int/float regs so identifier lookups fall
         // through to GEP+load from %state (same rationale as emit_pre_function).
@@ -8678,7 +8685,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.reset_register_names();
+        self.fun.txn_counter = 0;
         self.fun.clear_local_bindings();
         self.fun.let_binding_types.clear();
         self.fun.let_original_types.clear();
@@ -8708,7 +8715,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.reset_register_names();
+        self.fun.txn_counter = 0;
         self.fun.clear_local_bindings();
         self.fun.let_binding_types.clear();
         self.fun.let_original_types.clear();
