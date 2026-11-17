@@ -1,5 +1,16 @@
 # Device-free work queue (2026-11-17)
 
+## Status 2026-11-17 (end of first execution pass)
+
+| # | item | state | evidence |
+|---|---|---|---|
+| 1 | corpus ERR triage + slice B | **done** | `benchmarks/results/2026-11-17-corpus-err-triage.md`; two runner defects fixed, floor re-measured at 243/59/207/0/**25** |
+| 2 | `--config-dir` authority | **done** | `abi_dir()` consults the resolver chain, `run_build` publishes the flag; both directions verified; `deferred_ab_gate.sh` still green |
+| 3 | X1 denominator audit | **done** | `benchmarks/results/2026-11-17-x1-denominator-audit.md` — geometry full, reference "ceilings" were not hardware bounds |
+| 4 | K3 constrained runner | **done, blocked on environment** | kiosk `harness/edge_budget.sh` + `docs/results/2026-11-17-k3-edge-budget-harness.md`; the host cannot enforce `MemoryMax`, so the harness refuses to score |
+| 5 | Data→Float invalid bitcast | **done** | `tests/tier1/float_bit_reinterpret.bv` + gate test |
+| — | corpus slice C (ptr register through `inttoptr i64`) | **open, next** | documented with the exact IR in the triage results file |
+
 Four workstreams that need no PTL access, ordered by value. Written after the
 2026-11-16/17 memory lane closed (M2 tail-loop destruction, M6 determinism, M7
 RSS truth) so the next session does not idle on the blocked XPU lanes.
