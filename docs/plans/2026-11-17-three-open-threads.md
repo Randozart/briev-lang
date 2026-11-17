@@ -1,5 +1,17 @@
 # Three open threads — investigation and plan (2026-11-17)
 
+## Status 2026-11-17: all three threads worked; two closed, one narrowed
+
+| thread | state | evidence |
+|---|---|---|
+| 1 class D (`export let`) | **done** | both storage walks share `storage_class::let_of_item`; the last-resort read warns + materialises a zero; the stdlib's duplicate `SYS_*` declarations removed. `lib/std/posix/io.bv`, `process.bv` and the consumer `lib/std/os/fs.bv` build clean |
+| 2 class C survivors | **done** | C3 (`&field` deref canonicalises), C1 (`pointer_handle_to_word` honours the recorded width), C2 (closure args are boxed, not annotated). `ptr-swap`, `ptr-arithmetic`, `sig_as_type` build clean |
+| 3 the floor's units | **done** | the runner prints labelled `files_*` and `goals_*` blocks; `benchmarks/results/2026-11-17-corpus-floor-units.md` restates the floor in both units |
+| — class B survivor | **partially** | the Decimal-into-float-slot init is fixed; `defn-composite` emits the same store shape from a *second* site that is not that arm — recorded, not guessed at |
+
+Every fix below was found by the investigation, not assumed by the plan; where the
+plan's hypothesis was wrong it is corrected in place.
+
 Follow-up to `docs/plans/2026-11-17-device-free-work-queue.md` and
 `benchmarks/results/2026-11-17-corpus-err-triage.md`. Read-only investigation of
 the three threads left open at the end of that pass:

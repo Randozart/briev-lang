@@ -25,15 +25,15 @@ The runner now prints two labelled blocks — `files_*` and `goals_*` — and th
 numbers come from `--verify-report` JSON (the same source the census uses), not
 from grepping human-readable lines.
 
-## 2. The floor (2026-11-17, commit: class D + the units fix)
+## 2. The floor (2026-11-17, after class D + C1/C2/C3 + the units fix)
 
 ```
 === VERIFY-BODIES CORPUS ===
 Files:              243
 
 files (one per corpus file):
-  files_proven:      61      # no failure of any kind
-  files_failing:     8       # the build emitted an error
+  files_proven:      63      # no failure of any kind
+  files_failing:     5       # the build emitted an error
   files_unproven:    176     # >= 1 goal the prover could not decide
 
 goals (one per obligation, from --verify-report):
@@ -45,7 +45,7 @@ goals (one per obligation, from --verify-report):
 lines (diagnostic occurrences):
   no_postcondition:  0
   skipped_lines:     34559
-  error_lines:       13      # > files_failing when a file emits several
+  error_lines:       7       # > files_failing when a file emits several
 ```
 
 **Gates:** `files_failing` and `goals_violated` only. The first is "this file does
@@ -79,22 +79,25 @@ Two distinct defects, both now fixed:
    duplicate declarations are removed — the import already made them visible, and
    `syscall.bv` stays the single home for syscall numbers.
 
-`files_failing` went from ~18 to 8 on this pass (the two stdlib files plus three
-examples that advanced past their first error).
+`files_failing` went from ~18 to 8 with class D (the two stdlib files plus three
+examples that advanced past their first error), then to 5 with class C.
 
 ## 4. The 8 files still failing, by class
 
 | class | files | error |
 |---|---|---|
-| C1 initializer store | `examples/ptr-arithmetic.bv` | `'%t0' defined with type 'ptr' but expected 'i64'` |
-| C2 indirect call | `examples/sig_as_type.bv` | `'%t5' defined with type 'ptr' but expected 'i64'` |
-| C3 state-target | `examples/ptr-swap.bv` | `'%t37' defined with type 'i64' but expected 'ptr'` |
-| B survivor | `examples/syntax/meta/defn-composite.bv` | `integer/byte constant must have integer/byte type` |
-| E link | `examples/ptr-runtime.bv`, `examples/wildcard_lift.bv` | `linker command failed` |
-| F source | `examples/mmap-demo.bv`, `networking.bv`, `process-spawn.bv` | `type errors:` |
+C1, C2 and C3 are fixed (see the commit series); `ptr-arithmetic`, `ptr-swap` and
+`sig_as_type` now build and link, and `wildcard_lift.bv` — which imports them —
+went clean with them. What remains:
 
-`wildcard_lift.bv` imports several of the above, so it inherits their errors —
-that attribution is genuine, not a runner artefact.
+| class | files | error |
+|---|---|---|
+| B survivor | `examples/syntax/meta/defn-composite.bv` | `integer/byte constant must have integer/byte type` (a *second* site; the Decimal-into-float-slot init is fixed) |
+| E link | `examples/ptr-runtime.bv` | `linker command failed` |
+| F source | `examples/mmap-demo.bv`, `networking.bv`, `process-spawn.bv` | `type errors:` — the example sources themselves, not codegen |
+
+`files_failing` went 18 → 8 (class D) → 5 (class C). The three `type errors:` files
+are example-source staleness, a different lane from codegen.
 
 ## 5. What the historical numbers probably were
 
