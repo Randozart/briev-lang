@@ -81,17 +81,28 @@ A user on the previously pinned compiler cannot see any of that.
 | String **content**, string **length algebra** (`CharCount#(a + b)`), `Capacity#` | explicitly out of model |
 | `Float` (822 skips), generics/variadic (2007) | need a theory layer, not a gate flip |
 
-## Version decision needed
+## Version: **0.2.0** (decided 2026-11-17)
 
-`Cargo.toml` says `0.1.0` and no tag exists. Options:
+Pre-1.0 semver: a minor bump is the honest step, because the verification surface
+materially widened (opaque handles, length atoms, per-field tuple results, declared
+contracts as call-term facts) rather than merely gaining fixes.
 
-1. **`v0.1.5`** — continue the line the old counsel pins referenced (`v0.1.4`);
-   signals "same line, more capability".
-2. **`v0.2.0`** — the verification surface materially widened (handles, tuples,
-   contract facts), signalling a capability step.
-3. **Don't tag; publish the artifact only** — if releases are meant to stay
-   internal for now.
+`Cargo.toml` and `briev-verify/Cargo.toml` both go 0.1.0 → 0.2.0; `brievc --version`
+reports `brievc 0.2.0`.
 
-Then: `scripts/package_release.sh <version>`, record the SHA-256, publish, and
-(whenever a *new* counsel pin exists) revisit counsel — noting that counsel 0.5.0
-no longer consumes a `brievc` tarball at all.
+### Artifact, measured
+
+```
+briev-v0.2.0.tar.gz
+29bc29980f9662784338451b8d310872aaaf491f0d8ed63cd5ddc6723c753164
+```
+
+Acceptance-tested from the **extracted tarball** (not the build tree):
+
+- `brievc --version` → `brievc 0.2.0`
+- `byte_at` proves its `[term >= 0 && term <= 255]`
+- `violated: 0`
+
+Census on the packaged compiler over `lib/std` (92 files): **proven 2216**,
+unproven 101 (one distinct defn, `pf_exp`), skipped 13308, **violated 0**, one
+build error.
