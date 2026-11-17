@@ -15,7 +15,7 @@ The 5 unproven are unchanged and understood: `ip_v4` ×3 (disjoint-bit OR),
 | Reason | Lines | Note |
 |---|---|---|
 | a call to X, which has no value summary | **7976** | 55% — decomposed in §2 |
-| generic or variadic declaration has no scalar model | 2007 | type parameters, not a gate flip |
+| generic or variadic declaration has no scalar model | 2007 | **not 2007 declarations** — 52 decls, of which `iterator.bv`'s 25 are prelude-injected and re-counted per file (~80×). See §6 |
 | a handle-returning contract is outside the word model | 1631 | **added in phase 2a — too broad, see §3** |
 | `Float` outside the word model | 822 | IEEE, separate theory |
 | `Tuple([Int, Int])` outside the word model | 546 | see §4 |
@@ -196,14 +196,48 @@ Two further facts worth keeping: `lib/std/cast_lanes.bv` is **prelude-baked** in
 
 ## 6. Phase D: generic / variadic declarations (2007 lines)
 
-`defn map<K, V>`, `iter_*`. These are outside the model because their parameters
-are type-parameterised, and the value model is one scalar per name.
+**Investigated 2026-11-17** — full findings in
+`docs/plans/2026-11-17-generics-investigation.md`. The flat "2007" hid two things:
+a much smaller inventory, and a ceiling of zero.
 
-This is **not** a gate flip: admitting them means deciding what a type parameter
-means for the prover (erased? opaque? per-instantiation?). Almost all of them are
-also collection-shaped, so their bodies would then hit the `List` gate anyway.
-**Recommendation: defer**, and write a short design note when the collection
-model is on the table. Not worth guessing now.
+**The 2007 is an accounting artifact.** The real inventory is **52 generic
+declarations** (46 in `lib/std` + 6 in `lib/ffi/mappers/template.bv`). One skip
+line is emitted per *declaration per file*, and `plugins/parsed/prelude-native.bv`
+injects `std/iterator.bv` into every native unit — 25 generics × ~80 corpus files
+= ~2000 of the 2007. The rest reconciles to within ~60 lines: array 5, hashmap 8,
+option 4 counted once, `result`'s 4 counted ~12 times (12 importers).
+
+That artifact applies to the generics bucket specifically, and to any bucket whose
+declarations sit in a prelude-injected file. It does **not** explain every bucket:
+`float_fmt.bv` declares only 2 Float-typed functions, so the Float bucket (638–822
+lines) is file-local declaration surface, not duplication. Verdicts are unaffected
+either way (re-verifying per unit is legitimate — proof context differs by types
+and globals); only the accounting misleads.
+
+| population | decls | has postcontract | what it needs |
+|---|---|---|---|
+| `iterator.bv` (prelude) | 25 | **all 25** | `List<T>` model + function values + indexing/mutation |
+| `array.bv` | 5 | all 5 | `Vector<T,N>` — length is a *const generic* |
+| `option.bv` + `result.bv` | 8 | none | `match` on a handled union; unpacks/guards |
+| `hashmap.bv` | 8 | none | opaque `Map` model (`len`/`is_empty` are `Count#()`-shaped, near-free *if* a contract existed) |
+| variadic (meta, syscall) | 2 | — | compile-time metaprogram; opaque syscall — not prover targets |
+
+**The second fact: 16 of the 46 declare no postcondition.** A proven obligation
+is a discharged contract clause, and interprocedural facts come only from
+declared contracts — so admitting those 16 proves nothing and helps no caller.
+The 30 that *do* carry contracts are exactly the loop bodies needing the most new
+theory (`result[j] = arr[i]`, `f(arr[i])`, `acc = f(acc, arr[i])`).
+
+So Phase D's realistic yield today is **zero proven obligations at any admission
+cost**, and the work unit if it is ever revisited is **25–52 declarations**, not
+2007. **Recommendation: defer**, and write the design note for the *collection
+model*, not for generics.
+
+**Confirmed by measurement (0.3.0, skip-origin reporting).** Each report entry is
+now attributed to the file or to an import, and the same 92-file corpus reports
+**404 own skipped** against 13 308 raw entries (and 40 own proven against 2 216).
+Phase D is a 25–52 declaration project, and every future estimate must be sized
+off the *own* figure.
 
 ## 7. Phase E: HIR/AST defn-liveness drift (known bug, in `BUGS.md`)
 

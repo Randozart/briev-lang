@@ -148,7 +148,7 @@ printf '%s\0' "${FILES[@]}" \
         [ -f "$side" ] && had_side=1
         { printf "FILE: %s\n" "$f"
           "$0" build "$f" --verify-bodies --out "$2/build-$key" 2>&1 \
-              | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|error:"
+              | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|verify-bodies: [0-9]|error:"
         } > "$out" 2>&1
         [ "$had_side" -eq 0 ] && rm -f "$side"
     ' "$BRIEVC" {} "$workdir" "$workdir"
@@ -163,6 +163,20 @@ done
 # bucket), and NO_POSTCONDITION counted separately so it never inflates the
 # unproven denominator.
 counts=$(awk '
+    # 2026-11-17 (skip-origin reporting): "25 proven (1 own), 166 skipped (25 own)".
+    # The raw figures count one entry per declaration PER COMPILATION UNIT — the
+    # prelude re-contributes 25 generics from std/iterator.bv to every native file —
+    # so the `own` figures are what describe unmodelled program surface. Both are
+    # reported; neither silently replaces the other.
+    function num(s) { gsub(/[^0-9]/, "", s); return s + 0 }
+    /--verify-bodies: [0-9]/ {
+        n = split($0, p, " ")
+        for (i = 1; i < n; i++) {
+            if (p[i+1] == "proven")  { obl_proven  += p[i]; own_proven  += num(p[i+2]) }
+            if (p[i+1] == "skipped") { obl_skipped += p[i]; own_skipped += num(p[i+2]) }
+        }
+        next
+    }
     /^FILE: / { if (seen && !bad) proven++; seen=1; bad=0; next }
     /body has no terminating value path/ { no_post++; next }
     /could not prove:/ { unproven++; bad=1; next }
@@ -171,11 +185,11 @@ counts=$(awk '
     /error:/ { errors++; bad=1; errlines = errlines $0 "\n"; next }
     END {
         if (seen && !bad) proven++
-        printf "%d %d %d %d %d %d", proven, unproven, no_post, skipped, violated, errors
+        printf "%d %d %d %d %d %d %d %d %d %d", proven, unproven, no_post, skipped, violated, errors, obl_proven, own_proven, obl_skipped, own_skipped
     }
 ' "$raw")
 
-read -r proven unproven no_post skipped violated errors <<<"$counts"
+read -r proven unproven no_post skipped violated errors obl_proven own_proven obl_skipped own_skipped <<<"$counts"
 violated_lines=$(awk '/verify-bodies violation:/' "$raw")
 error_lines=$(awk '/error:/' "$raw")
 
@@ -188,6 +202,14 @@ NO_POSTCONDITION: $no_post
 SKIPPED:          $skipped
 VIOLATED:         $violated
 ERR:              $errors
+
+--- obligation-level (one entry per declaration per unit) ---
+PROVEN obligation entries:   $obl_proven
+SKIPPED obligation entries:  $obl_skipped
+
+--- own surface (what the corpus files themselves declare) ---
+PROVEN own:                 $own_proven
+SKIPPED own:                $own_skipped
 EOF
 
 if [ -n "$violated_lines" ]; then

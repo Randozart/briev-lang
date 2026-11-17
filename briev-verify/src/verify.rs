@@ -25,7 +25,7 @@ use crate::ast::{
     Annotation, BinaryOpKind, Contract, Expr, OutputType, Statement, TopLevel, Type, UnaryOpKind,
 };
 use crate::symbolic::{SymbolicState, SymbolicValue, eval_symbolic, simplify_binary};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 /// Z3 escalation profiler — active only with `--features z3-profile`.
@@ -316,6 +316,136 @@ pub struct BodyReport {
     pub skipped: Vec<String>,
 }
 
+/// Where a reported declaration came from, relative to the unit being compiled.
+///
+/// 2026-11-17 (plan `2026-11-17-skip-origin-reporting-plan.md`): a report entry
+/// is emitted once per declaration **per compilation unit**, and the prelude
+/// injects `std/iterator.bv` into every native unit. So the corpus total counts
+/// 25 prelude declarations ~80 times, and reading it as "unmodelled program
+/// surface" overstated the work by two orders of magnitude. The labels let a
+/// consumer separate the file's own surface from what it merely imported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Declared by the file being compiled (or synthesized for it by a
+    /// comptime/macro stage — those belong to this unit too).
+    Own,
+    /// Declared by an imported module (prelude included).
+    Imported,
+}
+
+impl Origin {
+    /// Stable JSON spelling. Never localise or re-span: consumers key off it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Origin::Own => "own",
+            Origin::Imported => "imported",
+        }
+    }
+}
+
+/// The name the report uses for `item`, if the prover reports on it at all.
+///
+/// Single source of truth for report naming: the human diagnostics, the JSON
+/// entries and the origin table must agree, or an `own` label could land on
+/// another declaration's line.
+pub fn report_name(item: &TopLevel) -> Option<&str> {
+    contract_target(item).map(|(name, _, _)| name)
+}
+
+/// Every name the report can mention, wrappers unwrapped.
+///
+/// Deliberately mirrors [`contract_target`]: `Definition` and `Transaction` are
+/// the only items the prover reports on, so the attribution set is exactly the
+/// report's population — no wider (which would mislabel imported names as own)
+/// and no narrower (which would hide a file's own work).
+pub fn declared_names(items: &[TopLevel]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|item| report_name(item).map(str::to_string))
+        .collect()
+}
+
+/// Attribution table for one compilation unit: which declaration names belong
+/// to the file, and which to its imports.
+///
+/// Deliberately name-based. `ImportResolver::item_origins` looks like the right
+/// mechanism and is not: `compile.rs` mutates the item vector five times after
+/// import resolution (inline stage blocks, comptime evaluation, the Resolved
+/// stage, comptime refs, composite expansion), so the parallel index vector no
+/// longer lines up with the items the prover sees. `Span` carries no file
+/// identity either, so a merged item cannot be attributed from its position.
+#[derive(Debug, Default, Clone)]
+pub struct OriginTable {
+    own: HashSet<String>,
+    imported: HashSet<String>,
+}
+
+impl OriginTable {
+    /// Build a table from the two name sets. Both must use printed declaration
+    /// names (wrappers such as `Export`/`SyncGroup` stripped).
+    pub fn new(own: HashSet<String>, imported: HashSet<String>) -> Self {
+        OriginTable { own, imported }
+    }
+
+    /// True when no attribution is available — the report then omits the
+    /// `origin` and `summary` keys entirely, keeping the JSON byte-identical to
+    /// the pre-2026-11-17 shape for every existing consumer and fixture.
+    pub fn is_empty(&self) -> bool {
+        self.own.is_empty() && self.imported.is_empty()
+    }
+
+    /// Classify one declaration name.
+    ///
+    /// `own` wins over `imported`, and anything neither set claims is `own`.
+    /// Both rules serve the same purpose — never write off a declaration the
+    /// file itself owns:
+    ///
+    /// * A name in *both* sets is the file's own declaration seen a second time
+    ///   through a module that re-loaded the same file. The prelude does exactly
+    ///   that: `std/cast_lanes.bv` imports `std/float_fmt.bv`, so compiling
+    ///   `float_fmt.bv` loads it again as a module and every name it declares
+    ///   lands in both sets.
+    /// * A genuine cross-file clash cannot reach here: the import-conflict rule
+    ///   rejects two modules providing the same name, so there is no program in
+    ///   which "both" means two different declarations.
+    /// * A synthesized declaration is this unit's work.
+    pub fn classify(&self, name: &str) -> Origin {
+        if self.own.contains(name) || !self.imported.contains(name) {
+            Origin::Own
+        } else {
+            Origin::Imported
+        }
+    }
+
+    /// Per-bucket counts by origin, plus `total` so a consumer can check
+    /// `own + imported == total == len(bucket)` without recounting.
+    fn summary_for(&self, entries: &[String]) -> serde_json::Value {
+        let (own, imported) = self.count(entries);
+        serde_json::json!({
+            "own": own,
+            "imported": imported,
+            "total": entries.len(),
+        })
+    }
+
+    /// `(own, imported)` counts for one report bucket.
+    ///
+    /// The two always sum to `entries.len()` — that identity is what lets a
+    /// consumer trust the `summary` without re-deriving it.
+    pub fn count(&self, entries: &[String]) -> (usize, usize) {
+        let mut own = 0usize;
+        let mut imported = 0usize;
+        for entry in entries {
+            let name = entry.split_once(": ").map_or(entry.as_str(), |(n, _)| n);
+            match self.classify(name) {
+                Origin::Own => own += 1,
+                Origin::Imported => imported += 1,
+            }
+        }
+        (own, imported)
+    }
+}
+
 impl BodyReport {
     /// Render the report as JSON for tooling (`--verify-report`).
     ///
@@ -324,19 +454,44 @@ impl BodyReport {
     /// a declaration name is an identifier, so it cannot contain `: ` and the
     /// split is unambiguous.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        // No attribution: the emitted document is byte-identical to the shape
+        // that existed before origin labels, so every consumer and fixture
+        // written against it keeps working untouched.
+        self.to_json_with_origins(&OriginTable::default())
+    }
+
+    /// Render the report with per-finding origin labels and a `summary` block.
+    ///
+    /// Additive only: verdicts are already decided when this runs, so the labels
+    /// cannot change what was proved, skipped or violated — they say *whose*
+    /// declaration each entry is. With an empty table the output is identical to
+    /// [`BodyReport::to_json`] (no `origin`, no `summary`), which is what makes
+    /// the change safe for existing consumers.
+    pub fn to_json_with_origins(&self, table: &OriginTable) -> serde_json::Value {
+        let mut document = serde_json::json!({
             // Names, not a bare count: a consumer has to be able to tell
             // "proved" from "never examined", and a total cannot do that. The
             // prelude is included in this list, so consumers intersect with
-            // their own declarations.
-            "proven": self.proven.iter().map(|name| serde_json::json!({
-                "name": name,
-                "reason": "",
-            })).collect::<Vec<_>>(),
-            "unproven": findings_json(&self.unproven),
-            "violated": findings_json(&self.violated),
-            "skipped": findings_json(&self.skipped),
-        })
+            // their own declarations (or read `summary.proven.own`, which is
+            // that intersection done for them).
+            "proven": findings_json_with(&self.proven, table, false),
+            "unproven": findings_json_with(&self.unproven, table, true),
+            "violated": findings_json_with(&self.violated, table, true),
+            "skipped": findings_json_with(&self.skipped, table, true),
+        });
+        if table.is_empty() {
+            return document;
+        }
+        let summary = serde_json::json!({
+            "proven": table.summary_for(&self.proven),
+            "unproven": table.summary_for(&self.unproven),
+            "violated": table.summary_for(&self.violated),
+            "skipped": table.summary_for(&self.skipped),
+        });
+        if let Some(object) = document.as_object_mut() {
+            object.insert("summary".to_string(), summary);
+        }
+        document
     }
 }
 
@@ -347,6 +502,42 @@ pub fn findings_json(entries: &[String]) -> Vec<serde_json::Value> {
         .map(|entry| {
             let (name, reason) = entry.split_once(": ").unwrap_or((entry.as_str(), ""));
             serde_json::json!({ "name": name, "reason": reason })
+        })
+        .collect()
+}
+
+/// Like [`findings_json`], with an `origin` label when attribution is available.
+///
+/// `has_reason` distinguishes the `proven` bucket: its entries are bare names
+/// (there is no reason to print), while every other bucket is `name: reason`.
+fn findings_json_with(
+    entries: &[String],
+    table: &OriginTable,
+    has_reason: bool,
+) -> Vec<serde_json::Value> {
+    if table.is_empty() {
+        return if has_reason {
+            findings_json(entries)
+        } else {
+            entries
+                .iter()
+                .map(|name| serde_json::json!({ "name": name, "reason": "" }))
+                .collect()
+        };
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            let (name, reason) = if has_reason {
+                entry.split_once(": ").unwrap_or((entry.as_str(), ""))
+            } else {
+                (entry.as_str(), "")
+            };
+            serde_json::json!({
+                "name": name,
+                "reason": reason,
+                "origin": table.classify(name).as_str(),
+            })
         })
         .collect()
 }
@@ -403,7 +594,8 @@ pub fn verify_bodies_with_types(
         // become leading facts (`gate`s) on every path. A callee whose body can
         // never be summarised — a memory read, a recursion — still contributes
         // what it declares, which is the project's stated source of truth.
-        let (rewritten, call_facts) = substitute_contracted_calls(&normalized_body, &contracts, name);
+        let (rewritten, call_facts) =
+            substitute_contracted_calls(&normalized_body, &contracts, name);
         let mut with_facts: Vec<Statement> = call_facts.into_iter().map(Statement::Gate).collect();
         with_facts.extend(rewritten);
         let body: &[Statement] = &with_facts;
@@ -801,33 +993,38 @@ fn replace_result(expr: &Expr, replacement: &Expr) -> Expr {
             Box::new(replace_result(r, replacement)),
         ),
         Expr::UnaryOp(k, inner) => Expr::UnaryOp(*k, Box::new(replace_result(inner, replacement))),
-        Expr::Field(base, f) => {
-            Expr::Field(Box::new(replace_result(base, replacement)), f.clone())
-        }
+        Expr::Field(base, f) => Expr::Field(Box::new(replace_result(base, replacement)), f.clone()),
         Expr::Call(name, args, id) => Expr::Call(
             name.clone(),
-            args.iter().map(|a| replace_result(a, replacement)).collect(),
+            args.iter()
+                .map(|a| replace_result(a, replacement))
+                .collect(),
             *id,
         ),
         Expr::MethodCall(recv, m, args, id) => Expr::MethodCall(
             Box::new(replace_result(recv, replacement)),
             m.clone(),
-            args.iter().map(|a| replace_result(a, replacement)).collect(),
+            args.iter()
+                .map(|a| replace_result(a, replacement))
+                .collect(),
             *id,
         ),
         Expr::Index(base, idx) => Expr::Index(
             Box::new(replace_result(base, replacement)),
             Box::new(replace_result(idx, replacement)),
         ),
-        Expr::Cast(inner, ty) => Expr::Cast(Box::new(replace_result(inner, replacement)), ty.clone()),
-        Expr::Reflect(base, target, kind) => {
-            Expr::Reflect(Box::new(replace_result(base, replacement)), target.clone(), *kind)
+        Expr::Cast(inner, ty) => {
+            Expr::Cast(Box::new(replace_result(inner, replacement)), ty.clone())
         }
+        Expr::Reflect(base, target, kind) => Expr::Reflect(
+            Box::new(replace_result(base, replacement)),
+            target.clone(),
+            *kind,
+        ),
         Expr::Consume(inner) => Expr::Consume(Box::new(replace_result(inner, replacement))),
         other => other.clone(),
     }
 }
-
 
 /// Whether a postcondition bounds the result against a literal.
 ///
@@ -945,20 +1142,17 @@ fn unsupported_length_reflection(
             Expr::Call(name, args, _) if name == "CharCount#" && args.len() == 1 => {
                 base_reason(&args[0], types)
             }
-            Expr::BinaryOp(_, l, r) => {
-                expr_reason(l, types).or_else(|| expr_reason(r, types))
-            }
+            Expr::BinaryOp(_, l, r) => expr_reason(l, types).or_else(|| expr_reason(r, types)),
             Expr::UnaryOp(_, inner)
             | Expr::Cast(inner, _)
             | Expr::Consume(inner)
             | Expr::Reflect(inner, _, _) => expr_reason(inner, types),
             Expr::Call(_, args, _) => args.iter().find_map(|a| expr_reason(a, types)),
-            Expr::MethodCall(recv, _, args, _) => expr_reason(recv, types)
-                .or_else(|| args.iter().find_map(|a| expr_reason(a, types))),
-            Expr::Field(base, _) => expr_reason(base, types),
-            Expr::Index(base, idx) => {
-                expr_reason(base, types).or_else(|| expr_reason(idx, types))
+            Expr::MethodCall(recv, _, args, _) => {
+                expr_reason(recv, types).or_else(|| args.iter().find_map(|a| expr_reason(a, types)))
             }
+            Expr::Field(base, _) => expr_reason(base, types),
+            Expr::Index(base, idx) => expr_reason(base, types).or_else(|| expr_reason(idx, types)),
             _ => None,
         }
     }
@@ -1011,9 +1205,7 @@ fn length_bases(post: &Expr) -> std::collections::BTreeSet<String> {
                 go(l, out);
                 go(r, out);
             }
-            Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Consume(inner) => {
-                go(inner, out)
-            }
+            Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Consume(inner) => go(inner, out),
             Expr::Field(base, _) => go(base, out),
             Expr::Index(base, idx) => {
                 go(base, out);
@@ -1218,10 +1410,9 @@ fn normalize_stmt_casts(stmt: &Statement, types: &HashMap<String, Type>) -> Stat
             expr: expr.as_ref().map(|x| e(x)),
             modifiers: modifiers.clone(),
         },
-        Statement::Guarded(cond, inner) => Statement::Guarded(
-            e(cond),
-            normalize_representation_casts(inner, types),
-        ),
+        Statement::Guarded(cond, inner) => {
+            Statement::Guarded(e(cond), normalize_representation_casts(inner, types))
+        }
         Statement::Term(Some(x)) => Statement::Term(Some(e(x))),
         Statement::EndProgram(Some(x)) => Statement::EndProgram(Some(e(x))),
         Statement::Tail(x) => Statement::Tail(e(x)),
@@ -1267,7 +1458,9 @@ fn normalize_expr_casts(expr: &Expr, types: &HashMap<String, Type>) -> (Expr, Op
         Expr::Call(name, args, id) => (
             Expr::Call(
                 name.clone(),
-                args.iter().map(|a| normalize_expr_casts(a, types).0).collect(),
+                args.iter()
+                    .map(|a| normalize_expr_casts(a, types).0)
+                    .collect(),
                 *id,
             ),
             None,
@@ -1278,7 +1471,9 @@ fn normalize_expr_casts(expr: &Expr, types: &HashMap<String, Type>) -> (Expr, Op
                 Expr::MethodCall(
                     Box::new(recv),
                     name.clone(),
-                    args.iter().map(|a| normalize_expr_casts(a, types).0).collect(),
+                    args.iter()
+                        .map(|a| normalize_expr_casts(a, types).0)
+                        .collect(),
                     *id,
                 ),
                 None,
@@ -2134,7 +2329,7 @@ fn rel_verdict(
             }
         }
     }
-// Non-negativity of bit composition, for `x >= 0` goals only.
+    // Non-negativity of bit composition, for `x >= 0` goals only.
     //
     // `a | b >= 0` holds when both operands are non-negative: the sign bit is
     // clear in each, so the OR cannot set it. `(x & m) << k >= 0` holds when the
@@ -2165,7 +2360,10 @@ fn non_negative_bound(value: &SymbolicValue, bounds: &HashMap<String, Bound>) ->
         SymbolicValue::Binary(op, l, r) if op == "|" => {
             let a = non_negative_bound(l, bounds)?;
             let b = non_negative_bound(r, bounds)?;
-            (a.lower >= 0 && b.lower >= 0).then_some(Bound { lower: 0, upper: a.upper.max(b.upper) })
+            (a.lower >= 0 && b.lower >= 0).then_some(Bound {
+                lower: 0,
+                upper: a.upper.max(b.upper),
+            })
         }
         SymbolicValue::Binary(op, l, r) if op == "<<" => {
             let shift = r.try_to_literal()?;
@@ -2917,9 +3115,7 @@ fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
         // Length reflection on a handle is modelled (phase 2b); the *base* type
         // is checked by `unsupported_length_reflection`, which can see the
         // declared types this expression-level gate cannot.
-        Expr::Reflect(_, target, _) if target == "Length" => {
-            None
-        }
+        Expr::Reflect(_, target, _) if target == "Length" => None,
         Expr::Reflect(..) => Some("reflection".to_string()),
         _ => Some("an unsupported expression".to_string()),
     }
@@ -3555,5 +3751,100 @@ mod unknown_identity_tests {
             Box::new(SymbolicValue::int_literal(1)),
         );
         assert!(!structural_eq(&tree, &tree));
+    }
+}
+
+/// Origin attribution tests (2026-11-17, skip-origin reporting).
+///
+/// The point of the feature is that labels are *metadata*: these tests pin both
+/// halves — the split is correct, and adding it cannot change a verdict.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    /// A report with one entry of each interesting kind.
+    fn report() -> BodyReport {
+        BodyReport {
+            proven: vec!["mine".into(), "theirs".into()],
+            unproven: vec!["dup: needs modular arithmetic".into()],
+            violated: vec![],
+            skipped: vec![
+                "theirs: generic or variadic declaration has no scalar arithmetic model".into(),
+                "mine: type Custom(\"Float\") is outside the signed 64-bit word model".into(),
+                // Neither set claims this name: it must land in `own`, because an
+                // unattributed name must never be written off as somebody else's.
+                "unknown: call to Load# — no value summary".into(),
+            ],
+        }
+    }
+
+    fn table() -> OriginTable {
+        OriginTable::new(
+            ["mine", "dup"].iter().map(|s| s.to_string()).collect(),
+            ["theirs", "dup"].iter().map(|s| s.to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn without_a_table_the_document_is_unchanged() {
+        let json = report().to_json();
+        let object = json.as_object().expect("object");
+        // Exact key set: adding a key unconditionally would break every existing
+        // consumer, which is why an empty table must produce the old shape.
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["proven", "skipped", "unproven", "violated"]);
+        assert!(json["skipped"][0].get("origin").is_none());
+        assert!(json.get("summary").is_none());
+    }
+
+    #[test]
+    fn a_table_labels_entries_and_keeps_reasons() {
+        let json = report().to_json_with_origins(&table());
+        assert_eq!(json["skipped"][0]["origin"], "imported");
+        assert_eq!(json["skipped"][1]["origin"], "own");
+        assert_eq!(json["skipped"][2]["origin"], "own");
+        assert_eq!(json["proven"][0]["origin"], "own");
+        assert_eq!(json["proven"][1]["origin"], "imported");
+        // In both sets (`dup` is the file's own name, re-loaded as a module by
+        // the prelude): `own` wins, because a legal program cannot have a genuine
+        // cross-file clash — the import-conflict rule rejects it.
+        assert_eq!(json["unproven"][0]["origin"], "own");
+        // The reason survives labelling untouched.
+        assert_eq!(
+            json["skipped"][1]["reason"],
+            "type Custom(\"Float\") is outside the signed 64-bit word model"
+        );
+    }
+
+    #[test]
+    fn summary_counts_reconcile_with_each_bucket() {
+        let r = report();
+        let json = r.to_json_with_origins(&table());
+        let summary = &json["summary"];
+        for (bucket, entries) in [
+            ("proven", &r.proven),
+            ("unproven", &r.unproven),
+            ("violated", &r.violated),
+            ("skipped", &r.skipped),
+        ] {
+            let own = summary[bucket]["own"].as_u64().unwrap();
+            let imported = summary[bucket]["imported"].as_u64().unwrap();
+            let total = summary[bucket]["total"].as_u64().unwrap();
+            assert_eq!(
+                own + imported,
+                total,
+                "{bucket}: origins must partition the bucket"
+            );
+            assert_eq!(
+                total as usize,
+                entries.len(),
+                "{bucket}: total must be the bucket length"
+            );
+        }
+        // two own (`mine`, `unknown`) + one imported (`theirs`)
+        assert_eq!(summary["skipped"]["own"], 2);
+        assert_eq!(summary["skipped"]["imported"], 1);
+        assert_eq!(summary["unproven"]["own"], 1);
     }
 }

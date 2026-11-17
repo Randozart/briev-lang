@@ -2544,15 +2544,34 @@ but the library is no longer "not paid for": on `brievc 0.2.0` the full `lib/std
 corpus (92 files) reports **2216 proven obligations**, **101 unproven**,
 **13 308 skipped** and **0 violated**.
 
-The unproven set is small and understood: `ip_v4` (needs disjoint-bit OR
-reasoning), `sha1_padded_len` (needs modular arithmetic), `is_alpha_loop` /
-`is_numeric_loop` (postcondition `i == s.^Length` — counter-versus-length), and
-`pf_exp` (a path returns a call to the recursive `pf_exp_digits`, whose declared
-post bounds only its first component; stating the domain in `pf_exp`'s
-precondition was tried and does not close it). What remains skipped is dominated
-by generics/variadic declarations, `Float`, and host/memory intrinsics; widening
-those needs a theory layer, not a gate flip — and index/alias reasoning also gates
-parallelism, since independence is a claim about disjoint writes.
+**Read that as work done, not as surface — and the difference is two orders of
+magnitude.** Those totals count one entry per declaration **per compilation unit**
+(§10.7.1), and the prelude injects `std/iterator.bv` into every native unit. The
+same corpus at 0.3.0, with each entry attributed to the file or to an import:
+
+| | proven | unproven | skipped |
+|---|---|---|---|
+| entries (declaration × unit) | 2 216 | 101 | 13 308 |
+| **own** (declared in the corpus file) | **40** | **6** | **404** |
+
+So **97% of the reported skip surface is imported code re-examined per unit**, and
+99% of the proven entries are the same. The library's own verified surface is 40
+proven obligations and 404 declarations outside the model — a target one can
+actually plan against, and the reason a skip count must never be quoted without
+its origin split.
+
+The six own unproven entries are the whole gap, named:
+
+| declaration | file | blocker |
+|---|---|---|
+| `ip_v4` | `std/net/socket.bv` | needs disjoint-bit OR reasoning |
+| `sha1_padded_len` | `std/net/sha1.bv` | needs modular arithmetic |
+| `is_alpha_loop`, `is_numeric_loop` | `std/string.bv` | postcondition `i == s.^Length` — counter-versus-length |
+| `pf_exp` | `std/cast_lanes.bv` | a path returns a call to the recursive `pf_exp_digits`, whose declared post bounds only its first component; stating the domain in the precondition was tried and does not close it |
+| `read32le` | `std/ffi/xxhash.bv` | **newly visible**: before attribution it was one of 101 indistinguishable entries |
+
+The remaining 95 `unproven` entries are `pf_exp` again, once per unit, because
+`cast_lanes.bv` is prelude-baked.
 
 ### 10.7.2 What 0.2.0 decides that §10.7 did not (2026-11-17)
 
@@ -2650,9 +2669,49 @@ refutation. `--no-link` produces a byte-identical report to a normal build (the
 link step is downstream of verification) and exists so corpus-wide verification
 does not pay to link hundreds of programs.
 
+#### One entry per declaration per compilation unit (2026-11-17)
+
+Each array has one entry per declaration **per compilation unit**, and a unit is
+the whole imported program, not just the file named on the command line. The
+prelude injects `std/iterator.bv` and twelve other modules into every native unit,
+so their declarations are re-examined for every file compiled. Summing an array
+across a corpus therefore counts each prelude declaration once per file — 25
+generic declarations from `std/iterator.bv` become ~2000 entries over 92 files.
+
+That number answers "how much verification work did the corpus do", not "how much
+unmodelled surface does the library contain". Since 0.3.0 every entry also carries
+`"origin"` and the document carries a `summary`:
+
+```json
+{ "name": "iter_map_loop", "reason": "generic or variadic declaration …", "origin": "imported" }
+```
+
+| Key | Meaning |
+|---|---|
+| `origin: "own"` | declared by the file being compiled (or synthesized for it by a comptime/macro stage) |
+| `origin: "imported"` | declared by an imported module, prelude included |
+| `summary.<array>.own` / `.imported` / `.total` | the same split as counts; `own + imported == total == len(array)` |
+
+`own` wins when a name appears on both sides, because a legal program cannot have
+a genuine cross-file clash — the import-conflict rule rejects it. The case that
+actually occurs is a file re-loaded as its own module (the prelude imports
+`std/cast_lanes.bv`, which imports `std/float_fmt.bv`, so compiling
+`float_fmt.bv` sees itself again), and there the reported declaration is the
+file's own.
+
+The labels are metadata: they are computed after every verdict is decided, so they
+cannot move a declaration between buckets. Quoting `summary.*.own` is what
+describes program surface; the raw totals describe work done.
+
+When attribution is unavailable — a report written by a pre-0.3.0 `brievc`, or a
+caller that passes no table — the document keeps the original four-key shape,
+byte-identical, so consumers written against it keep working.
+
 Corpus measurement has its own runners — `scripts/verify_bodies_corpus.sh`
-(per-file text tally) and `scripts/verify-bodies-census.sh` (JSON artifact). Both
-count a *failed build* separately from a proof outcome; a build error is not a
+(per-file text tally) and `scripts/verify-bodies-census.sh` (JSON artifact), both
+of which now report raw and own figures side by side, and
+`scripts/verify_report_counts.py` (one report → both tallies). Both count a
+*failed build* separately from a proof outcome; a build error is not a
 verification result.
 
 ### 10.8 How convergence is established — three mechanisms
