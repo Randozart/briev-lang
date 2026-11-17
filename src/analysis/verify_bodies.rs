@@ -1347,3 +1347,71 @@ mod contract_atom_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tuple_result_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A tuple result is proved field-by-field from the preconditions.
+    #[test]
+    fn tuple_fields_prove_from_the_precondition() {
+        let defn = parse_one(
+            "defn pair(acc: Int, k: Int) [acc >= 1 && k >= 0][term.0 >= 1 && term.1 >= 0] -> (Int, Int) {\n\
+                 term (acc, k);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "both fields must prove: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// A field that contradicts the body still refutes — the field split must not
+    /// let a wrong component pass because another one held.
+    #[test]
+    fn a_false_tuple_field_refutes() {
+        let defn = parse_one(
+            "defn bad(acc: Int, k: Int) [acc >= 1 && k >= 0][term.0 >= 1 && term.1 < 0] -> (Int, Int) {\n\
+                 term (acc, k);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert_eq!(
+            report.violated.len(),
+            1,
+            "a false field must be refuted: proven={:?} unproven={:?}",
+            report.proven,
+            report.unproven
+        );
+    }
+
+    /// A bare `term` on a multi-value result names the FIRST component, the same
+    /// convention the call gate uses.
+    #[test]
+    fn bare_term_names_the_first_component() {
+        let defn = parse_one(
+            "defn first(acc: Int, k: Int) [acc >= 1 && k >= 0][term >= 1] -> (Int, Int) {\n\
+                 term (acc, k);\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a bare term must resolve to component 0: unproven={:?}",
+            report.unproven
+        );
+    }
+}
