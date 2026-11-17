@@ -25,7 +25,7 @@ The runner now prints two labelled blocks — `files_*` and `goals_*` — and th
 numbers come from `--verify-report` JSON (the same source the census uses), not
 from grepping human-readable lines.
 
-## 2. The floor (2026-11-17, after class D + C1/C2/C3 + the units fix)
+## 2. The floor (commit `1191129a6`, after class D + C1/C2/C3 + the units fix)
 
 ```
 === VERIFY-BODIES CORPUS ===
@@ -46,7 +46,22 @@ lines (diagnostic occurrences):
   no_postcondition:  0
   skipped_lines:     34559
   error_lines:       7       # > files_failing when a file emits several
+
+obligation entries (as the compiler reports them, one per declaration per unit):
+  proven_entries:    5348    # includes the prelude's re-contributions
+  skipped_entries:   34559
+
+own surface (what the corpus files themselves declare):
+  proven_own:        40
+  skipped_own:       522
 ```
+
+The `own` figures are the ones that describe program surface: the prelude
+re-contributes its generics to every native compilation unit, so 5348 entries
+collapse to 40 owned proofs and 34559 skipped entries to 522 owned skips. That
+gap is also why the historical "210 PROVEN" is unattributable — with three
+plausible per-run numbers (40 own, 63 files, 5348 entries) and no unit written
+down, 210 does not identify any of them.
 
 **Gates:** `files_failing` and `goals_violated` only. The first is "this file does
 not build"; the second is "a contract was falsely proved". `goals_proven` moves
