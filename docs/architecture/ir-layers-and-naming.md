@@ -132,9 +132,29 @@ the IR; `hir::render` is its debug text; BIRD is reserved.**
 - Gates: `scripts/gate.sh quick|full`, corpus sweep, HIR/AST `.ll` A/B,
   determinism check, diff tests.
 
+## FFI boundary surface in HIR (2026-11-16)
+
+HIR previously carried only the *names* of protocol binding functions and
+the `frgn` signature (name, link_symbol, params, ret). The protocol's
+cast lanes, direction, and target — and the boundary's `from` spec,
+pre/postconditions, error type, and flags — were unrecoverable. An FFI
+contract expressed as protocol axioms was not representable.
+
+H1 added `HirProtocol` / `HirCastEdge` / `HirProtocolOp` and
+`HirProgram.protocols`. H2 added `HirBoundary` (with `HirFromSpec`:
+Literal/Registry/Protocol/Linked) attached to `HirForeign`. H3 made the
+audit count the remaining gap (`cross_ops` not yet populated by lowering) —
+the BUGS.md fixture now reports `unsupported=1 (protocols=1 boundary=0)`
+instead of the old `unsupported=0` that certified the loss. H4 wired
+`boundary_conversion` in the destination model to read `HirBoundary`
+directly; CStr classifications are unchanged.
+
+The audit printout: `HIR_AUDIT ok … unsupported=N (protocols=P boundary=B)`.
+
 ## References
 
 - `docs/plans/2026-11-09-h5-completion-next-leg.md` (flip, seam refactors)
 - `docs/plans/2026-11-09-compiler-verification-program.md` (gates, snapshots)
 - `docs/architecture/features/plugins.md` (live-AST plugin surface)
 - `docs/architecture/overview.md` (pipeline stages)
+- `docs/plans/2026-11-16-ffi-handoff-remainder.md` (FFI contract status + remaining work)

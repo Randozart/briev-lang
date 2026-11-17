@@ -282,6 +282,29 @@ They parse today so a descriptor can state the contract before its consumers
 land; a well-formed example is pinned by
 `glue::config::tests::boundary_sections_parse_when_well_formed`.
 
+#### Generated protocols — `brievc render <lang> [--check]` (2026-11-16)
+
+The protocol surface is **data, not code**. Each adapter's `values:` block
+fully declares the conversion lanes (boundary type, protocol, `to_op`,
+`from_op`, `from_copy`, retain/release). `brievc render <lang>` reads the
+descriptor and writes `lib/glue/<lang>/protocols.bv` — the `type` + `proto`
+declarations that `types.bv` imports. The generated file is committed with
+a provenance header (descriptor path + render timestamp) and checked in CI
+via `--check` mode: a stale file is refused, a missing file (first render)
+is accepted.
+
+The parity gate (`tests/glue_gen_parity.rs`) proves the claim: generated
+and hand-written protocols emit **byte-identical IR** over a corpus that
+exercises both lanes (Briev→C and C→Briev). The gate pins program
+structure — both variants import a protocol file at the same position and
+depth — so the only difference is how those declarations were written.
+
+Adding a language now requires **only** the `values:` block in
+`glue.dbv` + the `types.bv` import. No Rust changes, no hand-written
+`proto` declarations. The C and Python adapters both pass this gate with
+zero Rust changes (Python: `brievc render python --check` green since
+the `values:` block was added 2026-11-16).
+
 ### 5.3 templates
 
 - **`bindings.*`** — declarative files rendered by `briev bindings`

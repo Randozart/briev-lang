@@ -679,3 +679,23 @@ shim honors:
    parse/build snippets). The compiler carries only the composite ABI contract
    + the meld declarations. Adding a language (Lisp, COBOL, …) is a config
    section, never a compiler change.
+
+### 12. Generated protocol surface (2026-11-16)
+
+The protocol axioms for an FFI boundary are **generated from data**, not
+hand-written. Each adapter's `values:` block declares the lane (boundary
+type, protocol, `to_op`, `from_op`, `from_copy`); `brievc render <lang>`
+renders `lib/glue/<lang>/protocols.bv`. The C adapter's
+`type CStr: String<C_String>` + `proto C_String: String { axiom
+CastTo/CastFrom… }` pair is now the generated output of
+`values: { "String": { … } }` in `glue/c/glue.dbv`.
+
+The parity gate (`tests/glue_gen_parity.rs`) proves the claim: generated vs
+hand-written protocols emit **byte-identical IR** over both lanes. The gate
+pins program structure (both variants import at the same position and depth)
+so the only difference is how those declarations were written — not a
+difference the emitter should be invariant under.
+
+HIR carries the surface: `HirProtocol`/`HirCastEdge` (H1) and
+`HirBoundary`/`HirFromSpec` (H2). The audit (H3) counts the remaining gap
+(`cross_ops`); the destination model (H4) reads `HirBoundary` directly.
