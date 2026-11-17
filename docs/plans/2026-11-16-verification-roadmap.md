@@ -172,10 +172,27 @@ defn pf_exp(s: String, i: Int, len: Int, acc: Int)
 ```
 
 Contract-first says state the domain (`i >= 0`, `len >= 0`) rather than weaken the
-post. That edit was attempted and **reverted**: `cast_lanes.bv` is *prelude-baked*
-into `brievc`, so the change cannot be verified without rebuilding the prelude and
-auditing every call site. Left as an inspected unproven, to be done as its own
-contract change rather than smuggled into a verifier PR.
+post. That edit was **attempted, built into the prelude, and measured — and it does
+not work**. Two findings, both empirical:
+
+1. **The precondition is not the blocker.** With `i >= 0 && len >= 0` added and
+   `brievc` rebuilt from the patched prelude, `pf_exp` still reports
+   *"could not prove … path 1 of 6"*, unchanged.
+2. **The blocking path returns a call, not a tuple.** Two of `pf_exp`'s paths end
+   in `term pf_exp_digits(…)`, which *returns* a tuple, so there is no
+   `term.0`/`term.1` to bind — and `pf_exp_digits` is recursive, so it earns no
+   summary, while its declared post bounds only its first component
+   (`[term >= -1000 && term <= 1000]`).
+
+Closing this needs one of two things, neither available today: induction over the
+recursive `pf_exp_digits`, or a callee post that bounds the second component
+*and* is itself dischargeable. It is therefore recorded as an inspected,
+understood gap — not a precondition fix, and emphatically not a weakened post.
+
+Two further facts worth keeping: `lib/std/cast_lanes.bv` is **prelude-baked** into
+`brievc` (a `.bv` edit is inert until the binary is rebuilt), and
+`cast_portable.bv` carries its **own** `pf_exp` with a different contract
+(`[true][term >= -1000 && term <= 1000]`) — so any edit must consider both lanes.
 
 ## 6. Phase D: generic / variadic declarations (2007 lines)
 
