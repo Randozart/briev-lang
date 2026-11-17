@@ -10078,13 +10078,19 @@ impl LlvmBackend {
         writeln!(out, "{}{} = load i64, ptr {}", indent, fp, env_p).ok();
         let fp_p = self.fun.gen_reg();
         writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fp_p, fp).ok();
-        let arg_regs: Vec<String> = args
-            .iter()
-            .map(|a| {
-                let r = self.emit_expr(out, a, indent);
-                format!("i64 {}", r.name)
-            })
-            .collect();
+        // 2026-11-17 (class C2): the closure ABI boxes every argument to i64, so
+        // every argument must actually BE an i64. Annotating the raw register
+        // (`format!("i64 {}", r.name)`) lied whenever the value was a pointer —
+        // `apply_function("hello", my_printer)` passed the String's ptr as
+        // `i64 %t5`, and `opt` rejected the module. `adapt_to_i64` is the
+        // adapter that knows: it ptrtoints a pointer, boxes floats, and passes an
+        // i64 handle through.
+        let mut arg_regs: Vec<String> = Vec::with_capacity(args.len());
+        for a in args {
+            let r = self.emit_expr(out, a, indent);
+            let boxed = self.adapt_to_i64(out, indent, &r);
+            arg_regs.push(format!("i64 {boxed}"));
+        }
         let result = self.fun.gen_reg();
         writeln!(
             out,
