@@ -65,7 +65,7 @@ impl ConfigResolver {
     }
 
     /// Resolve the config directory path through the priority chain.
-    fn resolve_config_dir(override_dir: Option<&Path>) -> PathBuf {
+    pub(crate) fn resolve_config_dir(override_dir: Option<&Path>) -> PathBuf {
         // 1. CLI override
         if let Some(dir) = override_dir {
             return dir.to_path_buf();

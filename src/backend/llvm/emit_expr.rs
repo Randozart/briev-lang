@@ -12602,7 +12602,47 @@ impl LlvmBackend {
                             )
                             .ok();
                         }
+                    } else if cur_ll.starts_with('i') && dst_ll == "float" {
+                        // 2026-11-17 (BUGS 2026-11-15, Data→Float width
+                        // mismatch): the Bitcast lane is a REINTERPRETATION, so
+                        // `i64 → float` is the exact inverse of the existing
+                        // float → Data → Int lane above — narrow to the 32-bit
+                        // pattern, then bitcast. Without this the final `else`
+                        // emitted `bitcast i64 ... to float`, which LLVM
+                        // rejects (a bitcast may not change width).
+                        let cw = cur_ll[1..].parse::<u64>().unwrap_or(64);
+                        let w32 = if cw == 32 {
+                            cur.clone()
+                        } else {
+                            let r = self.fun.gen_reg();
+                            writeln!(out, "{}{} = trunc {} {} to i32", indent, r, cur_ll, cur).ok();
+                            r
+                        };
+                        writeln!(out, "{}{} = bitcast i32 {} to float", indent, dst, w32).ok();
+                    } else if cur_ll.starts_with('i') && dst_ll == "double" {
+                        // Same reinterpretation one width up: the pattern must
+                        // reach i64 before the bitcast.
+                        let cw = cur_ll[1..].parse::<u64>().unwrap_or(64);
+                        let w64 = if cw == 64 {
+                            cur.clone()
+                        } else {
+                            let r = self.fun.gen_reg();
+                            writeln!(out, "{}{} = zext {} {} to i64", indent, r, cur_ll, cur).ok();
+                            r
+                        };
+                        writeln!(out, "{}{} = bitcast i64 {} to double", indent, dst, w64).ok();
                     } else {
+                        // Every cross-kind and cross-width route is handled
+                        // above, so the catch-all is, by the lane's own
+                        // contract (`LaneKind::Bitcast`: "same-width
+                        // reinterpretation"), same-width only. Assert it: an
+                        // unequal-width bitcast is invalid IR, and emitting it
+                        // made the failure visible only as an LLVM verifier
+                        // dump after `opt` (BUGS.md 2026-11-15).
+                        debug_assert_eq!(
+                            cur_ll, dst_ll,
+                            "Bitcast lane must be same-width: {cur_ll} → {dst_ll}"
+                        );
                         writeln!(
                             out,
                             "{}{} = bitcast {} {} to {}",

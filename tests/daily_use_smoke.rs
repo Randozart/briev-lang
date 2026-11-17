@@ -194,6 +194,39 @@ fn build_library(name: &str) {
     );
 }
 
+/// 2026-11-17 (BUGS.md 2026-11-15, Data→Float width mismatch): REGRESSION GATE.
+/// `(0x40490FDB as Data) as Float` is a byte-pattern reinterpretation, not a
+/// value conversion, and it used to emit `bitcast i64 %v to float` — invalid IR
+/// that LLVM rejected, so the program did not compile. The printed value
+/// discriminates the three possible lowerings: correct = `3.14159274`, a
+/// `sitofp` value-conversion = `1078530011`, and a missing narrowing would not
+/// have built at all.
+#[test]
+fn float_bit_reinterpret_reinterprets_not_converts() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("float_bit_reinterpret", "bitcast", &[]);
+    assert_eq!(
+        out, "3.14159274\n",
+        "Data→Float must reinterpret the 32-bit pattern: {out:?}"
+    );
+    let out_dir =
+        Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/float_bit_reinterpret__bitcast");
+    let ir =
+        std::fs::read_to_string(out_dir.join("float_bit_reinterpret.ll")).expect("read emitted IR");
+    assert!(
+        !ir.contains("bitcast i64") || ir.contains("trunc i64"),
+        "the Data→Float route must narrow before the float bitcast:\n{ir}"
+    );
+    assert!(
+        !ir.lines()
+            .any(|l| l.contains("bitcast i64") && l.trim_end().ends_with("to float")),
+        "an unequal-width bitcast is invalid IR and must never be emitted"
+    );
+}
+
 /// 2026-11-16 (M2 tail-loop owned destruction): a self-tail recursion whose
 /// carried String is handed over at EVERY call site must be lowered to a real
 /// loop that frees the previous iteration's value, and must no longer recurse.

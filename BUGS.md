@@ -28,6 +28,22 @@ caller's cwd (development builds run from the repo root). Test:
 caller's working directory. The same question applies to `lib/glue` and the
 stdlib search path; they already take an explicit path or `BRIEV_HOME`.
 
+**Follow-up (2026-11-17): `--config-dir` must mean the same thing to every
+loader.** `ConfigResolver` (`src/config_resolver.rs`) already owns the chain
+`--config-dir` → `BRIEV_CONFIG_DIR` → `./.briev/config` → user profile → baked,
+but `run_build` applied the flag to only two consumers (`config_tuning`,
+`load_target_config`), so `config/abi/` ignored it. Now: `abi_dir()` consults the
+resolver first, and `run_build` publishes the flag as `BRIEV_CONFIG_DIR` for the
+process. Every rung is a FALL-THROUGH — a `--config-dir` holding only
+`ir-lowering.dbvl` (the `benchmarks/deferred_ab_gate.sh` shape) still resolves
+cores from the installation, and a dir that DOES hold a core is authoritative.
+Both directions are covered by tests and were verified by hand.
+
+The same exercise exposed a second, smaller defect: `validate_abi_core` reported
+"not shipped, known cores: …" for a core that exists but does not parse. It now
+reports the path and the parse error (`ABI core X at <path> cannot be used:
+needs an integer `int_bits` …`).
+
 ## 2026-11-16 — HIR drops the FFI boundary surface, and the audit does not notice
 
 **Reproduced.** A program with a generated boundary protocol, a `frgn` carrying
@@ -523,7 +539,7 @@ through the existing `Sqrt#` intrinsic, preserving both signs and all existing
 golden output lines. Keep division-trap regressions as the division oracle.
 Validation is recorded in the [CI split plan](docs/plans/2026-11-15-a0-independent-ci-jobs.md).
 
-## 2026-11-15 — Data-to-Float width mismatch emits an invalid bitcast (OPEN)
+## 2026-11-15 — Data-to-Float width mismatch emits an invalid bitcast (FIXED 2026-11-17)
 
 An alternative exceptional-value probe, `(0x7F800000 as Data) as Float`, emits
 `bitcast i64 ... to float`, rejected by LLVM verification. Narrowing the input
@@ -533,6 +549,19 @@ it cannot emit invalid IR. Reproduced with the release compiler at `2b64e8c8`;
 diagnostics are in `/tmp/opencode/briev-ci-split-validation/float-special-values-build.log`
 and `float-special-values-build-int32.log`. The formatting corpus uses the
 existing intrinsic/literal construction instead of this cast route.
+
+**Fixed.** The Bitcast lane already narrowed float→int (via i32) and handled
+ptr↔int and unequal integer widths; the int→float direction fell through to the
+catch-all `else`. Both directions are now explicit and symmetric: int→float does
+`trunc` to i32 then `bitcast` to float, int→double does `zext` to i64 then
+`bitcast` to double. The catch-all carries a `debug_assert_eq!(cur_ll, dst_ll)`
+— the lane's own contract is "same-width reinterpretation", so any future route
+that reaches it with mismatched widths fails in CI instead of after `opt`.
+
+Semantics pinned by `tests/tier1/float_bit_reinterpret.bv`: `(0x40490FDB as
+Data) as Float` prints `3.14159274`. The three lowerings are distinguishable in
+the output — correct reinterpretation = 3.14159274, a `sitofp` value conversion
+= 1078530011, and the old behaviour did not build at all.
 
 ## 2026-11-15 — a library failure suppresses unrelated required CI evidence
 

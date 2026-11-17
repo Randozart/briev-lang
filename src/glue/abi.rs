@@ -65,10 +65,19 @@ const KNOWN_KEYS: &[&str] = &[
 /// caller happens to stand. The old version only walked up from the current
 /// directory, so `brievc build` from any tree outside the compiler repo failed
 /// with "Known cores: <none found>" even though the data sits beside the
-/// binary. Order is now: explicit `BRIEV_HOME` (the documented install root),
-/// then the tree the binary itself lives in, then the caller's cwd (a
-/// development build run from the repo root).
+/// binary.
+///
+/// 2026-11-17: `--config-dir` (and `BRIEV_CONFIG_DIR`, and the profile chain)
+/// are consulted FIRST, through the one resolver that already owns that
+/// decision (`config_resolver`), so the flag means the same thing here as it
+/// does for targets and IR-lowering tuning. Each rung is a FALL-THROUGH, never
+/// an authority: `benchmarks/deferred_ab_gate.sh` builds with a `--config-dir`
+/// that holds only `ir-lowering.dbvl`, and that must keep resolving the cores
+/// from the installation rather than failing.
 fn abi_dir() -> Option<PathBuf> {
+    if let Some(dir) = config_dir_rung() {
+        return Some(dir);
+    }
     if let Some(dir) = std::env::var_os("BRIEV_HOME") {
         let candidate = PathBuf::from(dir).join("config").join("abi");
         if candidate.is_dir() {
@@ -81,6 +90,37 @@ fn abi_dir() -> Option<PathBuf> {
         }
     }
     walk_up_for_abi_dir(&std::env::current_dir().ok()?)
+}
+
+/// The `--config-dir` → `BRIEV_CONFIG_DIR` → project → profile chain, as an
+/// `abi/` directory, or `None` when that chain names a config root without one.
+fn config_dir_rung() -> Option<PathBuf> {
+    let resolved = crate::config_resolver::ConfigResolver::resolve_config_dir(None);
+    // `__baked__` is the compile-time fallback marker, not a path.
+    if resolved.to_string_lossy() == "__baked__" {
+        return None;
+    }
+    abi_dir_under(&resolved)
+}
+
+/// Probe one config root for an `abi/` directory that actually holds cores.
+///
+/// `--config-dir` conventionally points at the config ROOT, but callers pass
+/// `<root>/config` or `<root>/config/abi` just as often, and
+/// `benchmarks/deferred_ab_gate.sh` passes a directory that holds only
+/// `ir-lowering.dbvl`. So: probe, and answer `None` rather than guessing — the
+/// caller then falls through to the installation.
+fn abi_dir_under(root: &Path) -> Option<PathBuf> {
+    for candidate in [
+        root.join("abi"),
+        root.to_path_buf(),
+        root.join("config").join("abi"),
+    ] {
+        if candidate.join("sysv-x86_64.dbvl").is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Nearest `config/abi/` at or above `start`.
@@ -115,6 +155,14 @@ pub fn load_core_from(path: &Path) -> Result<AbiCore, String> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read ABI core '{}': {e}", path.display()))?;
     parse_core(&source, &path.display().to_string())
+}
+
+/// Path of one core file in the resolved `config/abi/`, whether or not it
+/// loads. `validate_abi_core` uses it to tell "not shipped" (a typo, list the
+/// alternatives) from "shipped but broken" (show the parse error).
+pub fn core_path(name: &str) -> Option<PathBuf> {
+    let path = abi_dir()?.join(format!("{name}.dbvl"));
+    path.is_file().then_some(path)
 }
 
 /// Names of every shipped core, sorted. Used by diagnostics that must list the
@@ -281,6 +329,31 @@ mod tests {
         let deeper = deep_bin.join("deps").join("nested");
         std::fs::create_dir_all(&deeper).expect("create nested dir");
         assert_eq!(walk_up_for_abi_dir(&deeper), Some(abi));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `--config-dir` may be the config root, `<root>/config`, or the `abi`
+    /// directory itself — and it may be a directory that has no cores at all
+    /// (`benchmarks/deferred_ab_gate.sh` passes one holding only
+    /// `ir-lowering.dbvl`). The last case must answer `None` so `abi_dir` falls
+    /// through to the installation instead of failing the build.
+    #[test]
+    fn config_root_probe_accepts_every_spelling_and_declines_a_hitless_dir() {
+        let root = std::env::temp_dir().join(format!("briev-abi-root-{}", std::process::id()));
+        let abi = root.join("config").join("abi");
+        std::fs::create_dir_all(&abi).expect("create synthetic tree");
+        std::fs::write(abi.join("sysv-x86_64.dbvl"), "name: \"sysv-x86_64\";")
+            .expect("write core");
+
+        assert_eq!(abi_dir_under(&root.join("config")), Some(abi.clone()));
+        assert_eq!(abi_dir_under(&abi), Some(abi.clone()));
+
+        // A config dir with settings but no cores (the A/B-gate shape).
+        let bare = root.join("ir-only");
+        std::fs::create_dir_all(&bare).expect("create bare config dir");
+        std::fs::write(bare.join("ir-lowering.dbvl"), "x: 1;").expect("write tuning");
+        assert_eq!(abi_dir_under(&bare), None, "must fall through, not fail");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

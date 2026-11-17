@@ -1329,8 +1329,21 @@ fn run_build(args: &[String]) -> Result<(), String> {
     // --config-dir must reach the IR-lowering tuning too (baked config is the
     // fallback): install the override BEFORE any compile step touches
     // `ir_lowering()` — the LazyLock initializes on first access.
+    //
+    // 2026-11-17: the flag also becomes the process's config root, so every
+    // loader that resolves data through `config_resolver` (glue ABI cores,
+    // module registry, and anything added later) sees the same directory the
+    // user named. Without this the flag meant different things per loader:
+    // `config/abi/` ignored it entirely, which broke `--config-dir` builds
+    // outside the compiler repo. Fall-through consumers are unaffected — a
+    // config dir without `abi/` still resolves the cores from the installation.
     if let Some(dir) = &opts.config_dir {
         briev_compiler::config_tuning::set_ir_lowering_from_dir(std::path::Path::new(dir))?;
+        // SAFETY: this runs at CLI startup, before any worker thread exists and
+        // before any concurrent environment access.
+        unsafe {
+            std::env::set_var("BRIEV_CONFIG_DIR", dir);
+        }
     }
 
     // 2026-07-28: Phase E.2 — doppelganger resolution: .opt.bv > .derive.bv > .bv
@@ -2387,18 +2400,12 @@ fn run_render(args: &[String]) -> Result<(), String> {
             return Err(format!("render: unexpected argument `{arg}`"));
         }
     }
-    let lang = lang.ok_or_else(|| {
-        "render: usage `brievc render <lang> [--check]`".to_string()
-    })?;
+    let lang = lang.ok_or_else(|| "render: usage `brievc render <lang> [--check]`".to_string())?;
     let target = briev_compiler::glue::config::load_glue_language(&lang)?;
     let descriptor = format!("lib/glue/{lang}/glue.dbv");
     let out = std::path::PathBuf::from(format!("lib/glue/{lang}/protocols.bv"));
-    let fresh = briev_compiler::glue::generator::render_and_write(
-        &target,
-        &descriptor,
-        &out,
-        check,
-    )?;
+    let fresh =
+        briev_compiler::glue::generator::render_and_write(&target, &descriptor, &out, check)?;
     if check {
         println!("render: {lang} protocols fresh");
     } else if fresh {
