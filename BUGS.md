@@ -1,3 +1,53 @@
+## 2026-11-17 — `export let` emitted a load of a symbol nothing declared (FIXED)
+
+**Symptom.** A four-line program produced IR that clang rejects:
+
+```briev
+import "std/io.bv";
+export let K: Int = 7;
+let done: Bool = false;
+node main [!done][done] { Print#(K); done = true; endprogram; };
+```
+```
+error: use of undefined value '@K'
+  %t12 = load i64, ptr @K
+```
+The non-exported sibling (`let k: Int = 7;`) was correct: `@k = global i64 7`,
+valid module. So the `export` marker was the whole difference — and the same
+defect had made `lib/std/posix/io.bv` and `process.bv` unbuildable (the class-D
+entry above fixed their *lookup* walk, not their *declaration* walk).
+
+**Cause — one name, three walks that disagreed.** An exported top-level `let`
+was classified plain by `analysis::storage_class::classify_plain_lets` (its
+`let_of_item` is deliberately export-transparent so `build_field_index` can
+register the name), but excluded from `HirProgram::globals` by HIR lowering's
+`if !exported` guard, and never registered as a plain global or a state field.
+`plain_lets` then said "plain" while nothing had declared the symbol: the read
+took a `load … ptr @K` and the declaration never existed.
+
+**Fix — decide once and make every walk say it.** An exported top-level `let`
+is host-visible storage, therefore **never register-resident**:
+
+- `analysis::storage_class::classify_plain_lets` iterates bare
+  `TopLevel::Statement` lets only (matching its own `storage_assertion_errors`),
+  so an exported let is never plain;
+- HIR lowering drops the `!exported` guard for `let`/`StateDecl` — the export
+  marker is transparent everywhere else in the compiler, here too;
+- `HirGlobal` gains `exported: bool` (lowering is the only place that knows it)
+  and `hir::storage_class::classify_plain_lets` skips exported globals, so the
+  AST and HIR classifications agree by construction rather than by coincidence.
+
+**Effect.** `export let K` now becomes a `%State` field, the module validates
+(`clang -x ir -c` → 0 errors), and `lib/std/posix/io.bv` + `process.bv` emit
+valid IR. Corpus reach: only those two files contain `export let`, so no other
+program's emission can change — and `benchmarks/ll_determinism_check.sh
+--quick` stayed byte-identical.
+
+**Tests.** `tests/hir_storage_class_parity.rs::exported_let_parity_and_never_plain`
+pins all three: both walks agree, the AST set excludes `K`, and `HirGlobal`
+carries `exported` (a consumer that loses the marker re-introduces the
+divergence).
+
 ## 2026-11-17 — `obj` member bodies could not call a **void** callee (FIXED)
 
 **Symptom.** `tests/rbv_router.rs::router_smoke_gate` failed, and it was the only
@@ -46,6 +96,25 @@ is specific to callees with **no return type**.
 `CARGO_TARGET_DIR` fails at the `brievc web` step, because `resolve_stdlib_root`
 probes `<exe>/../../lib`. Not a compiler bug — CI builds in-tree — but it costs a
 debugging cycle if you work with an external target dir; set `BRIEV_STDLIB_PATH`.
+
+**Same bug, independently diagnosed (2026-11-17, second session).** Found via
+the same CI symptom and fixed with the same line before the two sessions
+reconciled — which is a useful confirmation, not a disagreement. Two additions
+from that pass:
+
+- **Regression coverage widened.** `typechecker::member_free_call_tests` pins
+  four shapes: member txn → `frgn` (void), member txn → `defn`, top-level txn →
+  `frgn` (the always-worked control), and member txn → **unknown name still
+  refused** (the fix populates the set; it does not disable the gate). The last
+  one matters: without it a future "fix" that simply removed the check would
+  pass.
+- **`benchmarks/rbv_gate.sh` step 6** guarded on the *playwright package*
+  importing, not on the *chromium binary* existing. A machine with the npm
+  package but no `npx playwright install chromium` ran the browser smoke and
+  failed with "Executable doesn't exist" — an environment gap reported as a page
+  bug, on the same test. The guard now probes `chromium.executablePath()` and
+  names which gap it skipped. CI never had the package, so CI's redness was the
+  typecheck bug alone.
 
 ## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
 
@@ -14699,3 +14768,65 @@ address in a `ptr`-typed global and load that.
 (they get `define`d in the IR), so the IR verifies and links. The segfault is a
 separate defect in the fn-pointer *value* emission path — the address is loaded
 as data instead of being used as a callable pointer.
+
+## 2026-11-17 — `i64` register used as a GEP base (node bridge, CI red) — FIXED
+
+**Symptom.** `tests/c_driver_node.rs::python_node_cross_language_bridge` failed on
+`main` from `4ba5fe2b` until this fix, taking `Workspace tests` and `Default gates`
+down with it:
+
+```
+opt: /tmp/briev_py_node_bridge/node/node_bridge.ll:8248:33:
+     error: '%t61' defined with type 'i64' but expected 'ptr'
+```
+
+Emitted IR (`node_bridge.ll:8246-8250`):
+
+```llvm
+%t60 = load ptr, ptr %t59
+%t61 = ptrtoint ptr %t60 to i64                  ; t61 IS an i64
+%t64 = getelementptr i64, ptr %t61, i64 %t63     ; used as a pointer base
+```
+
+**Root cause: a per-register width map outliving the register namespace.**
+`reg_value_ll` records "the actual LLVM width this register holds" so width
+adapters do not guess from the stamped Briev type (a `Ptr<…>` stamp covers both a
+real pointer and an i64 handle). It is keyed by SSA register **name**, and
+`gen_reg()` derives names from `txn_counter`, which every function body resets:
+
+```rust
+pub fn gen_reg(&mut self) -> String { let n = self.txn_counter; … format!("%t{}", n) }
+```
+
+The callable-txn driver reset the counter and cleared its other per-register
+caches (`reg_float_cache`, `reg_type_cache`, `expr_dedup_cache`) but **not**
+`reg_value_ll`. So `iter_chain_loop` (`lib/std/iterator.bv`) began again at `%t0`
+while the map still held `%t61 = ptr` from the body emitted before it — a body
+where `%t61` really had been a pointer. `canonical_ptr` then saw "already a
+pointer", skipped its `inttoptr`, and the element GEP used the fresh *i64*
+`%t61` as a pointer base.
+
+**This corrects the diagnosis in issue #119.** The first write-up assumed the
+mirror of `2da3ed8b` (slice C) — a `ptrtoint` result recorded as `ptr` by the
+cast lane — and named two candidate fixes in the emitters. Measurement refuted
+that: instrumenting the cast-lane recorder showed **no** width record for `%t61`
+inside the failing function at all, and a generation counter showed the entry
+coming from the *same* generation at a different buffer length (222 122 →
+372 bytes). The emitters were right; the cache lifetime was wrong.
+
+**Fix.** `LlvmFunction::reset_register_names()` sets `txn_counter = 0` **and**
+clears `reg_value_ll`, and every site that reset the counter now calls it
+(`dispatch.rs`, four drivers in `emit_toplevel.rs`). One invariant instead of two
+half-invariants: a name-keyed cache resets with the names.
+
+Regression test: `backend::llvm::tests::a_new_function_body_does_not_inherit_register_widths`
+— verified to fail without the clear and pass with it. The end-to-end node-bridge
+test covers the real IR.
+
+Gates: `c_driver_node` 1 passed, `daily_use_smoke` 44 passed (slice C's own
+suite, no regression), lib suite 3916 passed, census on 92 files unchanged
+(2192 / 100 / 13162 / 0 / 2 debug-baseline; 2216 / 101 / 13308 / 0 / 1 release).
+
+**Not this bug:** the daily `Verification nightly` red (`AST opt-out suite
+(BRIEV_HIR_EMIT=0)`) is older — it fails on 2026-11-14, 15 and 16 as well, and is
+the HIR/AST defn-liveness drift already tracked in this file.

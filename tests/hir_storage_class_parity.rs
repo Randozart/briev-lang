@@ -115,3 +115,35 @@ fn corpus_storage_class_parity() {
         mismatches.join("\n")
     );
 }
+
+/// 2026-11-17: `export let` must be classified the same by both walks, and it
+/// must never be plain — an exported symbol is host-visible storage, not a
+/// register-resident SSA value. Before this, the AST (whose `let_of_item` is
+/// export-transparent for `build_field_index`) counted it plain while the HIR
+/// walk did not, and the exported name reached the read path with no
+/// declaration at all (`load i64, ptr @K` → clang: use of undefined value).
+#[test]
+fn exported_let_parity_and_never_plain() {
+    let src = "export let K: Int = 7;\n\
+               let done: Bool = false;\n\
+               node main [!done][done] { done = true; endprogram; };\n";
+    assert_parity(src, "exported-let");
+
+    let items = parse(src);
+    let empty = HashSet::new();
+    let ast = ast_plain(&items, None, &empty);
+    assert!(
+        !ast.contains("K"),
+        "an exported let must never be classified plain, got {ast:?}"
+    );
+
+    // The HIR node must CARRY the export marker — the classification cannot
+    // infer it, and a consumer that loses it re-introduces the divergence.
+    let program = lower_program(&items);
+    let k = program
+        .globals
+        .iter()
+        .find(|g| g.name == "K")
+        .expect("an exported top-level let must be a HIR global");
+    assert!(k.exported, "HirGlobal must record the export marker");
+}
