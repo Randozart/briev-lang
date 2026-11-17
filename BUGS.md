@@ -1,3 +1,56 @@
+## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
+
+**Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture
+`tests/fixtures/pointer_cast_wasm.rbv`):
+
+```
+opt: pointer_cast_wasm.ll:188:11: error: '%ac0' defined with type 'i64' but expected 'i32'
+  ret i32 %ac0
+```
+
+The emitted functions:
+
+```llvm
+define i32 @address(ptr %arg0) #8 {
+  entry:
+  %ac0 = ptrtoint ptr %arg0 to i64     ; handle is i64, always
+  ret i32 %ac0                          ; <- function returns i32 on wasm32
+}
+define i64 @wide_address(ptr %arg0) #8 {
+  entry:
+  %ac0 = ptrtoint ptr %arg0 to i64
+  %t0 = zext i32 %ac0 to i64            ; <- also assumes %ac0 is i32
+  ret i64 %t0
+}
+```
+
+**Two sites, one assumption.** The `%ac{i}` handle conversion
+(`emit_toplevel.rs`, the `param_llvm_ty == "ptr"` arm) hardcodes `to i64`, and
+its documented rationale (2026-11-13, #96) is deliberate: a later outbound-call
+marshalling reads `reg_llvm_ty` and must see a genuine i64. But the two
+*consumers* on the return path assume the handle is target-width —
+`emit_stmt.rs`'s `term` adaptation compares `llvm_type(reg.ty)` (`"ptr"`) against
+`fn_ret_ty` (`"i32"`), and `adapt_to_i64` (`helpers.rs`) widens from `i32`.
+
+**Not the exported-let change.** Verified by A/B: with
+`git show origin/main:src/analysis/storage_class.rs` in place (i.e. without the
+exported-let classification fix), the same failure reproduces identically. It is
+independent of that work, and it also fails before/after on `origin/main`.
+
+**Attempted, reverted — do not repeat naively.** Changing the `ptrtoint` to
+`i{int_bits}` fixes `address` but breaks `list_int_each_wasm.ll:190`
+(`'%ac0' defined with type 'i32' but expected 'i64'`) — some consumer genuinely
+wants i64. Adding a width-aware conversion at the `term` site fixes `address`
+but `wide_address` still emits `zext i32 %ac0 to i64`. **The fix is a unit:**
+the handle's width, `reg_llvm_ty`/`reg_value_ll`, and BOTH consumers must agree;
+patch one and the failure moves. Each attempt was measured and reverted, so
+`main` carries no half-change.
+
+**Next step.** Pick the handle width by what the ABI actually is on the target
+(i64 handle everywhere, per the 2026-11-13 decision), then make both consumers
+convert from the register's ACTUAL width (`reg_llvm_ty`) instead of from
+`llvm_type(reg.ty)` — with `test/rbv_list_each_wasm` and
+`test/hir_storage_class_parity` green as the exit condition.
 ## 2026-11-17 — `export let` emitted a load of a symbol nothing declared (FIXED)
 
 **Symptom.** A four-line program produced IR that clang rejects:
