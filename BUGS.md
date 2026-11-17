@@ -1,3 +1,52 @@
+## 2026-11-17 — `obj` member bodies could not call a **void** callee (FIXED)
+
+**Symptom.** `tests/rbv_router.rs::router_smoke_gate` failed, and it was the only
+failing test on `main` for at least three commits — including `eccd3799`, the
+`v0.2.0` release (4421 passed / 1 failed):
+
+```
+error: type errors:
+  invalid operation 'call to 'navigate'' on type 'navigate' is not defined in this
+  program — import the module that defines it
+build failed: tests/fixtures/obj_router.rbv
+```
+
+**Cause.** The shared member-context builder (`build_member_ctx`, used by both
+`obj` members and cells) copied every table from the file-level environment
+*except* `defined_fns`. Call resolution tries `fn_return_types` first, so any
+callee with a return type still resolved — which is why imported `defn`s worked
+and the bug looked like an import problem. A **void** callee has no return-type
+entry, so it fell through to the unknown-name gate against an empty set:
+
+```briev
+defn ping() { term; };                                  // void
+obj R { path: String;
+        txn go(url: String) [path != url][path == url] { path = url; ping(); term; }; };
+```
+
+```
+call to 'ping' … is not defined in this program        // false: it is defined
+```
+
+`frgn navigate(url: String) from "…";` is void too, which is why the router
+fixture was the only test that caught it.
+
+**Fix.** `mctx.defined_fns = defined_fns.clone();` — one line, so a member body
+sees the same callable-name set as a top-level body. Regression test:
+`typechecker::member_scope_tests::member_body_resolves_a_void_top_level_callee`,
+verified to fail without the fix and pass with it.
+
+**Correcting an earlier claim in this file.** The first version of this entry said
+a member body "resolves no outer names at all", based on a fuller repro where the
+member's own name was also rejected. That was an over-generalisation: same-file
+`defn`s and imported `defn`s resolved fine (through `fn_return_types`); the failure
+is specific to callees with **no return type**.
+
+**Unrelated, found while fixing:** running the gate with an out-of-tree
+`CARGO_TARGET_DIR` fails at the `brievc web` step, because `resolve_stdlib_root`
+probes `<exe>/../../lib`. Not a compiler bug — CI builds in-tree — but it costs a
+debugging cycle if you work with an external target dir; set `BRIEV_STDLIB_PATH`.
+
 ## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
 
 **Symptom.** Building any program that touches the C glue layer from a

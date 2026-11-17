@@ -237,3 +237,26 @@ properties for layout                 Cast.#Category property
 
 Layout is a property. Protocol is a capability. The type holds both, but the
 compiler makes decisions based on capability, not physical size.
+
+## 8. Generated Protocols (2026-11-16)
+
+The protocol surface for FFI boundaries is **data, not code**. A language
+adapter's `values:` block in `glue.dbv` declares the conversion lanes
+(boundary type, protocol name, `to_op`, `from_op`, `from_copy`,
+retain/release). `brievc render <lang>` reads the descriptor and writes
+`lib/glue/<lang>/protocols.bv` — the `type` + `proto` declarations that
+`types.bv` imports.
+
+The parity gate (`tests/glue_gen_parity.rs`) proves the claim: generated and
+hand-written protocols emit **byte-identical IR** over a corpus exercising
+both lanes (Briev→C and C→Briev). The gate pins program structure — both
+variants import a protocol file at the same position and depth — so the only
+difference is how those declarations were written.
+
+HIR carries the protocol surface as facts: `HirProtocol` with `HirCastEdge`
+directions and binding names (H1), and `HirBoundary` on `HirForeign` (H2).
+The audit counts the remaining gap (`cross_ops` not yet populated) so the
+BUGS.md fixture reports `unsupported=1 (protocols=1 boundary=0)` instead of
+the old `unsupported=0` that certified the loss. The destination model
+(H4) reads `HirBoundary` directly rather than reconstructing from the type
+declaration's protocol string.

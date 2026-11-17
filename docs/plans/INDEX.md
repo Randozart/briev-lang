@@ -427,8 +427,23 @@ blind to the boundary surface — measured, with `HIR_AUDIT ok … unsupported=0
 a boundary-bearing program. Decisions D1–D6 (ownership per function; ABI cores in
 config; versioned descriptor with unknown-key errors; the removed-surface gate
 before the generator; facts never strategies; generated items traced to a
-descriptor line). S0 spike: generated protocol drives zero-copy marshalling
-(PASS); aggregate layout injection still unmeasured.
+descriptor key path). S0 spike: generated protocol drives zero-copy
+marshalling (PASS); aggregate layout injection still unmeasured.
+
+**Status (2026-11-16):** S1–S3 landed (versioned descriptor, ABI cores,
+`brievc render <lang>` + `--check`, C adapter split). **G4′ parity gate
+PASSES** — generated vs hand-written protocols emit byte-identical IR over
+both lanes (pins program structure, not just text). G5 resolved the
+dangling `types_module`. **H1–H4 landed**: `HirProtocol`/`HirBoundary` /
+`HirFromSpec` on `HirForeign`; the audit counts the remaining gap (`cross_ops`) —
+the BUGS.md fixture now reports `unsupported=1 (protocols=1 boundary=0)` instead
+of the old `unsupported=0`; the destination model reads `HirBoundary` directly.
+**S5 stage guard** landed (structural synthesis refused after `Resolved`; `defn`
+bodies face `verify_bodies`). **PY closure test passes**: Python adapter's
+`values:` block renders with zero Rust changes. Remaining: R1 (doc matrix —
+in progress), D1/D2 (removed-surface gate + sweep), S4 (populate
+`HirProtocol::ops` to drive the audit's protocol count to 0). Full status +
+touch points: `2026-11-16-ffi-handoff-remainder.md`.
 
 ## The active umbrella
 

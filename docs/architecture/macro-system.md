@@ -200,6 +200,16 @@ argument to persist to physical disk. `FileRead$` checks VFS first, then disk.
 `macro-lock.toml` at the project root records approved capabilities per plugin
 `.bv`. Validated by SHA-256 hash. `--update-lockfile` regenerates.
 
+### Stage Guard (2026-11-16)
+
+`validate_nodes_for_stage` rejects structural declarations (protocol variants,
+type definitions, foreign bindings) synthesized after `Resolved`. These nodes
+fix the type surface; inserting one after `Resolved` would change what type
+checking and codegen see. Body-bearing `defn`s are deliberately excluded —
+they face `verify_bodies`, not the stage guard. `Insert$` calls this for
+every synthesis; the generated C protocols (inserted at `Resolved` by
+`brievc render`) are unaffected. Tests: `macros::actions::stage_guard_tests`.
+
 ---
 
 ## Tainted Node Filtering
