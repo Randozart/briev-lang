@@ -108,7 +108,14 @@ impl GemmPlan {
     pub(crate) fn dispatch_geometry(&self) -> DispatchGeometry {
         let r = Self::coopmat_tile_rows(self.m);
         let tile_m = 16 * r as u64;
-        let tile_n = TILE;
+        // 2026-11-17 (PTL preflight): one workgroup spans `64 * subgroups`
+        // COLUMNS, not 64 — the emitter flattens the grid with
+        // `tiles_x = n / (64 * subgroups)` (see `emit_coopmat_kernel`). Using the
+        // bare TILE here over-counted the dispatch by the subgroup factor while
+        // under-counting the per-workgroup width by the same factor, so the
+        // coverage product still came out right and the error hid. The NUMBER was
+        // wrong (2048 workgroups at 4096³ with the shipped subgroups=2, not 4096).
+        let tile_n = TILE * Self::coopmat_subgroups().max(1) as u64;
         let m = self.m.max(0) as u64;
         let n = self.n.max(0) as u64;
         let k = self.k.max(0) as u64;

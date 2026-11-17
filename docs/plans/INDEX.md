@@ -80,6 +80,22 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**PTL night queue (2026-11-17, ACTIVE — blocked on auth):**
+`docs/plans/2026-11-17-ptl-night-queue.md` — the node is up and tailnet-reachable but
+only answers with a **password** (`prestooverlord@100.92.76.67`, no key), so the
+queue cannot run unattended; either `ssh-copy-id` once or export
+`BRIEV_PTL_SSH="sshpass -p … ssh …"` (the harness already takes that prefix and
+stores nothing). It also records a **correction that changes the experiment**:
+`benchmarks/results/2026-11-09-intel-lane-ceilings.md:249` shows the f16 A/B is
+coopmat **1.05/371 ms vs f16-tiled 1.70/459 ms** — coopmat WINS like-for-like — and
+the `0.123/39.7 ms` figures are the **f32** tiled path. X1's "coopmat is 9× slower"
+therefore compares dtypes; the real deficit is the f16 TIER being 9× behind f32,
+whose recorded remedy is W3(1): an f16-storage/**f32-accumulate** tiled kernel (the
+CL-C reference reaches 84.4 ms / 1628 GFLOP/s). Queue: preflight (coopmat exposure,
+subgroup size, clinfo, glslang, cgroup) → P1 four-arm A/B over
+`spirv_coopmat × spirv_coopmat_f16acc` plus an explicit-finish run (settles X4) →
+P2 that kernel → P3 NEO residency → P5 K3 enforceability check.
+
 **pf_exp, the uninitialised float slot, and tonight's PTL queue (2026-11-17, ACTIVE):**
 `docs/plans/2026-11-17-pf-exp-float-slot-and-ptl-queue.md` — three follow-ups to the
 device-free queue. (A) `pf_exp` is 172 of the corpus's 207 unproven goals, and the
