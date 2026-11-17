@@ -52,6 +52,15 @@ patch one and the failure moves. Each attempt was measured and reverted, so
 So the unit is three consumers: the `term` adaptation, `adapt_to_i64`, and the
 `Ptr → Int64` cast lane.
 
+**Prime suspect, for whoever takes this next.**
+`helpers.rs::coerce_register_value` *already* knows this bug class: it computes
+`have_ll` as `"i64" if boxed_scalar_regs.contains(&val.name) || val.name.starts_with("%ac")`.
+But it returns early — `if is_handle_ty(want_ty) || is_handle_ty(&val.ty) { return val.clone(); }`
+— and `is_handle_ty` is true for `Type::Ptr(_)`. So a `Ptr → Int64` coercion
+never reaches the width logic, and the `zext i32 %ac0 to i64` in the emitted IR
+comes from a *different* site further along the cast lane. Start there: the
+`%ac` awareness exists already; the handle early-return is what bypasses it.
+
 **Next step.** Keep the i64 handle (the 2026-11-13 decision), then make all
 three consumers convert from the register's ACTUAL width (`reg_llvm_ty`) instead
 of from `llvm_type(reg.ty)`. Exit condition: `test/rbv_list_each_wasm` and
