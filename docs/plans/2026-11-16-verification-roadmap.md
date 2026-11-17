@@ -172,10 +172,27 @@ defn pf_exp(s: String, i: Int, len: Int, acc: Int)
 ```
 
 Contract-first says state the domain (`i >= 0`, `len >= 0`) rather than weaken the
-post. That edit was attempted and **reverted**: `cast_lanes.bv` is *prelude-baked*
-into `brievc`, so the change cannot be verified without rebuilding the prelude and
-auditing every call site. Left as an inspected unproven, to be done as its own
-contract change rather than smuggled into a verifier PR.
+post. That edit was **attempted, built into the prelude, and measured — and it does
+not work**. Two findings, both empirical:
+
+1. **The precondition is not the blocker.** With `i >= 0 && len >= 0` added and
+   `brievc` rebuilt from the patched prelude, `pf_exp` still reports
+   *"could not prove … path 1 of 6"*, unchanged.
+2. **The blocking path returns a call, not a tuple.** Two of `pf_exp`'s paths end
+   in `term pf_exp_digits(…)`, which *returns* a tuple, so there is no
+   `term.0`/`term.1` to bind — and `pf_exp_digits` is recursive, so it earns no
+   summary, while its declared post bounds only its first component
+   (`[term >= -1000 && term <= 1000]`).
+
+Closing this needs one of two things, neither available today: induction over the
+recursive `pf_exp_digits`, or a callee post that bounds the second component
+*and* is itself dischargeable. It is therefore recorded as an inspected,
+understood gap — not a precondition fix, and emphatically not a weakened post.
+
+Two further facts worth keeping: `lib/std/cast_lanes.bv` is **prelude-baked** into
+`brievc` (a `.bv` edit is inert until the binary is rebuilt), and
+`cast_portable.bv` carries its **own** `pf_exp` with a different contract
+(`[true][term >= -1000 && term <= 1000]`) — so any edit must consider both lanes.
 
 ## 6. Phase D: generic / variadic declarations (2007 lines)
 
@@ -208,9 +225,22 @@ Order and reasons:
 
 1. **`brievc`** — the vehicle. Everything gained (masked offsets, post→pre facts,
    handles, lengths, contract atoms) lives here.
-2. **`counsel-macros`**, then **`counsel`** — because counsel's static half pins
-   a `brievc` release tarball by sha256; a counsel release without a new pin
-   delivers nothing.
+2. ~~**`counsel-macros`**, then **`counsel`** — because counsel's static half pins
+   a `brievc` release tarball by sha256~~ — **premise revoked 2026-11-17**.
+   `counsel 0.5.0` (the version briev-lang pins) has **no `build.rs` and no
+   `brievc` dependency**: its static half is pure Rust (`syn` + `serde_json`,
+   feature `static`). The tarball pinning belonged to counsel **0.1.x** — the
+   `~/.cache/counsel/brievc-linux-x86_64-v0.1.{0,2,3}.tar.gz` artifacts on disk
+   are that era's leftovers.
+
+   Consequence: **a counsel release would carry none of this work.** The body
+   prover lives entirely in `brievc`; counsel's checker reads `#[pre]`/`#[post]`
+   attributes over Rust source and never sees a `.bv` body. Releasing counsel is
+   warranted only when counsel's own checker changes — it has not, and nothing in
+   this campaign touched it.
+
+   So the train reduces to **one artifact: a `brievc` release**, which stands on
+   its own because `brievc build --verify-bodies` is the user-facing surface.
 3. **`briev-verify`: hold.** Its public surface (`ScalarModel`, the admission
    path) changed three times in the last week, and its only consumer is
    `briev-lang` itself. Publishing locks in a shape we are actively moving;

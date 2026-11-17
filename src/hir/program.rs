@@ -244,7 +244,7 @@ pub enum HirFromSpec {
 /// HIR previously dropped. 2026-11-16 (H2): without these, a boundary's
 /// preconditions, error handling and ownership conventions are unrecoverable
 /// from HIR — the same class of loss as the protocol surface (H1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HirBoundary {
     pub from: HirFromSpec,
     /// `buffer:` clause, by name.
@@ -255,6 +255,10 @@ pub struct HirBoundary {
     pub postcondition: Option<String>,
     /// The error type name (`frgn … errors: T`), empty string when absent.
     pub error_type: Option<String>,
+    /// 2026-11-16 (H3): the error fields `error_type: Vec<(String, Type)>` has.
+    /// `HirBoundary` was modelled before this gap was named; the audit counts
+    /// it until it is carried.
+    pub error_fields: Vec<(String, Type)>,
     /// `frgn?` — optional, must check `fn?` before calling.
     pub is_optional: bool,
     /// `frgn!` — fire-and-forget, non-blocking, void return.

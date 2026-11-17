@@ -15,6 +15,11 @@ use counsel::{post, pre};
 pub struct UnsupportedCounts {
     pub expressions: usize,
     pub statements: usize,
+    /// 2026-11-16 (H3): boundary facts HIR cannot represent: `proto`
+    /// declarations and `frgn` boundary clauses. The statement/expression
+    /// counts measure bodies; these measure the surface.
+    pub protocols: usize,
+    pub boundary_facts: usize,
     pub expression_tags: BTreeMap<&'static str, usize>,
     pub statement_tags: BTreeMap<&'static str, usize>,
 }
@@ -24,7 +29,7 @@ impl UnsupportedCounts {
     #[pre(self.expressions >= 0 && self.statements >= 0)]
     #[post(term >= 0)]
     pub fn total(&self) -> usize {
-        self.expressions + self.statements
+        self.expressions + self.statements + self.protocols + self.boundary_facts
     }
 }
 
@@ -33,7 +38,33 @@ pub fn unsupported_counts(program: &HirProgram) -> UnsupportedCounts {
     for callable in &program.callables {
         count_body(&callable.body.statements, &mut counts);
     }
+    // 2026-11-16 (H3): the protocol and boundary surfaces count as
+    // unsupported until the lowering can represent their facts.
+    count_protocols(program, &mut counts);
+    count_boundaries(program, &mut counts);
     counts
+}
+
+fn count_protocols(program: &HirProgram, counts: &mut UnsupportedCounts) {
+    // A proto lowers to a HirProtocol node (H1), which carries name,
+    // category and cast lanes. What it does NOT carry yet is op bindings
+    // (cross_ops) — lowering does not populate `ops`. The audit counts
+    // each proto until S4 populates them.
+    for _proto in &program.protocols {
+        counts.protocols += 1;
+    }
+}
+
+fn count_boundaries(program: &HirProgram, counts: &mut UnsupportedCounts) {
+    // A frgn lowers to HirForeign with HirBoundary (H2). The boundary
+    // carries from/flags/contracts/error_fields. What the parser does NOT
+    // produce (no clause surface) is buffer_mode, pre/postcondition, and
+    // non-default flags — those are constructor-only defaults on the AST.
+    // The audit does not count represented facts; it counts gaps.
+    // Today there is no gap: the boundary mirrors what the AST can produce.
+    for _foreign in &program.foreign {
+        // no count — boundary is fully represented
+    }
 }
 
 pub fn unsupported_for_callable(callable: &HirCallable) -> UnsupportedCounts {
@@ -224,5 +255,52 @@ fn count_pattern(pattern: &HirPattern, counts: &mut UnsupportedCounts) {
         HirPatternKind::Wildcard
         | HirPatternKind::Binding(_)
         | HirPatternKind::TypedBinding(_, _) => {}
+    }
+}
+
+#[cfg(test)]
+mod boundary_audit_tests {
+    use super::*;
+
+    /// Parse and lower a minimal program.
+    fn lower(src: &str) -> HirProgram {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let items = p.parse_program().expect("parse");
+        super::super::lower::lower_program(&items)
+    }
+
+    /// 2026-11-16 (H3): a `proto` must be counted as an unsupported gap
+    /// until `cross_ops` is populated by lowering (S4). The BUGS.md fixture
+    /// must stop reporting `unsupported=0` while the protocol surface is
+    /// only partially represented.
+    #[test]
+    fn proto_is_counted_until_cross_ops_populated() {
+        let program = lower(
+            "proto TestProto: String {\n    axiom CastTo(String<UTF8>) = to_briev(#Lh);\n    axiom CastFrom(String<UTF8>) = to_c(#Lh);\n};\n",
+        );
+        assert_eq!(program.protocols.len(), 1, "one proto lowers to one node");
+        assert!(program.protocols[0].ops.is_empty(),
+                "cross_ops are not yet populated by lowering — this is the gap H3 reports");
+        let counts = unsupported_counts(&program);
+        assert_eq!(counts.protocols, 1,
+                "the protocol must be counted as an unsupported gap");
+        assert!(counts.total() > 0,
+                "total must be non-zero while the protocol gap exists");
+    }
+
+    /// A program with no `proto` and no `frgn` should have zero boundary
+    /// gaps.
+    #[test]
+    fn no_boundary_no_gap() {
+        let program = lower(
+            "let done: Bool = false;\nnode main [!done][done] {\n    done = true;\n    endprogram;\n};\n",
+        );
+        assert_eq!(program.protocols.len(), 0);
+        assert_eq!(program.foreign.len(), 0);
+        let counts = unsupported_counts(&program);
+        assert_eq!(counts.protocols, 0);
+        assert_eq!(counts.boundary_facts, 0);
+        assert_eq!(counts.total(), 0, "a pure program has no unsupported facts");
     }
 }

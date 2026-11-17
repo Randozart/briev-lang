@@ -446,13 +446,16 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         match briev_compiler::hir::lower_program_checked(&items) {
             Ok(program) => {
                 let facts = briev_compiler::hir::build_facts(&program);
+                let counts = briev_compiler::hir::unsupported_counts(&program);
                 eprintln!(
-                    "HIR_AUDIT ok callables={} types={} values={} sinks={} unsupported={}",
+                    "HIR_AUDIT ok callables={} types={} values={} sinks={} unsupported={} (protocols={} boundary={})",
                     program.callables.len(),
                     program.type_defs.len(),
                     facts.values.values.len(),
                     facts.sinks.sinks.len(),
-                    briev_compiler::hir::unsupported_counts(&program).total()
+                    counts.total(),
+                    counts.protocols,
+                    counts.boundary_facts
                 );
             }
             Err(issues) => eprintln!(
