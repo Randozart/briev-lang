@@ -225,9 +225,22 @@ Order and reasons:
 
 1. **`brievc`** — the vehicle. Everything gained (masked offsets, post→pre facts,
    handles, lengths, contract atoms) lives here.
-2. **`counsel-macros`**, then **`counsel`** — because counsel's static half pins
-   a `brievc` release tarball by sha256; a counsel release without a new pin
-   delivers nothing.
+2. ~~**`counsel-macros`**, then **`counsel`** — because counsel's static half pins
+   a `brievc` release tarball by sha256~~ — **premise revoked 2026-11-17**.
+   `counsel 0.5.0` (the version briev-lang pins) has **no `build.rs` and no
+   `brievc` dependency**: its static half is pure Rust (`syn` + `serde_json`,
+   feature `static`). The tarball pinning belonged to counsel **0.1.x** — the
+   `~/.cache/counsel/brievc-linux-x86_64-v0.1.{0,2,3}.tar.gz` artifacts on disk
+   are that era's leftovers.
+
+   Consequence: **a counsel release would carry none of this work.** The body
+   prover lives entirely in `brievc`; counsel's checker reads `#[pre]`/`#[post]`
+   attributes over Rust source and never sees a `.bv` body. Releasing counsel is
+   warranted only when counsel's own checker changes — it has not, and nothing in
+   this campaign touched it.
+
+   So the train reduces to **one artifact: a `brievc` release**, which stands on
+   its own because `brievc build --verify-bodies` is the user-facing surface.
 3. **`briev-verify`: hold.** Its public surface (`ScalarModel`, the admission
    path) changed three times in the last week, and its only consumer is
    `briev-lang` itself. Publishing locks in a shape we are actively moving;
