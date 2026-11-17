@@ -4062,9 +4062,7 @@ impl LlvmBackend {
                     // Decimal initializer for a float-typed field is a
                     // whole-number value; print it in the slot's own form.
                     let literal = match ty {
-                        "float" | "double" => {
-                            super::float_to_llvm_str(n as f64, ty)
-                        }
+                        "float" | "double" => super::float_to_llvm_str(n as f64, ty),
                         _ => n.to_string(),
                     };
                     writeln!(
@@ -4222,6 +4220,15 @@ impl LlvmBackend {
                     // 2026-07-31 (A4): array state fields initialize to
                     // zeroinitializer (`store [16 x float] 0` is invalid IR).
                     self.emit_aggregate_zero_init(out, indent, ty, gep);
+                } else if matches!(ty, "float" | "double" | "half") {
+                    // 2026-11-17 (defn-composite): `store float 0` is invalid IR
+                    // — a float slot needs a floating constant ("integer/byte
+                    // constant must have integer/byte type"). Every UNINITIALISED
+                    // float state field (`let r: Float;`) takes this arm, so this
+                    // was a hard compile failure for any program with one.
+                    // Delegated to the literal emitter rather than a second
+                    // hand-rolled hex path: the two must not be able to drift.
+                    self.emit_float_literal_store(out, indent, 0.0, (ty, gep));
                 } else {
                     writeln!(
                         out,
