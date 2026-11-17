@@ -49,6 +49,14 @@ Sizes: **S** ≤ ½ day, **M** ≈ 1 day, **L** > 1 day.
 | 3 | `G2` | `brievc glue render <lang> [--check]` + wired into CI on first generated file | S | G1 |
 | 4 | `G3` | Split `lib/glue/c.bv` into ops + `glue/c/protocols.bv` (generated) | S | G2 |
 | 5 | `G4` | **IR parity gate** — hand-written vs generated, byte-identical over a both-directions corpus | M | G3 |
+
+> **G4 landed as G4′** (`88ab39526`, 2026-11-16): the original wording compared
+> hand-written vs generated *in place*; the gate that actually passed pins
+> program **structure** — both variants import a protocol file at the same
+> position and depth, differing only in how those declarations were written
+> (inline vs imported are different programs to the emitter). Superseded by
+> `2026-11-16-f1-verification-and-g4-redesign.md`; the rest of this plan is
+> carried forward by `2026-11-16-ffi-handoff-remainder.md`.
 | 6 | `G5` | `types_module` — generate `glue/c/types.bv` from `values:` (or delete the key) | S | G3 |
 | 7 | `H1` | HIR: `HirProtocol` + lowering + verify | M | — |
 | 8 | `H2` | HIR: `HirBoundary` (from/flags/contracts/discipline) on `HirForeign` | M | H1 |
