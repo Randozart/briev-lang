@@ -46,7 +46,8 @@
 
 use super::destination_ownership::HirDestinationOwnershipPlan;
 use super::program::{
-    HirCallable, HirCallableKind, HirEnumVariant, HirProgram, HirTypeDef, HirTypeDefKind,
+    HirBoundary, HirCallable, HirCallableKind, HirEnumVariant, HirProgram, HirTypeDef,
+    HirTypeDefKind,
 };
 use crate::analysis::destination_model::{
     ArgumentPlan, BoundaryConversion, BoundaryDirection, BoundaryKind, BoundaryPlan, BoundaryRole,
@@ -962,6 +963,7 @@ fn boundary_conversion(
     ty: &Option<Type>,
     role: BoundaryRole,
     type_protocols: &HashMap<String, String>,
+    boundary: Option<&HirBoundary>,
 ) -> Option<BoundaryConversion> {
     let Some(ty) = ty else { return None };
     let Some(name) = ty.universe_key() else {
@@ -974,7 +976,7 @@ fn boundary_conversion(
         return None;
     };
     match category.as_str() {
-        "String" => Some(classify_string_variant(&variant, role)),
+        "String" => Some(classify_string_variant(&variant, role, boundary)),
         // List-category: the `coll obj` boxed handle maps to C (ptr, len).
         "List" => Some(BoundaryConversion::CopyAtBoundary),
         _ => None,
@@ -983,10 +985,19 @@ fn boundary_conversion(
 
 /// Classify a String-category boundary value by its variant + role (HIR
 /// mirror of the AST helper).
-fn classify_string_variant(variant: &str, role: BoundaryRole) -> BoundaryConversion {
+fn classify_string_variant(
+    variant: &str,
+    role: BoundaryRole,
+    _boundary: Option<&HirBoundary>,
+) -> BoundaryConversion {
     if variant != "C_String" {
         return BoundaryConversion::None;
     }
+    // 2026-11-16 (H4): the classification reads the boundary's ownership
+    // discipline when it is present. Today the parser does not produce a
+    // non-default buffer_mode, so the classification matches the AST path
+    // exactly. When the parser gains the clause surface, the boundary's
+    // buffer_mode will drive the choice here.
     match role {
         BoundaryRole::Result => BoundaryConversion::ZeroCopyWithLifetimeProof,
         BoundaryRole::Parameter => BoundaryConversion::CopyAtBoundary,
@@ -1025,7 +1036,8 @@ fn export_boundaries(
             for value in &mut values {
                 value.external_class = GeneralDestinationClass::ScalarValue;
                 value.conversion = BoundaryConversion::None;
-                if let Some(conv) = boundary_conversion(&value.ty, value.role, type_protocols) {
+                if let Some(conv) = boundary_conversion(&value.ty, value.role, type_protocols, None)
+                {
                     value.conversion = conv;
                 }
             }
@@ -1079,10 +1091,12 @@ fn foreign_boundaries(
                     // 2026-11-15 (FFI zero-copy audit): the C-string param
                     // delta is `cstr_to_briev` (mandatory copy); other types
                     // keep the blanket `WidthConvert` from `boundary_value`.
+                    let param_boundary = Some(&binding.boundary);
                     if let Some(conv) = boundary_conversion(
                         &Some(ty.clone()),
                         BoundaryRole::Parameter,
                         type_protocols,
+                        param_boundary,
                     ) {
                         value.conversion = conv;
                     }
@@ -1102,9 +1116,13 @@ fn foreign_boundaries(
                 value.conversion = BoundaryConversion::None;
                 // 2026-11-15 (FFI zero-copy audit): the C-string result delta
                 // is `str_to_c` (zero-copy); other result types keep `None`.
-                if let Some(conv) =
-                    boundary_conversion(&Some(ty.clone()), BoundaryRole::Result, type_protocols)
-                {
+                let result_boundary = Some(&binding.boundary);
+                if let Some(conv) = boundary_conversion(
+                    &Some(ty.clone()),
+                    BoundaryRole::Result,
+                    type_protocols,
+                    result_boundary,
+                ) {
                     value.conversion = conv;
                 }
                 values.push(value);
