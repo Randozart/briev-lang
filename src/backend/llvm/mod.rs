@@ -5368,6 +5368,24 @@ impl LlvmBackend {
                     }
                 }
             };
+            // 2026-11-17 (corpus triage, largest ERR class): a pointer-typed
+            // const with an INTEGER initialiser (`const UART_DR: Ptr<Bits<8>> =
+            // 0x40001000;`) emitted `@UART_DR = constant ptr 1073811456`, and
+            // LLVM refuses it: "integer/byte constant must have integer/byte
+            // type". A pointer constant needs the inttoptr form. Affected
+            // examples/pointer-trickery, ptr-arithmetic, defn-composite,
+            // volatile-io — one cause, four files.
+            let val_str = if llvm_ty == "ptr"
+                && !val_str.is_empty()
+                && val_str
+                    .trim_start_matches('-')
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+            {
+                format!("inttoptr (i64 {} to ptr)", val_str)
+            } else {
+                val_str
+            };
             // 2026-09-06 (Phase 8): the section(".name") placement on the
             // global constant (a define attribute on data — where the bytes
             // live). Sorted iteration keeps emission deterministic.

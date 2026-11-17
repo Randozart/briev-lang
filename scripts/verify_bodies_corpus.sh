@@ -63,6 +63,14 @@ cat >"$HOST_EXCLUDES" <<'EOF'
 examples/bad/boot_mps2.bv
 examples/bad/boot_rv64.bv
 examples/bad/boot_stage1.bv
+# 2026-11-17 (corpus triage): the `.bad` dialect is the BARE-METAL dialect
+# (docs/architecture/bad-dialect.md), not "invalid source". These are valid
+# multi-target bootloaders — `bootloader.bv` boots riscv64 and `typed_boot.bv`
+# is its typed end-to-end proof — and they have no host build path. Leaving them
+# in the corpus charged the floor for a Verifier verdict on a program that is
+# not host-buildable, the same reason the three above are excluded.
+examples/bad/bootloader.bv
+examples/bad/typed_boot.bv
 examples/kernel_rv64.b.bv
 examples/timer_arm.b.bv
 examples/timer_rv64.b.bv
@@ -119,9 +127,18 @@ trap 'rm -f "$raw"; rm -rf "$workdir"' EXIT
 printf '%s\0' "${FILES[@]}" \
     | xargs -0 -P "$(nproc)" -I{} sh -c '
         f="$1"
-        out="$2/$(printf "%s" "$f" | tr "/" "_")"
+        key="$(printf "%s" "$f" | tr "/" "_")"
+        out="$2/$key"
+        # 2026-11-17 (corpus triage): every file needs its OWN --out dir. The
+        # runner used to share "$3/out", so parallel builds overwrote each
+        # other"s `<name>.ll` and `opt` then verified one file against another
+        # — `examples/wildcard_lift.bv` came back carrying a dozen unrelated
+        # verifier errors while the files that actually owned them looked
+        # clean. A measurement tool that cross-attributes failures cannot
+        # produce a trustworthy floor.
+        mkdir -p "$2/build-$key"
         { printf "FILE: %s\n" "$f"
-          "$0" build "$f" --verify-bodies --out "$3/out" 2>&1 \
+          "$0" build "$f" --verify-bodies --out "$2/build-$key" 2>&1 \
               | grep -E "could not prove|verify-bodies skipped|verify-bodies violation|error:"
         } > "$out" 2>&1
     ' "$BRIEVC" {} "$workdir" "$workdir"
