@@ -32,6 +32,45 @@ pub(crate) const TILE: u64 = 64;
 pub(crate) const THREADS: u64 = 16;
 pub(crate) const REG: u64 = 4;
 
+/// 2026-11-17 (X1 denominator audit): what the tiled tier dispatches and what
+/// that counts. X1's own first action is "verify the work count of both arms
+/// before treating a timing as the target" — this makes the count a value the
+/// compiler reports instead of a number someone re-derives by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DispatchGeometry {
+    pub workgroups: u64,
+    pub tile_m: u64,
+    pub tile_n: u64,
+    pub tiles_m: u64,
+    pub tiles_n: u64,
+    /// Output elements the grid visits (`workgroups · tile_m · tile_n`).
+    pub covered: u64,
+    /// Output elements the problem has (`m · n`). `covered != output` means the
+    /// shapes do not divide the tile and the tiled tier must not be used.
+    pub output: u64,
+    pub macs: u64,
+}
+
+impl DispatchGeometry {
+    /// FLOPs, one MAC-and-add per inner step — the only count a GEMM has.
+    pub(crate) fn flops(&self) -> u64 {
+        self.macs.saturating_mul(2)
+    }
+
+    /// TFLOP/s implied by a measured wall clock in milliseconds.
+    pub(crate) fn implied_tflops(&self, millis: f64) -> f64 {
+        if millis <= 0.0 {
+            return 0.0;
+        }
+        self.flops() as f64 / (millis / 1000.0) / 1e12
+    }
+
+    /// Does the grid cover the output exactly once?
+    pub(crate) fn covers_output(&self) -> bool {
+        self.covered == self.output
+    }
+}
+
 /// The recognized naive-GEMM shape, with every literal the tiled synthesis
 /// needs. Field names stay opaque (no Briev-type knowledge).
 #[derive(Clone)]
@@ -56,9 +95,36 @@ impl GemmPlan {
     /// 0.022ms tensor). Kernel and runner both call this — one tier
     /// decision. Undo: delete the workgroup-count check.
     pub(crate) fn tensor_tier_eligible(&self) -> bool {
+        self.dispatch_geometry().workgroups >= 8
+    }
+
+    /// 2026-11-17 (X1 denominator audit): the dispatch geometry, in one place
+    /// so the tier gate, the emitted kernel and the audit CANNOT disagree.
+    ///
+    /// Grid contract (module header): one workgroup per `tile_m × tile_n`
+    /// output block, `tile_m = 16·R` (R = the effective coopmat tile-rows),
+    /// `tile_n = TILE` (64), from `THREADS × THREADS` invocations each computing
+    /// a `REG × REG` register tile. The grid is X-only and flattened.
+    pub(crate) fn dispatch_geometry(&self) -> DispatchGeometry {
         let r = Self::coopmat_tile_rows(self.m);
-        let workgroups = (self.m / (16 * r as i64)) * (self.n / 64);
-        workgroups >= 8
+        let tile_m = 16 * r as u64;
+        let tile_n = TILE;
+        let m = self.m.max(0) as u64;
+        let n = self.n.max(0) as u64;
+        let k = self.k.max(0) as u64;
+        let tiles_m = m / tile_m;
+        let tiles_n = n / tile_n;
+        let workgroups = tiles_m.saturating_mul(tiles_n);
+        DispatchGeometry {
+            workgroups,
+            tile_m,
+            tile_n,
+            tiles_m,
+            tiles_n,
+            covered: workgroups.saturating_mul(tile_m).saturating_mul(tile_n),
+            output: m.saturating_mul(n),
+            macs: m.saturating_mul(n).saturating_mul(k),
+        }
     }
 
     /// The effective coopmat tile-rows for a plan: the configured R capped
@@ -1674,6 +1740,104 @@ mod tests {
         builder.set_entry_point(func_id, "main", ExecutionModel::GLCompute, &interface);
         builder.add_execution_mode(func_id, spirv::ExecutionMode::LocalSize, 32, 1, 1);
         builder.build()
+    }
+
+    // ── X1 denominator audit (2026-11-17) ───────────────────────────────────
+    //
+    // X1's first action, before trusting any coopmat timing: "verify the work
+    // count of both arms; a wrong denominator would make the whole comparison
+    // meaningless." The work count is dispatch geometry, not a device property,
+    // so it is checked here and printed by `benchmarks/gpu_workcount_audit.sh`.
+    //
+    // The recorded Vulkan A/B this reframes (plan 2026-11-16 memory-and-xpu
+    // finish-grind §X1): 512^3 coopmat 1.05 ms / tiled 0.12 ms;
+    // 4096^3 coopmat 371 ms / tiled 39.7 ms. Implied rates (2·m·n·k FLOP):
+    //
+    //   512^3  coopmat 0.256 TFLOP/s   tiled 2.237 TFLOP/s
+    //   4096^3 coopmat 0.370 TFLOP/s   tiled 3.462 TFLOP/s
+    //
+    // Two things follow, and only one was suspected:
+    //
+    // 1. The geometry is FULL — `workgroups · tile_m · tile_n == m·n` for both
+    //    shapes, so the dispatch is neither folded nor short. X1's "suspect
+    //    denominator" branch is refuted.
+    // 2. The figures X1 compared against (SIMD f32 1.46, f16-storage 1.63
+    //    TFLOP/s) are REFERENCE-KERNEL achievements, not hardware bounds: BOTH
+    //    arms beat them at 512^3, where the window is too short for a launch
+    //    artefact to explain a 9x gap. Comparing against them is what made a
+    //    correct denominator look impossible.
+    //
+    // Still real: coopmat is ~8.8x (512^3) and ~9.3x (4096^3) slower than the
+    // tiled arm, and its target is that arm's rate, not 1.63.
+    #[test]
+    fn x1_dispatch_geometry_covers_the_output_and_the_denominator_is_sound() {
+        let plan = |m: i64| GemmPlan {
+            m,
+            n: m,
+            k: m,
+            a_field: "a".into(),
+            b_field: "b".into(),
+            y_field: "y".into(),
+        };
+        let small = plan(512).dispatch_geometry();
+        let large = plan(4096).dispatch_geometry();
+
+        for (name, g) in [("512^3", small), ("4096^3", large)] {
+            eprintln!(
+                "{name}: workgroups={} tile={}x{} tiles={}x{} covered={} output={} flops={}",
+                g.workgroups,
+                g.tile_m,
+                g.tile_n,
+                g.tiles_m,
+                g.tiles_n,
+                g.covered,
+                g.output,
+                g.flops()
+            );
+            assert!(
+                g.covers_output(),
+                "{name}: the grid must visit every output element exactly once \
+                 (covered {} vs output {})",
+                g.covered,
+                g.output
+            );
+            assert_eq!(
+                g.workgroups,
+                g.tiles_m * g.tiles_n,
+                "{name}: workgroups must equal tiles_m * tiles_n"
+            );
+        }
+
+        // The recorded times, turned into implied rates. These assertions pin
+        // the arithmetic the plan's "sanity caution" was reasoning about.
+        let recorded = [
+            ("512^3 coopmat", small, 1.05_f64, 0.256),
+            ("512^3 tiled", small, 0.12, 2.237),
+            ("4096^3 coopmat", large, 371.0, 0.370),
+            ("4096^3 tiled", large, 39.7, 3.462),
+        ];
+        for (name, g, millis, expect) in recorded {
+            let got = g.implied_tflops(millis);
+            eprintln!("{name}: {millis} ms -> {got:.3} TFLOP/s");
+            assert!(
+                (got - expect).abs() < 0.01,
+                "{name}: implied {got:.3} TFLOP/s, expected {expect}"
+            );
+        }
+
+        // Both arms scale the same way (~1.4-1.6x) from 512^3 to 4096^3. A
+        // folded dispatch would COLLAPSE at the larger shape, not scale.
+        let tiled_ratio = large.implied_tflops(39.7) / small.implied_tflops(0.12);
+        let coopmat_ratio = large.implied_tflops(371.0) / small.implied_tflops(1.05);
+        assert!(
+            (1.3..1.8).contains(&tiled_ratio) && (1.3..1.8).contains(&coopmat_ratio),
+            "both arms must scale the same way (tiled {tiled_ratio:.2}, coopmat {coopmat_ratio:.2})"
+        );
+
+        // The reference figures are not hardware bounds: both arms beat them at
+        // 512^3. Pinned so nobody re-derives "impossible denominator" from them.
+        assert!(small.implied_tflops(1.05) < 1.63);
+        assert!(small.implied_tflops(0.12) > 1.63);
     }
 }
 
