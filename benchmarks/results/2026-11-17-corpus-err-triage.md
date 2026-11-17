@@ -179,3 +179,28 @@ shape than the plain numeric one). Class D: `import-forms` (`@val`),
 **Next slice recommendation changed:** do class D next, not the rest of C — it is
 stdlib, it is two files, and both look like one mechanism (a global declared in an
 imported module not reaching the module that uses it).
+
+## 8. Class D first pass — the cause is narrowed, not fixed
+
+`lib/std/posix/io.bv` reads `FD_STDOUT` at `%t9 = load i64, ptr @FD_STDOUT` and
+the module never declares it (`grep -c "@FD_STDOUT = " == 0`). Source:
+`export let FD_STDOUT: Int = 1;`.
+
+A/B run to find the differentiator:
+
+| variant | declared? | builds? |
+|---|---|---|
+| `export let FD_STDOUT: Int = 1;` | no | no |
+| `let FD_STDOUT: Int = 1;` (export removed) | no | no |
+
+So it is **not** an export-unwrapping bug — the export marker is a red herring.
+The shape that breaks is a module-level `let` in a module with **no node/txn**
+(a defn-only library): there is no `%State`, so the value must become a
+module-scope global, the read path already emits one, and the declaration side
+never registers it. `plain_global_types` (which drives `@name = global …`) has no
+insertion site reachable from this shape.
+
+Next step is therefore in the frontend classification (`plain_lets` /
+`plain_global_types` population) rather than in the emitter, and it must be
+checked against the 200+ `lib/std` files that *do* build so the fix does not
+change how state-backed modules lower.
