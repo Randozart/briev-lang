@@ -47,6 +47,32 @@ is specific to callees with **no return type**.
 probes `<exe>/../../lib`. Not a compiler bug — CI builds in-tree — but it costs a
 debugging cycle if you work with an external target dir; set `BRIEV_STDLIB_PATH`.
 
+## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
+
+**Symptom.** A `Float` accumulator written inside a `foreach` emits an `fadd`
+whose operand is an i64 register, so LLVM refuses the module:
+
+```llvm
+%pbf14 = fadd fast float 0.0, %t36    ; %t36 is i64
+```
+
+Repro: `examples/syntax/meta/defn-composite.bv` (`$defn accumulate` accumulates
+into a `Float` local over `foreach k in 0..n`). Found while fixing the
+uninitialised-float-slot zero initialiser (`4e38abc6a`) — that fix moved the file
+past its first error and exposed this one, so it is a long-standing defect, not a
+regression.
+
+**Why it matters beyond the example.** Any `Float` accumulator carried by a
+`foreach` takes the per-field-phi path (`%pbf<N>`), and the carry register is the
+i64 state word rather than the unboxed float. Float accumulators are ordinary
+code, so the reach is wider than one example file.
+
+**Not fixed.** The fix belongs in the loop engine's float carry (unbox the
+carried word before the arithmetic, or keep the carry in a `float` phi), and the
+loop engines are the least suitable place for a rushed change: the same code
+feeds every benchmark. Recorded with the exact IR so the next session starts from
+evidence rather than a rebuild.
+
 ## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
 
 **Symptom.** Building any program that touches the C glue layer from a

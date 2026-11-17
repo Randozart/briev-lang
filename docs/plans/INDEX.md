@@ -80,6 +80,28 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**pf_exp, the uninitialised float slot, and tonight's PTL queue (2026-11-17, ACTIVE):**
+`docs/plans/2026-11-17-pf-exp-float-slot-and-ptl-queue.md` — three follow-ups to the
+device-free queue. (A) `pf_exp` is 172 of the corpus's 207 unproven goals, and the
+multiplicity is the prelude re-contributing one contract to every native unit, not
+172 problems. **Outcome: it is not a contract bug** — it is the `Int, Int`
+tuple-summary gap already documented as phase 2 of
+`docs/plans/2026-11-15-value-summaries.md` §3.2. Measured: adding `i >= 0` changes
+nothing, and rewriting `pf_exp_digits`' post in tuple form moves the goal from
+UNPROVEN to SKIPPED (`0 unproven / 142 skipped`) without proving anything — a
+relabelling, reverted. The clamp still allows 9999 against a commented ±1000 cap;
+recorded, not changed, because it is unverifiable until a tuple post means
+something. (B)
+`defn-composite`'s `store float 0` is the `None` arm of `emit_field_init_value`:
+`let r: Float;` with no initializer emits an integer zero into a float slot, so
+*any* uninitialised Float state field is currently a compile failure. (C) the
+evening PTL queue, prepared: X1 first (its denominator question is already settled
+by the audit — the target is the tiled arm's own 2.24/3.46 TFLOP/s, and the only
+open question is whether the wall clock includes completion, so run each arm with
+and without an explicit finish), then X2 (NEO residency, mirror the L0
+`launch_dev` shape), then X3 (GLSL/XMX ceiling, same-device CL-C references), with
+every number recorded and kernel knobs A/B'd via the variant gate.
+
 **Device-free work queue (2026-11-17, ACTIVE):**
 `docs/plans/2026-11-17-device-free-work-queue.md` — what to do while the PTL node
 stays unreachable. Five items with gates: (1) corpus ERR triage, because the
