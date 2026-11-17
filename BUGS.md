@@ -1,3 +1,53 @@
+## 2026-11-17 — `export let` emitted a load of a symbol nothing declared (FIXED)
+
+**Symptom.** A four-line program produced IR that clang rejects:
+
+```briev
+import "std/io.bv";
+export let K: Int = 7;
+let done: Bool = false;
+node main [!done][done] { Print#(K); done = true; endprogram; };
+```
+```
+error: use of undefined value '@K'
+  %t12 = load i64, ptr @K
+```
+The non-exported sibling (`let k: Int = 7;`) was correct: `@k = global i64 7`,
+valid module. So the `export` marker was the whole difference — and the same
+defect had made `lib/std/posix/io.bv` and `process.bv` unbuildable (the class-D
+entry above fixed their *lookup* walk, not their *declaration* walk).
+
+**Cause — one name, three walks that disagreed.** An exported top-level `let`
+was classified plain by `analysis::storage_class::classify_plain_lets` (its
+`let_of_item` is deliberately export-transparent so `build_field_index` can
+register the name), but excluded from `HirProgram::globals` by HIR lowering's
+`if !exported` guard, and never registered as a plain global or a state field.
+`plain_lets` then said "plain" while nothing had declared the symbol: the read
+took a `load … ptr @K` and the declaration never existed.
+
+**Fix — decide once and make every walk say it.** An exported top-level `let`
+is host-visible storage, therefore **never register-resident**:
+
+- `analysis::storage_class::classify_plain_lets` iterates bare
+  `TopLevel::Statement` lets only (matching its own `storage_assertion_errors`),
+  so an exported let is never plain;
+- HIR lowering drops the `!exported` guard for `let`/`StateDecl` — the export
+  marker is transparent everywhere else in the compiler, here too;
+- `HirGlobal` gains `exported: bool` (lowering is the only place that knows it)
+  and `hir::storage_class::classify_plain_lets` skips exported globals, so the
+  AST and HIR classifications agree by construction rather than by coincidence.
+
+**Effect.** `export let K` now becomes a `%State` field, the module validates
+(`clang -x ir -c` → 0 errors), and `lib/std/posix/io.bv` + `process.bv` emit
+valid IR. Corpus reach: only those two files contain `export let`, so no other
+program's emission can change — and `benchmarks/ll_determinism_check.sh
+--quick` stayed byte-identical.
+
+**Tests.** `tests/hir_storage_class_parity.rs::exported_let_parity_and_never_plain`
+pins all three: both walks agree, the AST set excludes `K`, and `HirGlobal`
+carries `exported` (a consumer that loses the marker re-introduces the
+divergence).
+
 ## 2026-11-17 — `obj` member bodies could not call a **void** callee (FIXED)
 
 **Symptom.** `tests/rbv_router.rs::router_smoke_gate` failed, and it was the only

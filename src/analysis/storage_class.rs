@@ -318,7 +318,17 @@ pub fn classify_plain_lets(
     let written = body_written_names(items);
     let mut plain = HashSet::new();
     for item in items {
-        if let Some(stmt) = let_of_item(item) {
+        // 2026-11-17: `let_of_item` is export-transparent (build_field_index
+        // needs that), but a PLAIN let is register-resident SSA — an
+        // `export let` is host-visible storage and can never be that. Using
+        // the export-transparent accessor here classified `export let
+        // FD_STDIN: Int = 0;` as plain, disagreeing with the HIR walk and
+        // with this module's own `storage_assertion_errors`.
+        let stmt = match item {
+            TopLevel::Statement(stmt) => stmt.as_ref(),
+            _ => continue,
+        };
+        {
             if let Statement::Let { name, ty, expr, .. } = stmt {
                 let declared = let_annotation(name, items);
                 if let_lowers_plain(
