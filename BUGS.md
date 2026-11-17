@@ -1,3 +1,57 @@
+## 2026-11-17 — a free call in an obj/cell MEMBER body was refused as undefined (FIXED)
+
+**Symptom.** `tests/fixtures/obj_router.rbv` (the `obj_router` step of
+`benchmarks/rbv_gate.sh`, hence `tests/rbv_router.rs`, hence CI) failed to
+compile:
+
+```
+error: type errors:
+  invalid operation 'call to 'navigate'' on type 'navigate' is not defined in
+  this program — import the module that defines it (e.g. `import "std/…"`) or
+  remove the call
+build failed: tests/fixtures/obj_router.rbv
+```
+
+The *identical* body at top level compiled. Minimal reproduction:
+
+```briev
+import "std/web/router.bv";
+obj R {
+    path: String;
+    txn go(url: String) [path != url][path == url] { path = url; navigate(url); term; };
+};
+let r: R = R { path: current_path() };   // fails
+```
+removing the `obj` wrapper (a top-level `txn go`) compiles.
+
+**Root cause.** The 2026-11-16 undefined-name typecheck gap made
+`TypecheckContext::defined_fns` load-bearing: `resolve_free_call`
+(`src/typechecker/mod.rs:2334`) REFUSES a call whose name is not in the set,
+instead of guessing `Int`. Top-level bodies receive the full set
+(`ctx.defined_fns = env.defined_fns.clone()`, `:7399`). Member bodies are
+typechecked through `build_member_ctx`, which builds a fresh
+`TypecheckContext::new(universe)` and copied a dozen fields — but never
+`defined_fns`, which `TypecheckContext::new` initialises empty (`:232`). So
+every free call in a member body (obj AND cell — the builder is shared) saw an
+empty set. The bug predates the fixtures: it landed with the 2026-11-16 gate and
+was invisible until the web-surface gate next ran against a member txn.
+
+**Fix.** `build_member_ctx` now sets `mctx.defined_fns = defined_fns.clone();`
+— the same set, one construction path per context kind.
+
+**Tests.** `typechecker::member_free_call_tests`: member txn → frgn, member txn
+→ defn, top-level txn → frgn (the always-worked control), and member txn →
+unknown name **still refused** (the fix populates the set, it does not disable
+the gate).
+
+**Also.** `benchmarks/rbv_gate.sh` step 6 guarded on the *playwright package*
+being importable, not on the *chromium binary* existing — a machine with the npm
+package but no `npx playwright install chromium` ran the browser smoke and
+failed with "Executable doesn't exist", reporting an environment gap as a page
+bug. The guard now probes `chromium.executablePath()` and skips with which gap
+it skipped. CI never had the package, so CI's redness was the typecheck bug
+alone.
+
 ## 2026-11-17 — `config/abi/` is only found when the build starts inside the compiler repo (FIXED)
 
 **Symptom.** Building any program that touches the C glue layer from a

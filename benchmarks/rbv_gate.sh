@@ -172,10 +172,24 @@ echo "OK brievc watch --once (dev-loop build path + worked example)"
 # 6. Stranger-loads-page smoke (Phase 3.1 gate): build the counter in bundle
 #    mode and load it in a real Chromium — the node gate (step 1) stubs the
 #    host and cannot prove the page loads from file://, the boot flush lands,
-#    or a real click round-trips to the DOM. Skips gracefully if Playwright /
-#    Chromium is unavailable (no sudo / pacman needed — the browser downloads
-#    to ~/.cache/ms-playwright via `npx playwright install chromium`).
-if command -v node >/dev/null && node -e "import('playwright')" >/dev/null 2>&1; then
+#    or a real click round-trips to the DOM.
+#
+#    2026-11-17: the guard must check the BROWSER BINARY, not just the
+#    `playwright` package. A machine with the npm package installed but no
+#    `npx playwright install chromium` has an importable module and no
+#    executable, so the old guard let the smoke run and fail with
+#    "Executable doesn't exist" — an environment gap reported as a page bug.
+#    The gate skips when the browser is absent and says which gap it skipped.
+has_playwright_browser() {
+    command -v node >/dev/null || return 1
+    node --input-type=module -e '
+        const {chromium} = await import("playwright");
+        const fs = await import("node:fs");
+        const p = chromium.executablePath();
+        process.exit(p && fs.existsSync(p) ? 0 : 1);
+    ' >/dev/null 2>&1
+}
+if has_playwright_browser; then
     COUNTER_OUT="$OUT_ROOT/counter"
     mkdir -p "$COUNTER_OUT"
     "$BRIEVC" build "$ROOT/examples/counter.rbv" --out "$COUNTER_OUT" >/dev/null || {
@@ -184,7 +198,7 @@ if command -v node >/dev/null && node -e "import('playwright')" >/dev/null 2>&1;
     node "$ROOT/benchmarks/rbv_browser_smoke.mjs" "$COUNTER_OUT/counter.html" || exit 1
     echo "OK counter (stranger-loads-page smoke: real browser, file://, click round-trip)"
 else
-    echo "SKIP: stranger-loads-page smoke (Playwright/Chromium not available)"
+    echo "SKIP: stranger-loads-page smoke (Playwright package or Chromium binary not available)"
 fi
 
 echo "rbv_gate: OK"

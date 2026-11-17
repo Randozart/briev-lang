@@ -6476,6 +6476,14 @@ pub fn check_program_with_target(
         for name in &optional_frgns {
             mctx.optional_frgns.insert(name.clone());
         }
+        // 2026-11-17: the undefined-name gate (2026-11-16, `defined_fns`) is
+        // load-bearing — `resolve_free_call` REFUSES a call whose name is not
+        // in it. Member bodies (obj and cell txns/defns) get a fresh
+        // `TypecheckContext`, so without this line every free call in a member
+        // body — `navigate(url)` in a `Router.go` member txn — was rejected as
+        // "not defined in this program", while the identical top-level txn
+        // typechecked fine. Same set, one construction path.
+        mctx.defined_fns = defined_fns.clone();
         for (name, ty) in &state_bindings {
             mctx.bindings.insert(name.clone(), ty.clone());
             mctx.state_keys.insert(name.clone());
@@ -13247,5 +13255,80 @@ mod operator_receiver_tests {
         let source = "type Flag: Bool { op Add(Int): add_flag(#Lh, #Rh); }; defn add_flag(b: Flag, delta: Int) -> Flag { term b; }; defn f(b: Flag) -> Flag { term b + 1; };";
         let result = crate::library::parse_and_check("<declared-operator>", source);
         assert!(result.is_ok(), "{result:?}");
+    }
+}
+
+#[cfg(test)]
+mod member_free_call_tests {
+    use super::*;
+
+    /// Parse + typecheck a snippet.
+    fn check(src: &str) -> Result<(), Vec<TypeError>> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe)
+    }
+
+    /// 2026-11-17: a FREE call inside an obj member txn must resolve exactly as
+    /// it does in a top-level txn. The member context is built fresh
+    /// (`build_member_ctx`), so it must carry `defined_fns` — without it every
+    /// frgn/defn call in a member body was refused as "not defined in this
+    /// program" while the identical top-level body typechecked.
+    #[test]
+    fn member_txn_can_call_a_frgn() {
+        let src = "frgn navigate(url: String) from \"glue/web/web.js\";\n\
+                   obj R {\n\
+                       path: String;\n\
+                       txn go(url: String) [path != url][path == url] {\n\
+                           path = url; navigate(url); term;\n\
+                       };\n\
+                   };\n\
+                   let r: R = R { path: \"\" };\n";
+        check(src).expect("a member txn must be able to call a frgn");
+    }
+
+    /// The same call at top level (the shape that always worked) — kept as the
+    /// against-which control so a future member-context change cannot pass by
+    /// accidentally widening both.
+    #[test]
+    fn top_level_txn_can_call_a_frgn() {
+        let src = "frgn navigate(url: String) from \"glue/web/web.js\";\n\
+                   let path: String = \"\";\n\
+                   txn go(url: String) [path != url][path == url] {\n\
+                       path = url; navigate(url); term;\n\
+                   };\n";
+        check(src).expect("a top-level txn must be able to call a frgn");
+    }
+
+    /// A member txn calling a plain user defn must also resolve. This is the
+    /// half of `defined_fns` that frgns are not: the bug hid both.
+    #[test]
+    fn member_txn_can_call_a_defn() {
+        let src = "defn helper(x: Int) -> Int { term x + 1; };\n\
+                   obj C {\n\
+                       n: Int;\n\
+                       txn bump() [n < 10][n == 10] { n = helper(n); term; };\n\
+                   };\n\
+                   let c: C = C { n: 0 };\n";
+        check(src).expect("a member txn must be able to call a defn");
+    }
+
+    /// The undefined-name gate must still fire inside a member body: the fix
+    /// populates the set, it does not disable the check.
+    #[test]
+    fn member_txn_still_rejects_an_unknown_call() {
+        let src = "obj C {\n\
+                       n: Int;\n\
+                       txn bump() [n < 10][n == 10] { n = not_defined_anywhere(n); term; };\n\
+                   };\n\
+                   let c: C = C { n: 0 };\n";
+        let errs = check(src).expect_err("an unknown call must still be refused in a member body");
+        let text = format!("{errs:?}");
+        assert!(
+            text.contains("not defined in this program"),
+            "expected the undefined-name diagnostic, got: {text}"
+        );
     }
 }
