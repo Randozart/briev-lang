@@ -80,12 +80,18 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
-**PTL night queue (2026-11-17, ACTIVE — blocked on auth):**
-`docs/plans/2026-11-17-ptl-night-queue.md` — the node is up and tailnet-reachable but
-only answers with a **password** (`prestooverlord@100.92.76.67`, no key), so the
-queue cannot run unattended; either `ssh-copy-id` once or export
-`BRIEV_PTL_SSH="sshpass -p … ssh …"` (the harness already takes that prefix and
-stores nothing). It also records a **correction that changes the experiment**:
+**PTL night queue (2026-11-17, EXECUTED — see the results file):**
+`docs/plans/2026-11-17-ptl-night-queue.md` — **executed 2026-11-17 evening.** Outcomes:
+key auth works with `prestopoverlord@` (the earlier probe misspelled it); preflight
+confirms Arc B390 with `cooperativeMatrix = true`; and **P1 overturned X1** —
+`brievc run` dispatches a different grid than the emitted runner (16x for the
+coopmat tier), so "coopmat is a 9x regression" was the harness. Measured properly
+(build → link → run): 4096³ f16 = 26.23 ms / 5.24 TFLOP/s, 3.2x FASTER than the
+hand-written CL-C reference; the shipped `coopmat: 1, f16acc: 1` default is correct
+and f32 accumulation is 1.46x slower. `briev_lane.sh` now builds+links+times the
+shipped binary. New top target from the re-taken table: **f32-storage GEMM, 8.5x
+behind the reference at 4096³**, because that path has no tiled kernel (coopmat only
+handles f16 storage). K3's cgroup check is negative on this node too. It also records a **correction that changes the experiment**:
 `benchmarks/results/2026-11-09-intel-lane-ceilings.md:249` shows the f16 A/B is
 coopmat **1.05/371 ms vs f16-tiled 1.70/459 ms** — coopmat WINS like-for-like — and
 the `0.123/39.7 ms` figures are the **f32** tiled path. X1's "coopmat is 9× slower"

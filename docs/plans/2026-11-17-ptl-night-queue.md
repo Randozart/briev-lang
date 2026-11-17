@@ -1,5 +1,38 @@
 # PTL night queue (2026-11-17) — access, preflight, and the experiment that matters
 
+## Status at the end of the night
+
+| step | result |
+|---|---|
+| 0 access | **done** — `prestopoverlord@100.92.76.67` (the earlier probe misspelled the account); key auth, unattended |
+| 1 preflight | **done** — Arc B390, Vulkan 1.4.357, `cooperativeMatrix = true`, subgroup 32, OpenCL + glslang + spirv-dis present, 20 GiB free |
+| 2 P1 four-arm A/B | **done, and it overturned X1** — see below |
+| 3 P2 (f16/f32-acc kernel) | **retired**: f32 accumulation is 1.46x *slower*; there was never a kernel to fix |
+| 4 P3 NEO residency | not started (the evening went into the harness defect, which was worth more) |
+| 5 P5 K3 check | **done, negative** — `MemoryMax` is unenforced on this node too |
+
+### What P1 actually found
+
+`brievc run` was the measurement instrument, and it was wrong: it links a generic
+driver that dispatches its own work-item count (16x the tile grid for the coopmat
+tier). Measured the way a program ships, 4096³ f16 coopmat is **26.23 ms
+(5.24 TFLOP/s)**, not 367.8 — **3.2x faster than the hand-written CL-C reference**
+and ~30x faster than the f32 fixture. X1's premise ("coopmat shipped as a 9x
+regression") is withdrawn; the shipped default is correct.
+
+Full evidence and the re-taken ceiling table (both arms, same night):
+`benchmarks/results/2026-11-17-ptl-f16-tier.md`.
+
+### The new top target
+
+The re-taken table leaves one real gap: **f32-storage GEMM is 4.7x (512³) and 8.5x
+(4096³) behind the CL-C reference**, because that path never enters the
+cooperative-matrix tier (which needs f16 storage) and there is no tiled f32 kernel
+at all — only coopmat or naive. Per doctrine that is a general tiling derivation,
+not a vendor special case, and it is a much better-scoped problem than X1 was:
+there is a same-night baseline to beat.
+
+
 The node is free and reachable on the tailnet; other work there may be killed.
 What follows is the runnable queue plus the one thing blocking it.
 
