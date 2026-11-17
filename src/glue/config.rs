@@ -1070,6 +1070,41 @@ rust: { version: 1; types_module: "glue/rust/types.bv"; extension: "rs"; bridge_
         );
     }
 
+    /// Every shipped adapter that names a `types_module` must name a file that
+    /// exists. `glue/c/types.bv` did not: the descriptor pointed at nothing, and
+    /// nothing read the path, so the claim was never checked. A dangling path in
+    /// data is a lie the compiler tells itself — this pins it shut.
+    #[test]
+    fn every_named_types_module_exists() {
+        let mut checked = 0;
+        for entry in std::fs::read_dir("lib/glue").expect("lib/glue") {
+            let dir = entry.expect("dir entry").path();
+            let cfg = dir.join("glue.dbv");
+            if !cfg.exists() {
+                continue;
+            }
+            let lang = dir.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+            let source = std::fs::read_to_string(&cfg).expect("read descriptor");
+            let Some(target) = parse_glue_dbvl(&source)
+                .expect("descriptor parses")
+                .remove(lang)
+            else {
+                continue;
+            };
+            let path = target.types_module.to_string_lossy().to_string();
+            if path.is_empty() {
+                continue;
+            }
+            let resolved = std::path::Path::new("lib").join(&path);
+            assert!(
+                resolved.exists(),
+                "adapter `{lang}` names types_module `{path}` but {resolved:?} does not exist"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "expected at least one adapter with a types_module");
+    }
+
     #[test]
     fn the_c_adapter_declares_its_abi_core() {
         // Only where `c_abi` values are genuine C types; the managed-language
