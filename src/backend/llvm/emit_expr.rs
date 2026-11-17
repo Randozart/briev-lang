@@ -513,14 +513,15 @@ impl LlvmBackend {
         indent: &str,
     ) -> TypedRegister {
         let ptr_reg = self.emit_expr(out, inner, indent);
-        // 2026-07-30: Ptr values are stored as i64 internally (see
-        // ptrtoint at emit_toplevel.rs:1188). Convert back to actual
-        // LLVM ptr before loading.
-        let load_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
-            self.canonical_ptr(out, indent, &ptr_reg.name)
-        } else {
-            ptr_reg.name.clone()
-        };
+        // 2026-11-17 (class C3): a dereference operand is ALWAYS an address, so
+        // it must always be canonicalised. The old gate
+        // `matches!(ptr_reg.ty, Type::Ptr(_))` never fired for `&state_field`,
+        // because `emit_addr_of_identifier` stamps the resulting i64 handle as
+        // `Int` (it emits `ptrtoint ptr <gep> to i64`). The handle then went
+        // straight into `load i64, ptr %handle` — invalid IR. `canonical_ptr`
+        // already does the right thing for both shapes: pass a recorded pointer
+        // through, inttoptr an i64 handle.
+        let load_ptr = self.canonical_ptr(out, indent, &ptr_reg.name);
         let pointee_ty = match &ptr_reg.ty {
             Type::Ptr(inner_ty) => inner_ty.as_ref().clone(),
             _ => Type::int(), // fallback
@@ -2030,6 +2031,11 @@ impl LlvmBackend {
                 }
             } else if self.is_string_operand(ty) || matches!(ty, Type::Ptr(_)) {
                 writeln!(out, "{}{} = load ptr, ptr @{}", indent, v, name).ok();
+                // 2026-11-17 (class C1): record the ACTUAL width. A `Ptr`-typed
+                // constant loads as a real `ptr`, but the stamped type maps to
+                // the i64 handle domain, so every consumer that trusts the stamp
+                // treats this pointer as an i64 (`store i64 %t0` into a slot).
+                self.fun.reg_value_ll.insert(v.to_string(), "ptr".to_string());
                 TypedRegister {
                     name: v.to_string(),
                     ty: ty.clone(),

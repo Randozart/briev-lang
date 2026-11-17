@@ -4149,7 +4149,16 @@ impl LlvmBackend {
                 // 2026-07-19: Store with native type when possible. Skip
                 // adapt_to_i64 boxing when the value's LLVM type matches the
                 // field's LLVM type (float→"float", double→"double").
-                let val_ty = self.llvm_type(&val_reg.ty);
+                // 2026-11-17 (class C1): the stamped type says i64 for a `Ptr`
+                // value, but the register may hold a real pointer (a load from a
+                // ptr-typed global). Trust the recorded width when there is one,
+                // or the store writes `ptr` into an i64 slot.
+                let val_ty = self
+                    .fun
+                    .reg_value_ll
+                    .get(&val_reg.name)
+                    .cloned()
+                    .unwrap_or_else(|| self.llvm_type(&val_reg.ty));
                 if val_ty == *ty {
                     writeln!(
                         out,

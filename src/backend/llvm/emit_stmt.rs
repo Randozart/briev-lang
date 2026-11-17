@@ -3520,13 +3520,11 @@ pub(crate) fn emit_assign_statement(
         Expr::Deref(inner) => {
             let ptr_reg = backend.emit_expr(out, inner, indent);
             let store_ty = backend.llvm_type(&val.ty);
-            // 2026-07-30: Ptr values are stored as i64 internally;
-            // convert back to LLVM ptr before storing through.
-            let store_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
-                backend.canonical_ptr(out, indent, &ptr_reg.name)
-            } else {
-                ptr_reg.name.clone()
-            };
+            // 2026-11-17 (class C3): same rule as the deref load — an address is
+            // canonicalised, never assumed. `&state_field` yields an i64 handle
+            // stamped `Int`, so the old `matches!(ty, Ptr)` gate skipped the
+            // inttoptr and stored through an i64 (`store i64 %v, ptr %handle`).
+            let store_ptr = backend.canonical_ptr(out, indent, &ptr_reg.name);
             writeln!(
                 out,
                 "{}store {} {}, ptr {}",
