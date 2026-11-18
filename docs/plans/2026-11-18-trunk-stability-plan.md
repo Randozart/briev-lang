@@ -330,9 +330,17 @@ behavior change. No backend emission depends on it yet.
 
 ---
 
-## W4 — PF_exp induction (prover-side, last) — RE-SCOPED 2026-11-18
+## W4 — PF_exp induction (prover-side, last) — ✅ IMPLEMENTED 2026-11-18 (RE-SCOPED)
 
-**Full design: `docs/plans/2026-11-18-w4-pf-exp-tuple-induction.md`.**
+**Full design + outcome: `docs/plans/2026-11-18-w4-pf-exp-tuple-induction.md`.**
+Commit `407c7d790`. `pf_exp` is PROVEN; `lib/std` `goals_unproven` 99 → 10
+(the 89 `pf_exp` goals gone), `goals_proven` 2168 → 2257, `goals_violated` 0.
+No inductive step in the prover was actually needed: three *general*
+mechanisms were — multi-field value summaries, tuple-aware call-site facts,
+and constant-negation folding — after which the contract ladder became
+checkable. The `acc < 100` clamp the earlier plan proposed was **rejected**:
+it truncates `1e1500` to `1e150`, so the loop saturates at 1000 instead
+(byte-identical `str_to_float` output, verified A/B).
 
 ### Findings (2026-11-18 re-scope)
 

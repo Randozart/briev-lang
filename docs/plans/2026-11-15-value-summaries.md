@@ -164,6 +164,22 @@ multi-field representation (two obligations, one per field, or a record
 sort in SMT). **Deferred** — documented here as phase 2, not implemented this
 round.
 
+**Phase 2 landed 2026-11-18** (`briev-verify/src/verify.rs`; see
+`docs/plans/2026-11-18-w4-pf-exp-tuple-induction.md`). The representation chosen
+was per-field expressions, not a record sort in SMT:
+
+- a value `Summary` may now be `Expr::Tuple(fields)` (`evaluate_result`), so a
+  non-recursive tuple callee earns a per-field summary;
+- a tuple callee's **declared** postcondition is consumed at the call site as
+  one fact per field (`tuple_arity`, tuple-of-atoms in `rewrite_expr`,
+  `term`/`term.N` mapping in `post_facts_for_atom`), so even an
+  unsymmarisable (guard-dependent or recursive) callee contributes its
+  tuple bounds;
+- `eval_symbolic` folds constant negation, so negative bounds (`term.0 >= -1000`)
+  are decidable by the interval verdict.
+
+Result: `pf_exp` proved; `lib/std` `goals_unproven` 99 → 10.
+
 ### 3.3 String / Float / List / collection types
 
 These are genuinely outside the word model: heap values, IEEE-754, and

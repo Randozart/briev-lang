@@ -214,3 +214,103 @@ does not capture), the correct outcome is an **advisory-unproven report with the
 named reason** — not a forced proof, and not a weakened contract. That is the
 Rule 1 boundary, and it is the honest end-state for the cases the induction
 does not yet cover.
+
+---
+
+## Outcome (implemented 2026-11-18, commit 407c7d790)
+
+`pf_exp` is **proven**. `lib/std` census moved from
+`files_unproven 89 / goals_unproven 99 / goals_proven 2168` to
+`files_unproven 7 / goals_unproven 10 / goals_proven 2257`, with
+`goals_violated` staying at **0**. The 10 remaining goals are pre-existing and
+unrelated (`ip_v4`, `sha1_padded_len`, `is_numeric_loop`, `is_alpha_loop`,
+`read32le`).
+
+The induction framing above turned out to be wrong in an instructive way: no
+inductive step in the prover was needed. Three general mechanisms were, and the
+contract ladder only became checkable *after* they existed.
+
+### Mechanism 1 — multi-field value summaries (`briev-verify/src/verify.rs`)
+
+`Summary` keeps one `value: Expr`, but that expression may now be a tuple:
+`evaluate_result` (new) evaluates each component of a terminating tuple and
+returns `Expr::Tuple(fields)`, and `summary_mentions_only_params` checks a tuple
+field by field (because `free_idents` does not descend tuples). `inline_expr`
+gained a `Tuple` arm and `substitute_params` gained `Field` and `Tuple` arms.
+Effect: a caller of a non-recursive tuple callee is proven rather than skipped
+with "a call to X, which has no value summary". Pinned by
+`tuple_callee_summary_proves_the_caller`.
+
+### Mechanism 2 — tuple-aware call-site facts (same file)
+
+`build_call_contracts` now records each callee's result arity via `tuple_arity`
+(noting that `-> (A, B)` arrives as `OutputType::Single(Type::Tuple(..))`, not
+`OutputType::Tuple` — the first implementation returned arity 1 and left a
+surviving `term.1` gate). `rewrite_expr` gives a tuple callee one atom per field
+and returns them as a tuple, `post_facts_for_atom` / `replace_result` map `term`
+and `term.N` onto those atoms, and `mentions_ident` descends `Field` (without
+that the `term.0` conjuncts were dropped before `replace_result` ever saw them).
+`bounds_result_against_literal` also accepts `term.N`.
+Effect: a callee with **no** summary — guard-dependent or recursive — still
+contributes its declared tuple postcondition at the call site, one fact per
+field. This is what makes the 2026-11-17 "tuple postcondition" experiment real
+progress instead of the relabelling it was then. Pinned by
+`tuple_contract_facts_reach_the_call_site` and
+`tuple_contract_facts_refuse_an_unrelated_claim`.
+
+### Mechanism 3 — constant negation folds (`briev-verify/src/symbolic.rs`)
+
+`eval_symbolic` returned `Unknown` for every `UnaryOp(Neg, _)`, so `-1000`
+(written `Neg(Decimal(1000))`) could never be compared: every negative-literal
+postcondition fell through to Z3 and stayed undecided. A constant negation now
+folds to a literal with `wrapping_neg` (matching `literal_word`). This is the
+general fix — it applies to every negative bound in the corpus, not just
+`pf_exp`. Pinned by `constant_negation_folds_to_a_literal`,
+`negated_identifier_is_unknown`, and `negative_literal_postcondition_proves`.
+
+### Contract facts now made checkable (no observable behavior change)
+
+- `pf_sign`: pre `i >= 0`, post adds `term.1 >= 0`.
+- `pf_num`: pre adds `i >= 0`, post adds `term.3 >= 0` (the next index).
+  These are the two facts that let the call gate discharge `pf_exp`'s new
+  `i >= 0` precondition at `str_to_float`'s call site — the "caller ladder"
+  the original plan predicted, and it stayed inside one file.
+- `pf_exp`: pre adds `i >= 0`; post unchanged (`term.0` in ±1000, `term.1 >= 0`).
+- `pf_exp_digits`: pre `acc` in `[0, 1000]`, `i >= 0`, `sg` in `{-1, 1}`; post is
+  the tuple form. **The digit step now saturates at 1000** rather than growing to
+  9999, which is what makes the declared `±1000` bound true.
+- `cast_portable.bv` kept in step.
+
+### Why saturation, not the `acc < 100` guard
+
+The 2026-11-17 plan proposed narrowing the guard to `acc < 100` (cap 999).
+That keeps the contract true but **changes what `str_to_float` returns**:
+`1e1500` would land on exponent 150 (a finite `1e150`) instead of saturating.
+Saturation keeps `|e| <= 1000` *and* is unobservable, because `Float` is `f32`
+and `10^39` already overflows. Verified by A/B: the baseline and the saturating
+version produce byte-identical output for
+`1e1500 1e9999 1e-9999 1e500 1e308 1e309 1e1000 123.456e2 1e-320 0.1`.
+
+### Rule 1 boundary, exercised honestly
+
+`pf_exp_digits` is recursive, so it can never earn a value summary and its own
+body proof stays **advisory-skipped** ("a call to `pf_exp_digits`, which has no
+value summary"). It is used at the call site because a declared contract is the
+source of truth — the same rule `build_call_contracts` already applies to every
+single-valued callee, and `goals_violated == 0` confirms no false proof was
+introduced.
+
+### Verification
+
+- `lib/std` census as above; `goals_violated` 0.
+- Full corpus: `files_failing` 4 (all pre-existing: `mmap-demo`, `networking`,
+  `process-spawn` missing extern declarations, and `defn-composite`'s known
+  invalid-IR example); `goals_violated` 0.
+- `cargo test -p briev-compiler --lib` 3935/3935; `briev-verify` 53/53.
+- `bash scripts/gate.sh quick` green; `ll_determinism_check.sh --quick`
+  byte-identical; `glue_gen_parity` green.
+- Kani `prove_exp_accumulator.rs`: 4/4 harnesses verified (saturating step
+  invariant, the 9999 refutation, the signed tail, and `10^39` overflowing
+  `f32` — the range claim that makes saturation lossless).
+- Praetor on the touched files: 16 diagnostics, identical to the baseline
+  (zero new).
