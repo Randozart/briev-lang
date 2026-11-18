@@ -1,0 +1,28 @@
+// 2026-11-18 (issue #7, Phase 2/3): multi-statement guard body with local lets.
+//
+// Phase 2 coverage-matrix finding: `outlinable_stmt` returns true for a
+// `Let` whose expr is outlinable, so a body like
+//   when a >= 10 { let u = -a; let c = a as Int; endprogram Print#(u + c); };
+// passes the outline gate. But the cold-function emission (reassigned_lets
+// cleared, let_bindings reset, no body-local-let registration) DROPS the let
+// bindings — the IR computed `(-a) + a` instead of `u + c`, and `c` silently
+// became 0. The Phase 1 post-outline validation caught this live:
+//   "error: cold function `@txn_n_cold_0` references `c` which has no storage
+//    in this module … the value would silently become 0."
+//
+// Phase 3 repair: the outline gate now requires body.len() == 1. Multi-
+// statement guard bodies stay inline (correct — they read %state directly
+// via the normal emission path). This fixture documents the hole: it builds
+// with NO validation diagnostic, the guard is NOT outlined (no _cold_
+// function), and the program prints the correct value (0 = -10 + 10).
+let a: Int = 3;
+let b: Int = 4;
+
+node n [a < 10][a >= 10] {
+  a = a + 1;
+  when a >= 10 {
+    let u: Int = -a;
+    let c: Int = a as Int;
+    endprogram Print#(u + c);
+  };
+};

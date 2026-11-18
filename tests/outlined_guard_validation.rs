@@ -94,3 +94,62 @@ fn cold_function_uses_cp_params_not_state() {
     );
     let _ = std::fs::remove_dir_all(&out_dir);
 }
+
+/// 2026-11-18 (issue #7, Phase 2 coverage-matrix / Phase 3 repair): a
+/// multi-statement guard body with local `let`s must NOT be outlined — the
+/// cold-function emission drops the let bindings (a silent-zero shape the
+/// Phase 1 validation caught live). The outline gate now requires
+/// `body.len() == 1`, so this fixture builds with NO validation diagnostic
+/// and the guard stays inline (no `_cold_` function). The program prints the
+/// correct value (0 = -10 + 10), not the silent 0 the old outlined path
+/// would have produced.
+#[test]
+fn multi_stmt_guard_with_local_lets_stays_inline() {
+    let bv = format!(
+        "{}/tests/fixtures/outlined_guard_local_lets.bv",
+        std::env::var("CARGO_MANIFEST_DIR").unwrap()
+    );
+    let out_dir =
+        std::env::temp_dir().join(format!("outlined_guard_{}_inline", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_brievc"))
+        .args(["build", &bv, "--out", &out_dir.to_string_lossy()])
+        .output()
+        .expect("failed brievc build");
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    let stdout = String::from_utf8_lossy(&build.stdout);
+    assert!(build.status.success(), "build failed:\n{stderr}\n{stdout}");
+    // No validation diagnostic — the gate no longer outlines this shape, so
+    // there is no rewrite gap to fire. A regression (re-outlining multi-stmt
+    // bodies) would fire "which has no storage in this module".
+    let combined = format!("{stderr}\n{stdout}");
+    assert!(
+        !combined.contains("which has no storage in this module"),
+        "regression: the post-outline validation fired — a multi-statement \
+         guard body was outlined and its local lets were silently dropped. \
+         The single-statement gate (issue #7 Phase 3) was weakened. \
+         Diagnostics:\n{combined}"
+    );
+    // The guard must NOT be outlined — no `@txn_n_cold_` function.
+    let ll = out_dir.join("outlined_guard_local_lets.ll");
+    let src = std::fs::read_to_string(&ll).expect("read .ll");
+    assert!(
+        !src.contains("@txn_n_cold_"),
+        "regression: the multi-statement guard was outlined into a cold \
+         function — the local lets would be silently dropped (issue #7 \
+         Phase 3). The guard must stay inline.\n\n.ll:\n{}",
+        src
+    );
+    // Run the binary and check the printed value is correct (0 = -10 + 10),
+    // not the silent 0 the old outlined path produced.
+    let bin = out_dir.join("outlined_guard_local_lets");
+    let run = Command::new(&bin).output().expect("failed to run binary");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        out.trim() == "0",
+        "regression: the program printed `{out}` — expected `0` (u + c = -10 + \
+         10). A silent-zero rewrite gap (or a wrong inline emission) would \
+         produce a different value."
+    );
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
