@@ -258,6 +258,30 @@ kernel silently stays on the CPU lane. Still open — see the accel-surface resu
 file (`benchmarks/results/2026-11-17-accel-surface-survey.md`), which now makes the
 silence a build warning and a CI error under `--deny-accel-cpu-fallback`.
 
+## 2026-11-18 — OpenCL resident path crashes; the driver entries must not be advertised (OPEN)
+
+Measured on PTL with unconditional probes: with `launch_dev`/`launch_dev2d` in the OpenCL
+driver table, `briev_accel_launch_resident_2d` IS entered, every precondition passes
+(`driver ok`, `kernel_ready ok`, ops present, `mapped()` non-null after the prime) and then
+the process **dumps core** between `seed_or_sync_scalars` and the driver dispatch (the C
+function's first print never fires).
+
+Most likely cause, from reading the paths: OpenCL's `mapped()` returns `k->staging`, which
+is only set by the **copy path** and points at a `proj_out` buffer that
+`briev_dev_opencl_launch` has already `clReleaseMemObject`'d — so the first dirty-range write
+in `seed_or_sync_scalars` is a use-after-free.
+
+Two confusions this cost, both worth recording:
+
+* the 2026-11-17 driver work was reported as "inert" because the resident path appeared
+  unreached — the real cause was a **stale archive**: the linked driver's tail was zero, so
+  `resident_ops_missing` was true and the copy path ran;
+* two sessions read that copy path as "OpenCL residency is refused by design". It is not: it
+  is *broken*.
+
+**Action:** the entries are commented out of the driver table with this measurement beside
+them. Copy path restored on OpenCL (0.027 ms), levelzero unchanged (0.190–0.204 ms).
+
 ## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED (OPEN)
 
 `g0_fsum_approx` prints `WRONG` on the NEO/OpenCL lane while `g0_fsum_exact` and both

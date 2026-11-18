@@ -501,8 +501,14 @@ BrievDeviceDriver briev_dev_opencl = {
     .destroy_kernel = briev_dev_opencl_destroy_kernel,
     .shutdown = briev_dev_opencl_shutdown,
     .mapped = briev_dev_opencl_mapped,
-    // 2026-11-17 (S2): residency — no per-dispatch allocation, dirty-range
-    // uploads, results left in the staging window.
-    .launch_dev = briev_dev_opencl_launch_dev,
-    .launch_dev2d = briev_dev_opencl_launch_dev2d,
+    // 2026-11-18 (R1) — DO NOT ADVERTISE `launch_dev`/`launch_dev2d` YET.
+    // Measured on PTL with unconditional probes: once these entries are present the
+    // OpenCL lane DOES enter `briev_accel_launch_resident_2d`, gets past the prime
+    // (`mapped()` non-null) and then **dumps core** between `seed_or_sync_scalars`
+    // and the driver dispatch — the `[R1] C launch_dev2d called` print never fires.
+    // Until that is fixed the lane must stay on the copy path, which is correct:
+    //   .launch_dev = briev_dev_opencl_launch_dev,
+    //   .launch_dev2d = briev_dev_opencl_launch_dev2d,
+    // (Earlier runs "proving" the copy path was taken were linking a stale archive
+    // whose driver tail was zero — the entries were never actually reached.)
 };
