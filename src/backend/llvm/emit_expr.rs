@@ -2035,7 +2035,9 @@ impl LlvmBackend {
                 // constant loads as a real `ptr`, but the stamped type maps to
                 // the i64 handle domain, so every consumer that trusts the stamp
                 // treats this pointer as an i64 (`store i64 %t0` into a slot).
-                self.fun.reg_value_ll.insert(v.to_string(), "ptr".to_string());
+                self.fun
+                    .reg_value_ll
+                    .insert(v.to_string(), "ptr".to_string());
                 TypedRegister {
                     name: v.to_string(),
                     ty: ty.clone(),
@@ -2090,7 +2092,10 @@ impl LlvmBackend {
     /// Used only by the identifier read's last resort: a `true` answer means the
     /// `load … ptr @name` is well-formed, a `false` answer is a compiler bug (or
     /// a program the frontend should have rejected) and must not become IR.
-    fn ident_is_module_global(&self, name: &str) -> bool {
+    /// 2026-11-18 (issue #7): made `pub(crate)` so the post-outline validation
+    /// (`validate_cold_body_idents`) shares the EXACT predicate the emission
+    /// uses — they must never disagree.
+    pub(crate) fn ident_is_module_global(&self, name: &str) -> bool {
         if self.ctx.constants.contains_key(name)
             || self.ctx.inits.contains_key(name)
             || self.ctx.plain_global_types.contains_key(name)

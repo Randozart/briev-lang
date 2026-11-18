@@ -1823,6 +1823,50 @@ pub(crate) fn emit_term_value_tail(
             writeln!(out, "{}br label %{}", indent, post_label).ok();
         }
         backend.fun.terminated = true;
+    // 2026-11-17 (issue #8): a value-form `term <val>` in the SSA reactor
+    // main (a `node` body) is NOT a function return — the reactor main is
+    // `define i32 @main` and has no return value. The SSA loop sets
+    // `void_txn_abort_label` to the current txn's `.ssn_<name>` next-txn
+    // label precisely so a terminating term skips the rest of THIS body
+    // (interpreter TermReturn, src/interpreter/eval.rs). This arm MUST be
+    // checked before `fn_ret_ty != "void"`: the reactor main carries
+    // `fn_ret_ty = "i64"` (Int width), so that arm previously emitted
+    // `ret i64 <val>` into `define i32 @main` — invalid IR (probe: a node
+    // body `when x == 1 { term Print#(1); }; term Print#(2);` failed
+    // `opt -verify` with "value doesn't match function result type
+    // 'i32'"). Callable txns/defns are handled by the first arm
+    // (`callable_txn_result`), and the member arm below is unaffected —
+    // inlined members have no `void_txn_abort_label`. Undo: restore the
+    // `fn_ret_ty` arm's original position (delete this arm + the next).
+    } else if backend.fun.void_txn_abort_label.is_some()
+        && backend.fun.self_binding.is_none()
+        && backend.fun.self_prefix.is_none()
+    {
+        // 2026-11-18 (dyn dispatch regression): this guard must NOT catch an
+        // INLINED member body. When a member's `term <val>` runs inlined
+        // inside the SSA reactor main, `void_txn_abort_label` is set (by the
+        // enclosing node's body loop) AND `member_result` is set (above). The
+        // member's term must fall through to the member arm, which emits NO
+        // terminator — the member's value register is taken by
+        // `emit_member_body` (the dyn dispatch's value phi: `member.exit.t*` →
+        // the caller's `%t = phi [...member.exit...]`). Branching to
+        // `.ssn_<name>` here instead DROPS the computed value, so the caller
+        // sees a phi input that never materialised — and, for a `dyn` list,
+        // the dispatch switch misses its cases and hits the default arm
+        // (`dynswd_N`: `call void @llvm.trap()`). `self_binding`/`self_prefix`
+        // are the discriminators: a genuine reactor-main value-term has
+        // neither (the node body has no `self`); an inlined member has one.
+        // The bare `term;` (convergence checkpoint) never reaches here — it
+        // goes through `emit_bare_term_gate`. Undo: delete this arm + its
+        // comment; the original `fn_ret_ty` order returns (and issue #8's
+        // `ret i64` into `define i32 @main` returns with it).
+        // The value's side effects (e.g. `Print#`) were already emitted by
+        // `emit_expr` above; branch to the next-txn label to skip the rest
+        // of this firing's body. No `ret` — the reactor main is not
+        // callable.
+        let abort = backend.fun.void_txn_abort_label.as_ref().unwrap().clone();
+        writeln!(out, "{}br label %{}", indent, abort).ok();
+        backend.fun.terminated = true;
     } else if backend.fun.member_result.is_some() {
         // 2026-08-04 (term-termination-diagnostics): INLINED member
         // body (emit_member_body -> emit_statement_sequence): this
