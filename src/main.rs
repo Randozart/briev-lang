@@ -1853,40 +1853,85 @@ fn run_check(args: &[String]) -> Result<(), String> {
     // by `check`, not just `build`. Default `check` (no flag) stays
     // frontend-only and cheap — the conformance sweep depends on that.
     let validate = args.iter().any(|a| a.as_str() == "--validate");
-    let file_path = args
-        .iter()
-        .find(|a| a.as_str() != "--validate")
-        .ok_or("missing file argument")?;
+    // 2026-11-18 (dogfooding gap G0): `--stdlib-path` was accepted by
+    // `build`/`run` but silently ignored by `check` — a file outside the
+    // Briev tree could never be typechecked. Parse it here and hand it to
+    // `check_source_with_options`. Also accept the sibling env var the
+    // resolver already honours in the other commands.
+    let flags = parse_check_flags(args);
+    let file_path = flags.file_path.ok_or("missing file argument")?;
+    let stdlib_path = flags.stdlib_path.or_else(|| {
+        std::env::var("BRIEV_STDLIB_PATH")
+            .ok()
+            .filter(|p| !p.is_empty())
+    });
     let source = {
-        let p = std::path::Path::new(file_path);
+        let p = std::path::Path::new(&file_path);
         let doppel = briev_compiler::derive::Doppelganger::resolve(p);
         if doppel != p {
             std::fs::read_to_string(&doppel)
                 .map_err(|e| format!("cannot read '{}': {}", doppel.display(), e))?
         } else {
-            std::fs::read_to_string(file_path)
+            std::fs::read_to_string(&file_path)
                 .map_err(|e| format!("cannot read '{}': {}", file_path, e))?
         }
     };
     // 2026-08-09 (Phase 13, SPEC 22.6): `briev check file.dbv|file.dbvl`
     // dispatches to the Data Briev check (parse + validate asserted schemas),
     // not the .bv source pipeline.
-    let ext = get_extension(file_path);
+    let ext = get_extension(file_path.as_str());
     if ext == ".dbv" || ext == ".dbvl" {
-        return compile::check_data_source(file_path, &source);
+        return compile::check_data_source(file_path.as_str(), &source);
     }
     if validate {
         // Run the full build pipeline (frontend + normalizer + codegen) but
         // stop before linking: `compile_source` with `validate_ir = true`
         // validates the emitted `.ll` with `opt -passes=verify` and returns.
         let opts = briev_compiler::pipeline::BuildOptions {
-            file_path: file_path.to_string(),
+            file_path: file_path.clone(),
             validate_ir: true,
+            stdlib_path: stdlib_path.clone(),
             ..Default::default()
         };
-        return compile::compile_source(file_path, &source, &opts);
+        return compile::compile_source(&file_path, &source, &opts);
     }
-    compile::check_source(file_path, &source)
+    compile::check_source_with_options(&file_path, &source, stdlib_path)
+}
+
+/// The sub-command flags `check` understands: the optional validate flag,
+/// the optional stdlib path, and the file. Parsed once, additively, with the
+/// flag pair consumed in one hop (no nested scan).
+struct CheckFlags {
+    /// The file argument (the first non-flag token).
+    file_path: Option<String>,
+    /// The `--stdlib-path` value, when supplied.
+    stdlib_path: Option<String>,
+}
+
+fn parse_check_flags(args: &[String]) -> CheckFlags {
+    let mut flags = CheckFlags {
+        file_path: None,
+        stdlib_path: None,
+    };
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--stdlib-path" => {
+                if let Some(value) = args.get(index + 1) {
+                    flags.stdlib_path = Some(value.clone());
+                    index += 2;
+                } else {
+                    break;
+                }
+            }
+            other if other != "--validate" && flags.file_path.is_none() => {
+                flags.file_path = Some(other.to_string());
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    flags
 }
 
 fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {

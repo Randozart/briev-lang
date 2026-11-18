@@ -28,7 +28,7 @@ pub use briev_compiler::backend::llvm::TrgUnresolvedAction;
 // and library consumers run the real path.
 pub use briev_compiler::pipeline::{
     BeastFilter, BeastPosition, BeastStage, BuildOptions, check_data_source, check_source,
-    compile_to_typed,
+    check_source_with_options, compile_to_typed,
 };
 use briev_compiler::pipeline::{
     CompiledView, ViewMountSpecs, build_plugin_manager, check_types, compile_view,

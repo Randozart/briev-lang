@@ -969,6 +969,27 @@ pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
     check_source_for(file_path, source, None)
 }
 
+/// `check_source` with an explicit `--stdlib-path` (2026-11-18, dogfooding
+/// gap G0). The plain `check_source` builds a DEFAULT `BuildOptions`, which
+/// drops the stdlib root the caller configured — so a file outside the Briev
+/// tree could never be typechecked (the prelude's `std/types/bootstrap.bv`
+/// went unresolvable). Keeping `check_source`/`check_source_for` unchanged
+/// (the sweep uses them) and adding this one follows the additive-only rule.
+pub fn check_source_with_options(
+    file_path: &str,
+    source: &str,
+    stdlib_path: Option<String>,
+) -> Result<(), String> {
+    let opts = BuildOptions {
+        file_path: file_path.to_string(),
+        stdlib_path,
+        ..Default::default()
+    };
+    let (_items, _universe) = parse_and_check(file_path, source, &opts)?;
+    println!("OK");
+    Ok(())
+}
+
 /// 2026-10-19 (contract tiers rollout): read the gate's stage from
 /// `config/contracts.dbvl` (row: `policy: allow|warn|deny`). Absent file or
 /// row = `allow` — the migration stage. The flip to `deny` is the config
@@ -1653,6 +1674,40 @@ mod tests {
         assert!(
             result.is_ok(),
             "browser root import should typecheck: {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_source_with_options_resolves_prelude_from_stdlib_path_ooc() {
+        // Dogfooding gap G0 (2026-11-18): `check_source` built a DEFAULT
+        // BuildOptions, so a file OUTSIDE the repo tree could never be
+        // typechecked — the prelude's `std/types/bootstrap.bv` went
+        // unresolvable even with an explicit stdlib path (the resolver saw
+        // the flag, the default opts dropped it). `check_source_with_options`
+        // threads the path through; this test pins the outside-the-tree case
+        // by pointing at the repo's own lib from a Cargo-supplied temp dir.
+        let dir = tempfile::tempdir().expect("temporary project directory");
+        let root = dir.path().join("main.bv");
+        std::fs::write(
+            &root,
+            "defn answer() [true][term == 42] -> Int { term 42; };
+node entry [beginprogram][true] { let _ = answer(); };",
+        )
+        .unwrap();
+        let source = std::fs::read_to_string(&root).unwrap();
+        let result = check_source_with_options(
+            root.to_str().unwrap(),
+            &source,
+            Some(
+                crate::resource_root()
+                    .join("lib")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "outside-tree check with an explicit stdlib path must typecheck: {result:?}"
         );
     }
 
