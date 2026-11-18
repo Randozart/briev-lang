@@ -330,7 +330,15 @@ enough that the **deferred-normalize plan stops being detected**: five
 optimization is lost. Verified causally (patch on: red; patch off: green). The AST is
 therefore the wrong layer — the literal's form must not change, only the slot's type.
 
-**Next approach (not yet tried).** Type the slot from the declared type where the
+**Second attempt, also rejected (2026-11-18).** Pre-declaring preheader allocas for
+the countable-loop body's reassigned lets — the pattern `emit_ssa_main` already uses
+(`collect_reassigned_lets` → `let_bindings`), which types the slot from the *declar
+ed* type — does **not** fix it: the composite's accumulator is still demoted to its
+own i64 slot inside the inner `foreach`, and `%t32 = fptosi float %t27 to i64` plus
+the i64 backedge remain. So the declared-type binding has to reach the *inner*
+foreach's assignment path, not just this loop's preheader.
+
+**Next approach.** Type the slot from the declared type where the
 reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),
 leaving the AST byte-identical so the deferred detector is unaffected.
 
