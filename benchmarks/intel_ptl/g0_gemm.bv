@@ -24,6 +24,7 @@ let i: Int = 0;
 let k: Int = 0;
 let phase: Int = 0;
 let bad: Int = 0;
+let canary_bad: Int = 0;
 let gpu_sum: Float = 0.0;
 let cpu_sum: Float = 0.0;
 
@@ -77,13 +78,55 @@ async node verify [phase == 2 && k < NS][k == NS] {
     term;
 };
 
-async node verify_done [phase == 2 && k == NS][phase == 3] {
+async node verify_done [phase == 2 && k == NS][phase = 3] {
     phase = 3;
     term;
 };
 
-async node report [phase == 3 && bad >= 0 && gpu_sum >= 0.0 - 1000000000000.0
+// 2026-11-18 (R2): the INPUT-INTEGRITY canary — FULL COVERAGE.
+//
+// G0_GEMM_BAD=0 was green BEFORE the 16x over-dispatch fix: the surplus workgroups wrote
+// identical values into the tiles the output check samples, and sprayed out of bounds
+// elsewhere. A value comparison cannot see that; corruption of a NEIGHBOUR can. `a` and `b`
+// precede `y` in %State and are filled from a closed form, so recomputing that form detects
+// any write that landed in them.
+//
+// Sampled coverage was tried first and DID NOT BITE (CANARY_BAD=0 under a vendored pre-fix
+// driver): 4096 of 262144 indices simply misses where the overflow lands. This version
+// checks every element, batched like `init`, so any corruption anywhere is counted.
+//
+// STATUS (2026-11-18): the canary reports CANARY_BAD=0 on vulkan, but it has NOT been
+// proven to bite. The vendored pre-fix driver left CANARY_BAD=0 AND BAD=0, because THIS
+// fixture's kernel does not take the 2-D-local-size path the 16x bug lived in — the tiled
+// ceiling fixture does (`ceil_gemm_512_f32.abv` → `OpExecutionMode LocalSize 16 16 1`),
+// while `g0_gemm`'s IR carries no embedded kernel blob at all under `--llvm`. So the canary
+// is a real full-coverage input check, but as a regression gate for the 16x class it is
+// UNPROVEN until it is shown red against a fixture that actually declares a 2-D local
+// size. Do not cite it as evidence yet.
+//
+// Limitation, stated rather than hidden: a write past the END of the projection may hit
+// memory no field covers (or unmapped memory -> SIGSEGV). The canary covers corruption,
+// the crash covers the other half.
+async node canary [phase == 3 && i < MN][i == MN] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        let want_a: Float = ((idx * 7) % 13) as Float * 0.125 - 0.5;
+        let want_b: Float = ((idx * 3) % 11) as Float * 0.25 - 1.0;
+        when a[idx] != want_a { canary_bad = canary_bad + 1; };
+        when b[idx] != want_b { canary_bad = canary_bad + 1; };
+    };
+    i = i + 4096;
+    term;
+};
+
+async node canary_done [phase == 3 && i == MN][phase = 4] {
+    phase = 4;
+    term;
+};
+
+async node report [phase == 4 && bad >= 0 && canary_bad >= 0
+                   && gpu_sum >= 0.0 - 1000000000000.0
                    && cpu_sum >= 0.0 - 1000000000000.0][true] {
-    endprogram println!("G0_GEMM_BAD={} GPU_SUM={} CPU_SUM={} Y0={} YN={}",
-                        bad, gpu_sum, cpu_sum, y[0], y[MN - 1]);
+    endprogram println!("G0_GEMM_BAD={} GPU_SUM={} CPU_SUM={} Y0={} YN={} CANARY_BAD={}",
+                        bad, gpu_sum, cpu_sum, y[0], y[MN - 1], canary_bad);
 };

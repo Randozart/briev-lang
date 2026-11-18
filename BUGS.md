@@ -258,6 +258,30 @@ kernel silently stays on the CPU lane. Still open — see the accel-surface resu
 file (`benchmarks/results/2026-11-17-accel-surface-survey.md`), which now makes the
 silence a build warning and a CI error under `--deny-accel-cpu-fallback`.
 
+## 2026-11-18 — OpenCL resident path crashes; the driver entries must not be advertised (OPEN)
+
+Measured on PTL with unconditional probes: with `launch_dev`/`launch_dev2d` in the OpenCL
+driver table, `briev_accel_launch_resident_2d` IS entered, every precondition passes
+(`driver ok`, `kernel_ready ok`, ops present, `mapped()` non-null after the prime) and then
+the process **dumps core** between `seed_or_sync_scalars` and the driver dispatch (the C
+function's first print never fires).
+
+Most likely cause, from reading the paths: OpenCL's `mapped()` returns `k->staging`, which
+is only set by the **copy path** and points at a `proj_out` buffer that
+`briev_dev_opencl_launch` has already `clReleaseMemObject`'d — so the first dirty-range write
+in `seed_or_sync_scalars` is a use-after-free.
+
+Two confusions this cost, both worth recording:
+
+* the 2026-11-17 driver work was reported as "inert" because the resident path appeared
+  unreached — the real cause was a **stale archive**: the linked driver's tail was zero, so
+  `resident_ops_missing` was true and the copy path ran;
+* two sessions read that copy path as "OpenCL residency is refused by design". It is not: it
+  is *broken*.
+
+**Action:** the entries are commented out of the driver table with this measurement beside
+them. Copy path restored on OpenCL (0.027 ms), levelzero unchanged (0.190–0.204 ms).
+
 ## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED (OPEN)
 
 `g0_fsum_approx` prints `WRONG` on the NEO/OpenCL lane while `g0_fsum_exact` and both
@@ -395,6 +419,19 @@ Next step is therefore one level up, not another insert: find **every writer** o
 save/restore pair in `emit_expr.rs:6297/6571/10212`) and make the declared `ty` win where
 the `Let` is first seen. Do not add a fourth speculative insert; the map has an owner that
 has not been identified yet.
+
+**ROOT CAUSE FOUND (2026-11-18, `docs/plans/2026-11-18-d1-root-cause.md`).** The writer
+is the countable-body `Statement::Let` arm in `loop_engine/counter.rs`: it registers
+`let_binding_types[name] = reg.ty` (the INITIALISER's type) for every declared local
+**except `Event<T>`**, which gets the declared type. `let acc_: Float = 0;` therefore
+registers `Int`, and `emit_foreach_statement` types the carrier slot from that map with an
+`i64` fallback. Three outside-in attempts failed because the map is *written* here, not
+merely cleared.
+
+The fix is the rule the `Event<T>` branch already applies locally: **the declared type
+wins**, and the value is coerced with `helpers.rs::coerce_register_value` — the helper
+whose own doc comment cites this exact case (`int-literal-float-init`, the ordinary `let`
+path, which is why a plain node works). Not yet applied.
 
 **Next approach.** Type the slot from the declared type where the
 reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),
