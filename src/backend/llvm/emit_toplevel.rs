@@ -323,7 +323,14 @@ impl LlvmBackend {
         if std::env::var_os("BRIEV_DBG_REASSIGNED").is_some() {
             let mut names: Vec<String> = out
                 .iter()
-                .map(|(k, v)| format!("{k}:{}", v.as_ref().map(|t| format!("{t:?}")).unwrap_or_else(|| "<no declared type>".into())))
+                .map(|(k, v)| {
+                    format!(
+                        "{k}:{}",
+                        v.as_ref()
+                            .map(|t| format!("{t:?}"))
+                            .unwrap_or_else(|| "<no declared type>".into())
+                    )
+                })
                 .collect();
             names.sort();
             eprintln!("[reassigned] {}", names.join(", "));
@@ -6785,9 +6792,28 @@ impl LlvmBackend {
                         // outlined — see outlinable_stmt above. A mutating or
                         // member-calling guard must stay inline (the cold copy
                         // would reference the undefined `%state` or lose writes).
-                        if body
-                            .iter()
-                            .any(|s| has_ffi_call(s, &self.ctx.observable_names))
+                        //
+                        // 2026-11-18 (issue #7, Phase 3): the body must be a
+                        // SINGLE statement. Multi-statement bodies with local
+                        // `let`s are a silent-zero shape: `outlinable_stmt`
+                        // returns true for a `Let` whose expr is outlinable, so
+                        // a body like { let u = -a; let c = a as Int;
+                        // endprogram Print#(u + c); } passes the gate — but the
+                        // cold-function emission (reassigned_lets cleared,
+                        // let_bindings reset, no body-local-let registration)
+                        // drops the let bindings: the IR computes (-a) + a
+                        // instead of u + c, and `c` silently becomes 0. The
+                        // Phase 1 post-outline validation caught this live
+                        // (`c` is neither a `__cp_` param nor a module global).
+                        // The supported shape (per outlinable_expr's own
+                        // comment) is a single `println!(sum)`-style observable
+                        // over scalar idents; multi-statement guard bodies were
+                        // never a supported shape and now stay inline (correct,
+                        // reads %state directly).
+                        if body.len() == 1
+                            && body
+                                .iter()
+                                .any(|s| has_ffi_call(s, &self.ctx.observable_names))
                             && body.iter().all(outlinable_stmt)
                         {
                             ffi_guard_indices.push(ri);

@@ -250,7 +250,24 @@ determinism, and is gated on real evidence.
 
 ---
 
-## W3 — FFI follow-up: thread the protocol *contract* into HIR
+## W3 — FFI follow-up: thread the protocol *contract* into HIR ✅ IMPLEMENTED 2026-11-18
+
+Implementation: `HirProtocol.contract: Option<HirContract>` added
+(`src/hir/program.rs`); `lower_protocol_item_full` lowers
+`pd.contract` via the existing `lower_contract` helper (fresh
+`IdSupply::default()` scoped to the contract's expressions — protocols are
+not callables, so no def/node ids are allocated); `has_unrepresentable_contract`
+is now `pd.contract.is_some() && contract.is_none()` (false whenever the
+lowering succeeds — which is always, since `lower_contract` handles every
+`Contract` shape the parser produces). `count_protocols` unchanged in logic
+(counts a proto only when `has_unrepresentable_contract` is true) — now
+returns 0 for all protos. The H3/S4 audit story is closed: a
+contract-bearing proto is fully represented, 0 unsupported facts.
+
+Test update: `proto_with_contract_is_one_gap` →
+`proto_with_contract_is_fully_represented` (asserts
+`proto.contract.is_some()`, `has_unrepresentable_contract == false`, pre is a
+real `HirExpr` not an `Other` gap, `counts.protocols == 0`, `counts.total() == 0`).
 
 ### Findings
 
