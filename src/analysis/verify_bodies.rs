@@ -1039,7 +1039,11 @@ mod handle_model_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert_eq!(
             report.proven.len(),
             1,
@@ -1065,7 +1069,11 @@ mod handle_model_tests {
             "a conversion must not be proved as an identity: {:?}",
             report.proven
         );
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
     }
 
     /// A handle-returning contract is a claim about text or length — a separate
@@ -1083,7 +1091,11 @@ mod handle_model_tests {
         );
         let report = verify_bodies(&[defn]);
         assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
-        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
+        assert!(
+            report.unproven.is_empty(),
+            "unproven: {:?}",
+            report.unproven
+        );
         assert!(
             report
                 .skipped
@@ -1118,7 +1130,11 @@ mod length_fact_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert_eq!(
             report.proven.len(),
             1,
@@ -1139,7 +1155,11 @@ mod length_fact_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
     }
 
     /// Length reflection on a non-handle never reaches the prover: the frontend
@@ -1181,7 +1201,11 @@ mod handle_contract_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert_eq!(
             report.proven.len(),
             1,
@@ -1203,9 +1227,16 @@ mod handle_contract_tests {
         );
         let report = verify_bodies(&[defn]);
         assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
-        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
         assert!(
-            report.skipped.iter().any(|l| l.contains("handle-returning")),
+            report.unproven.is_empty(),
+            "unproven: {:?}",
+            report.unproven
+        );
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|l| l.contains("handle-returning")),
             "expected a handle skip: {:?}",
             report.skipped
         );
@@ -1222,9 +1253,16 @@ mod handle_contract_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.unproven.is_empty(), "unproven: {:?}", report.unproven);
         assert!(
-            report.skipped.iter().any(|l| l.contains("handle-returning")),
+            report.unproven.is_empty(),
+            "unproven: {:?}",
+            report.unproven
+        );
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|l| l.contains("handle-returning")),
             "expected a handle skip: {:?}",
             report.skipped
         );
@@ -1241,7 +1279,11 @@ mod handle_contract_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert_eq!(
             report.proven.len(),
             1,
@@ -1276,7 +1318,11 @@ mod contract_atom_tests {
              };",
         );
         let report = verify_bodies(&items);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert!(
             report.proven.iter().any(|n| n == "use_raw"),
             "the caller must prove from the declared bound: proven={:?} skipped={:?}",
@@ -1302,7 +1348,11 @@ mod contract_atom_tests {
              };",
         );
         let report = verify_bodies(&items);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert!(
             report.skipped.iter().any(|l| l.contains("caller")),
             "a value-relational callee must leave the body skipped: {:?}",
@@ -1368,7 +1418,11 @@ mod tuple_result_tests {
              };",
         );
         let report = verify_bodies(&[defn]);
-        assert!(report.violated.is_empty(), "violated: {:?}", report.violated);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
         assert_eq!(
             report.proven.len(),
             1,
@@ -1412,6 +1466,147 @@ mod tuple_result_tests {
             1,
             "a bare term must resolve to component 0: unproven={:?}",
             report.unproven
+        );
+    }
+
+    /// A negative-literal postcondition is decidable without a solver.
+    ///
+    /// `-1000` reaches the AST as `Neg(Decimal(1000))`; before `eval_symbolic`
+    /// folded constant negation, that operand was `Unknown`, so every negative
+    /// bound (`term >= -1000`, `acc >= -1`) fell through to Z3 and stayed
+    /// undecided. This pins the general fix that made `pf_exp` provable.
+    #[test]
+    fn negative_literal_postcondition_proves() {
+        let defn = parse_one(
+            "defn negpost(x: Int) [x >= 5 && x <= 1000][term >= -1000 && term <= 1000] -> Int {\n\
+                 term x;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "a negative literal bound must prove by interval: unproven={:?} skipped={:?}",
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// Parse every declaration in a source unit.
+    fn parse_all(src: &str) -> Vec<TopLevel> {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items
+    }
+
+    /// W4 Layer 1 (2026-11-18): a tuple-returning callee gains a per-field
+    /// summary, so a caller that returns its result directly is proven instead
+    /// of skipped with "a call to X, which has no value summary".
+    ///
+    /// This is the value-summaries phase 2 case: before the multi-field
+    /// summary, `Summary` held one `Expr`, so a tuple callee could never earn
+    /// one and every caller stayed out of the model.
+    #[test]
+    fn tuple_callee_summary_proves_the_caller() {
+        let items = parse_all(
+            "defn tpair(a: Int, b: Int) [a >= 1 && b >= 0][term.0 >= 1 && term.1 >= 0] -> (Int, Int) {\n\
+                 term (a, b);\n\
+             };\n\
+             defn tcaller(a: Int, b: Int) [a >= 1 && b >= 0][term.1 >= 0] -> (Int, Int) {\n\
+                 term tpair(a, b);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert!(
+            report.proven.iter().any(|p| p.starts_with("tcaller")),
+            "the caller of a tuple callee must prove from the callee's per-field summary: \
+             proven={:?} unproven={:?} skipped={:?}",
+            report.proven,
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// W4 Layer 1 negative case: the summary must not turn a genuinely
+    /// unprovable field into a proof. `badcaller` claims `term.1 >= 1` but the
+    /// callee only guarantees `term.1 >= 0`, so it must refute.
+    #[test]
+    fn tuple_callee_summary_still_refutes_a_bad_claim() {
+        let items = parse_all(
+            "defn tpair2(a: Int, b: Int) [a >= 1 && b >= 0][term.0 >= 1 && term.1 >= 0] -> (Int, Int) {\n\
+                 term (a, b);\n\
+             };\n\
+             defn badcaller(a: Int, b: Int) [a >= 1 && b >= 0][term.1 >= 1] -> (Int, Int) {\n\
+                 term tpair2(a, b);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            !report.proven.iter().any(|p| p.starts_with("badcaller")),
+            "a field claim stronger than the callee guarantees must never be proven: \
+             proven={:?}",
+            report.proven
+        );
+    }
+
+    /// W4 Layer 2 (2026-11-18): a tuple callee that cannot earn a value summary
+    /// (its result depends on a guard) still contributes its *declared* tuple
+    /// postcondition at the call site, one fact per field.
+    ///
+    /// `pairg` is unsymmarisable, so only the declared contract can bound
+    /// `term.0`/`term.1` at `useg`'s call. Before this, the call became one
+    /// opaque atom and the tuple fields were unbound, so the caller stayed
+    /// unproven.
+    #[test]
+    fn tuple_contract_facts_reach_the_call_site() {
+        let items = parse_all(
+            "defn pairg(r: Int) [r >= 0][term.0 >= 1 && term.1 >= 0] -> (Int, Int) {\n\
+                 when r == 0 { term (1, 0); };\n\
+                 term (2, r);\n\
+             };\n\
+             defn useg(r: Int) [r >= 0][term.0 >= 1 && term.1 >= 0] -> (Int, Int) {\n\
+                 term pairg(r);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert!(
+            report.proven.iter().any(|p| p.starts_with("useg")),
+            "a declared tuple postcondition must reach the call site per field: \
+             proven={:?} unproven={:?} skipped={:?}",
+            report.proven,
+            report.unproven,
+            report.skipped
+        );
+    }
+
+    /// W4 Layer 2 negative case: per-field facts must not become an unsound
+    /// blank check. `baduse` claims a bound the callee never declares.
+    #[test]
+    fn tuple_contract_facts_refuse_an_unrelated_claim() {
+        let items = parse_all(
+            "defn pairh(r: Int) [r >= 0][term.0 >= 1 && term.1 >= 0] -> (Int, Int) {\n\
+                 when r == 0 { term (1, 0); };\n\
+                 term (2, r);\n\
+             };\n\
+             defn baduse(r: Int) [r >= 0][term.0 >= 100] -> (Int, Int) {\n\
+                 term pairh(r);\n\
+             };",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            !report.proven.iter().any(|p| p.starts_with("baduse")),
+            "a bound the callee never declares must not be proven: proven={:?}",
+            report.proven
         );
     }
 }

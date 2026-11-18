@@ -758,7 +758,7 @@ fn contract_target(item: &TopLevel) -> Option<(&str, &crate::ast::Contract, &[St
 /// Keyed by callee name. Only declarations with an **explicit, non-trivial**
 /// postcondition qualify, and a postcondition that folds to literal `false` is
 /// dropped — an inconsistent declaration must not poison unrelated obligations.
-type CallContracts = HashMap<String, (Vec<String>, Expr)>;
+type CallContracts = HashMap<String, (Vec<String>, Expr, usize)>;
 
 /// Collect the usable postconditions of a body of items.
 ///
@@ -771,7 +771,10 @@ type CallContracts = HashMap<String, (Vec<String>, Expr)>;
 /// declared.
 fn build_call_contracts(items: &[TopLevel]) -> CallContracts {
     let mut out: CallContracts = HashMap::new();
-    let mut collect = |name: &str, params: &[(String, Type)], contract: &crate::ast::Contract| {
+    let mut collect = |name: &str,
+                       params: &[(String, Type)],
+                       contract: &crate::ast::Contract,
+                       output: Option<&crate::ast::OutputType>| {
         if !contract.explicit || trivially_true(&contract.post_condition) {
             return;
         }
@@ -792,17 +795,45 @@ fn build_call_contracts(items: &[TopLevel]) -> CallContracts {
             (
                 params.iter().map(|(n, _)| n.clone()).collect(),
                 contract.post_condition.clone(),
+                tuple_arity(output),
             ),
         );
     };
     for item in items {
         match item {
-            TopLevel::Definition(d) => collect(&d.name, &d.parameters, &d.contract),
-            TopLevel::Transaction(t) => collect(&t.name, &t.parameters, &t.contract),
+            TopLevel::Definition(d) => {
+                collect(&d.name, &d.parameters, &d.contract, d.output_type.as_ref())
+            }
+            TopLevel::Transaction(t) => {
+                collect(&t.name, &t.parameters, &t.contract, t.output_type.as_ref())
+            }
             _ => {}
         }
     }
     out
+}
+
+/// How many scalar fields a callee's result splits into.
+///
+/// A single value is one field; a tuple result is one field per element, so a
+/// caller can read `term.0`, `term.1`, … through `bind_output`. This is the
+/// arity that turns a declared tuple postcondition into per-field facts at the
+/// call site (value-summaries phase 2). A `Named`/`Union`/`Array` result stays
+/// single-field: it is not a tuple, and splitting it would invent structure the
+/// model does not have.
+fn tuple_arity(output: Option<&crate::ast::OutputType>) -> usize {
+    match output {
+        // `-> (A, B)` is written as one tuple *type*, so it reaches the AST as a
+        // `Single(Type::Tuple(..))`; an `OutputType::Tuple` is the same shape
+        // spelled structurally. Both split per field.
+        Some(crate::ast::OutputType::Single(crate::ast::Type::Tuple(fields)))
+            if fields.len() > 1 =>
+        {
+            fields.len()
+        }
+        Some(crate::ast::OutputType::Tuple(fields)) if fields.len() > 1 => fields.len(),
+        _ => 1,
+    }
 }
 
 /// Replace contracted calls with opaque atoms and return the facts they carry.
@@ -892,13 +923,28 @@ fn rewrite_expr(
             if !usable {
                 return Expr::Call(name.clone(), args, *id);
             }
-            let (params, post) = &contracts[name];
+            let (params, post, arity) = &contracts[name];
             *counter += 1;
-            let atom = Expr::Identifier(format!("call#{counter}#{name}"));
+            // One atom per result field. A single-valued callee keeps the single
+            // atom it always had; a tuple-returning callee yields `arity` atoms,
+            // returned as a tuple so `bind_output` splits `term.0`/`term.1` from
+            // them — the call-site half of value-summaries phase 2.
+            let atoms: Vec<Expr> = if *arity <= 1 {
+                vec![Expr::Identifier(format!("call#{counter}#{name}"))]
+            } else {
+                (0..*arity)
+                    .map(|field| Expr::Identifier(format!("call#{counter}#{name}#{field}")))
+                    .collect()
+            };
             // The declared postcondition, with parameters substituted by the
-            // (already rewritten) arguments and `term` replaced by this call's atom.
-            facts.extend(post_facts_for_atom(params, post, &args, &atom));
-            atom
+            // (already rewritten) arguments and each result hole replaced by
+            // this call's per-field atom.
+            facts.extend(post_facts_for_atom(params, post, &args, &atoms));
+            if atoms.len() == 1 {
+                atoms.into_iter().next().expect("one atom")
+            } else {
+                Expr::Tuple(atoms)
+            }
         }
         Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
             *kind,
@@ -948,7 +994,7 @@ fn rewrite_expr(
 /// prover: the callee's *body* is never inspected, so memory-reading accessors
 /// and recursive helpers — which can never earn a value summary — still
 /// contribute what they declare.
-fn post_facts_for_atom(params: &[String], post: &Expr, args: &[Expr], atom: &Expr) -> Vec<Expr> {
+fn post_facts_for_atom(params: &[String], post: &Expr, args: &[Expr], atoms: &[Expr]) -> Vec<Expr> {
     let mut conjuncts = Vec::new();
     split_conjuncts(post, &mut conjuncts);
     let mut allowed = std::collections::BTreeSet::new();
@@ -961,7 +1007,7 @@ fn post_facts_for_atom(params: &[String], post: &Expr, args: &[Expr], atom: &Exp
             continue;
         }
         let substituted = substitute_params(&conjunct, params, args);
-        let replaced = replace_result(&substituted, atom);
+        let replaced = replace_result(&substituted, atoms);
         let only_ours = free_idents(&replaced)
             .iter()
             .all(|id| allowed.contains(id) || id.starts_with("call#"));
@@ -983,45 +1029,52 @@ fn split_conjuncts(expr: &Expr, out: &mut Vec<Expr>) {
     }
 }
 
-/// Replace `term` / `__result` with a concrete expression.
-fn replace_result(expr: &Expr, replacement: &Expr) -> Expr {
+/// Replace `term` / `__result` with a concrete expression, and each `term.N`
+/// with the atom for that field.
+///
+/// The atom list has one entry per result field (`tuple_arity`). A bare `term`
+/// names the first component, the same convention `bind_output` uses and the
+/// call gate already applies; `term.N` names field `N` when the callee returns
+/// more than one value.
+fn replace_result(expr: &Expr, atoms: &[Expr]) -> Expr {
     match expr {
-        Expr::Identifier(n) if n == "term" || n == "__result" => replacement.clone(),
+        Expr::Identifier(n) if n == "term" || n == "__result" => {
+            atoms.first().cloned().unwrap_or_else(|| expr.clone())
+        }
+        Expr::Field(base, field) => match base.as_ref() {
+            Expr::Identifier(n) if n == "term" || n == "__result" => field
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| atoms.get(index).cloned())
+                .unwrap_or_else(|| expr.clone()),
+            _ => Expr::Field(Box::new(replace_result(base, atoms)), field.clone()),
+        },
         Expr::BinaryOp(k, l, r) => Expr::BinaryOp(
             *k,
-            Box::new(replace_result(l, replacement)),
-            Box::new(replace_result(r, replacement)),
+            Box::new(replace_result(l, atoms)),
+            Box::new(replace_result(r, atoms)),
         ),
-        Expr::UnaryOp(k, inner) => Expr::UnaryOp(*k, Box::new(replace_result(inner, replacement))),
-        Expr::Field(base, f) => Expr::Field(Box::new(replace_result(base, replacement)), f.clone()),
+        Expr::UnaryOp(k, inner) => Expr::UnaryOp(*k, Box::new(replace_result(inner, atoms))),
         Expr::Call(name, args, id) => Expr::Call(
             name.clone(),
-            args.iter()
-                .map(|a| replace_result(a, replacement))
-                .collect(),
+            args.iter().map(|a| replace_result(a, atoms)).collect(),
             *id,
         ),
         Expr::MethodCall(recv, m, args, id) => Expr::MethodCall(
-            Box::new(replace_result(recv, replacement)),
+            Box::new(replace_result(recv, atoms)),
             m.clone(),
-            args.iter()
-                .map(|a| replace_result(a, replacement))
-                .collect(),
+            args.iter().map(|a| replace_result(a, atoms)).collect(),
             *id,
         ),
         Expr::Index(base, idx) => Expr::Index(
-            Box::new(replace_result(base, replacement)),
-            Box::new(replace_result(idx, replacement)),
+            Box::new(replace_result(base, atoms)),
+            Box::new(replace_result(idx, atoms)),
         ),
-        Expr::Cast(inner, ty) => {
-            Expr::Cast(Box::new(replace_result(inner, replacement)), ty.clone())
+        Expr::Cast(inner, ty) => Expr::Cast(Box::new(replace_result(inner, atoms)), ty.clone()),
+        Expr::Reflect(base, target, kind) => {
+            Expr::Reflect(Box::new(replace_result(base, atoms)), target.clone(), *kind)
         }
-        Expr::Reflect(base, target, kind) => Expr::Reflect(
-            Box::new(replace_result(base, replacement)),
-            target.clone(),
-            *kind,
-        ),
-        Expr::Consume(inner) => Expr::Consume(Box::new(replace_result(inner, replacement))),
+        Expr::Consume(inner) => Expr::Consume(Box::new(replace_result(inner, atoms))),
         other => other.clone(),
     }
 }
@@ -1033,8 +1086,16 @@ fn replace_result(expr: &Expr, replacement: &Expr) -> Expr {
 /// use, and substituting the call for an atom would only convert a skip into an
 /// unproven verdict.
 fn bounds_result_against_literal(post: &Expr) -> bool {
+    /// A result hole: the whole value (`term`) or one field of it (`term.N`).
+    /// The field form is what a multi-field callee declares, so accepting it is
+    /// what lets a tuple-returning callee's contract reach its call site
+    /// (value-summaries phase 2).
     fn is_term(expr: &Expr) -> bool {
-        matches!(expr, Expr::Identifier(n) if n == "term")
+        match expr {
+            Expr::Identifier(n) => n == "term",
+            Expr::Field(base, _) => matches!(base.as_ref(), Expr::Identifier(n) if n == "term"),
+            _ => false,
+        }
     }
     fn literal(expr: &Expr) -> bool {
         match expr {
@@ -1629,6 +1690,7 @@ fn verify_one_with_term_sort(
     BodyOutcome::Proven
 }
 
+
 /// A refutation needs a feasible execution path. Failure to find a witness or
 /// decide feasibility cannot turn an unreachable branch into a hard error.
 fn reachable_verdict(post: &Expr, state: &SymbolicState) -> ProofVerdict {
@@ -1825,6 +1887,10 @@ fn mentions_ident(expr: &Expr, name: &str) -> bool {
         Expr::Identifier(ident) => ident == name,
         Expr::BinaryOp(_, l, r) => mentions_ident(l, name) || mentions_ident(r, name),
         Expr::UnaryOp(_, inner) => mentions_ident(inner, name),
+        // `term.0` mentions the result hole through its base, so a tuple
+        // postcondition's conjuncts are kept (and replaced per field) instead
+        // of being dropped before `replace_result` sees them.
+        Expr::Field(base, _) => mentions_ident(base, name),
         _ => false,
     }
 }
@@ -3162,7 +3228,7 @@ fn build_summaries(
             let Ok(value) = evaluate_body(&flattened) else {
                 continue;
             };
-            if !mentions_only(&value, params) {
+            if !summary_mentions_only_params(&value, params) {
                 continue;
             }
             sums.insert(
@@ -3232,7 +3298,7 @@ fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
                 }
             }
             Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-                return crate::symbolic::snapshot::value_expr(&eval_symbolic(e, &state)).ok_or(());
+                return evaluate_result(e, &state);
             }
             Statement::Gate(_) | Statement::Check(_) | Statement::Expression(_) => {}
             // Guards pick between values; a non-value exit has no result.
@@ -3240,6 +3306,27 @@ fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
         }
     }
     Err(())
+}
+
+/// Evaluate a terminating expression into a summary value.
+///
+/// A single-valued result is its snapshot expression. A multi-value (tuple)
+/// result becomes a tuple of per-field expressions, so a caller can read
+/// `term.N` through `bind_output` — the same field split the postcondition and
+/// the path walk already use. Without this, a tuple-returning callee could
+/// never earn a summary and its callers stayed out of the model
+/// ("a call to X, which has no value summary" — value-summaries phase 2).
+fn evaluate_result(expr: &Expr, state: &SymbolicState) -> Result<Expr, ()> {
+    if let Expr::Tuple(elements) = expr {
+        let mut fields = Vec::with_capacity(elements.len());
+        for element in elements {
+            fields.push(
+                crate::symbolic::snapshot::value_expr(&eval_symbolic(element, state)).ok_or(())?,
+            );
+        }
+        return Ok(Expr::Tuple(fields));
+    }
+    crate::symbolic::snapshot::value_expr(&eval_symbolic(expr, state)).ok_or(())
 }
 
 /// Replace every summarised call in a body with the callee's value form.
@@ -3293,6 +3380,14 @@ fn inline_expr(expr: &Expr, sums: &HashMap<String, Summary>, depth: usize) -> Re
             Box::new(inline_expr(r, sums, depth)?),
         ),
         Expr::UnaryOp(kind, x) => Expr::UnaryOp(*kind, Box::new(inline_expr(x, sums, depth)?)),
+        // A tuple literal's components are inlined individually so a nested
+        // summarised call inside one still reaches its value form.
+        Expr::Tuple(items) => Expr::Tuple(
+            items
+                .iter()
+                .map(|item| inline_expr(item, sums, depth))
+                .collect::<Result<_, _>>()?,
+        ),
         Expr::Call(name, args, _) => {
             // A modelled intrinsic keeps its call form: it has no summary to
             // inline, but `eval_symbolic` gives it an interval directly.
@@ -3322,6 +3417,10 @@ fn inline_expr(expr: &Expr, sums: &HashMap<String, Summary>, depth: usize) -> Re
 }
 
 /// Replace the callee's parameters with the caller's argument expressions.
+///
+/// `Field` and `Tuple` arms are what let a multi-field summary substitute into
+/// a caller: a callee whose result is `(acc, i)` yields `term.0`/`term.1`
+/// bindings via these arms (value-summaries phase 2).
 fn substitute_params(expr: &Expr, params: &[String], args: &[Expr]) -> Expr {
     match expr {
         Expr::Identifier(name) => match params.iter().position(|p| p == name) {
@@ -3336,7 +3435,32 @@ fn substitute_params(expr: &Expr, params: &[String], args: &[Expr]) -> Expr {
         Expr::UnaryOp(kind, x) => {
             Expr::UnaryOp(*kind, Box::new(substitute_params(x, params, args)))
         }
+        Expr::Field(base, field) => Expr::Field(
+            Box::new(substitute_params(base, params, args)),
+            field.clone(),
+        ),
+        Expr::Tuple(items) => Expr::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_params(item, params, args))
+                .collect(),
+        ),
         other => other.clone(),
+    }
+}
+
+/// Whether a summary value mentions only the callee's parameters.
+///
+/// `free_idents` does not descend into tuples, so a tuple summary is checked
+/// field by field — otherwise a summary that referenced one of the callee's
+/// locals would pass vacuously and smuggle a caller-invisible name into the
+/// caller's model.
+fn summary_mentions_only_params(value: &Expr, params: &[String]) -> bool {
+    match value {
+        Expr::Tuple(fields) => fields
+            .iter()
+            .all(|field| summary_mentions_only_params(field, params)),
+        _ => mentions_only(value, params),
     }
 }
 
