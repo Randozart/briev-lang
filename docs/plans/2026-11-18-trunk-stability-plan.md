@@ -70,20 +70,25 @@ interference." **The native gate simply does not use it.**
   benchmark suite (`-march=native`) and `ll_determinism_check.sh`.
   This is a **stopgap**, not the long-term answer — see B.
 
-**B. Root cause: make `-march` config-driven, default `haswell`.** ✅ IMPLEMENTED 2026-11-18
+**B. Root cause: make `-march` config-driven, default `x86-64-v3`.** ✅ IMPLEMENTED 2026-11-18
 
-Implementation notes (supersede the original `x86-64-v3` default below):
-- clang/LLVM `-march` takes **concrete CPU names**, not feature-set levels —
-  `x86-64-v3` is not a valid `-march` value (clang error: `unknown target
-  CPU`). The default is `haswell`, the concrete CPU closest to the x86-64-v3
-  feature set (SSE4.2 + AVX + AVX2 + FMA; no AVX-512/AMX).
+Implementation notes:
+- The default is `x86-64-v3` — a **feature-set level**, not a concrete CPU
+  name. clang/LLVM accepts feature-set levels as `-march` values
+  (x86-64-v2/v3/v4 are valid — see clang's own 'valid target CPU values'
+  list). v3 = SSE4.2 + AVX + AVX2 + FMA; it does NOT include AVX-512/AMX —
+  the feature set that intermittently SIGILLs on GitHub runners under
+  `-march=native`. This is exactly the deterministic baseline the plan
+  asked for.
 - `--march` accepts both `--march=<cpu>` and `--march <cpu>` (mirrors `--accel`).
 - **Parser fix** (`src/dbriev/v2.rs::parse_bare_token`): bare tokens now
   terminate at `\n` (line-oriented `.dbvl`), matching `parse_positional_values`.
   Without this, a bare token at end-of-line (no trailing `;`) runs into the
-  next line and swallows it — `target.x86_64: …; haswell` parsed the march
-  field as `"haswell\ntarget.aarch64: 32"`. This also corrects the documented
-  `#`-line behavior in `config_db::tests::only_double_slash_comments_are_skipped`
+  next line and swallows it — `target.x86_64: …; x86-64-v3` parsed the march
+  field as `"x86-64-v3\ntarget.aarch64: 32"`, which is what made the earlier
+  `unknown target CPU` error appear to be a name problem. The name was never
+  the issue; the parser was. This also corrects the documented `#`-line
+  behavior in `config_db::tests::only_double_slash_comments_are_skipped`
   (the `#` line no longer swallows the following keyed line).
 - `benchmarks/build_and_bench.sh` was left unchanged — it passes
   `-march=native` explicitly via clang flags in the harness, not via the
@@ -138,7 +143,7 @@ field:
 - `config/targets.dbvl` (add `march` column to tuning rows).
 - `src/config_tuning.rs` (`TargetSettings.march: Option<String>` + parsing).
 - `src/compile.rs:3466` (read march from config; `--march` CLI flag;
-  default `haswell` for x86_64-linux).
+  default `x86-64-v3` for x86_64-linux).
 - `src/dbriev/v2.rs` (`parse_bare_token` newline terminator — required for
   the march field to parse correctly as a trailing bare token).
 - `benchmarks/build_and_bench.sh` (pass `--march=native` explicitly —

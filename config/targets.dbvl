@@ -59,12 +59,14 @@
 // inherited from the machine that built it. Absent (no field 8) = the link
 // step uses a conservative default (x86-64-v3 for x86_64-linux, no march
 // for cross-compilation). A `--march=<cpu>` CLI flag overrides.
-// haswell = the concrete CPU closest to the x86-64-v3 feature set
-// (SSE4.2 + AVX + AVX2 + FMA). clang/LLVM uses concrete CPU names, not
-// feature-set levels — `x86-64-v3` is not a valid -march value. haswell
-// does NOT require AVX-512/AMX (the feature set that intermittently
-// SIGILLs on GitHub runners under -march=native).
-target.x86_64: 16; 4.0; 4; 0; 2147483648; 4; 3; 2; haswell
+// x86-64-v3 = the deterministic feature-set baseline (SSE4.2 + AVX + AVX2
+// + FMA; no AVX-512/AMX). clang/LLVM accepts feature-set levels as -march
+// values (x86-64-v2/v3/v4 are valid — see clang's own 'valid target CPU
+// values' list). This is a deployment-target declaration, not a build-host
+// property: every x86_64 binary runs on v3 regardless of which runner
+// built it. The AVX-512/AMX feature set that intermittently SIGILLs under
+// -march=native is NOT in v3, so the native-flake root cause is removed.
+target.x86_64: 16; 4.0; 4; 0; 2147483648; 4; 3; 2; x86-64-v3
 target.aarch64: 32; 4.0; 4; 1; 2147483648; 4; 3; 2
 target.arm64: 32; 4.0; 4; 1; 2147483648; 4; 3; 2
 target.wasm32: 4294967295; 4.0; 4; 1; 1073741824; 4; 3; 2

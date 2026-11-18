@@ -3487,18 +3487,21 @@ fn compile_ll_to_binary(
         // x86/aarch64 concept, invalid for riscv64/wasm/spirv).
         let is_native = triple.starts_with("x86_64") || triple.contains("linux");
         if is_native {
-            // 2026-11-18 (W1-B): default is `haswell` — the concrete CPU
-            // closest to the x86-64-v3 feature set (SSE4.2 + AVX + AVX2 +
-            // FMA). clang/LLVM uses concrete CPU names, not feature-set
-            // levels (`x86-64-v3` is not a valid `-march` value). `haswell`
-            // does NOT require AVX-512/AMX — the feature set that
-            // intermittently SIGILLs on GitHub runners under `-march=native`.
+            // 2026-11-18 (W1-B): default is `x86-64-v3` — the deterministic
+            // feature-set baseline (SSE4.2 + AVX + AVX2 + FMA; no AVX-512/
+            // AMX). clang/LLVM accepts feature-set levels as `-march` values
+            // (x86-64-v2/v3/v4 are valid — see clang's own 'valid target
+            // CPU values' list). A deployment-target declaration, not a
+            // build-host property: every x86_64 binary runs on v3
+            // regardless of which runner built it. The AVX-512/AMX feature
+            // set that intermittently SIGILLs under `-march=native` is not
+            // in v3, so the native-flake root cause is removed.
             let config_march = briev_compiler::config_tuning::target_settings_for(&triple)
                 .march
                 .clone();
             let march = march_override
                 .or(config_march.as_deref())
-                .unwrap_or("haswell");
+                .unwrap_or("x86-64-v3");
             cmd.arg(format!("-march={}", march));
         }
         cmd.args(["-ffast-math", ll_path]);
