@@ -2798,6 +2798,7 @@ async node fill [i < N][i == N] {
             file_path: path.to_string(),
             emit_ir_only: false,
             validate_ir: false,
+            verify_ir: true,
             out_dir: None,
             optimize_budget: 256,
             emit_beast_stages: vec![],
@@ -3200,6 +3201,7 @@ async node gemm [i < M * N][i == M * N] {
             file_path: path.clone(),
             emit_ir_only: false,
             validate_ir: false,
+            verify_ir: true,
             out_dir: None,
             optimize_budget: 256,
             emit_beast_stages: vec![],
@@ -3603,6 +3605,40 @@ async node gemm [i < M * N][i == M * N] {
         };
         assert!(err.contains("Fix:"), "diagnostic carries the fix: {}", err);
         assert!(err.contains("nosuch"), "names the plan's node: {}", err);
+    }
+}
+/// A short single-line rendering of a statement for a diagnostic.
+///
+/// 2026-11-18 (plan compiler-diagnostics-ir-verification): both kernel-surface
+/// bail-outs used to print `Discriminant(11)` — the enum's memory layout, not
+/// anything the author wrote. `Statement` implements `Display`, so quote the
+/// code itself and bound the length.
+pub(crate) fn stmt_excerpt(stmt: &crate::ast::Statement) -> String {
+    let text = stmt
+        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out: String = text.chars().take(110).collect();
+    if text.chars().count() > 110 {
+        out.push('…');
+    }
+    out
+}
+
+#[cfg(test)]
+mod excerpt_tests {
+    use super::stmt_excerpt;
+
+    /// 2026-11-18: the kernel-surface bail-outs quote the author's code, never
+    /// `Discriminant(N)` (the enum's layout is not something the author wrote).
+    #[test]
+    fn stmt_excerpt_quotes_code_on_one_line_and_never_discriminant() {
+        let stmt = crate::ast::Statement::Block(vec![crate::ast::Statement::EndProgram(None)]);
+        let text = stmt_excerpt(&stmt);
+        assert!(!text.contains("Discriminant"), "{text}");
+        assert!(!text.contains('\n'), "the excerpt is one line: {text}");
+        assert!(!text.is_empty(), "the author's code must be quoted");
     }
 }
 pub mod runner;

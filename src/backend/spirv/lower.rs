@@ -711,9 +711,12 @@ impl<'a> FnLowerer<'a> {
                 Ok(())
             }
             other => self.err(format!(
-                "unsupported statement in kernel body ({:?}) — compute kernels \
-                 support let/assign/expression/term over integer expressions",
-                std::mem::discriminant(other)
+                "a compute kernel body cannot contain this statement: `{}`\n  \
+                 why:  the SPIR-V kernel lane lowers let / assign / expression / \
+                 term over integer expressions, and this construct has no kernel form\n  \
+                 fix:  compute it on the host lane and pass the result in, or declare \
+                 the node without `accel` to run the whole body on the CPU",
+                super::stmt_excerpt(other)
             )),
         }
     }

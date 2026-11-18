@@ -1300,10 +1300,6 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     let out_path = determine_out_path(file_path, opts.out_dir.as_deref())?;
     let out_path = out_path.replace(".ll", ext);
 
-    // 2026-07-15: SPIR-V writes inside codegen (binary format), skip outer write
-    // 2026-07-25: Vm backend also writes inside codegen (.lair is binary)
-    // 2026-09-08: PTX writes inside codegen (.ptx is text but artifacts are
-    // managed by the arm, like the .spv path).
     if opts.backend != BackendKind::Spirv
         && opts.backend != BackendKind::Vm
         && opts.backend != BackendKind::Ptx
@@ -1372,6 +1368,15 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // This is the seam the default `check` never reaches (it returns at
     // parse_and_check), which is why a frontend-legal program with invalid
     // IR could pass `check` but fail `build`.
+    // 2026-11-18 (plan compiler-diagnostics-ir-verification): `--llvm` writes the
+    // module and used to return 0 even when LLVM could not parse it. That is how
+    // two codegen bugs in one session stayed invisible: the compile step reported
+    // success on a module the toolchain rejects, and every downstream gate then
+    // measured a program that cannot exist. Verify here too.
+    if opts.emit_ir_only && opts.verify_ir && opts.backend == BackendKind::Llvm && ext == ".ll" {
+        verify_emitted_ir(&out_path)?;
+    }
+
     if opts.validate_ir {
         verify_emitted_ir(&out_path)?;
         println!("OK (emitted IR verified)");
@@ -3383,19 +3388,23 @@ struct LinkInputs<'a> {
 /// compiler lowering bugs (missing sret slots, width mismatches, undefined SSA)
 /// into Briev diagnostics instead of clang errors or runtime traps.
 fn verify_emitted_ir(ll_path: &str) -> Result<(), String> {
-    let output = Command::new("opt")
-        .args(["-passes=verify", "-disable-output", ll_path])
-        .output()
-        .map_err(|e| format!("cannot invoke opt to verify '{}': {}", ll_path, e))?;
-    if output.status.success() {
-        return Ok(());
+    // 2026-11-18: the verdict is rendered by `ir_verify` so every path (build,
+    // `--llvm`, `check --validate`) says the same thing: what LLVM objected to,
+    // the offending instruction, and that the defect is the compiler's — not a
+    // raw `opt` dump naming a register the author never wrote.
+    let ir = std::fs::read_to_string(ll_path)
+        .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
+    match briev_compiler::ir_verify::verify_llvm_ir(&ir, ll_path, ll_path) {
+        briev_compiler::ir_verify::IrVerify::Ok { ran } => {
+            if !ran {
+                eprintln!(
+                    "note: no LLVM verifier (opt/clang) on PATH — skipped the emitted-IR check"
+                );
+            }
+            Ok(())
+        }
+        briev_compiler::ir_verify::IrVerify::Invalid(msg) => Err(msg),
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(format!(
-        "emitted IR failed LLVM verification for '{}':\n{}",
-        ll_path,
-        stderr.trim()
-    ))
 }
 
 fn compile_ll_to_binary(

@@ -191,7 +191,7 @@ impl super::LlvmBackend {
                 }),
                 Err(e) => {
                     self.warnings.push(format!(
-                        "warning: accel '{}': kernel emission failed — {} (staying CPU)",
+                        "warning: accel '{}': kernel emission failed — {}",
                         name, e
                     ));
                     blobs.push(AccelKernelBlob {

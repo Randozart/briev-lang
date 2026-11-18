@@ -80,6 +80,20 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**Compiler messages: invalid IR as a first-class diagnostic (2026-11-18, ACTIVE):**
+`docs/plans/2026-11-18-compiler-diagnostics-ir-verification.md`. Four findings: on a
+clang failure the compiler prints `clang failed to compile '<f>.bv'` with no cause
+(its real diagnostic goes unattributed to the terminal); `--llvm` never validates, so
+invalid IR ships with **exit 0** (both of this session's codegen bugs hid there); the
+emitted IR has no `!dbg` and statements carry no spans, so `%t36` cannot be attributed
+to `acc_ = acc_ + x`; and the verifier already exists — in
+`match_termination_tests.rs`, unused in production. Plan: M1 verify every module by
+default in every mode (message says *the compiler* is at fault and leaves the `.ll` as
+a reproducer), M2 `; briev:` construct breadcrumbs so a failing line names the
+statement (no spans, no metadata, zero codegen risk), M3 a corpus `invalid_ir` column
+that turns BUGS groups A–E from a number into 17 named diagnostics, M4 a what/why/fix
+sweep starting with the three messages authors actually hit.
+
 **Device-free queue (2026-11-17, ACTIVE — PTL unavailable):**
 `docs/plans/2026-11-17-device-free-queue.md`. D1 = the loop-carried `Float` backedge
 (`examples/syntax/meta/defn-composite.bv` emits `fadd fast float 0.0, %t36` with an

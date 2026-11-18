@@ -55,6 +55,8 @@ pub mod hardware;
 pub mod hardware_validator;
 pub mod hir;
 pub mod import_resolver;
+/// 2026-11-18: post-codegen verification of the emitted module.
+pub mod ir_verify;
 pub mod interpreter;
 pub mod intrinsic_signatures;
 pub mod layout;
