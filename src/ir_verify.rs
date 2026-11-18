@@ -36,6 +36,16 @@ pub enum IrVerify {
 /// `artifact_hint` is where the caller will leave the `.ll` so the author has a
 /// reproducer; it is only mentioned, never created here.
 pub fn verify_llvm_ir(ir: &str, source_label: &str, artifact_hint: &str) -> IrVerify {
+    // Cheap textual pre-check that needs no toolchain: a call target with no
+    // `define` and no `declare` is invalid IR whatever LLVM thinks, and it is the
+    // one class whose cause is always "codegen emitted a call to something the
+    // program never defined". It catches the case that motivated this module —
+    // `call ptr @str_to_c(ptr …)` from a protocol binding whose function was never
+    // imported — without touching legitimate modules that DECLARE a protocol and
+    // define its bindings elsewhere (they emit no casts, hence no calls).
+    if let Some(msg) = undefined_call_targets(ir) {
+        return IrVerify::Invalid(render(&msg, ir, source_label, artifact_hint));
+    }
     // A per-run temp file: the verifier wants a path, and the module is the
     // thing under test, so it must be the exact bytes we are about to ship.
     let named = temp_path();
@@ -159,6 +169,69 @@ fn first_error(stderr: &str) -> (Option<usize>, String) {
             .trim()
             .to_string(),
     )
+}
+
+/// `Some(reason)` when the module calls a symbol it never defines or declares.
+///
+/// Only CALL targets are considered (`call … @name(`): a name that appears in a
+/// global, a metadata node or a `getelementptr` is not a call, and treating those
+/// as symbols produced false positives when this check lived at the type level
+/// (two stdlib modules that DECLARE protocols and leave the bindings to the
+/// importer were rejected). Emitting a call to an undefined function is always a
+/// compiler defect — the definition either exists and was dropped, or never did.
+fn undefined_call_targets(ir: &str) -> Option<String> {
+    let mut defined: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for line in ir.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("define ") {
+            if let Some(n) = rest.split('@').nth(1) {
+                defined.insert(n.split('(').next().unwrap_or(n));
+            }
+        } else if let Some(rest) = t.strip_prefix("declare ") {
+            if let Some(n) = rest.split('@').nth(1) {
+                defined.insert(n.split('(').next().unwrap_or(n));
+            }
+        }
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for line in ir.lines() {
+        let t = line.trim_start();
+        if !t.contains("call ") {
+            continue;
+        }
+        // Every `@name(` on a call line is a call target (direct calls, and the
+        // symbol operand of an indirect call's declaration is never here).
+        let mut rest = t;
+        while let Some(at) = rest.find('@') {
+            rest = &rest[at + 1..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.' || *c == '$')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            let after = rest.get(name.len()..).unwrap_or("");
+            if !after.starts_with('(') {
+                continue; // a reference (e.g. a function pointer), not a call target
+            }
+            if !defined.contains(name.as_str()) && !missing.contains(&name) {
+                missing.push(name);
+            }
+        }
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    missing.sort();
+    Some(format!(
+        "the module calls {} with no definition or declaration",
+        missing
+            .iter()
+            .map(|n| format!("'@{n}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// Where the registers the message names were DEFINED, one hop at a time.
@@ -363,6 +436,19 @@ mod tests {
     fn registers_in_reads_names_and_ignores_stray_percent() {
         assert_eq!(registers_in("%a, %b %a 50%"), vec!["%a", "%b"]);
         assert!(registers_in("no registers").is_empty());
+    }
+
+    #[test]
+    fn a_call_to_an_undefined_symbol_is_caught_without_a_toolchain() {
+        let ir = "define i32 @main() {\nentry:\n  %1 = call ptr @str_to_c(ptr %2)\n  ret i32 0\n}\n";
+        let why = undefined_call_targets(ir).expect("the missing callee must be reported");
+        assert!(why.contains("@str_to_c"), "{why}");
+        // A reference that is not a call (function pointer in a global) is not a
+        // missing callee, and a declared one is fine.
+        let ok = "declare ptr @str_to_c(ptr)\ndefine i32 @main() {\nentry:\n  %1 = call ptr @str_to_c(ptr null)\n  ret i32 0\n}\n";
+        assert!(undefined_call_targets(ok).is_none(), "{:?}", undefined_call_targets(ok));
+        let indirect = "define i32 @main() {\nentry:\n  %f = load ptr, ptr @cmp_int\n  ret i32 0\n}\n";
+        assert!(undefined_call_targets(indirect).is_none(), "a global reference is not a call");
     }
 
     #[test]
