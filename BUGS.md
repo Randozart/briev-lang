@@ -396,6 +396,19 @@ save/restore pair in `emit_expr.rs:6297/6571/10212`) and make the declared `ty` 
 the `Let` is first seen. Do not add a fourth speculative insert; the map has an owner that
 has not been identified yet.
 
+**ROOT CAUSE FOUND (2026-11-18, `docs/plans/2026-11-18-d1-root-cause.md`).** The writer
+is the countable-body `Statement::Let` arm in `loop_engine/counter.rs`: it registers
+`let_binding_types[name] = reg.ty` (the INITIALISER's type) for every declared local
+**except `Event<T>`**, which gets the declared type. `let acc_: Float = 0;` therefore
+registers `Int`, and `emit_foreach_statement` types the carrier slot from that map with an
+`i64` fallback. Three outside-in attempts failed because the map is *written* here, not
+merely cleared.
+
+The fix is the rule the `Event<T>` branch already applies locally: **the declared type
+wins**, and the value is coerced with `helpers.rs::coerce_register_value` — the helper
+whose own doc comment cites this exact case (`int-literal-float-init`, the ordinary `let`
+path, which is why a plain node works). Not yet applied.
+
 **Next approach.** Type the slot from the declared type where the
 reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),
 leaving the AST byte-identical so the deferred detector is unaffected.
