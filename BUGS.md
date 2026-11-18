@@ -338,6 +338,22 @@ own i64 slot inside the inner `foreach`, and `%t32 = fptosi float %t27 to i64` p
 the i64 backedge remain. So the declared-type binding has to reach the *inner*
 foreach's assignment path, not just this loop's preheader.
 
+**Third measurement (2026-11-18, `BRIEV_DBG_REASSIGNED=1`).**
+`collect_reassigned_lets` returns an **empty map** for `defn-composite.bv`:
+
+```
+$ BRIEV_DBG_REASSIGNED=1 brievc build examples/syntax/meta/defn-composite.bv --llvm …
+[reassigned]            (×5, all empty)
+```
+
+So no pre-declaration can help here: the accumulator is never seen as a reassigned
+let, which is why both earlier attempts changed nothing. The statement that assigns
+`acc_` is not visible to the collector's walk — most likely the composite call is
+still a single invocation-shaped statement at the point the backend walks the body,
+and the expansion produces the `let`/`foreach` pair later (during emission). That is
+the thing to confirm next: print the node body's statement kinds before
+`collect_reassigned_lets` runs.
+
 **Next approach.** Type the slot from the declared type where the
 reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),
 leaving the AST byte-identical so the deferred detector is unaffected.
