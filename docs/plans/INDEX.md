@@ -80,6 +80,20 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**Next queue: gate the IR check, fix the named bugs, advance the pin (2026-11-18, ACTIVE):**
+`docs/plans/2026-11-18-gate-the-ir-check-and-advance.md`. **P0** the worktree is behind
+(local `c06804413`, origin/main `e5849e192`) — sync first. **P1** make
+`scripts/ir_verify_corpus.sh` a gate: parallelise it (`lib/` blew a 40-min window),
+add a workflow mirroring `verify-bodies-census.yml`, and ratchet on a checked-in
+allowance list so a new invalid module fails CI. **P2** `tests/fixtures/glue_gen/
+{parity_generated,parity_handwritten}.bv`: `@str_to_c` is **called twice and never
+declared or defined** — a protocol-axiom body is not a liveness root; fix the root,
+then add a defensive "never emit a call to an undefined symbol" pass (which also
+covers the 17 BUGS A–E entries). **P3** bump `briev-kiosk-avatar/compiler.lock` from
+`3e72d9313` and validate with the soak/census. **P4** D1: the inner `foreach`'s
+local-demotion site types the slot from the initialiser; instrument
+`collect_reassigned_lets` for `defn-composite.bv` to name the function to change.
+
 **Compiler messages: invalid IR as a first-class diagnostic (2026-11-18, ACTIVE):**
 `docs/plans/2026-11-18-compiler-diagnostics-ir-verification.md`. Four findings: on a
 clang failure the compiler prints `clang failed to compile '<f>.bv'` with no cause
