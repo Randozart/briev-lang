@@ -150,6 +150,16 @@ typedef struct {
     // result into — `mapped` returns it so the runtime's field download path
     // works (OpenCL has no persistent host-visible projection).
     void* staging;
+    // 2026-11-17 (S2 residency): the device buffer and its size, kept across
+    // dispatches. Before this the copy path created, wrote, ran, read and
+    // RELEASED a cl_mem on every launch — three driver round-trips of pure
+    // setup per dispatch, which is most of the wall-vs-device gap.
+    cl_mem dev_buf;
+    size_t dev_buf_bytes;
+    // The projection length the runtime hands the copy path (the only place
+    // the size is known), and whether `dev_buf` already holds valid contents.
+    size_t proj_bytes;
+    int dev_seeded;
 } BrievOpenClKernel;
 
 static int briev_dev_opencl_create_kernel(const uint8_t* spirv, size_t size, void** out) {
@@ -310,6 +320,7 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
         p_clFinish(cl_queue);
         p_clReleaseMemObject(buf);
         k->staging = proj_out;
+    k->proj_bytes = proj_bytes;
         return 1;
     }
     if (err != 0) {
@@ -328,6 +339,7 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
     p_clReleaseMemObject(buf);
     // The staging window now holds the result; `mapped` exposes it.
     k->staging = proj_out;
+    k->proj_bytes = proj_bytes;
     return 1;
 }
 
@@ -340,6 +352,10 @@ static void briev_dev_opencl_destroy_kernel(void* handle) {
     BrievOpenClKernel* k = (BrievOpenClKernel*)handle;
     if (!k) {
         return;
+    }
+    if (k->dev_buf && p_clReleaseMemObject) {
+        p_clReleaseMemObject(k->dev_buf);
+        k->dev_buf = NULL;
     }
     p_clReleaseKernel(k->kernel);
     p_clReleaseProgram(k->program);
@@ -362,6 +378,117 @@ static void briev_dev_opencl_shutdown(void) {
     cl_ready = 0;
 }
 
+// 2026-11-17 (S2 residency) — NOT YET ON THE DISPATCH PATH.
+// Measured on PTL: the runner's resident entry still takes the copy path, and
+// the duplicate `briev_dev_opencl` driver table in libbriev_gpu_rt.a /
+// libbriev_accel_rt.a is the likely cause (see
+// benchmarks/results/2026-11-17-neo-residency-partial.md). The code below is
+// correct against the ABI and is kept so the next session can finish the
+// routing instead of rewriting it; it is inert until then.
+//
+// The resident path — no per-dispatch buffer churn. `mapped` exposes the host staging window, the runtime seeds the
+// dirty scalars there, and the launch uploads ONLY full projections or the
+// dirty (offset,length) pairs it is given, then reads the whole projection
+// back for the runtime's field download.
+//
+// Still a copy: OpenCL has no device-mapped host pointer, so the honest
+// ceiling here is "two copies per dispatch, zero allocations". Fine-grained
+// SVM (`clSVMAlloc` + `clEnqueueSVMMemcpy`) is the follow-up that removes the
+// copies too; it needs a device that reports CL_DEVICE_SVM_FINE_GRAIN_BUFFER,
+// so it must be probed, not assumed.
+static int briev_dev_opencl_resident_ready(BrievOpenClKernel* k, size_t proj_bytes) {
+    if (!k || !p_clCreateBuffer) {
+        return 0;
+    }
+    if (k->dev_buf && k->dev_buf_bytes == proj_bytes) {
+        return 1;
+    }
+    if (k->dev_buf && p_clReleaseMemObject) {
+        p_clReleaseMemObject(k->dev_buf);
+        k->dev_buf = NULL;
+        k->dev_buf_bytes = 0;
+    }
+    int err = 0;
+    k->dev_buf = p_clCreateBuffer(cl_ctx, 0x1 /* CL_MEM_READ_WRITE */, proj_bytes, NULL, &err);
+    if (!k->dev_buf || err != 0) {
+        k->dev_buf = NULL;
+        return 0;
+    }
+    k->dev_buf_bytes = proj_bytes;
+    // First use of a new buffer: the device copy is undefined, so the next
+    // launch must upload the whole projection regardless of the dirty list.
+    k->dev_seeded = 0;
+    return 1;
+}
+
+static int briev_dev_opencl_launch_dev2d(void* handle, size_t nx, size_t ny,
+                                         int full_sync, const size_t* dirty,
+                                         uint32_t n_dirty) {
+    BrievOpenClKernel* k = (BrievOpenClKernel*)handle;
+    if (!k || !k->staging) {
+        return 0;
+    }
+    size_t proj_bytes = k->proj_bytes;
+    if (proj_bytes == 0 || !briev_dev_opencl_resident_ready(k, proj_bytes)) {
+        return 0;
+    }
+    int err = 0;
+    if (full_sync || !k->dev_seeded) {
+        k->dev_seeded = 1;
+        err = p_clEnqueueWriteBuffer(cl_queue, k->dev_buf, 0, 0, proj_bytes, k->staging, 0, NULL, NULL);
+        if (err != 0) {
+            return 0;
+        }
+    } else {
+        for (uint32_t i = 0; i < n_dirty; i++) {
+            size_t off = dirty[2 * i];
+            size_t len = dirty[2 * i + 1];
+            if (off >= proj_bytes) {
+                continue;
+            }
+            if (off + len > proj_bytes) {
+                len = proj_bytes - off;
+            }
+            err = p_clEnqueueWriteBuffer(cl_queue, k->dev_buf, 0, off, len,
+                                         (const char*)k->staging + off, 0, NULL, NULL);
+            if (err != 0) {
+                return 0;
+            }
+        }
+    }
+    err = p_clSetKernelArg(k->kernel, 0, sizeof(cl_mem), &k->dev_buf);
+    if (err != 0) {
+        return 0;
+    }
+    int64_t n = (int64_t)(nx * ny);
+    err = p_clSetKernelArg(k->kernel, 1, sizeof(int64_t), &n);
+    if (err != 0) {
+        return 0;
+    }
+    size_t global_size = nx * ny;
+    size_t local_size = k->local_x ? k->local_x : 64;
+    if (g_verbose) {
+        fprintf(stderr, "[briev_accel/opencl] resident dispatch global=%zu local=%zu dirty=%u full=%d\n",
+                global_size, local_size, n_dirty, full_sync);
+        fflush(stderr);
+    }
+    if (p_clEnqueueNDRangeKernel(cl_queue, k->kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL) != 0) {
+        return 0;
+    }
+    if (p_clFinish(cl_queue) != 0) {
+        return 0;
+    }
+    // The runtime's field download reads `mapped`, so land the results there.
+    if (p_clEnqueueReadBuffer(cl_queue, k->dev_buf, 0, 0, proj_bytes, k->staging, 0, NULL, NULL) != 0) {
+        return 0;
+    }
+    return p_clFinish(cl_queue) == 0;
+}
+
+static int briev_dev_opencl_launch_dev(void* handle, size_t global_n) {
+    return briev_dev_opencl_launch_dev2d(handle, global_n, 1, 1, NULL, 0);
+}
+
 BrievDeviceDriver briev_dev_opencl = {
     // 2026-11-08 (Stage F): designated init so `mapped` (9th field) is set
     // while the optional residency tail stays zero.
@@ -374,4 +501,8 @@ BrievDeviceDriver briev_dev_opencl = {
     .destroy_kernel = briev_dev_opencl_destroy_kernel,
     .shutdown = briev_dev_opencl_shutdown,
     .mapped = briev_dev_opencl_mapped,
+    // 2026-11-17 (S2): residency — no per-dispatch allocation, dirty-range
+    // uploads, results left in the staging window.
+    .launch_dev = briev_dev_opencl_launch_dev,
+    .launch_dev2d = briev_dev_opencl_launch_dev2d,
 };

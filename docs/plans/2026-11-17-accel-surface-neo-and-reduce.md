@@ -250,3 +250,30 @@ g0_sum 0.574, g0_minmax 0.572, g0_fsum_approx 0.295, g0_fsum_exact 0.287.
 **Also found:** `g0_fsum_approx on opencl: WRONG (bad=?)` — an OpenCL-lane
 correctness bug in the approximate fsum kernel, currently reported-not-required by
 `g0.sh`. Recorded for the reduce work (S3).
+
+### S2 — PARTIAL, with the premise corrected (2026-11-17)
+
+Driver work landed (persistent `cl_mem`, dirty-range uploads, `launch_dev` /
+`launch_dev2d`) and is correct against the ABI, but **it is not on the dispatch
+path**: a freshly built archive still logs only the copy path for
+`ceil_elem_f32.abv` on OpenCL, and the resident marker never fires. Two
+`briev_dev_opencl` driver tables exist (`libbriev_gpu_rt.a`,
+`libbriev_accel_rt.a`) and the link order appears to decide which the runtime
+resolves — a one-hour investigation, not a rewrite.
+
+The larger finding: **the plan's premise was wrong.** Vulkan's residency win comes
+from `vkMapMemory` (device-visible host memory). OpenCL with regular `cl_mem` has
+no equivalent, so "residency" there saves an allocation and an event, not the two
+projection copies that dominate wall time. The honest lever is fine-grained SVM
+(`clSVMAlloc` + `CL_MEM_SVM_FINE_GRAIN_BUFFER`, probed, never assumed), and the
+metric should be **copies per dispatch**, not wall ≈ device.
+
+Details and next steps: `benchmarks/results/2026-11-17-neo-residency-partial.md`.
+
+### S3 — not started (2026-11-17)
+
+Blocked behind S2's measurement plumbing in the sense that it needs the same
+`copies per dispatch` instrument to tell a real win from a copy artefact. The
+reduce numbers stand as recorded: unlicensed 0.229/0.304 ms (f16/f32), licensed
+`approx` 0.106, reference 0.0969 — and `g0_fsum_approx` reports **WRONG on the
+opencl lane**, which must be fixed before the licensed lane is tuned.
