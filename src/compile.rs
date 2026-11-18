@@ -3892,9 +3892,20 @@ mod tests {
         let result = super::verify_emitted_ir(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
         assert!(result.is_err(), "invalid IR must be rejected");
+        let message = result.unwrap_err();
+        // 2026-11-18: the verdict is now rendered by `ir_verify::render`, which
+        // says "the compiler produced invalid IR for '<file>' / why: LLVM
+        // rejected the module: …" and keeps the .ll as evidence. Pin that
+        // contract instead of the word "verification": the point is that the
+        // diagnostic names the emitted-IR check AND blames the compiler, so a
+        // user never reads it as their own program's fault.
         assert!(
-            result.unwrap_err().contains("verification"),
-            "diagnostic must identify IR verification"
+            message.contains("invalid IR"),
+            "diagnostic must identify the emitted-IR check: {message}"
+        );
+        assert!(
+            message.contains("LLVM rejected") && message.contains("compiler"),
+            "diagnostic must name LLVM and attribute the defect to the compiler: {message}"
         );
     }
 
@@ -4026,6 +4037,14 @@ node go [done == false][done == true] {
             config_dir: None,
             file_path: file_path.to_string(),
             emit_ir_only: false,
+            // 2026-11-18: `verify_ir` joined `BuildOptions` (default ON, see
+            // `impl Default` in pipeline.rs). This helper is one of the
+            // hand-rolled literals that trap already warns about — it duplicates
+            // the field set piecewise, so a new field breaks the bin test target
+            // (`error[E0063]: missing field 'verify_ir'`) instead of falling back
+            // to the default. Set it to the documented default rather than
+            // guessing; the webstack path never reaches IR verification.
+            verify_ir: true,
             out_dir: None,
             optimize_budget: 256,
             emit_beast_stages: vec![],
