@@ -1365,6 +1365,19 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         })
     });
 
+    // 2026-11-17 (issue #5): `brievc check --validate` stops here. The
+    // frontend (parse_and_check), the normalizer, and the codegen have all
+    // run; the emitted `.ll` is on disk at `out_path`. Validate it with
+    // `opt -passes=verify` and return — no bad-fn objects, no clang link.
+    // This is the seam the default `check` never reaches (it returns at
+    // parse_and_check), which is why a frontend-legal program with invalid
+    // IR could pass `check` but fail `build`.
+    if opts.validate_ir {
+        verify_emitted_ir(&out_path)?;
+        println!("OK (emitted IR verified)");
+        return Ok(());
+    }
+
     if !opts.emit_ir_only {
         let binary_base = out_path.strip_suffix(ext).unwrap_or(&out_path);
         // 2026-08-03: --library — package a static .a (+ PIC .so) instead of

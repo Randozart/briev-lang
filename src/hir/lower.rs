@@ -8,7 +8,8 @@ use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
     HirBody, HirBoundary, HirCallable, HirCallableKind, HirCastDirection, HirCastEdge, HirContract,
     HirEnumVariant, HirField, HirForeign, HirFromSpec, HirGlobal, HirInit, HirOutput, HirParam,
-    HirProgram, HirProtocol, HirTypeDef, HirTypeDefKind, HirWatchdog, HirWatchdogOnFire, ThreadPin,
+    HirProgram, HirProtocol, HirProtocolOp, HirTypeDef, HirTypeDefKind, HirWatchdog,
+    HirWatchdogOnFire, ThreadPin,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use crate::ast::{
@@ -149,16 +150,60 @@ fn lower_protocol_item_full(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOu
             target_category: edge.target_category.clone(),
             target_variant: edge.target_variant.clone(),
             binding: binding.fn_name.clone(),
+            // 2026-11-17 (S4): carry the authority marker (SPEC §8.7) so the
+            // audit can tell a trusted lane from a derived one.
+            trusted_axiom: edge.trusted_axiom,
         });
     }
-    let ops = Vec::new();
+    // 2026-11-17 (S4): op bindings were dropped here (`ops = Vec::new()`), so
+    // the audit had to count every proto as unsupported. Lower them: the op
+    // name + the binding fn from `impl_args` (the same fn the liveness walk
+    // already extracts via `collect_binding_fns` below). Declarative ops
+    // (no `impl_args`) carry an empty binding — they bind no runtime function.
+    let ops: Vec<HirProtocolOp> = pd.cross_ops.iter().map(lower_protocol_op).collect();
     out.protocols.push(HirProtocol {
         name: pd.name.clone(),
         category: pd.category.clone(),
         casts,
         ops,
+        // 2026-11-17 (S4): a protocol-level contract has no HIR node yet.
+        // Record its presence so the audit counts exactly that gap; the
+        // ops/casts/trusted surface is certified by the lowering.
+        has_unrepresentable_contract: pd.contract.is_some(),
     });
     lower_protocol_bindings(pd, out);
+}
+
+/// One op binding from a protocol definition. Declarative ops (no
+/// `impl_args`) carry an empty binding — they bind no runtime function, so
+/// there is no emission root to name.
+fn lower_protocol_op(op: &crate::ast::OperatorDef) -> HirProtocolOp {
+    HirProtocolOp {
+        op: op.op.clone(),
+        binding: op_binding_name(op).unwrap_or_default(),
+        // 2026-11-17 (S4): carry the authority marker (SPEC §8.8) so the
+        // audit can distinguish trusted from derived ops.
+        trusted_axiom: op.trusted_axiom,
+    }
+}
+
+/// The runtime binding fn named by an op's `impl_args` (`None` for declarative
+/// ops, which bind no function). Mirrors `defn_liveness::collect_binding_fns`
+/// (identifier / single-identifier-list / marker-list forms) but returns the
+/// first fn name rather than appending to a shared set.
+fn op_binding_name(op: &crate::ast::OperatorDef) -> Option<String> {
+    use crate::ast::PropertyValue;
+    let Some(pv) = &op.impl_args else {
+        return None;
+    };
+    match pv {
+        PropertyValue::Identifier(name) => Some(name.clone()),
+        PropertyValue::List(items) => items.iter().find_map(|v| match v {
+            PropertyValue::Identifier(name) => Some(name.clone()),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 fn lower_protocol_bindings(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOutputs<'_>) {

@@ -188,6 +188,13 @@ pub struct BuildOptions {
     /// 2026-11-10: emit canonical HIR text at Typed and Provenanced
     /// (--emit-hir). Debug/tooling artifact; never read back.
     pub emit_hir: bool,
+    /// 2026-11-17 (issue #5): `brievc check --validate` runs the backend
+    /// normalizer + codegen + `opt -passes=verify` WITHOUT linking. This
+    /// closes the check/build divergence where the frontend accepts a
+    /// program whose emitted IR fails LLVM verification (missing sret slot,
+    /// width mismatch, undefined SSA). Default `check` (no flag) stays
+    /// frontend-only and cheap — the conformance sweep depends on that.
+    pub validate_ir: bool,
     /// Selected backend (resolved from extension + --backend flag).
     pub backend: BackendKind,
     /// Disable automatic stdlib import (for bare-metal/no-OS targets).
@@ -359,6 +366,7 @@ impl Default for BuildOptions {
             config_dir: None,
             file_path: String::new(),
             emit_ir_only: false,
+            validate_ir: false,
             out_dir: None,
             optimize_budget: 256,
             emit_beast_stages: vec![],
