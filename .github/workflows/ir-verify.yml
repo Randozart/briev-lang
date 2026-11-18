@@ -1,0 +1,72 @@
+# Emitted-IR verification — the gate that makes "invalid IR" a build failure.
+#
+# 2026-11-18 (plan: gate-the-ir-check-and-advance). Two codegen bugs in one session
+# emitted modules LLVM rejects while `brievc build` returned 0 (`--llvm`) or printed
+# a raw `opt` dump naming a register. Three invalid-IR files then sat unnoticed in
+# two directories because the check was a tool somebody had to remember to run.
+#
+# This workflow runs `scripts/ir_verify_corpus.sh`, which compiles every `.bv`
+# twice — with and without the verifier — so a frontend diagnostic is never
+# mistaken for a compiler defect, and fails when the set of invalid modules differs
+# from `tests/ir_verify_allow.txt` (a shrink-only list). A new invalid module fails;
+# a stale exemption fails too.
+name: Emitted IR Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  invalid-ir:
+    name: emitted-IR sweep
+    runs-on: ubuntu-24.04
+    # Full tree measured at ~26 min locally with a DEBUG compiler and 8 workers;
+    # the release build here is faster, but the hosted runner has fewer cores.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm z3 build-essential
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build brievc
+        run: cargo build --release --bin brievc
+
+      # PRs get the fast half (tests/); pushes to main get the whole tree, because
+      # that is the set the allowance was baselined on and the only run where the
+      # ratchet is meaningful.
+      - name: Sweep (pull request — tests only)
+        if: github.event_name == 'pull_request'
+        env:
+          BRIEVC: ./target/release/brievc
+          IR_VERIFY_JOBS: "4"
+        run: bash scripts/ir_verify_corpus.sh tests
+
+      - name: Sweep (main — full tree, ratchet enforced)
+        if: github.event_name == 'push'
+        env:
+          BRIEVC: ./target/release/brievc
+          IR_VERIFY_JOBS: "4"
+        run: bash scripts/ir_verify_corpus.sh
+
+      - name: Upload per-file logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invalid-ir-logs
+          path: |
+            /tmp/ir-verify-corpus/results.tsv
+            /tmp/ir-verify-corpus/*/v.log
+          retention-days: 14
