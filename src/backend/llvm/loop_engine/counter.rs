@@ -812,7 +812,7 @@ impl LlvmBackend {
                     if field_ty == "float" || field_ty == "double" {
                         writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
                     } else {
-                        writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
+                        emit_carry_copy(out, &be_f, &field_ty, &val);
                     }
                 }
             }
@@ -1532,7 +1532,7 @@ impl LlvmBackend {
                     if field_ty == "float" || field_ty == "double" {
                         writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
                     } else {
-                        writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
+                        emit_carry_copy(out, &be_f, &field_ty, &val);
                     }
                 }
             }
@@ -2065,7 +2065,7 @@ impl LlvmBackend {
                 if field_ty == "float" || field_ty == "double" {
                     writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
                 } else {
-                    writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
+                    emit_carry_copy(out, &be_f, &field_ty, &val);
                 }
             }
         }
@@ -2125,7 +2125,7 @@ impl LlvmBackend {
                 if field_ty == "float" || field_ty == "double" {
                     writeln!(out, "  {} = fadd fast {} 0.0, {}", be_f, field_ty, val).ok();
                 } else {
-                    writeln!(out, "  {} = add {} 0, {}", be_f, field_ty, val).ok();
+                    emit_carry_copy(out, &be_f, &field_ty, &val);
                 }
             }
         }
@@ -3351,4 +3351,24 @@ impl LlvmBackend {
             .ok();
         }
     }
+}
+
+/// Emit the loop-backedge identity copy of `val` into `dst`.
+///
+/// 2026-11-17 (BUGS.md f16 store, second instance): every backedge copy was
+/// `add {ty} 0, %val`. That is a valid copy for integers and INVALID for
+/// floats — a carried `Float16` produced `add half 0, %t25`
+/// ("integer/byte constant must have integer/byte type"), and the same idiom
+/// on a `float` carries the integer zero. Type the zero to the field's own
+/// width and use the floating opcode for floating types.
+///
+/// The rule is `fp_width`, not a name list: `half`, `float`, `double` and
+/// `fp128` all take `fadd <ty> <typed-zero>, %v`.
+fn emit_carry_copy(out: &mut String, dst: &str, llvm_ty: &str, val: &str) {
+    let (op, zero) = match llvm_ty {
+        "half" => ("fadd", "0xH0000"),
+        "float" | "double" | "x86_fp80" | "fp128" => ("fadd", "0.0"),
+        _ => ("add", "0"),
+    };
+    writeln!(out, "  {} = {} {} {}, {}", dst, op, llvm_ty, zero, val).ok();
 }

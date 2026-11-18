@@ -12501,16 +12501,12 @@ impl LlvmBackend {
             // float) has no graph lane — it is not a representation change,
             // just a precision change, so emit fpext/fptrunc. This fixes
             // `2.0 as Float64` / `x as CDouble` emitting a bitcast+sitofp mess.
-            if (src_ll == "float" || src_ll == "double")
-                && (target_ll == "float" || target_ll == "double")
-                && src_ll != target_ll
-            {
+            // 2026-11-17 (BUGS.md f16 store): decided by WIDTH, not by name.
+            // The name list covered float/double only, so `half` fell through
+            // to the identity return and `1.0 as Float16` left a float in a
+            // half slot (invalid IR). fp_cast_op is the same rule everywhere.
+            if let Some(op) = super::fp_cast_op(&src_ll, &target_ll) {
                 let reg = self.fun.gen_reg();
-                let op = if target_ll == "double" {
-                    "fpext"
-                } else {
-                    "fptrunc"
-                };
                 writeln!(
                     out,
                     "{}{} = {} {} {} to {}",
@@ -12962,11 +12958,9 @@ impl LlvmBackend {
                             ty: target.clone(),
                         });
                     }
-                    let op = if target_ll == "double" {
-                        "fpext"
-                    } else {
-                        "fptrunc"
-                    };
+                    // 2026-11-17: width, not name — `half` joins float and
+                    // double (a name test made half→float a fptrunc).
+                    let op = super::fp_cast_op(&cur_ll, &target_ll).unwrap_or("fptrunc");
                     writeln!(
                         out,
                         "{}{} = {} {} {} to {}",

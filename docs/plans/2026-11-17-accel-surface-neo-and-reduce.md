@@ -176,3 +176,32 @@ cannot be fooled by a fixture that stops delivering. Results:
 **Deviation:** shipped as warning-by-default + deny flag rather than an unconditional
 error (five harnesses build `recommender.bv` with no mode flag; the codebase already
 uses this shape for `--deny-memory-ambiguity`).
+
+### S1.2 — DONE (2026-11-17)
+
+The f16 store bug was **two** defects, both name-testing where the rule is width:
+
+1. the cast emitter's float-width branch listed only `float`/`double`, so
+   `Float → Float16` returned the source register (no `fptrunc`) and the float
+   landed in a `half` slot;
+2. the loop engine's backedge identity copy emitted `add {ty} 0, %v` at four
+   sites — valid for integers, invalid for every float (`add half 0, %t`).
+
+Fixed with `fp_width`/`fp_cast_op` (width-derived, covering `half`/`float`/
+`double`/`x86_fp80`/`fp128`) and one `emit_carry_copy` with a typed zero. The
+original BUGS note scoped this to the accel CPU-fallback lane; it was general —
+a constant index constant-folds to a literal `half`, a variable index did not.
+`brievc build` never ran clang over the emitted `.ll`, so the invalid module
+reported success. Gate:
+`daily_use_smoke::float16_stores_narrow_instead_of_aliasing`.
+
+**Unplanned but required:** the quick gate was already red on five binaries
+(`verify_report`, `unit_test_blocks`, `interpreter_corpus_parity`,
+`reduction_scripts`, plus the batch they share) because stdlib resolution was
+anchored at the *source file's* directory: a fixture in a tempdir could not find
+`lib/std` even with `BRIEV_HOME` set, so the gate only went green when `TMPDIR`
+was inside the repo. Added two rungs to `resolve_stdlib_root()` — `BRIEV_HOME`
+(same rung `glue::abi::abi_dir` already honours) and the invocation's own
+working directory — and repaired the `reduction_scripts` "good" fixture, which
+had stopped being good once the no-termination warning landed. `gate.sh quick`
+now passes without TMPDIR tricks.

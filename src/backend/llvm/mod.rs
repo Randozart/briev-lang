@@ -10390,6 +10390,36 @@ fn expr_has_unsafe_counter_ref(
 /// A binary comparison where exactly one operand is the counter: safe only as
 /// a boundary `==`/`>=` (counter on the left) or `==`/`<=` (counter on the
 /// right, i.e. `bound <= i`) against THIS node's bound value.
+/// IEEE width, in bits, of an LLVM IR floating type. `None` for anything else
+/// (integers, pointers, vectors).
+///
+/// 2026-11-17 (BUGS.md f16 store): the cast emitter decided float↔float
+/// conversions by name — `(src == "float" || src == "double") && ...` — so
+/// `half` never qualified and `1.0 as Float16` returned the `float` register
+/// unchanged, which then landed in a `half` slot (`store half %t, ptr` with a
+/// float operand: invalid IR). A name list cannot express "the widths differ";
+/// this can, and it covers `half` and `fp128` for free.
+pub(crate) fn fp_width(llvm_ty: &str) -> Option<u32> {
+    match llvm_ty {
+        "half" => Some(16),
+        "float" => Some(32),
+        "double" => Some(64),
+        "x86_fp80" => Some(80),
+        "fp128" => Some(128),
+        _ => None,
+    }
+}
+
+/// The fp→fp conversion opcode for a width change, or `None` when the types are
+/// not both floating or the widths are equal (identity — emit nothing).
+pub(crate) fn fp_cast_op(src_ll: &str, dst_ll: &str) -> Option<&'static str> {
+    let (src, dst) = (fp_width(src_ll)?, fp_width(dst_ll)?);
+    if src == dst {
+        return None;
+    }
+    Some(if dst > src { "fpext" } else { "fptrunc" })
+}
+
 fn counter_compare_is_unsafe(
     kind: crate::ast::BinaryOpKind,
     counter_on_left: bool,

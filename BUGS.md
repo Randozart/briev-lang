@@ -202,42 +202,61 @@ from that pass:
   names which gap it skipped. CI never had the package, so CI's redness was the
   typecheck bug alone.
 
-## 2026-11-17 — writing a `Float16` array element from a `Float` expression emits invalid IR
+## 2026-11-17 — FIXED: writing a `Float16` element from a `Float` expression emitted invalid IR
 
 **Symptom.** `store half %t35, ptr %t40` where `%t35` is `float` — LLVM rejects the
-module (`'%t35' defined with type 'float' but expected 'half'`). Repro (found while
-writing a self-checking GPU GEMM fixture):
+module (`'%t35' defined with type 'float' but expected 'half'`).
+
+**Minimal repro (no accel involved).**
 
 ```briev
-let a: Float16[4096];
-async accel node fill [i < 4096][i == 4096] {
-    a[i] = 1.0 as Float16;      // value stays `float`; the store wants `half`
+let a: Float16[64];
+let h: Float16 = 0.0;
+async node init [phase == 0 && i < 64][i == 64] {
+    let f: Float = 1.0;
+    let x: Float16 = f as Float16;
+    a[i] = x;      // store half <float>
+    h = x;         // add half 0, %t25   (integer zero in floating arithmetic)
     i = i + 1;
     term;
 };
 ```
 
-**Cause (not yet fixed).** The `as Float16` cast does not narrow: the register keeps
-its `float` LLVM type, and the element store then writes it into a `half` slot. The
-`FloatWidth` lane exists for exactly this (`fptrunc`/`fpext` between Float variants),
-so the open question is whether `Float16` resolves as a member of the `Float`
-protocol in this universe at all — if it does not, the cast falls through to
-identity and never narrows.
+**Two causes, both name-testing where the rule is width.**
 
-**Scope (checked 2026-11-17).** Ordinary host code is fine: `x[0] = 1.0 as Float16;`
-in a `node` body emits `sitofp i64 ... to half` / a proper half store and compiles.
-The failure appears on the **accel CPU-fallback lane** — a kernel whose body cannot
-be lowered to SPIR-V (see the `when` note below) is re-emitted for the CPU and that
-path stores the unnarrowed `float` into a `half` slot. So the impact is narrower
-than first written: it hits GPU kernels that fall back, not f16 code in general.
+1. **The cast emitter decided float↔float by name.** The empty-path branch of
+   `emit_cast_steps` read
+   `(src_ll == "float" || src_ll == "double") && (target_ll == "float" || target_ll == "double")`
+   — so a `half` endpoint never qualified and `Float → Float16` fell through to the
+   identity return: no `fptrunc`, the `float` register survived into the `half` slot.
+   `LaneKind::FloatWidth` had the same shape (`op = if target == "double" { fpext }
+   else { fptrunc }`), which would have made `half → float` an `fptrunc`.
+2. **The loop engine's backedge copy was integer-only.** Four sites in
+   `loop_engine/counter.rs` emitted `add {ty} 0, %val` as an identity copy, valid for
+   integers and invalid for any floating type (`add half 0, %v` →
+   "integer/byte constant must have integer/byte type"). Now one helper,
+   `emit_carry_copy`, with a typed zero (`0xH0000` / `0.0`) and `fadd` for floats.
 
-**Also found, same fixture:** accel kernel bodies reject `when`
-(`SPIR-V lowering: unsupported statement in kernel body (Discriminant(11))` and the
-kernel silently stays on CPU). The fixture language for GPU bodies is
-let/assign/expression/term over integer expressions; a data-dependent branch means
-falling back to the CPU lane with only a warning. Worth documenting in the accel
-guide, because a silent CPU fallback is exactly the class of thing that makes a
-"GPU" measurement meaningless.
+**Why it was mis-scoped at first.** The original note said host code was fine and
+only the accel CPU-fallback lane was affected. That was an artefact of the probe:
+`x[0] = 1.0 as Float16` (constant index) is constant-folded to a literal `half`,
+while `a[i] = ...` (variable index) goes through the register path that never
+narrowed. **Every** `Float → Float16` assignment through a register was broken, and
+`--llvm` builds hid it because `brievc build` does not run `clang` over the `.ll` —
+the compile step reported success while the module was invalid.
+
+**Fix.** `fp_width` / `fp_cast_op` in `src/backend/llvm/mod.rs` decide by width
+(`half`=16, `float`=32, `double`=64, `x86_fp80`=80, `fp128`=128), used by both cast
+sites; `emit_carry_copy` types the backedge zero. Gate:
+`daily_use_smoke::float16_stores_narrow_instead_of_aliasing`, fixture
+`tests/tier1/float16_roundtrip.bv` (prints 150 and 15 through the float protocol;
+`1.5` is exact in binary16, so a wrong narrowing changes the integer).
+
+**Also found, same expedition:** accel kernel bodies reject `when`
+(`SPIR-V lowering: unsupported statement in kernel body (Discriminant(11))`) and the
+kernel silently stays on the CPU lane. Still open — see the accel-surface results
+file (`benchmarks/results/2026-11-17-accel-surface-survey.md`), which now makes the
+silence a build warning and a CI error under `--deny-accel-cpu-fallback`.
 
 ## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
 

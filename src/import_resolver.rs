@@ -429,6 +429,22 @@ impl ImportResolver {
             }
         }
 
+        // 2b. `BRIEV_HOME` — the documented install/source root (2026-11-17).
+        // Same rung `glue::abi::abi_dir` already honours. Without it a build
+        // whose SOURCE sits outside the project tree (a tempdir in a test, a
+        // file in /tmp, a generated corpus) could not find `lib/std` even
+        // though `BRIEV_HOME` named it: the ladder fell through to the
+        // executable's `../../lib` and the nearest-ancestor `Cargo.toml` walk,
+        // neither of which exists for an installed compiler. That failure
+        // silently broke five gate binaries, so the harness had to be run with
+        // TMPDIR inside the repo to get a green gate.
+        if let Ok(home) = std::env::var("BRIEV_HOME") {
+            let lib = PathBuf::from(home).join("lib");
+            if lib.join("std").is_dir() {
+                return Some(lib);
+            }
+        }
+
         // 3. Executable-relative (dev layout)
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
@@ -457,6 +473,20 @@ impl ImportResolver {
                 if packaged_p.join("std").is_dir() {
                     return Some(packaged_p);
                 }
+            }
+        }
+
+        // 3b. The INVOCATION's working directory (2026-11-17). A generated or
+        // temporary source file is not part of a project, but the command that
+        // compiles it is: `brievc build /tmp/x.bv` run from a project root must
+        // find that root's `lib/std`. Without this rung the ladder fell through
+        // to `self.root_path/lib` (the *source file's* directory) and failed —
+        // which is why the reduction-harness predicates could not use a
+        // tempdir fixture, and why the gate needed TMPDIR inside the repo.
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidate = cwd.join("lib");
+            if candidate.join("std").is_dir() {
+                return Some(candidate);
             }
         }
 

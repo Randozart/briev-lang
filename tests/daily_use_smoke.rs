@@ -984,3 +984,40 @@ fn accel_declaration_is_never_dropped_silently() {
         );
     }
 }
+
+/// 2026-11-17 (BUGS.md f16 store): REGRESSION GATE — a `Float16` store narrows.
+///
+/// `a[i] = 1.0 as Float16` emitted `store half %t, ptr %p` with `%t` a `float`
+/// register, so the module did not link at all; and a carried `Float16` emitted
+/// `add half 0, %v` (an integer zero in floating arithmetic). Both came from
+/// NAME-testing float types instead of width-testing them: the cast emitter's
+/// width branch listed only `float`/`double`, and four backedge copy sites
+/// hard-coded `add {ty} 0, %v`. The fixture prints 150 and 15 through the float
+/// protocol (`1.5` is exact in binary16), so a wrong narrowing shows as a
+/// different integer rather than as silence.
+#[test]
+fn float16_stores_narrow_instead_of_aliasing() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("float16_roundtrip", "f16", &[]);
+    assert_eq!(
+        out, "1500",
+        "Float16 must round-trip 1.5 exactly (150 then 15): {out:?}"
+    );
+    let ir = std::fs::read_to_string(
+        Path::new(PROJECT_ROOT)
+            .join("target/briev_daily_use_smoke/float16_roundtrip__f16")
+            .join("float16_roundtrip.ll"),
+    )
+    .expect("read emitted IR");
+    assert!(
+        ir.contains("fptrunc float") && ir.contains("to half"),
+        "the Float→Float16 cast must narrow with fptrunc:\n{ir}"
+    );
+    assert!(
+        !ir.contains(" add half 0,"),
+        "an integer zero is not a half — the carried-copy must be fadd half <zero>:\n{ir}"
+    );
+}

@@ -1,0 +1,42 @@
+// float16_roundtrip.bv — a Float16 store must narrow, not alias a float.
+//
+// 2026-11-17 (BUGS.md): `a[i] = 1.0 as Float16` used to emit
+// `store half %t, ptr %p` where `%t` was a `float` register — invalid IR, so
+// the program did not link at all. Two distinct causes, both by NAME-testing
+// instead of width-testing:
+//   1. the cast emitter's float-width branch listed only `float`/`double`, so
+//      `Float → Float16` returned the source register unchanged (no fptrunc);
+//   2. the loop engine's backedge identity copy emitted `add {ty} 0, %v` for
+//      every field type, which is invalid for a carried `half`.
+//
+// 1.5 is exact in binary16, so the expected values are exact and any precision
+// mistake shows up as a different integer: a[3]*100 = 150, h*10 = 15.
+//
+// Gate: `daily_use_smoke::float16_stores_narrow_instead_of_aliasing`.
+
+const N: Int = 8;
+
+let i: Int = 0;
+let phase: Int = 0;
+let a: Float16[8];
+let h: Float16 = 0.0;
+let seen: Int[2];
+
+// Fill every element from a `Float` expression — the shape that failed.
+async node init [phase == 0 && i < N][i == N] {
+    let f: Float = 1.5;
+    let x: Float16 = f as Float16;
+    a[i] = x;
+    h = x;
+    i = i + 1;
+    term;
+};
+
+// Read back through the float protocol and print as integers.
+async node fin [phase == 0 && i == N][phase == 1] {
+    seen[0] = (a[3] as Float * 100.0) as Int;
+    seen[1] = (h as Float * 10.0) as Int;
+    Print#(seen[0]);
+    Print#(seen[1]);
+    endprogram;
+};

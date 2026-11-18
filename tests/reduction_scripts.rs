@@ -52,7 +52,7 @@ fn predicates_distinguish_crash_from_diagnostic() {
     let good = dir.path().join("good.bv");
     std::fs::write(
         &good,
-        "let done: Bool = false;\nnode main [done == false][done] { done = true; term; };\n",
+        "let done: Bool = false;\nnode main [done == false][done] { done = true; endprogram; };\n",
     )
     .unwrap();
     assert_eq!(predicate("ice", &good), 1);
