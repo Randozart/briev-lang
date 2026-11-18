@@ -570,8 +570,12 @@ fn emit_host_stmt(
             Ok(())
         }
         other => Err(format!(
-            "host body statement ({:?}) outside the runner v1 surface",
-            std::mem::discriminant(other)
+            "the generated GPU runner cannot express this host statement: `{}`\n  \
+             why:  the runner drives the kernel from C; its host surface is let / \
+             assign / expression over integers, plus term and endprogram\n  \
+             fix:  move this statement into a `node` that runs on the CPU lane, or \
+             keep it out of the program that emits a runner",
+            super::stmt_excerpt(other)
         )),
     }
 }

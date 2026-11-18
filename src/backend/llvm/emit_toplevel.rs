@@ -312,9 +312,23 @@ impl LlvmBackend {
                 }
             }
         });
-        lets.into_iter()
+        let out: HashMap<String, Option<Type>> = lets
+            .into_iter()
             .filter(|(n, _)| assigned.contains(n))
-            .collect()
+            .collect();
+        // 2026-11-18 (D1 investigation): name what the caller will pre-declare, and
+        // with which declared type. Without this, a local whose slot ends up typed
+        // from its INITIALISER looks identical to one that was never collected, and
+        // two fix attempts went to the wrong layer because of it.
+        if std::env::var_os("BRIEV_DBG_REASSIGNED").is_some() {
+            let mut names: Vec<String> = out
+                .iter()
+                .map(|(k, v)| format!("{k}:{}", v.as_ref().map(|t| format!("{t:?}")).unwrap_or_else(|| "<no declared type>".into())))
+                .collect();
+            names.sort();
+            eprintln!("[reassigned] {}", names.join(", "));
+        }
+        out
     }
 
     /// Pre-declare entry-block allocas for every let in `body` that is

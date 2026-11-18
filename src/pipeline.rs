@@ -308,6 +308,11 @@ pub struct BuildOptions {
     /// a warning by default; this makes it a hard error
     /// (`--deny-accel-cpu-fallback`), the CI gate for the intel/GPU lanes.
     pub deny_accel_cpu_fallback: bool,
+    /// 2026-11-18: verify the emitted module before it is written/linked
+    /// (default ON; `--no-verify-ir` opts out). A compile step that reports
+    /// success on a module LLVM rejects is a silent defect: two codegen bugs in
+    /// one session were invisible for exactly that reason.
+    pub verify_ir: bool,
     /// 2026-09-06 (ISR plan): the active target profile's ISR mechanism —
     /// the configured default behind mechanism-less `isr` declarations.
     /// Populated from folio.toml [target.<name>] isr_mechanism.
@@ -416,6 +421,7 @@ impl Default for BuildOptions {
             accel_cpu_fallback: None,
             accel_mode: None,
             deny_accel_cpu_fallback: false,
+            verify_ir: true,
             isr_mechanism: None,
             triple_override: None,
             linker_script_override: None,

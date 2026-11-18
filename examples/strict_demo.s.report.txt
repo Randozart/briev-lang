@@ -1,0 +1,6 @@
+=== .s verification report ===
+trust boundaries (compiler takes these on faith):
+  (none)
+memory decisions:
+  buf: freed after run
+=== end report ===

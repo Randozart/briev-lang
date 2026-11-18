@@ -80,6 +80,34 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**Next queue: gate the IR check, fix the named bugs, advance the pin (2026-11-18, ACTIVE):**
+`docs/plans/2026-11-18-gate-the-ir-check-and-advance.md`. **P0** the worktree is behind
+(local `c06804413`, origin/main `e5849e192`) — sync first. **P1** make
+`scripts/ir_verify_corpus.sh` a gate: parallelise it (`lib/` blew a 40-min window),
+add a workflow mirroring `verify-bodies-census.yml`, and ratchet on a checked-in
+allowance list so a new invalid module fails CI. **P2** `tests/fixtures/glue_gen/
+{parity_generated,parity_handwritten}.bv`: `@str_to_c` is **called twice and never
+declared or defined** — a protocol-axiom body is not a liveness root; fix the root,
+then add a defensive "never emit a call to an undefined symbol" pass (which also
+covers the 17 BUGS A–E entries). **P3** bump `briev-kiosk-avatar/compiler.lock` from
+`3e72d9313` and validate with the soak/census. **P4** D1: the inner `foreach`'s
+local-demotion site types the slot from the initialiser; instrument
+`collect_reassigned_lets` for `defn-composite.bv` to name the function to change.
+
+**Compiler messages: invalid IR as a first-class diagnostic (2026-11-18, ACTIVE):**
+`docs/plans/2026-11-18-compiler-diagnostics-ir-verification.md`. Four findings: on a
+clang failure the compiler prints `clang failed to compile '<f>.bv'` with no cause
+(its real diagnostic goes unattributed to the terminal); `--llvm` never validates, so
+invalid IR ships with **exit 0** (both of this session's codegen bugs hid there); the
+emitted IR has no `!dbg` and statements carry no spans, so `%t36` cannot be attributed
+to `acc_ = acc_ + x`; and the verifier already exists — in
+`match_termination_tests.rs`, unused in production. Plan: M1 verify every module by
+default in every mode (message says *the compiler* is at fault and leaves the `.ll` as
+a reproducer), M2 `; briev:` construct breadcrumbs so a failing line names the
+statement (no spans, no metadata, zero codegen risk), M3 a corpus `invalid_ir` column
+that turns BUGS groups A–E from a number into 17 named diagnostics, M4 a what/why/fix
+sweep starting with the three messages authors actually hit.
+
 **Device-free queue (2026-11-17, ACTIVE — PTL unavailable):**
 `docs/plans/2026-11-17-device-free-queue.md`. D1 = the loop-carried `Float` backedge
 (`examples/syntax/meta/defn-composite.bv` emits `fadd fast float 0.0, %t36` with an

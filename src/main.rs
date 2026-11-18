@@ -473,6 +473,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut int_bits = 64u64;
     let mut accel_cpu_fallback: Option<u64> = None;
     let mut deny_accel_cpu_fallback = false;
+    let mut verify_ir = true;
     // 2026-11-08 (attr plan): GPU offload policy is a compiler mode.
     let mut accel_mode: Option<briev_compiler::analysis::accel::AccelMode> = None;
     let mut triple_override: Option<String> = None;
@@ -636,6 +637,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
                 }
             });
             i += consumed;
+        } else if arg == "--no-verify-ir" {
+            verify_ir = false;
+            i += 1;
         } else if arg == "--deny-accel-cpu-fallback" {
             deny_accel_cpu_fallback = true;
             i += 1;
@@ -812,6 +816,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         file_path,
         emit_ir_only,
         validate_ir: false,
+        verify_ir,
         out_dir,
         optimize_budget,
         emit_beast_stages: emit_beast,
@@ -1201,6 +1206,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         file_path: file_path.clone(),
         emit_ir_only: false,
         validate_ir: false,
+        verify_ir: true,
         out_dir: None,
         optimize_budget: 256,
         emit_beast_stages: vec![],

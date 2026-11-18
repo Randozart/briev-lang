@@ -338,6 +338,22 @@ own i64 slot inside the inner `foreach`, and `%t32 = fptosi float %t27 to i64` p
 the i64 backedge remain. So the declared-type binding has to reach the *inner*
 foreach's assignment path, not just this loop's preheader.
 
+**Third measurement (2026-11-18, `BRIEV_DBG_REASSIGNED=1`).**
+`collect_reassigned_lets` returns an **empty map** for `defn-composite.bv`:
+
+```
+$ BRIEV_DBG_REASSIGNED=1 brievc build examples/syntax/meta/defn-composite.bv --llvm …
+[reassigned]            (×5, all empty)
+```
+
+So no pre-declaration can help here: the accumulator is never seen as a reassigned
+let, which is why both earlier attempts changed nothing. The statement that assigns
+`acc_` is not visible to the collector's walk — most likely the composite call is
+still a single invocation-shaped statement at the point the backend walks the body,
+and the expansion produces the `let`/`foreach` pair later (during emission). That is
+the thing to confirm next: print the node body's statement kinds before
+`collect_reassigned_lets` runs.
+
 **Next approach.** Type the slot from the declared type where the
 reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),
 leaving the AST byte-identical so the deferred detector is unaffected.
@@ -496,6 +512,72 @@ a self-recursive `txn`, and `export defn` — those all agree.
 the release `.ll` (checked on `os/dir`). The drift therefore lands on
 *classification*: boundary ownership and the reclamation hints read
 `DefnLiveness`, so those defns get the non-live treatment while being live.
+
+**CORRECTION + ROOT CAUSE + FIXED (2026-11-18).** Three things above are wrong,
+and the cause is not a missing walk arm.
+
+*The direction is inverted.* The assert is `debug_assert_eq!(h.live, ast.live)`
+(`src/backend/mod.rs:641`), so `left` is **HIR** and `right` is **AST**.
+Measured on the resolved program (`dir.bv` as root, 232 items): **HIR 79, AST 24,
+AST-only 0, HIR-only 55**. The capture above ("AST-only 56, HIR-only 0") swapped
+the labels. HIR is the *superset*, so the release path ships the larger,
+conservative set — and the analysis that loses callees is the **AST** one.
+
+*The cause is a bare-name slot rule mismatch.* Both builders reduce the program to
+one body per name, and a type member shares that slot with a top-level/exported
+declaration:
+
+```rust
+// src/analysis/defn_liveness.rs — used for MEMBERS (:303) and EXPORTS (:394)
+fn index_defn(&mut self, d: &Definition) {
+    self.defns.entry(d.name.clone()).or_insert(&d.body);   // FIRST-wins
+}
+TopLevel::Definition(d) => { self.defns.insert(...) }      // :377 LAST-wins
+```
+
+HIR is last-wins everywhere. When the prelude brings in
+`std/collections.bv`'s `obj HashMap { defn entries }` and `dir.bv` contributes
+`export defn entries`, the AST kept the **member's** body under the name
+`entries` and never walked dir.bv's — losing `dir_open`, `dir_close`, `dir_loop`
+and their closures. `entries` is merely where it became visible; the drift is
+latent for **any** member/top-level name collision.
+
+*Proof that it is an ordering artefact, not a missing arm:*
+
+```
+obj Bag { defn entries(t: Int) [true][true] { term t; }; };
+export defn entries(x: Int) [true][true] { term helper(x); };
+```
+
+→ `helper` missing from AST. Reverse the two declarations → `helper` missing from
+HIR. Same code, opposite verdicts: a lossy index, not a walker gap.
+
+**Fix.** The collision-safe multimap (`member_bodies`, added 2026-10-15 for
+member-vs-member collisions) now also receives **exported** defn/txn bodies
+(`analysis` export arm; `hir::index_defn` for `owner.is_some() || exported` —
+`index_txn` already did it unconditionally). Whichever body wins `defns`, every
+body under the name is walked, so both sides agree by construction and no call
+edge is dropped regardless of declaration order.
+
+**Impact, corrected.** Release ships the larger set, so nothing emitted was ever
+at risk. The under-approximating consumers were the **AST** ones: closure
+liveness (`src/backend/llvm/mod.rs:7618`, `build_with_roots`), and the
+reclamation/lifecycle analyses. Those treated live helpers as dead.
+
+**Tests.** `tests/hir_defn_liveness_parity.rs`:
+`dir_bv_as_root_does_not_trip_the_liveness_assert` is **un-ignored** (it was the
+repro), plus `a_member_and_an_exported_defn_sharing_a_name_both_contribute`,
+which asserts the helper is live in *both* analyses in *both* declaration orders
+— parity alone is insufficient, since the bug made both sides agree whenever they
+dropped the same body. Both tests verified to fail without the fix.
+
+Residual, documented rather than hidden: with a name-keyed live set, a member and
+a same-named top-level declaration share liveness. That is over-approximation
+(safe direction), not unsoundness.
+
+Verified: lib suite 3921 passed, `daily_use_smoke` 46 passed (golden IR
+unchanged), liveness parity 4 passed.
+
 
 **Reproduce.**
 
