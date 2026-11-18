@@ -4007,6 +4007,12 @@ node go [done == false][done == true] {
     /// compile_view unit tests.
     fn webstack_opts(file_path: &str) -> BuildOptions {
         BuildOptions {
+            // 2026-11-18: BuildOptions gained `deny_accel_cpu_fallback` and
+            // `validate_ir`. This helper listed every field by hand and was the
+            // only initializer left behind, so the binary target's tests stopped
+            // COMPILING (E0063) and every PR branched off main inherited the red.
+            validate_ir: false,
+            deny_accel_cpu_fallback: false,
             run: false,
             config_dir: None,
             file_path: file_path.to_string(),
