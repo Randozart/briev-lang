@@ -12,13 +12,21 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use briev_compiler::library;
-use briev_compiler::target::{BackendKind, TargetConfig, get_extension};
+use briev_compiler::target::{get_extension, BackendKind, TargetConfig};
 use briev_compiler::vocab;
 use compile::BeastFilter;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
+        print_usage(&args[0]);
+        return;
+    }
+    // 2026-11-18 (dogfooding gap G1): `brievc <cmd> --help` used to treat the
+    // flag as the input FILE and fail with "cannot read '--help'". Any
+    // -h/--help anywhere prints the usage and exits 0 — additive, and no
+    // subcommand's behaviour changes otherwise.
+    if args[2..].iter().any(|a| a == "-h" || a == "--help") {
         print_usage(&args[0]);
         return;
     }
@@ -1783,7 +1791,11 @@ fn find_changed_rbv(
     walk_rbv(dir, &mut newest);
     newest.and_then(
         |(mtime, path)| {
-            if mtime > *since { Some(path) } else { None }
+            if mtime > *since {
+                Some(path)
+            } else {
+                None
+            }
         },
     )
 }
