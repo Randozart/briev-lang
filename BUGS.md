@@ -354,6 +354,28 @@ and the expansion produces the `let`/`foreach` pair later (during emission). Tha
 the thing to confirm next: print the node body's statement kinds before
 `collect_reassigned_lets` runs.
 
+**Fourth measurement (2026-11-18, `BRIEV_DBG_BODY` / `BRIEV_DBG_SLOT`).** Two facts,
+and they contradict the source:
+
+```
+[cm_body] 4 statement(s): Let[let acc_: Float = 0;] | Foreach[foreach(k in 0..4) { acc_ = (acc_ + 2); }] | Assign[r = acc_;] | Assign[i = (i + 1);]
+[carrier] 'acc_' -> typed=Some(Custom("Int")); let_binding_types=[acc_:Custom("Int")]
+```
+
+So the countable body **is** expanded (case (a)), the declaration plainly reads `Float`,
+and the carrier slot still asks `let_binding_types` for `acc_` and gets **`Int`**. The
+emitter path that populates that map for this name is registering the INITIALISER's type,
+not the declaration — and registering it after any pre-pass, since inserting
+`Float` before the body (both with `or_insert_with` and with an unconditional overwrite)
+changed nothing, and neither did recording it in `emit_statement`'s `Let` arm.
+`context.rs:1704` clears the map (`clear_locals`), so ordering is part of the puzzle.
+
+Next step is therefore one level up, not another insert: find **every writer** of
+`let_binding_types` for a body local (grep shows readers in `emit_stmt.rs` and a
+save/restore pair in `emit_expr.rs:6297/6571/10212`) and make the declared `ty` win where
+the `Let` is first seen. Do not add a fourth speculative insert; the map has an owner that
+has not been identified yet.
+
 **Next approach.** Type the slot from the declared type where the
 reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),
 leaving the AST byte-identical so the deferred detector is unaffected.

@@ -2068,6 +2068,20 @@ pub(crate) fn emit_foreach_statement(
             }
         }
         let slot = backend.fun.gen_reg();
+        if std::env::var_os("BRIEV_DBG_SLOT").is_some() {
+            let mut known: Vec<String> = backend
+                .fun
+                .let_binding_types
+                .iter()
+                .map(|(k, v)| format!("{k}:{v:?}"))
+                .collect();
+            known.sort();
+            eprintln!(
+                "[carrier] '{name}' -> typed={:?}; let_binding_types=[{}]",
+                backend.fun.let_binding_types.get(&name),
+                known.join(", ")
+            );
+        }
         let llvm_ty = backend
             .fun
             .let_binding_types
