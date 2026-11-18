@@ -87,8 +87,27 @@ error[E0063]: missing fields `deny_accel_cpu_fallback` and `validate_ir`
 Nothing caught it because `cargo test --lib` never compiles the **binary's** test
 target; the nightly's `--all` nextest run is the only caller that does.
 
-Three blockers, then, all in the path to observing the AST suite: the filterset,
-the missing `/tmp/opencode`, and this stale initializer. With all three fixed the
+### 2c. Four blockers in total, and the fourth was a test lying about itself
+
+After (1), (2b) and the tooling were fixed, the suite ran **4443 tests: 4442
+passed, 1 failed** — and the last one was informative:
+
+```
+enum_list_elements_survive_later_calls ... FAILED
+panicked at tests/enum_list_lifetime_regression.rs:27
+build failed:            <- empty stderr
+```
+
+The test spawned a hardcoded `target/release/brievc`; the nightly builds only
+debug, so the file did not exist. **It had also not been testing what it claims
+locally**: this checkout held a release binary from 2026-11-17 09:07, so the test
+drove a stale compiler. `CARGO_BIN_EXE_brievc` (as `dir_smoke.rs` and
+`wasm32_parity.rs` already use) makes the path and profile the ones under test.
+
+Four blockers, then, all between CI and an observation: the filterset, the stale
+`BuildOptions` initializer, the job's hand-rolled toolchain list (no
+`spirv-tools`, no `/tmp/opencode`), and this hardcoded binary path. Each one
+looked like a code failure. With all three fixed the
 suite runs **4442 tests, 4442 passed, 13 skipped (916 s)** — the AST path itself
 is healthy, and the 2026-11-15 red was the `/tmp/opencode` panic, not liveness.
 
