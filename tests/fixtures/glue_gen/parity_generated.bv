@@ -1,5 +1,15 @@
 // S3/G4' parity pair — variant A: protocols from the generated file.
 import "std/io.bv";
+// 2026-11-18: the protocol axioms name the ops (`str_to_c` / `cstr_to_briev`)
+// but nothing defines them — they live in `glue/c.bv`. The emitter fires the
+// lane at the call site and emits `call @str_to_c` with no declaration, which
+// is invalid IR: `--llvm` now verifies the module (`verify_ir`, default ON) and
+// rejects it with "use of undefined value '@str_to_c'". Importing the ops
+// module is what a user of this protocol needs to do anyway; the generator
+// does not emit it yet (glue schema has types_module but no ops module).
+// Added to BOTH variants at the same position so the parity gate still differs
+// only in how the protocol declarations were written.
+import "glue/c.bv";
 import "./generated_glue.bv";
 
 // The foreign signature takes the boundary type, so the meld fires the protocol's
