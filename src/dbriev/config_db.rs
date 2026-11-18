@@ -620,17 +620,23 @@ wasm32-wasi: { \"#System\": \"wasi_snapshot_preview1\"; \"#Vendor\": \"custom\" 
 
     #[test]
     fn only_double_slash_comments_are_skipped() {
-        // 2026-08-03: `#` lines are NOT comments in the v2 grammar. A `#` line
-        // without a `;` is consumed by parse_positional_values as one bare token
-        // that swallows the following keyed line too — so `#` comments silently
-        // destroy data. Config files must use `//`; this locks both directions.
+        // 2026-08-03: `#` lines are NOT comments in the v2 grammar. Config
+        // files must use `//`; this locks both directions.
+        //
+        // 2026-11-18 (W1-B): a bare token now terminates at `\n` (line-
+        // oriented `.dbvl`), so a `#` line no longer swallows the following
+        // keyed line. The `#` line is parsed as its own (positional, non-keyed)
+        // record and `real_key` survives as a keyed entry. This is the
+        // corrected behavior the 2026-08-03 note predicted would follow once
+        // the line terminator was enforced in `parse_bare_token`.
         let src = "\
 # this is a TOML-style comment, not skipped
 real_key: 1;
 ";
         let db = ConfigDb::from_str(src).unwrap();
-        // The `#` line consumed the real_key line — no keyed entries survive.
-        assert!(db.is_empty());
+        // The `#` line is its own positional record (no key); `real_key`
+        // survives as a keyed entry.
+        assert_eq!(db.field_int("real_key", 0), Some(1));
 
         // The supported comment form round-trips normally.
         let src = "// comment\nreal_key: 1;\n";

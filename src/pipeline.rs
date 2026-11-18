@@ -356,6 +356,13 @@ pub struct BuildOptions {
     /// For triaging large-IR instability and reproducing backend bugs
     /// without optimizer interference.
     pub safe_mode: bool,
+    /// 2026-11-18 (W1-B, native-flake root cause): explicit `-march=<cpu>`
+    /// override for the link step. Takes precedence over the per-target
+    /// `march` in config/targets.dbvl and over the conservative default.
+    /// `--march=native` is available for local development but is never the
+    /// default — the ISA a binary runs on is a deployment-target property,
+    /// not a build-host property.
+    pub march_override: Option<String>,
 }
 
 /// 2026-09-25 (interop Wave 1 C3): the de-facto default option set, lifted
@@ -425,6 +432,7 @@ impl Default for BuildOptions {
             verify_bodies: false,
             verify_report: None,
             safe_mode: false,
+            march_override: None,
         }
     }
 }

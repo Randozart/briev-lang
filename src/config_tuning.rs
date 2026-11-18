@@ -53,6 +53,13 @@ pub struct TargetSettings {
     /// emitted function's `alloca` sizes exactly and rejects a breach. None =
     /// no declared ceiling (hosted targets without a row field).
     pub frame_limit_bytes: Option<u64>,
+    /// 2026-11-18 (W1-B, native-flake root cause): the `-march` CPU target for
+    /// the link step. A deployment-target property, not a build-host property:
+    /// the ISA a binary runs on is declared per-target, not inherited from the
+    /// machine that built it. `None` = no declared march (the link step uses
+    /// a conservative default: `x86-64-v3` for x86_64-linux, no march for
+    /// cross-compilation). A `--march=<cpu>` CLI flag overrides this.
+    pub march: Option<String>,
 }
 
 /// Global (target-independent) IR lowering tuning (plan §8.2).
@@ -412,6 +419,11 @@ pub const DEFAULT_TARGET_SETTINGS: TargetSettings = TargetSettings {
     vector_min_width: 4,
     isr_mechanism: None,
     frame_limit_bytes: None,
+    // 2026-11-18 (W1-B): no declared march in the default — the link step
+    // falls back to a conservative per-triple default (x86-64-v3 for
+    // x86_64-linux). Targets that want a specific ISA declare it in
+    // config/targets.dbvl (field 8).
+    march: None,
 };
 
 const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
@@ -929,6 +941,11 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
             .field_int(&key, 7)
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_TARGET_SETTINGS.max_enum_inline_depth);
+        // 2026-11-18 (W1-B): field 8 — the `-march` CPU target for the link
+        // step. A deployment-target property: the ISA a binary runs on is
+        // declared per-target, not inherited from the build host. Absent =
+        // no declared march (the link step uses a conservative default).
+        let march = db.field_string(&key, 8).map(|v| v.to_string());
         out.insert(
             prefix.to_string(),
             TargetSettings {
@@ -940,6 +957,7 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
                 fp_reserved_temps,
                 effect_carry_temp_min,
                 max_enum_inline_depth,
+                march,
             },
         );
     }
