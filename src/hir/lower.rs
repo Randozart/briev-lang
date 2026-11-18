@@ -161,15 +161,27 @@ fn lower_protocol_item_full(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOu
     // already extracts via `collect_binding_fns` below). Declarative ops
     // (no `impl_args`) carry an empty binding — they bind no runtime function.
     let ops: Vec<HirProtocolOp> = pd.cross_ops.iter().map(lower_protocol_op).collect();
+    // 2026-11-18 (W3): lower the protocol-level contract. Reuses
+    // `lower_contract` (the same fn `HirCallable` uses) so pre/post/
+    // watchdog lower identically. A fresh IdSupply scoped to the contract's
+    // expressions — protocols are not callables, so no def/node ids are
+    // allocated here; the ids are internal to the HIR tree.
+    let contract = pd.contract.as_ref().map(|c| {
+        let mut ids = IdSupply::default();
+        lower_contract(c, &mut ids)
+    });
     out.protocols.push(HirProtocol {
         name: pd.name.clone(),
         category: pd.category.clone(),
         casts,
         ops,
-        // 2026-11-17 (S4): a protocol-level contract has no HIR node yet.
-        // Record its presence so the audit counts exactly that gap; the
-        // ops/casts/trusted surface is certified by the lowering.
-        has_unrepresentable_contract: pd.contract.is_some(),
+        // 2026-11-18 (W3): the contract is now fully represented in HIR.
+        // `has_unrepresentable_contract` is true only when the AST declares
+        // a contract the lowering could not represent (currently impossible
+        // — `lower_contract` handles every `Contract` shape the parser
+        // produces).
+        has_unrepresentable_contract: pd.contract.is_some() && contract.is_none(),
+        contract,
     });
     lower_protocol_bindings(pd, out);
 }

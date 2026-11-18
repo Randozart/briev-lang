@@ -389,10 +389,15 @@ pub struct HirProtocol {
     pub ops: Vec<HirProtocolOp>,
     /// 2026-11-17 (S4): the AST protocol declares a contract HIR has no node
     /// for (`ProtocolDef::contract`). The lowering records its presence here
-    /// so the audit can count exactly that gap — a contract with no HIR home
-    /// is the one remaining unsupported protocol fact. Always `true` today
-    /// (no HIR node exists yet); becomes `false` when a contract is lowered.
+    /// so the audit can count exactly that gap. `false` when `contract` is
+    /// `Some` (the contract is fully represented); `true` when the AST
+    /// declares a contract that the lowering could not lower.
     pub has_unrepresentable_contract: bool,
+    /// 2026-11-18 (W3, FFI-contract-into-HIR): the protocol-level contract,
+    /// lowered from `ProtocolDef::contract`. Reuses `HirContract` (pre/post
+    /// as `HirExpr`, watchdog as `Option<HirWatchdog>`) — the same node
+    /// `HirCallable` carries. `None` when the AST declares no contract.
+    pub contract: Option<HirContract>,
 }
 
 /// One `axiom CastTo/CastFrom(…) = binding(#Lh)` lane.

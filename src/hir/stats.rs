@@ -46,17 +46,15 @@ pub fn unsupported_counts(program: &HirProgram) -> UnsupportedCounts {
 }
 
 fn count_protocols(program: &HirProgram, counts: &mut UnsupportedCounts) {
-    // 2026-11-17 (S4): a proto lowers to a HirProtocol carrying name,
-    // category, cast lanes (with their `trusted_axiom` markers, SPEC §8.7)
-    // and op bindings (with theirs, SPEC §8.8) — the lowering populates
-    // `ops` from `cross_ops` and both authority flags. What HIR does NOT
-    // carry is the protocol `contract` (the AST's `ProtocolDef::contract`):
-    // a protocol-level contract has no HIR node. The audit counts exactly
-    // that gap — a proto is one unsupported fact iff it declares a
-    // contract HIR cannot represent, and zero otherwise. (The ops/casts/
-    // trusted surface is certified by the lowering.) To undo: restore the
-    // `for _proto in &program.protocols { counts.protocols += 1; }` that
-    // counted every proto until the surface was fully represented.
+    // 2026-11-18 (W3): a proto lowers to a HirProtocol carrying name,
+    // category, cast lanes (with their `trusted_axiom` markers, SPEC §8.7),
+    // op bindings (with theirs, SPEC §8.8), AND the protocol-level contract
+    // (lowered to `HirContract`, the same node `HirCallable` carries). The
+    // lowering populates all four surfaces. `has_unrepresentable_contract`
+    // is `false` whenever the contract is represented (i.e. always, since
+    // `lower_contract` handles every `Contract` shape the parser produces)
+    // and `true` only if a future parser change introduces a contract form
+    // the lowering cannot handle. Today: zero protocol gaps.
     for proto in &program.protocols {
         if proto.has_unrepresentable_contract {
             counts.protocols += 1;
@@ -310,25 +308,41 @@ mod boundary_audit_tests {
         assert_eq!(counts.total(), 0, "no unsupported facts");
     }
 
-    /// A `proto` that declares a protocol-level contract (HIR has no node
-    /// for it) is exactly one unsupported fact — the audit counts that gap
-    /// and nothing else.
+    /// 2026-11-18 (W3): a `proto` that declares a protocol-level contract
+    /// now LOWERS that contract into `HirProtocol::contract` (reusing
+    /// `HirContract`, the same node `HirCallable` carries). The audit counts
+    /// zero gaps: the contract is fully represented. Supersedes the S4
+    /// `proto_with_contract_is_one_gap` test (which expected one gap while
+    /// HIR had no node for the contract).
     #[test]
-    fn proto_with_contract_is_one_gap() {
+    fn proto_with_contract_is_fully_represented() {
         let program = lower(
             "proto TestProto: String [true] {\n    axiom CastTo(String<UTF8>) = to_briev(#Lh);\n};\n",
         );
         assert_eq!(program.protocols.len(), 1, "one proto lowers to one node");
+        let proto = &program.protocols[0];
+        // The contract is lowered — present and not unrepresentable.
         assert!(
-            program.protocols[0].has_unrepresentable_contract,
-            "the protocol contract has no HIR node — the recorded gap"
+            proto.contract.is_some(),
+            "the protocol contract lowers into HirProtocol::contract"
+        );
+        assert!(
+            !proto.has_unrepresentable_contract,
+            "the contract is fully represented — no gap"
+        );
+        // The contract carries pre/post expressions — they lowered to real
+        // HIR nodes (not an Other gap placeholder).
+        let c = proto.contract.as_ref().unwrap();
+        assert!(
+            !matches!(c.pre.kind, HirExprKind::Other(_)),
+            "pre_condition lowered to a real HirExpr, not an Other gap"
         );
         let counts = unsupported_counts(&program);
         assert_eq!(
-            counts.protocols, 1,
-            "a contract-bearing proto is exactly one unsupported fact"
+            counts.protocols, 0,
+            "a contract-bearing proto is fully represented — no gap"
         );
-        assert_eq!(counts.total(), 1);
+        assert_eq!(counts.total(), 0, "no unsupported facts");
     }
 
     /// A program with no `proto` and no `frgn` should have zero boundary
