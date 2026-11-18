@@ -1,0 +1,25 @@
+// 2026-11-17 (issue #8): a value-form `term <val>` inside a `when` guard in
+// the SSA reactor main (a `node` body) must branch to the next-txn label
+// (`.ssn_<name>`) to skip the rest of this firing's body — it must NOT
+// emit `ret i64` into `define i32 @main`. The reactor main is not callable;
+// a `term` in a node body means "end this firing," not "return a value."
+//
+// Pre-fix, the `fn_ret_ty != "void"` arm in `emit_term_value_tail` fired
+// before the `void_txn_abort_label` arm (the reactor main carries
+// `fn_ret_ty = "i64"`), emitting `ret i64 <val>` into `define i32 @main` —
+// invalid IR (`opt -verify`: "value doesn't match function result type
+// 'i32'"). Post-fix, the `void_txn_abort_label` arm fires first, emitting
+// `br label %.ssn_<name>`.
+//
+// The `endprogram` after the guard is a hard process exit: the `term` in
+// the guard fires `Print#(1)`, then the post-guard `endprogram` exits.
+// The `Print#(2)` argument is the exit code (not a print). This mirrors the
+// known-good `term_guard_value_form.bv` reference (which uses
+// `endprogram Print#(1)` inside the guard).
+let done: Bool = false;
+let x: Int = 0;
+node main [!done][done] {
+  x = 1;
+  when x == 1 { term Print#(1); };
+  endprogram;
+};

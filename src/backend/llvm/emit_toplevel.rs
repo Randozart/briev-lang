@@ -6060,6 +6060,127 @@ impl LlvmBackend {
         }
     }
 
+    /// 2026-11-18 (issue #7, Phase 1): post-outline validation. Every
+    /// identifier left in a rewritten cold-guard body (i.e. NOT replaced by a
+    /// `__cp_<name>` param) must be a symbol this module actually emits a
+    /// global for — a compile-time constant, an `init` global, a plain global,
+    /// an MMIO pin, or a synthetic/runtime symbol. An identifier that is NOT
+    /// one of those is the silent-zero shape: `collect_idents` captured it as a
+    /// `__cp_` param but `rewrite_stmt_idents` did NOT substitute it (a
+    /// rewrite-completeness gap), so the cold body references the ORIGINAL name,
+    /// which is not a param of the cold function. `emit_identifier_load`
+    /// (class D, `emit_expr.rs:2030`) would then warn and materialise 0 — a
+    /// correctness bug that is invisible in the IR until runtime.
+    ///
+    /// The validation is a HARD ERROR (not a warning): a silent 0 in an
+    /// outlined guard changes program behaviour, and the class-D warning would
+    /// be buried in the output. The fix for a firing diagnostic is to repair
+    /// `collect_idents`/`rewrite_stmt_idents` coverage — not to let the value
+    /// vanish.
+    ///
+    /// Undo: delete this call from the cold-function emission loop and the
+    /// helper; class D remains as the safety net (warn + zero).
+    fn validate_cold_body_idents(
+        &mut self,
+        body: &[Statement],
+        field_names: &[String],
+        param_names: &[String],
+        cold_name: &str,
+    ) {
+        // Rewrite the body the same way emission does, then collect every
+        // identifier that survived (i.e. was not a `__cp_` param).
+        let mut survivors: Vec<String> = Vec::new();
+        for stmt in body {
+            let rewritten = Self::rewrite_stmt_idents(stmt, field_names, param_names);
+            Self::collect_remaining_idents(&rewritten, &mut survivors);
+        }
+        survivors.sort();
+        survivors.dedup();
+        // A `__cp_` param is a param of the cold function — it is always
+        // resolvable (registered in `let_bindings` during emission). Exclude
+        // them from the survivor check. The remaining identifiers must be
+        // module globals: use the SAME predicate as `emit_identifier_load`
+        // class-D (`ident_is_module_global`) so the validation and emission
+        // never disagree.
+        let mut bad: Vec<String> = survivors
+            .into_iter()
+            .filter(|name| !name.starts_with("__cp_") && !self.ident_is_module_global(name))
+            .collect();
+        if bad.is_empty() {
+            return;
+        }
+        // Turn the silent-zero into a loud diagnostic. A hard `panic!` would
+        // abort the whole compile mid-emission; a `warnings` entry is the
+        // project's convention for codegen diagnostics (class D, emit_expr.rs
+        // uses the same channel), and the message is unambiguously an error —
+        // the value WILL silently become 0 and the program will be wrong.
+        self.warnings.push(format!(
+            "error: cold function `@{cold_name}` references `{name}` which has no storage in this module — it is not a param, a constant, an init, a plain global, or an MMIO pin. This is an outlining rewrite gap (the identifier was captured by `collect_idents` but not substituted by `rewrite_stmt_idents`); the value would silently become 0. Fix the rewrite coverage.\n  unresolved in cold body: {bad:?}",
+            name = bad[0],
+        ));
+    }
+
+    /// Collect every `Expr::Identifier` left in a statement (post-rewrite).
+    fn collect_remaining_idents(stmt: &Statement, out: &mut Vec<String>) {
+        use crate::ast::*;
+        match stmt {
+            Statement::Let { expr, .. } => {
+                if let Some(e) = expr {
+                    Self::collect_idents_in_expr(e, out);
+                }
+            }
+            Statement::Expression(e)
+            | Statement::Term(Some(e))
+            | Statement::Tail(e)
+            | Statement::EndProgram(Some(e)) => Self::collect_idents_in_expr(e, out),
+            Statement::Assign(lhs, rhs) => {
+                Self::collect_idents_in_expr(lhs, out);
+                Self::collect_idents_in_expr(rhs, out);
+            }
+            Statement::Guarded(cond, body) => {
+                Self::collect_idents_in_expr(cond, out);
+                for s in body {
+                    Self::collect_remaining_idents(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect every `Expr::Identifier` in an expression tree.
+    fn collect_idents_in_expr(expr: &Expr, out: &mut Vec<String>) {
+        use crate::ast::*;
+        match expr {
+            Expr::Identifier(name) => out.push(name.clone()),
+            Expr::Call(_, args, _) => {
+                for a in args {
+                    Self::collect_idents_in_expr(a, out);
+                }
+            }
+            Expr::BinaryOp(_, l, r) => {
+                Self::collect_idents_in_expr(l, out);
+                Self::collect_idents_in_expr(r, out);
+            }
+            Expr::UnaryOp(_, e) | Expr::Deref(e) | Expr::AddrOf(e) => {
+                Self::collect_idents_in_expr(e, out);
+            }
+            // Cast's target is a Type, not an expr — only the inner is walked.
+            Expr::Cast(inner, _) => Self::collect_idents_in_expr(inner, out),
+            Expr::Field(obj, _) | Expr::Index(obj, _) => Self::collect_idents_in_expr(obj, out),
+            Expr::Block(stmts) => {
+                for s in stmts {
+                    Self::collect_remaining_idents(s, out);
+                }
+            }
+            Expr::List(elems) | Expr::Tuple(elems) => {
+                for e in elems {
+                    Self::collect_idents_in_expr(e, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn emit_transaction(
         &mut self,
         out: &mut String,
@@ -7296,6 +7417,11 @@ impl LlvmBackend {
                 }
                 writeln!(out, "}}").ok();
                 writeln!(out).ok();
+
+                // 2026-11-18 (issue #7, Phase 1): post-outline validation — every
+                // identifier left in the rewritten cold body must be a module
+                // global (not a silent-zero rewrite gap). Hard error on a miss.
+                self.validate_cold_body_idents(&body, &field_names, &cp_names, &cold_name);
 
                 self.fun.let_bindings = saved_let_bindings;
                 self.fun.native_parameter_slots = saved_native_parameters;

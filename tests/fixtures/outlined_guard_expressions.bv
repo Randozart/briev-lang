@@ -1,0 +1,28 @@
+// 2026-11-18 (issue #7, Phase 2): outlined-guard exercise.
+//
+// The canonical outlinable shape (see term_valid_swan_song.bv) is a guard
+// whose body is a single observable expression over PURE scalar reads:
+// `endprogram Print#(a)`. Such a body is outlined into
+// `@txn_<name>_cold_N` by the cold-function outlining pass — the FFI call
+// becomes a memory barrier, and the body is rewritten so every state
+// identifier is read through a `__cp_<name>` param instead of `%state`.
+//
+// This fixture exercises the expression shapes `rewrite_expr_idents`
+// handles inside an outlined body:
+//   * Identifier reads (a, b)
+//   * BinaryOp over identifiers (a * b)
+//   * a call whose arg is a binary op (Print#(a * b))
+//   * an `endprogram` with a value arg (the observable that triggers the
+//     cold barrier)
+//
+// The post-outline validation (`validate_cold_body_idents`) confirms no
+// identifier survives the rewrite unresolved (a silent-zero gap would fire a
+// loud diagnostic here). Expected: builds with NO validation warning and
+// prints `a*b` once, then exits.
+let a: Int = 3;
+let b: Int = 4;
+
+node n [a < 10][a >= 10] {
+  a = a + 1;
+  when a >= 10 { endprogram Print#(a * b); };
+};
