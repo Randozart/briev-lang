@@ -51,12 +51,31 @@ It does not. With a freshly built `target/compiler-in-briv` synced to the node,
 # gpu_time: 0.039 ms
 ```
 
-and the resident marker added to `launch_dev2d` never fires. Both
-`libbriev_gpu_rt.a` and `libbriev_accel_rt.a` carry `briev_dev_opencl` symbols, so
-the most likely explanation is that the **driver table the runtime resolves is not
-the one this file defines** — the two archives overlap and the link order decides.
-That is a one-hour investigation (dump the table's function pointers at load and
-compare against the address of `briev_dev_opencl_launch_dev2d`), not a rewrite.
+and the resident marker added to `launch_dev2d` never fires.
+
+### CORRECTION (2026-11-18): the duplicate-table hypothesis was wrong
+
+This file first blamed two `briev_dev_opencl` driver tables. `nm` disproves it:
+
+```
+target/compiler-in-briv/libbriev_gpu_rt.a : D briev_dev_opencl   (defined)
+target/compiler-in-briv/libbriev_gpu_rt.a : D briev_dev_vulkan   (defined)
+target/compiler-in-briv/libbriev_accel_rt.a: U briev_dev_opencl  (undefined ref)
+```
+
+There is **exactly one** table and it is the one this session edited, so link order
+is not the explanation. The open question is narrower and testable: of the three
+ways `briev_accel_launch_resident_2d` can silently fall back to the copy path —
+
+1. `driver()` returned `None`;
+2. `resident_ops_missing(d)` is true (`launch_dev2d` / `mapped` / `launch_dev` reads
+   as `None` from Rust);
+3. `mapped` is null after `prime_lazy_buffer`;
+
+— the run cannot say which. Next step is one verbose line per branch, plus a check
+that the C designated initialiser and the Rust `BrievDeviceDriver` declaration agree
+on field order and count (a mismatch reads a live pointer as `None`, and would
+explain Vulkan working while OpenCL does not).
 
 ## The architectural finding, which matters more than the plumbing
 
@@ -79,3 +98,27 @@ target should be "copies per dispatch", not "wall ≈ device".
    once with `clSVMAlloc` and make the resident path pointer-only.
 3. Re-measure `ceil_elem_f32` with copies/dispatch as the metric, then re-check
    the GEMM/reduce lanes for regressions.
+
+## A second trap found while instrumenting: `build.rs` can ship a stale runtime
+
+`build.rs` compiles `lib/runtime/*.c` into `target/compiler-in-briv/libbriev_gpu_rt.a`
+and `src/accel_rt_standalone.rs` into `libbriev_accel_rt.a`, then prints the link
+flags. When the C step or the rustc step fails it **prints a cargo warning and
+returns**:
+
+```
+warning: briev-compiler@0.3.0: gpu-rt: accel_rt staticlib build failed — brievc run unavailable
+```
+
+and the build continues. The `brievc` binary then links against whatever archive
+was already there. Reproduced on this machine: after editing `accel_rt.rs` the bin
+failed to link with `undefined symbol: briev_dev_vulkan`, and the *only* fix was
+`touch build.rs` to force the script to re-run (the subsequent build is green and
+`libbriev_accel_rt.a` again carries `U briev_dev_opencl`).
+
+Consequence for every measurement: **a runtime edit can be silently absent from the
+binary you measured.** Before trusting any driver-level result, check that the
+build did not emit that warning, and prefer a forced `touch build.rs` build after
+editing `lib/runtime/**` or `src/accel_rt*.rs`. Whether `build.rs` should re-run on
+those inputs (via `cargo:rerun-if-changed`) is the real fix; it is recorded here
+rather than changed under a measurement session.

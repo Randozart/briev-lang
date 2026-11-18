@@ -300,6 +300,40 @@ open question is which read route the expanded body takes and why it misses that
 branch. `%t20` is an alloca, not the `%State` slot, which points at the phi's
 spill rather than the field.
 
+**Worse than invalid IR: the accumulator is round-tripped through an i64 slot.**
+2026-11-18, reading the full body:
+
+```llvm
+%t20 = alloca i64 ; the accumulator's slot, typed from its INTEGER initialiser
+foreach.body23:
+  %t29 = load i64, ptr %t20
+  %t31 = sitofp i64 %t29 to float          ; widen
+  %t27 = fadd fast float %t31, %t30        ; add
+  %t32 = fptosi float %t27 to i64          ; TRUNCATE back to integer
+  store i64 %t32, ptr %t20
+```
+
+So a `Float` accumulator inside a composite loop **truncates to an integer on every
+iteration** — `1.5` costs its fraction each time. Today the program does not link at
+all (the backedge reads the i64 into `fadd float`), which masks it. **Any fix that
+only coerces at the backedge keeps the arithmetic wrong** — that is the messenger,
+not the defect. The slot must be typed from the *declaration* (`Float`), and the
+`sitofp`/`fptosi` pair must disappear.
+
+**Attempted fix, rejected (2026-11-18).** Rewriting the composite folder so a
+float-declared `let` materialises `0` as `0.0` (`src/plugin/composite.rs`,
+`fold_let_stmt`) works: `alloca float`, `load float`, `fadd float`, valid IR, and a
+fixture prints the right value (8.0 accumulated four times). But it changes
+`lib/std/numeric.bv`'s `softmax_fused` (`let s_: Float = 0;` / `let sc: Float = 0;`)
+enough that the **deferred-normalize plan stops being detected**: five
+`backend::ptx::tests` fail at `deferred_region_info(...) == None`, i.e. a real
+optimization is lost. Verified causally (patch on: red; patch off: green). The AST is
+therefore the wrong layer — the literal's form must not change, only the slot's type.
+
+**Next approach (not yet tried).** Type the slot from the declared type where the
+reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),
+leaving the AST byte-identical so the deferred detector is unaffected.
+
 **Not fixed.** Every float benchmark rides this loop engine, so the fix needs its
 own session with the local A/B runbook (Rule 20: measure before building). The
 trace above is the starting point; the repro is

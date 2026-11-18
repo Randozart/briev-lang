@@ -867,9 +867,24 @@ pub extern "C" fn briev_accel_launch_resident_2d(
         return 0;
     };
     if !kernel_ready(r, idx) {
+        if unsafe { g_verbose } != 0 {
+            eprintln!("[briev_accel] resident: kernel {idx} not ready -> copy path");
+        }
         return 0;
     }
     if resident_ops_missing(d) {
+        // 2026-11-18 (S2): name WHY residency was skipped. Three branches can
+        // silently take the copy path, and a bare "the resident marker never
+        // fires" cannot tell them apart — that ambiguity is what let a wrong
+        // duplicate-driver-table diagnosis survive a whole session.
+        if unsafe { g_verbose } != 0 {
+            eprintln!(
+                "[briev_accel] resident: driver missing ops (launch_dev2d={} mapped={} launch_dev={}) -> copy path",
+                d.launch_dev2d.is_some(),
+                d.mapped.is_some(),
+                d.launch_dev.is_some()
+            );
+        }
         return briev_accel_launch(idx, state, nx * ny); // driver can't
     }
     let kernel = r.kernels[idx as usize];
@@ -878,10 +893,18 @@ pub extern "C" fn briev_accel_launch_resident_2d(
     let k = unsafe { &*r.descs.add(idx as usize) };
     if mapped.is_null() {
         if !prime_lazy_buffer(idx, kernel, state, nx * ny, mapped_fn) {
+            if unsafe { g_verbose } != 0 {
+                eprintln!("[briev_accel] resident: prime failed for kernel {idx} -> copy path");
+            }
             return 0;
         }
         mapped = unsafe { (mapped_fn)(kernel) } as *mut u8;
         if mapped.is_null() {
+            if unsafe { g_verbose } != 0 {
+                eprintln!(
+                    "[briev_accel] resident: driver mapped() still null after prime -> copy path"
+                );
+            }
             return 0;
         }
     }

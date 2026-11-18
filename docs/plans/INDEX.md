@@ -80,6 +80,20 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**Device-free queue (2026-11-17, ACTIVE — PTL unavailable):**
+`docs/plans/2026-11-17-device-free-queue.md`. D1 = the loop-carried `Float` backedge
+(`examples/syntax/meta/defn-composite.bv` emits `fadd fast float 0.0, %t36` with an
+i64 operand; six float copy sites in `loop_engine/counter.rs`, and the deciding
+question is whether the i64 slot holds a boxed float or an integer — unbox at the
+copy vs fix the recording). D2 = **correct** the residency results file: `nm` refutes
+the duplicate-driver-table hypothesis (`D briev_dev_opencl` only in
+`libbriev_gpu_rt.a`; `U` in `libbriev_accel_rt.a`), so instrument the three branches
+in `briev_accel_launch_resident_2d` and check C/Rust field-order agreement instead.
+D3 = localise `g0_fsum_approx` WRONG on OpenCL statically (it differs from the exact
+fixture by one keyword and the data is integer-valued, so the subgroup-sum lowering
+is wrong, not the licence). D4 = GEMM input-integrity canary, the three corpus
+rewrites, `pf_exp` phase 2.
+
 **Accel surface, NEO residency, reduce lane (2026-11-17, ACTIVE — next three workstreams):**
 `docs/plans/2026-11-17-accel-surface-neo-and-reduce.md`. Six instrument defects found
 this campaign (dead-pid soak, shared `--out`, `.s` report pollution, `brievc run`'s

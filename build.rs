@@ -188,8 +188,12 @@ fn build_gpu_rt(out_root: &Path) {
             .map(|s| s.success())
             .unwrap_or(false);
     if !ar_ok {
-        println!("cargo:warning=gpu-rt: ar failed — brievc run unavailable");
-        return;
+        // 2026-11-18: HARD failure. This used to warn and return, which shipped
+        // whatever archive was already on disk — `brievc` then linked a runtime
+        // that did not contain the drivers, and the only symptom was
+        // "undefined symbol: briev_dev_vulkan" at the bin link (or, worse, a
+        // measurement of a runtime the source no longer described).
+        panic!("gpu-rt: ar failed — cannot build libbriev_gpu_rt.a; a stale archive must never ship");
     }
     // The Rust orchestration staticlib (same briev_accel_* C ABI, built
     // from src/accel_rt.rs) — runners and LLVM binaries link this instead
@@ -212,8 +216,10 @@ fn build_gpu_rt(out_root: &Path) {
         .map(|s| s.success())
         .unwrap_or(false);
     if !accel_ok {
-        println!("cargo:warning=gpu-rt: accel_rt staticlib build failed — brievc run unavailable");
-        return;
+        // 2026-11-18: HARD failure — see the `ar` note above. A missing
+        // staticlib is not a degraded build; it is a build that cannot
+        // describe the runtime it links.
+        panic!("gpu-rt: accel_rt staticlib build failed — cannot build libbriev_accel_rt.a");
     }
     println!("cargo:rustc-link-search=native={}", out_root.display());
     println!("cargo:rustc-link-lib=static=briev_gpu_rt");
