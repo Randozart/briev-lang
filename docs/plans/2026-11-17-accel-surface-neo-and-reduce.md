@@ -205,3 +205,48 @@ was inside the repo. Added two rungs to `resolve_stdlib_root()` — `BRIEV_HOME`
 working directory — and repaired the `reduction_scripts` "good" fixture, which
 had stopped being good once the no-termination warning landed. `gate.sh quick`
 now passes without TMPDIR tricks.
+
+### S1.3 — RESOLVED, but not the way the plan said (2026-11-17)
+
+**S1.3a (emit `_runner.c` for `.bv`) — cancelled: wrong shape.** A `.bv` program
+compiles to a *host binary* with the kernels embedded (`@briev_kernel_<name>`), so
+the trustworthy measurement path is already `build` → run the binary. There is no
+runner to emit and nothing to link; the only thing `brievc run` adds is the
+mis-dispatch risk the night-1 work removed. `.abv` keeps the runner because it
+*is* the standalone artifact.
+
+**S1.3b (differential correctness gate) — already existed as `g0_gemm.bv`.** The
+device lane runs `matmul!(a, b, y, M, N, K, i, Float)`; a plain `node` recomputes
+sampled outputs as a CPU dot product and folds the deltas into `G0_GEMM_BAD`. The
+missing piece was that nobody had run it on the **Vulkan** lane, where the tiled
+16×16 kernel lives (`g0.sh` gates it on levelzero/opencl, where `matmul!` has no
+OpenCL projection and falls back with a self-check). Measured on PTL:
+
+```
+$ BRIEV_ACCEL_DEVICE=vulkan brievc run --accel=force --deny-accel-cpu-fallback g0_gemm.bv
+[briev_accel] kernel 'gemm' compiled on 'vulkan'
+G0_GEMM_BAD=0 GPU_SUM=131033.188 CPU_SUM=131033.188 Y0=28.46875 YN=35.0625
+```
+
+So the tiled tier's values are verified against a CPU reference on the device, and
+the whole G0 suite passes with `--deny-accel-cpu-fallback` (all six previously
+undelivered fixtures now deliver under `--accel=force`): levelzero g0_elem 0.153 ms,
+g0_sum 0.574, g0_minmax 0.572, g0_fsum_approx 0.295, g0_fsum_exact 0.287.
+
+**Two gaps this exposes, recorded rather than papered over.**
+
+1. **A value check cannot see the 16× bug's harm.** Over-dispatch wrote each tile
+   16 times with *identical values* and sprayed the surplus workgroups outside
+   `y`. `BAD=0` was therefore true before the fix too — the damage was 16× the work
+   plus out-of-bounds writes into neighbouring fields. The gate needs an
+   **input-integrity canary** (checksum `a`/`b` after the GEMM), which is the only
+   cheap way a value comparison catches an OOB write.
+2. **`--deny-accel-cpu-fallback` is compile-time only.** It covers a body the
+   analyser declines. It does not cover a body that *is* delivered but has no
+   projection for the selected driver — `gemm` on levelzero prints
+   "CPU fallback (no OpenCL projection, Vulkan-only until G3), self-check ok" and
+   still passes. A per-lane projection gate is the next step for that class.
+
+**Also found:** `g0_fsum_approx on opencl: WRONG (bad=?)` — an OpenCL-lane
+correctness bug in the approximate fsum kernel, currently reported-not-required by
+`g0.sh`. Recorded for the reduce work (S3).
