@@ -1021,3 +1021,30 @@ fn float16_stores_narrow_instead_of_aliasing() {
         "an integer zero is not a half — the carried-copy must be fadd half <zero>:\n{ir}"
     );
 }
+
+/// The `net/server_loop` lifecycle, end to end (2026-11-18, dogfooding
+/// Knooppunt on Briev).
+///
+/// Boots `serve_listen` on a loopback port, drives ONE exchange from a client
+/// socket in the same process (the accepted connection waits in the backlog, so
+/// no threads are needed), and pins the fingerprint:
+///   listener-ok, connect-ok, accept-ok, send-ok,
+///   parse-status(1 = COMPLETE), method=="POST", path=="/v1/probe",
+///   response-sent, client-saw-200, status digits "200"
+/// → "1111111111200".
+///
+/// The second half of the same fixture is covered by running it twice: the
+/// second run must rebind over TIME_WAIT (SO_REUSEADDR inside `serve_listen`),
+/// so a regression in the socket setup shows up as a bind failure, not flakiness.
+#[test]
+fn server_loop_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("server_loop_smoke", "golden", &[]);
+    assert_eq!(
+        out, "1111111111200",
+        "server lifecycle golden drifted: {out:?}"
+    );
+}
