@@ -330,51 +330,77 @@ behavior change. No backend emission depends on it yet.
 
 ---
 
-## W4 — PF_exp induction (prover-side, last)
+## W4 — PF_exp induction (prover-side, last) — RE-SCOPED 2026-11-18
 
-### Findings
+**Full design: `docs/plans/2026-11-18-w4-pf-exp-tuple-induction.md`.**
 
-- `docs/plans/2026-11-17-trunk-next-steps.md:85` marks it "tracked but not
-  started," lower priority, explicitly "last."
-- It is **prover-side** (briev-verify body prover / SMT), not compiler
-  codegen. The structural-projection groundwork (field-projection
-  `field_assignments`, commit `c732c0b02`) already landed; PF_exp
-  induction builds on the body prover's induction support.
-- It is only now unblocked: the original gate was "parked until compiler
-  issues clear," and the #7/#8 fixes + the native-flake quarantine (W1)
-  satisfy that.
+### Findings (2026-11-18 re-scope)
 
-### Plan
+- The original framing (add `i >= 0` to `pf_exp`, give `pf_exp_digits` a tuple
+  postcondition, fix the clamp, build the caller ladder) is **already measured
+  and reverted** in `docs/plans/2026-11-17-pf-exp-float-slot-and-ptl-queue.md`
+  §A. It is a relabelling, not progress.
+- The real blocker is the **multi-field (tuple) value-summary gap** —
+  value-summaries "phase 2" (`docs/plans/2026-11-15-value-summaries.md` §3.2).
+  `Summary` is single-valued; recursion is rejected; so a recursive tuple
+  callee (`pf_exp_digits`) never earns a summary, and its declared
+  postcondition never reaches `pf_exp`'s call site.
+- Confirmed with a fresh probe (2026-11-18): `pf_exp2`/`pf_exp_digits2` are
+  *skipped* with "a call to X, which has no value summary" **even with** the
+  added `i >= 0 && i <= len` preconditions. The skip is structural —
+  precondition edits cannot close it.
 
-1. Read the existing induction scaffolding in `briev-verify` (the body
-   prover's `induction` path) and the `pf_exp` contract it must discharge.
-2. Derive the induction hypothesis for `pf_exp` (the exponential/fixed-point
-   shape) using the field-projection support; wire the inductive step into
-   the SMT query builder.
-3. Keep it **advisory/unproven-safe**: per the standing constraint, the
-   prover proves only its conservative pure-integer subset; an unsupported
-   `pf_exp` step stays advisory (no CI failure) until the induction covers
-   it.
-4. Add a Kani harness (standalone crate, standard `assert!`) for the
-   safety-critical inductive step, and a `briev-verify` unit test that the
-   `pf_exp` contract now discharges.
+### Plan (re-scoped)
+
+Three additive layers in the prover (value-summaries phase 2, for the tuple
+case), plus the contract-first code fix the prover now makes checkable:
+
+1. **Layer 1 — multi-field summaries.** Generalise `Summary` from one
+   `value: Expr` to a per-field view; a non-recursive tuple callee earns a
+   per-`term.N` summary; field-aware substitution at call sites (`i2 =
+   pf_num(...).term.3` becomes a concrete expression, so `i2 >= 0` is
+   decidable).
+2. **Layer 2 — inductive step for recursive tuple callees.** A tail-recursive
+   callee earns its declared tuple postcondition at the call site only when an
+   inductive invariant over its accumulator is *established* (at entry) and
+   *preserved* (one pass), reusing the Houdini-style machinery
+   (`infer_invariant`, `verify.rs:2589`). When the invariant cannot be
+   established, the caller **stays advisory-unproven** with the named reason
+   (Rule 1) — never a forced proof, never a silent unproven.
+3. **Layer 3 — code fix (contract-first, Rule 2).** `pf_exp_digits`' clamp
+   `when acc < 1000` lets `999 * 10 + 9 = 9999 > 1000`; the guard must be
+   `acc < 100`. Keep the contract, fix the code. Now checkable once Layers
+   1–2 give the tuple postcondition meaning.
+
+Fixtures before edits (a non-recursive tuple callee that must become
+provable; a recursive tuple callee whose invariant cannot be established and
+must stay advisory-unproven). Then Kani harness + `briev-verify` unit test.
 
 ### Files touched
-- `briev-verify/src/` (body prover induction + SMT query).
-- `kani/` (new harness).
-- A `briev-verify` test.
+- `briev-verify/src/verify.rs` (multi-field `Summary`, field-aware
+  substitution, inductive step for recursive tuple callees).
+- `tests/tier1/` (the fixture pair).
+- `kani/` (inductive-step harness).
+- `lib/std/cast_lanes.bv` (the `acc < 100` clamp fix + caller ladder, kept in
+  step with `cast_portable.bv` if the latter is touched — the excluded corpus
+  file).
+- This plan + the value-summaries doc + the corpus floor note.
 
 ### Verification
 - `cargo test -p briev-verify` green.
 - `cd kani && kani prove <harness>` passes.
-- `pf_exp` conformance program now PROVEN (not UNPROVEN) in the census.
+- `pf_exp`'s census goal is **discharged or advisory-unproven with the named
+  reason** — never a silent unproven, never violated. `goals_violated` stays 0.
+- `cargo nextest --lib` green.
 
 ### Risk
 **Medium — and it's deferred by design.** This is the only workstream that
 adds new *proof* surface. It must not weaken any existing contract (Rule 1)
-and must stay advisory for uncovered cases. It is deliberately last because
-it is the only one that can't be verified by a green CI job — it needs the
-proof to actually go through.
+and must stay advisory for uncovered cases. The additive design (Layers 1–2
+extend, never replace, the single-valued path) bounds the blast radius: a
+regression would show as an existing single-valued fixture losing its proof.
+The honest end-state for shapes the induction does not cover is an
+advisory-unproven report with the named reason, not a forced proof.
 
 ---
 
