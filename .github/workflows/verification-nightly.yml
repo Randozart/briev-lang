@@ -33,19 +33,40 @@ jobs:
         with:
           tool: cargo-nextest@0.9.151
       - uses: Swatinem/rust-cache@v2
+      # 2026-11-18: several `#[cfg(test)]` PTX dump tests write debug artifacts
+      # to a hardcoded `/tmp/opencode/…` and `unwrap()` the write (45 references,
+      # e.g. src/backend/ptx/tensor.rs). CI normally gets that directory from
+      # `.github/actions/compiler-tools`, which this job never invokes — so those
+      # tests panicked with "No such file or directory" (the 2026-11-15 red:
+      # `backend::ptx::tensor::r16_dump::*`). Create it here rather than teaching
+      # 45 test sites to tolerate a missing debug path.
+      - name: Create the test artifact directory
+        run: mkdir -p /tmp/opencode
       # The flipped default is HIR; this keeps the one-release opt-out path
       # honest without doubling every PR gate.
       # 2026-11-15: two tests are HIR-specific and must be excluded:
       #   - `analysis_carries_hir`: calls `hir::verify()` and `lower_program()`
       #   - `router_smoke_gate`: tests HIR-path codegen via the `brievc` subprocess
       # Both fail under BRIEV_HIR_EMIT=0; the PR gate covers them with HIR on.
+      #
+      # 2026-11-18: the exclusion below was written as `-E 'not testname:NAME'`
+      # twice. Neither half is valid: nextest's predicates are `test(…)`/
+      # `package(…)`/… with matchers `=str`, `~str`, `/re/` (see
+      # `cargo nextest help filterset`), and `-E` takes ONE expression — two
+      # flags mean the second silently replaces the first. The job died with
+      # "error: failed to parse filterset" (exit 94) before running a single
+      # test, so the AST path went unobserved from 2026-11-16 until this fix.
+      #
+      # Direction matters here: an unparseable filterset fails loudly, but a
+      # *parseable* one that silently drops a flag would hide a real failure.
+      # The expression below keeps both exclusions in one filterset, so neither
+      # can be lost.
       - name: Full suite on the AST path
         env:
           BRIEV_HIR_EMIT: "0"
         run: |
           cargo nextest run --all -j 4 \
-            -E 'not testname:analysis_carries_hir' \
-            -E 'not testname:router_smoke_gate'
+            -E 'not (test(=analysis_carries_hir) or test(=router_smoke_gate))'
 
   full-opt-matrix:
     name: Full tier1 optimization matrix
