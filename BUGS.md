@@ -258,6 +258,26 @@ kernel silently stays on the CPU lane. Still open — see the accel-surface resu
 file (`benchmarks/results/2026-11-17-accel-surface-survey.md`), which now makes the
 silence a build warning and a CI error under `--deny-accel-cpu-fallback`.
 
+## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED (OPEN)
+
+`g0_fsum_approx` prints `WRONG` on the NEO/OpenCL lane while `g0_fsum_exact` and both
+levelzero lanes are correct. The two fixtures differ only by the `approx` licence and the
+data is integer-valued f32, so reassociation is bit-exact: the *lowering* is wrong, not
+the licence.
+
+Diagnosis (static): the kernel launches `LocalSize 32` and reduces with
+`OpGroupNonUniformFAdd %uint_3` — scope 3 is **Subgroup** — which is only equivalent to
+"all 32 invocations" when the device's subgroup width is 32 (measured on levelzero) and
+not 16 (typical for NEO on Xe).
+
+**Refuted fix:** switching to `Scope::Workgroup` made it worse on BOTH lanes —
+`G0_SUM_BAD=220`, `gpu_time 0.021 ms`, `GPU_SUM=0 CPU_SUM=0` (nothing produced) versus
+`BAD=0` / 0.305 ms with the shipped subgroup scope. Reverted.
+
+Remaining candidates, both needing the device: make the workgroup and subgroup coincide
+(emit `LocalSize` equal to the reported subgroup width — a dispatch decision) or lower the
+fold through shared memory + `ControlBarrier` + a lane-0 store.
+
 ## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
 
 **Symptom.** A `Float` accumulator written inside a `foreach` emits an `fadd`

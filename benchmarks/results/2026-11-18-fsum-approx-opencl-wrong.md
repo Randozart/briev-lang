@@ -68,3 +68,32 @@ spirv-dis /tmp/spv/k_<kernel>_ocl.spv -o /tmp/spv/k.spvasm
 
 Works for any `.bv` accel program: the `_ocl` image is the OpenCL flavour, the
 unsuffixed one is the Vulkan flavour.
+
+## REFUTED ON DEVICE (2026-11-18): workgroup scope breaks both lanes
+
+The candidate above ("emit the reduce at workgroup scope") was implemented, built, and
+run on PTL — and it is **wrong**:
+
+| `g0_fsum_approx`, `--accel=force --deny-accel-cpu-fallback` | `G0_SUM_BAD` | gpu_time |
+|---|---|---|
+| `Scope::Subgroup` (as shipped) | **0** | 0.305 ms |
+| `Scope::Workgroup` (the candidate) | **220** | 0.021 ms |
+
+The `BAD=220` case also reported `GPU_SUM=0 CPU_SUM=0 Y0=0 YN=0` — the kernel produced
+nothing at all, on **both** lanes (levelzero too), so this is not "the OpenCL half-sum"
+in a different disguise: `OpGroupNonUniformFAdd` with `Reduce` at workgroup scope does
+not behave as the subgroup form with a wider participation set on these drivers. The
+change is reverted; the shipped code is `Scope::Subgroup` (0.305 ms, `BAD=0`).
+
+**What this leaves.** The static diagnosis stands (the OpenCL lane returns the wrong sum
+where levelzero does not, and the only difference between the correct and incorrect
+fixture is the reassociation licence). What is refuted is the *mechanism I proposed*.
+The remaining candidate is to make the workgroup and the subgroup coincide instead of
+widening the scope — emit the row kernel's `LocalSize` equal to the device's reported
+subgroup width (a frontend/dispatch decision, not a lowering one), or lower the fold
+through shared memory + `ControlBarrier` + a lane-0 store. Both need the device to
+check; neither is a one-liner.
+
+Lesson, again: a plausible static diagnosis is a hypothesis until a device runs it, and
+this one took four minutes to disprove on the hardware that had been unavailable for
+two days.

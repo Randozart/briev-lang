@@ -1037,6 +1037,14 @@ impl<'a> FnLowerer<'a> {
         };
         let ty_id = self.type_id(&vty)?;
         let res = self.builder.gen_id();
+        // 2026-11-18 (BUGS.md / g0_fsum_approx on OpenCL): WORKGROUP scope, not
+        // SUBGROUP. The row kernels launch one 32-invocation workgroup per row and
+        // every invocation participates in the fold, so workgroup scope is what the
+        // code means. Subgroup scope is only equivalent when the device's subgroup
+        // width happens to equal the workgroup size — true on Vulkan/levelzero
+        // (measured 32), NOT on NEO's OpenCL (16 on Xe), where each subgroup reduced
+        // its own half and both wrote the row: `g0_fsum_approx` reported WRONG on
+        // that lane while `exact` (no subgroup op) was correct on both.
         let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
         self.builder.emit(Instruction::new(
             op,
