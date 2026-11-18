@@ -258,6 +258,26 @@ kernel silently stays on the CPU lane. Still open — see the accel-surface resu
 file (`benchmarks/results/2026-11-17-accel-surface-survey.md`), which now makes the
 silence a build warning and a CI error under `--deny-accel-cpu-fallback`.
 
+## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED (OPEN)
+
+`g0_fsum_approx` prints `WRONG` on the NEO/OpenCL lane while `g0_fsum_exact` and both
+levelzero lanes are correct. The two fixtures differ only by the `approx` licence and the
+data is integer-valued f32, so reassociation is bit-exact: the *lowering* is wrong, not
+the licence.
+
+Diagnosis (static): the kernel launches `LocalSize 32` and reduces with
+`OpGroupNonUniformFAdd %uint_3` — scope 3 is **Subgroup** — which is only equivalent to
+"all 32 invocations" when the device's subgroup width is 32 (measured on levelzero) and
+not 16 (typical for NEO on Xe).
+
+**Refuted fix:** switching to `Scope::Workgroup` made it worse on BOTH lanes —
+`G0_SUM_BAD=220`, `gpu_time 0.021 ms`, `GPU_SUM=0 CPU_SUM=0` (nothing produced) versus
+`BAD=0` / 0.305 ms with the shipped subgroup scope. Reverted.
+
+Remaining candidates, both needing the device: make the workgroup and subgroup coincide
+(emit `LocalSize` equal to the reported subgroup width — a dispatch decision) or lower the
+fold through shared memory + `ControlBarrier` + a lane-0 store.
+
 ## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
 
 **Symptom.** A `Float` accumulator written inside a `foreach` emits an `fadd`
@@ -353,6 +373,28 @@ still a single invocation-shaped statement at the point the backend walks the bo
 and the expansion produces the `let`/`foreach` pair later (during emission). That is
 the thing to confirm next: print the node body's statement kinds before
 `collect_reassigned_lets` runs.
+
+**Fourth measurement (2026-11-18, `BRIEV_DBG_BODY` / `BRIEV_DBG_SLOT`).** Two facts,
+and they contradict the source:
+
+```
+[cm_body] 4 statement(s): Let[let acc_: Float = 0;] | Foreach[foreach(k in 0..4) { acc_ = (acc_ + 2); }] | Assign[r = acc_;] | Assign[i = (i + 1);]
+[carrier] 'acc_' -> typed=Some(Custom("Int")); let_binding_types=[acc_:Custom("Int")]
+```
+
+So the countable body **is** expanded (case (a)), the declaration plainly reads `Float`,
+and the carrier slot still asks `let_binding_types` for `acc_` and gets **`Int`**. The
+emitter path that populates that map for this name is registering the INITIALISER's type,
+not the declaration — and registering it after any pre-pass, since inserting
+`Float` before the body (both with `or_insert_with` and with an unconditional overwrite)
+changed nothing, and neither did recording it in `emit_statement`'s `Let` arm.
+`context.rs:1704` clears the map (`clear_locals`), so ordering is part of the puzzle.
+
+Next step is therefore one level up, not another insert: find **every writer** of
+`let_binding_types` for a body local (grep shows readers in `emit_stmt.rs` and a
+save/restore pair in `emit_expr.rs:6297/6571/10212`) and make the declared `ty` win where
+the `Let` is first seen. Do not add a fourth speculative insert; the map has an owner that
+has not been identified yet.
 
 **Next approach.** Type the slot from the declared type where the
 reassigned local's alloca is emitted (`emit_let_statement`'s reassigned-local path),

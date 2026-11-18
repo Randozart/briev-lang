@@ -722,6 +722,26 @@ impl LlvmBackend {
             // fall-through branch and produced empty predecessor blocks).
             self.fun.terminated = false;
             self.fun.cur_block = Some(".cm_body".to_string());
+            // 2026-11-18 (D1 investigation): this path pre-declares NOTHING —
+            // `collect_reassigned_lets` has two call sites (ssa.rs, emit_toplevel.rs)
+            // and neither is here. Before deciding how a reassigned local gets its
+            // slot, print what the body actually contains at this point: an expanded
+            // `let`/`foreach` pair (case a: some emitter ignores the declared type) or
+            // one invocation-shaped statement whose expansion happens later (case b).
+            if std::env::var_os("BRIEV_DBG_BODY").is_some() {
+                let kinds: Vec<String> = body
+                    .iter()
+                    .map(|st| {
+                        let text = crate::backend::spirv::stmt_excerpt(st);
+                        format!(
+                            "{}[{}]",
+                            statement_kind(st),
+                            text.chars().take(48).collect::<String>()
+                        )
+                    })
+                    .collect();
+                eprintln!("[cm_body] {} statement(s): {}", kinds.len(), kinds.join(" | "));
+            }
 
             // 2026-07-17: Initialize pending_phi_backedge with identity values.
             // Body writes will overwrite entries for modified fields.
@@ -3364,6 +3384,27 @@ impl LlvmBackend {
 ///
 /// The rule is `fp_width`, not a name list: `half`, `float`, `double` and
 /// `fp128` all take `fadd <ty> <typed-zero>, %v`.
+/// The variant name of a statement, for diagnostics.
+fn statement_kind(st: &crate::ast::Statement) -> &'static str {
+    use crate::ast::Statement as S;
+    match st {
+        S::Let { .. } => "Let",
+        S::Assign(..) => "Assign",
+        S::ArrowAssign { .. } => "ArrowAssign",
+        S::Expression(_) => "Expression",
+        S::Guarded(..) => "Guarded",
+        S::Block(_) => "Block",
+        S::Foreach { .. } => "Foreach",
+        S::Match { .. } => "Match",
+        S::Term(_) => "Term",
+        S::Tail(_) => "Tail",
+        S::EndProgram(_) => "EndProgram",
+        S::Break => "Break",
+        S::Defer(_) => "Defer",
+        _ => "Other",
+    }
+}
+
 fn emit_carry_copy(out: &mut String, dst: &str, llvm_ty: &str, val: &str) {
     let (op, zero) = match llvm_ty {
         "half" => ("fadd", "0xH0000"),
