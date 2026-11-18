@@ -213,6 +213,10 @@ struct Builder<'a> {
     /// implementation bodies (coll growth → malloc) that a program using
     /// no collections must not pay for.
     type_members: HashMap<String, Vec<String>>,
+    /// 2026-11-18: also holds EXPORTED defn/txn bodies. The slot rule above is
+    /// shared with members, so an exported name that collides with an imported
+    /// member loses `defns`; registering it here keeps its call edges walkable.
+    ///
     /// 2026-10-15 (member-name collision, found by Design D's GrowBuf):
     /// obj MEMBER defns share a name across objs by design — a trait
     /// requirement like `put_u8` is provided by both `ByteBuf` and
@@ -392,10 +396,24 @@ impl<'a> Builder<'a> {
                 // "unreached defn". Index the inner defn/txn like any other.
                 if let TopLevel::Definition(d) = e.inner.as_ref() {
                     self.index_defn(d);
+                    // 2026-11-18 (HIR/AST defn-liveness drift, dir.bv):
+                    // `index_defn` fills the bare-name slot with `or_insert`
+                    // because it is shared with MEMBERS — so an exported defn
+                    // that collides with an imported member of the same name
+                    // lost the slot and its body was never walked. dir.bv's
+                    // `export defn entries` collides with
+                    // `std/collections.bv`'s `obj HashMap { defn entries }`,
+                    // so `dir_open`/`dir_close`/`dir_loop` vanished from the
+                    // live set (56 names; the assert fired at
+                    // src/backend/mod.rs:641). Register the exported body in
+                    // the collision-safe multimap too: whichever body wins
+                    // `defns`, EVERY body under the name is walked.
+                    self.index_member_body(&d.name, &d.body, &d.contract);
                     self.roots.insert(d.name.clone());
                 }
                 if let TopLevel::Transaction(t) = e.inner.as_ref() {
                     self.index_txn(t);
+                    self.index_member_body(&t.name, &t.body, &t.contract);
                     self.roots.insert(t.name.clone());
                     self.root_txn_dispatch(t);
                 }
