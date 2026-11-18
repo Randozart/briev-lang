@@ -1,0 +1,53 @@
+// accel_lane_report.bv — a declared accel body must never be dropped silently.
+//
+// 2026-11-17 (accel-surface survey): seven corpus programs declared
+// `async accel node` and emitted no kernel and no diagnostic — the node ran on
+// the CPU lane while the source claimed device execution, so every timing was a
+// CPU number. The eligibility gate only ever spoke on the *emission* path.
+//
+// `rowsum` below has the shape that reproduces the hole: a strided row-sum that
+// the try-mode policy declines to dispatch (no proven device win), in the
+// default `--accel=keyword-only` mode. The compiler must say so; with
+// `--deny-accel-cpu-fallback` it must refuse to build.
+//
+// Gate: `daily_use_smoke::accel_declaration_is_never_dropped_silently`.
+
+const ROWS: Int = 64;
+const K: Int = 1024;
+
+let i: Int = 0;
+let phase: Int = 0;
+let done: Int = 0;
+
+let a: Int[65536];
+let y: Int[64];
+
+// init (CPU): deterministic values, -3..3.
+async node init [phase == 0 && i < 65536][i == 65536] {
+    a[i] = (i % 7) - 3;
+    i = i + 1;
+    term;
+};
+
+async node init_done [phase == 0 && i == 65536][phase == 1] {
+    phase = 1;
+    i = 0;
+    term;
+};
+
+// device lane as declared: the strided row-sum whose dispatch the default
+// policy declines. Undelivered on purpose — the point of the fixture.
+async accel node rowsum [phase == 1 && i < ROWS][i == ROWS] {
+    let acc: Int = 0;
+    foreach k in 0..K {
+        acc = acc + a[i * K + k];
+    };
+    y[i] = acc;
+    i = i + 1;
+    term;
+};
+
+async node finish [phase == 1 && i == ROWS][phase == 2] {
+    done = 1;
+    endprogram;
+};

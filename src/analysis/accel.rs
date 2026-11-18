@@ -2042,6 +2042,64 @@ pub fn analyze(
     out
 }
 
+/// Bodies the source marks `accel` that will NOT run on the device in this
+/// compilation, as ready-to-print what/why/fix messages (sorted by body name).
+///
+/// 2026-11-17 (survey finding): the eligibility gate only ever spoke through a
+/// codegen warning on the *emission* path, so a marked body the analyser
+/// declined was compiled for the CPU in silence — `benchmarks/recommender.bv`
+/// declares three `async accel node`s and emitted zero kernels with no
+/// diagnostic, and six of the Intel G0 gate fixtures did the same under the
+/// default mode (their gate hid it by passing `--accel=force`). A declaration
+/// of device execution must never be dropped quietly: either the kernel is
+/// emitted, or the author is told why it was not.
+///
+/// A caller turns these into warnings, or into a hard error under
+/// `--deny-accel-cpu-fallback` (the same warn-by-default / deny-in-CI shape as
+/// `--deny-memory-ambiguity`).
+pub fn undelivered_device_bodies(
+    items: &[TopLevel],
+    accel: &HashMap<String, AccelEntry>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in items {
+        let txn = match item {
+            TopLevel::Transaction(t) => t,
+            _ => continue,
+        };
+        if !txn.modifiers.iter().any(|m| m.name == "accel") {
+            continue;
+        }
+        // Absent from the map, or present with a CPU decision: either way the
+        // kernel never reached the device.
+        let entry = accel.get(&txn.name);
+        let decided_gpu = matches!(
+            entry.map(|e| &e.decision),
+            Some(AccelDecision::Gpu) | Some(AccelDecision::Probe)
+        );
+        if decided_gpu {
+            continue;
+        }
+        let reasons = entry.map(|e| e.shape.reasons.clone()).unwrap_or_default();
+        let why = if !reasons.is_empty() {
+            reasons.join("; ")
+        } else if entry.map(|e| e.shape.eligible).unwrap_or(false) {
+            // Eligible but not chosen: try mode could not prove a device win
+            // for this shape. The kernel is emittable — the default policy
+            // simply declines to dispatch it.
+            "the kernel shape is valid, but this mode could not prove a device win for it (try-mode miss)".to_string()
+        } else {
+            "no kernel shape was derived for this body".to_string()
+        };
+        out.push(format!(
+            "accel node '{}' will run on the CPU lane, not the device\n  why:  {}\n  fix:  restructure the body to the kernel surface (let / assign / expression / term over integer expressions), or pass `--accel=force` to dispatch it anyway; every timing for this node is a CPU number",
+            txn.name, why
+        ));
+    }
+    out.sort();
+    out
+}
+
 /// Canonical, deterministic rendering of one entry. The parity harness
 /// compares this string between the AST and HIR analyses; BTreeMap key order
 /// keeps the map side deterministic.

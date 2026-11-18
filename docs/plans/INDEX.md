@@ -80,6 +80,37 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**Accel surface, NEO residency, reduce lane (2026-11-17, ACTIVE — next three workstreams):**
+`docs/plans/2026-11-17-accel-surface-neo-and-reduce.md`. Six instrument defects found
+this campaign (dead-pid soak, shared `--out`, `.s` report pollution, `brievc run`'s
+dispatch, the `LocalSize` parse, and the silent CPU fallback); this finishes that
+class. **S1 accel surface:** (S1.0) survey the 21 files with `accel node` for silent
+CPU fallbacks — `kernel.rs:194` warns and runs on the CPU, so those "GPU" numbers are
+CPU numbers; (S1.1) make emission failure an ERROR with an explicit
+`--accel-allow-cpu-fallback` opt-out, never silence; (S1.2) fix the f16 fallback store
+(`store half <float>`); (S1.3) the differential correctness gate — emit `_runner.c`
+for `.bv` accel programs too, and add a runner `[check]` compare against a CPU-lane
+reference (cheaper and more honest than widening the kernel statement surface).
+**S2 NEO residency:** fill the optional `mapped`/`launch_dev`/`launch_dev2d` driver
+entries in `briev_dev_opencl.c` (the table already exists in `src/accel_rt.rs:188`),
+reuse one timestamp event, gate on wall ≈ device. **S3 reduce:** a cooperative
+smem tree-reduce only under the `approx` licence (0.106 → beat 0.0969), unlicensed
+lane untouched.
+
+**PTL tiled-GEMM dispatch — a correctness bug, found night 2 (2026-11-17, ACTIVE):**
+`docs/plans/2026-11-17-ptl-tiled-gemm-dispatch.md`. `emit_tiled` decodes its tile
+from `wgid_x` with **no bounds check**, while the emitted runner launches
+`n_gemm = M·N` work items — 65536 workgroups where the tile grid has 4096. So
+`tile_m` runs to 1023 against 64 real tile rows and the kernel stores 16x outside
+`y`; `cooperativeMatrixRobustBufferAccess = false` makes that UB, not a clamped
+discard. Unnoticed because every ceiling fixture is zero-filled ("zeros over
+zeros"). Three consumers compute the launch three different ways (emitted runner
+tiled lane, emitted runner coopmat lane, `prepare_run`), which is why it hid. It
+also dissolves night 1's "f32 GEMM is 8.5x behind" target: 459/800 ms at 16x
+redundancy is ~29/~50 ms, i.e. *faster* than the CL-C reference. Plan: a non-zero
+checked fixture first (today's compiler must FAIL it), then a kernel guard, then one
+geometry shared by all three consumers, then re-measure; then NEO residency.
+
 **PTL night queue (2026-11-17, EXECUTED — see the results file):**
 `docs/plans/2026-11-17-ptl-night-queue.md` — **executed 2026-11-17 evening.** Outcomes:
 key auth works with `prestopoverlord@` (the earlier probe misspelled it); preflight

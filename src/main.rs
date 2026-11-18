@@ -468,6 +468,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut sysquery_files: Vec<String> = Vec::new();
     let mut int_bits = 64u64;
     let mut accel_cpu_fallback: Option<u64> = None;
+    let mut deny_accel_cpu_fallback = false;
     // 2026-11-08 (attr plan): GPU offload policy is a compiler mode.
     let mut accel_mode: Option<briev_compiler::analysis::accel::AccelMode> = None;
     let mut triple_override: Option<String> = None;
@@ -629,6 +630,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
                 }
             });
             i += consumed;
+        } else if arg == "--deny-accel-cpu-fallback" {
+            deny_accel_cpu_fallback = true;
+            i += 1;
         } else if arg == "--accel-cpu-fallback" {
             let val = args.get(i + 1).ok_or(
                 "--accel-cpu-fallback requires a number argument (min work items for GPU)",
@@ -824,6 +828,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         split: split_flag,
         accel_cpu_fallback,
         accel_mode,
+        deny_accel_cpu_fallback,
         isr_mechanism: None,
         triple_override,
         linker_script_override,
@@ -1218,6 +1223,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         split: false,
         accel_cpu_fallback: None,
         accel_mode: None,
+        deny_accel_cpu_fallback: false,
         isr_mechanism: None,
         triple_override: None,
         linker_script_override: None,

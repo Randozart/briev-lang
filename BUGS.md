@@ -224,10 +224,12 @@ so the open question is whether `Float16` resolves as a member of the `Float`
 protocol in this universe at all — if it does not, the cast falls through to
 identity and never narrows.
 
-**Impact.** Any program that writes an `f16` element from a `Float` expression fails
-to compile — which is the ordinary way to produce f16 output (the ceiling GEMMs
-avoid it only because `matmul_f16!` writes through its own path). Combined with the
-note below, f16 storage is currently hard to exercise from source.
+**Scope (checked 2026-11-17).** Ordinary host code is fine: `x[0] = 1.0 as Float16;`
+in a `node` body emits `sitofp i64 ... to half` / a proper half store and compiles.
+The failure appears on the **accel CPU-fallback lane** — a kernel whose body cannot
+be lowered to SPIR-V (see the `when` note below) is re-emitted for the CPU and that
+path stores the unnarrowed `float` into a `half` slot. So the impact is narrower
+than first written: it hits GPU kernels that fall back, not f16 code in general.
 
 **Also found, same fixture:** accel kernel bodies reject `when`
 (`SPIR-V lowering: unsupported statement in kernel body (Discriminant(11))` and the

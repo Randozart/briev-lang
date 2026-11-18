@@ -913,3 +913,74 @@ fn constants_gate_golden_output() {
     let out = build_link_run("constants_gate", "golden", &[]);
     assert_eq!(out, "0", "constants gate reported mismatches: {out:?}");
 }
+
+/// 2026-11-17 (accel-surface survey): REGRESSION GATE for the silent CPU lane.
+///
+/// An `accel` keyword is a declaration that the work belongs on the device. The
+/// compiler used to drop such a body onto the CPU lane with no diagnostic
+/// whenever the analyser declined it — seven corpus programs sat in that state,
+/// six of them the Intel G0 gate fixtures (whose gate masked it by passing
+/// `--accel=force`), so their "GPU" numbers were CPU numbers. The invariant this
+/// test pins is *never silent*: either the kernel is emitted, or the author is
+/// told which node was not delivered and why, and `--deny-accel-cpu-fallback`
+/// refuses to build.
+#[test]
+fn accel_declaration_is_never_dropped_silently() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let out_dir = Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/accel_lane_report__gate");
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let fixture = Path::new(PROJECT_ROOT).join("tests/tier1/accel_lane_report.bv");
+
+    let build = |deny: bool| {
+        let mut cmd = Command::new(brievc);
+        cmd.args([
+            "build",
+            &fixture.to_string_lossy(),
+            "--stdlib-path",
+            &format!("{PROJECT_ROOT}/lib/std"),
+            "--out",
+            &out_dir.to_string_lossy(),
+        ]);
+        if deny {
+            cmd.arg("--deny-accel-cpu-fallback");
+        }
+        cmd.output().expect("spawn brievc build")
+    };
+
+    // Default: the build succeeds and names the undelivered node.
+    let ok = build(false);
+    let err = String::from_utf8_lossy(&ok.stderr).to_string();
+    let kernel_emitted = std::fs::read_dir(&out_dir)
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .any(|e| e.path().extension().map(|x| x == "ll").unwrap_or(false))
+        })
+        .unwrap_or(false);
+    if kernel_emitted && err.contains("@briev_kernel_rowsum = private constant [0 x i8]") {
+        panic!("a zero-length kernel blob must never be reported as delivered");
+    }
+    let reported = err.contains("accel node 'rowsum'")
+        && err.contains("will run on the CPU lane")
+        && err.contains("why:")
+        && err.contains("fix:");
+    let delivered = err.contains("kernel 'rowsum' compiled");
+    assert!(
+        reported || delivered,
+        "the accel declaration was dropped in silence (no diagnostic, no device report):\n{err}"
+    );
+
+    // Deny: an undelivered declaration is a hard error, an error code, not prose.
+    if reported {
+        let denied = build(true);
+        assert!(
+            !denied.status.success(),
+            "--deny-accel-cpu-fallback must fail when a declared accel node is undelivered"
+        );
+        let derr = String::from_utf8_lossy(&denied.stderr).to_string();
+        assert!(
+            derr.contains("error: accel node 'rowsum'"),
+            "the denial must name the node with error severity:\n{derr}"
+        );
+    }
+}

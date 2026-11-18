@@ -2211,6 +2211,33 @@ fn codegen(
     // must win over its plan-only pass.
     analysis.thread_plan = thread_plan;
 
+    // ── Accel delivery gate (2026-11-17, survey finding) ────────────────
+    // An `accel` keyword is a declaration that this work belongs on the
+    // device. Until now a body the analyser declined was compiled for the CPU
+    // with no diagnostic at all (seven corpus programs sat in that state, six
+    // of them the Intel G0 gate fixtures, whose gate masked it with
+    // `--accel=force`). Never silent: warn, or fail under
+    // `--deny-accel-cpu-fallback`.
+    {
+        let undelivered =
+            briev_compiler::analysis::accel::undelivered_device_bodies(items, &analysis.accel);
+        if !undelivered.is_empty() {
+            if opts.deny_accel_cpu_fallback {
+                // The caller prefixes the whole block once; later messages
+                // carry their own prefix so a multi-body program stays legible.
+                return Err(undelivered
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| if i == 0 { m.clone() } else { format!("error: {m}") })
+                    .collect::<Vec<_>>()
+                    .join("\n"));
+            }
+            for msg in &undelivered {
+                eprintln!("warning: {msg}");
+            }
+        }
+    }
+
     // ── Capability validation (Plan 0.2, 2026-08-23) ───────────────────
     // Backends with a partial surface declare it (backend::*::CAPABILITIES);
     // programs reaching beyond are rejected here with what/why/fix instead

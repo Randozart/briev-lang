@@ -297,6 +297,10 @@ pub struct BuildOptions {
     /// 2026-11-08 (attr plan): GPU offload policy is a compiler MODE, not
     /// program metadata (`--accel`). None = keyword-marked bodies, try mode.
     pub accel_mode: Option<crate::analysis::accel::AccelMode>,
+    /// 2026-11-17: an `accel`-declared node that will not run on the device is
+    /// a warning by default; this makes it a hard error
+    /// (`--deny-accel-cpu-fallback`), the CI gate for the intel/GPU lanes.
+    pub deny_accel_cpu_fallback: bool,
     /// 2026-09-06 (ISR plan): the active target profile's ISR mechanism —
     /// the configured default behind mechanism-less `isr` declarations.
     /// Populated from folio.toml [target.<name>] isr_mechanism.
@@ -396,6 +400,7 @@ impl Default for BuildOptions {
             split: false,
             accel_cpu_fallback: None,
             accel_mode: None,
+            deny_accel_cpu_fallback: false,
             isr_mechanism: None,
             triple_override: None,
             linker_script_override: None,

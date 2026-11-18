@@ -7,7 +7,12 @@
 #
 # PASS requires BOTH:
 #   1. the program's printed BAD=0 and GPU_SUM == CPU_SUM, and
-#   2. the verbose log's "compiled on '<device>'" line (no silent CPU
+#   2. `--deny-accel-cpu-fallback` (2026-11-17): a declared `accel` node the
+#      analyser declines is normally a warning; under this flag it is an error,
+#      so a fixture that STOPS delivering fails the gate instead of quietly
+#      timing the CPU lane. (Survey: six of these fixtures delivered only under
+#      `--accel=force`, and a plain build swallowed that in silence.)
+#   3. the verbose log's "compiled on '<device>'" line (no silent CPU
 #      fallback).
 #
 # OpenCL is reported, not required: NEO rejects our IL entry point today
@@ -43,12 +48,12 @@ tar -C "$ROOT" -cf - target/compiler-in-briv \
 fail=0
 sample_report() {
     local bench="$1" dev="$2"
-    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" | grep -E "G0_.*_BAD|compiled on" | tail -3 || true
+    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" | grep -E "G0_.*_BAD|compiled on" | tail -3 || true
 }
 run_gate() {
     local bench="$1" dev="$2"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
     local bad compiled
     # Fixtures name their own label (e.g. G0_SUM_BAD, G0_MINMAX_BAD); accept
     # the last must-be-zero counter line.
@@ -98,7 +103,7 @@ run_gate g0_fsum_exact vulkan
 run_gate_reported() {
     local bench="$1" dev="$2"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 90 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 90 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
     local bad compiled
     bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
     compiled=$(printf '%s\n' "$out" | grep -c "kernel '.*' compiled on '$dev'" || true)
@@ -123,7 +128,7 @@ run_gate_reported() {
 report_gemm_fallback() {
     local dev="$1"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 300 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/g0_gemm.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 300 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/g0_gemm.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
     local bad
     bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
     if printf '%s\n' "$out" | grep -q "has no OpenCL projection"; then
