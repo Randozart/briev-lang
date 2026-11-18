@@ -809,7 +809,10 @@ pub extern "C" fn briev_accel_launch(idx: u32, state: *mut core::ffi::c_void, wo
         }
     }
     let iters = bench_iterations();
-    let verbose = unsafe { g_verbose } != 0;
+    // 2026-11-18 (B2): read the env rather than the cached `g_verbose` — the cache is
+    // written by `briev_accel_init` and was 0 in the generated runner even with
+    // BRIEV_ACCEL_VERBOSE set, which made every diagnostic on this path silent.
+    let verbose = unsafe { g_verbose } != 0 || std::env::var_os("BRIEV_ACCEL_VERBOSE").is_some();
     let launch_fn = d.launch;
     let ok = run_bench(iters, verbose, || {
         launch_fn.map_or(false, |f| unsafe {
@@ -862,12 +865,18 @@ pub extern "C" fn briev_accel_launch_resident_2d(
     nx: u64,
     ny: u64,
 ) -> i32 {
+    // 2026-11-18 (B2): `g_verbose` is cached by `briev_accel_init` and was 0 in the
+    // runner even with BRIEV_ACCEL_VERBOSE set (the C drivers read the env
+    // themselves), so every gated branch log was silent while the fallback happened.
+    // Read the env here: a fallback that cannot say why is how this question survived
+    // three sessions.
+    let verbose = unsafe { g_verbose } != 0 || std::env::var_os("BRIEV_ACCEL_VERBOSE").is_some();
     let r = rt();
     let Some(d) = driver() else {
         return 0;
     };
     if !kernel_ready(r, idx) {
-        if unsafe { g_verbose } != 0 {
+        if verbose {
             eprintln!("[briev_accel] resident: kernel {idx} not ready -> copy path");
         }
         return 0;
@@ -877,7 +886,7 @@ pub extern "C" fn briev_accel_launch_resident_2d(
         // silently take the copy path, and a bare "the resident marker never
         // fires" cannot tell them apart — that ambiguity is what let a wrong
         // duplicate-driver-table diagnosis survive a whole session.
-        if unsafe { g_verbose } != 0 {
+        if verbose {
             eprintln!(
                 "[briev_accel] resident: driver missing ops (launch_dev2d={} mapped={} launch_dev={}) -> copy path",
                 d.launch_dev2d.is_some(),
@@ -893,14 +902,14 @@ pub extern "C" fn briev_accel_launch_resident_2d(
     let k = unsafe { &*r.descs.add(idx as usize) };
     if mapped.is_null() {
         if !prime_lazy_buffer(idx, kernel, state, nx * ny, mapped_fn) {
-            if unsafe { g_verbose } != 0 {
+            if verbose {
                 eprintln!("[briev_accel] resident: prime failed for kernel {idx} -> copy path");
             }
             return 0;
         }
         mapped = unsafe { (mapped_fn)(kernel) } as *mut u8;
         if mapped.is_null() {
-            if unsafe { g_verbose } != 0 {
+            if verbose {
                 eprintln!(
                     "[briev_accel] resident: driver mapped() still null after prime -> copy path"
                 );
@@ -912,7 +921,6 @@ pub extern "C" fn briev_accel_launch_resident_2d(
     // No device→host scalar sync: the host owns the scalars (they were
     // just uploaded); arrays stay device-resident until download.
     let iters = bench_iterations();
-    let verbose = unsafe { g_verbose } != 0;
     let launch_dev2d = d.launch_dev2d.unwrap();
     let ok = run_bench(iters, verbose, || unsafe {
         (launch_dev2d)(
