@@ -80,6 +80,20 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**Residency truth, GEMM canary, pin (2026-11-18, ACTIVE — D1 closed at 0/336):**
+`docs/plans/2026-11-18-residency-canary-pin.md`. **B2** run the `.abv` *runner* (not
+`brievc run`) with `BRIEV_ACCEL_VERBOSE=1` and read which of the three residency fallbacks
+fires — three answers, three actions (field-order mismatch in the C-vs-Rust driver struct;
+`mapped` null because regular `cl_mem` has no host mapping, so the metric becomes copies
+per dispatch and the next question is NEO's SVM support; or nothing prints, meaning the
+runner never reaches the resident entry — itself the answer). **B3** a `canary` node in
+`g0_gemm.bv` recomputing the `a`/`b` closed form on the CPU and checking `y`'s neighbour,
+because `G0_GEMM_BAD=0` was green *before* the 16× over-dispatch fix; prove it bites with a
+vendored pre-fix `LocalSize` parse (`CANARY=BAD` while `BAD=0`). **B4** bump the kiosk pin
+to `db7912367` (the first commit that changes a slot type) and validate with the ratchet
+(73/0/2196) *and* the soak. S3 and the `fsum_approx` OpenCL mechanism stay unplanned until
+correctness is measured.
+
 **D1 + the PTL batch (2026-11-18, ACTIVE — PTL free again):**
 `docs/plans/2026-11-18-d1-and-ptl-batch.md`. **D1:** the accountable finding —
 `collect_reassigned_lets` has two call sites (`ssa.rs:452`, `emit_toplevel.rs:385`) and
