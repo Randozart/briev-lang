@@ -80,6 +80,20 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**D1 + the PTL batch (2026-11-18, ACTIVE — PTL free again):**
+`docs/plans/2026-11-18-d1-and-ptl-batch.md`. **D1:** the accountable finding —
+`collect_reassigned_lets` has two call sites (`ssa.rs:452`, `emit_toplevel.rs:385`) and
+`loop_engine/counter.rs` calls it ZERO times, while `defn-composite` takes
+`emit_countable_main`; so the empty map was never a missed walk, that path pre-declares
+nothing. Step 1 is two env-gated prints (body statement kinds; slot type when declared ≠
+chosen), then the fix by case, with the rule recorded: **a slot is typed by its
+declaration, the initialiser is coerced.** **B1** the OpenCL `fsum_approx` bug — emit the
+reduce at `Scope::Workgroup` (`emit_subgroup_reduce` hard-codes Subgroup; identical where
+`LocalSize ==` subgroup size, so levelzero cannot regress). **B2** read which of the
+three residency fallbacks fires (the logging landed 2026-11-18). **B3** the GEMM
+input-integrity canary, and prove it bites by rebuilding the old `local_total` parse —
+`G0_GEMM_BAD=0` was green *before* the 16× fix too.
+
 **Next queue: gate the IR check, fix the named bugs, advance the pin (2026-11-18, ACTIVE):**
 `docs/plans/2026-11-18-gate-the-ir-check-and-advance.md`. **P0** the worktree is behind
 (local `c06804413`, origin/main `e5849e192`) — sync first. **P1** make
