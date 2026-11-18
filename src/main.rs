@@ -483,6 +483,8 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut verify_report: Option<String> = None;
     // 2026-11-15 (issue #9): conservative compile profile (--safe).
     let mut safe_mode = false;
+    // 2026-11-18 (W1-B): explicit -march=<cpu> override for the link step.
+    let mut march_override: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -719,6 +721,24 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             // optimizer interference.
             safe_mode = true;
             i += 1;
+        } else if arg == "--march" || arg.starts_with("--march=") {
+            // 2026-11-18 (W1-B): explicit -march=<cpu> for the link step.
+            // Both spellings: `--march native` and `--march=native` (mirrors
+            // --accel). Overrides the per-target march in config/targets.dbvl.
+            // Available for local development (--march=native) but never the
+            // default.
+            let (val, consumed) = if let Some(v) = arg.strip_prefix("--march=") {
+                (v.to_string(), 1)
+            } else {
+                (
+                    args.get(i + 1)
+                        .ok_or("--march requires a CPU name (e.g. --march=native)")?
+                        .clone(),
+                    2,
+                )
+            };
+            march_override = Some(val);
+            i += consumed;
         } else if arg == "--linker-script" {
             let val = args
                 .get(i + 1)
@@ -844,6 +864,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         verify_bodies,
         verify_report,
         safe_mode,
+        march_override,
     })
 }
 
@@ -1240,6 +1261,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         verify_bodies: false,
         verify_report: None,
         safe_mode: false,
+        march_override: None,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;

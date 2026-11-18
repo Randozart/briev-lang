@@ -2850,6 +2850,7 @@ async node fill [i < N][i == N] {
             verify_bodies: false,
             verify_report: None,
             safe_mode: false,
+            march_override: None,
         };
         let (mut items, mut universe) =
             crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");
@@ -3252,6 +3253,7 @@ async node gemm [i < M * N][i == M * N] {
             verify_bodies: false,
             verify_report: None,
             safe_mode: false,
+            march_override: None,
         };
         let (mut items, mut universe) =
             crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");

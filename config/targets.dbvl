@@ -53,7 +53,18 @@
 // effect-call arguments. Field 6 = effect_carry_temp_min — minimum
 // temp-mediated Float fields for the carry shape.
 // Defaults below are policy starting points, overridable per deployment.
-target.x86_64: 16; 4.0; 4; 0; 2147483648; 4; 3; 2
+// 2026-11-18 (W1-B, native-flake root cause): field 8 = `-march` CPU target
+// for the link step. A deployment-target property, not a build-host
+// property — the ISA a binary runs on is declared per-target, never
+// inherited from the machine that built it. Absent (no field 8) = the link
+// step uses a conservative default (x86-64-v3 for x86_64-linux, no march
+// for cross-compilation). A `--march=<cpu>` CLI flag overrides.
+// haswell = the concrete CPU closest to the x86-64-v3 feature set
+// (SSE4.2 + AVX + AVX2 + FMA). clang/LLVM uses concrete CPU names, not
+// feature-set levels — `x86-64-v3` is not a valid -march value. haswell
+// does NOT require AVX-512/AMX (the feature set that intermittently
+// SIGILLs on GitHub runners under -march=native).
+target.x86_64: 16; 4.0; 4; 0; 2147483648; 4; 3; 2; haswell
 target.aarch64: 32; 4.0; 4; 1; 2147483648; 4; 3; 2
 target.arm64: 32; 4.0; 4; 1; 2147483648; 4; 3; 2
 target.wasm32: 4294967295; 4.0; 4; 1; 1073741824; 4; 3; 2

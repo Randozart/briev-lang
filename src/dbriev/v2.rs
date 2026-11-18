@@ -1086,13 +1086,20 @@ impl Parser {
         Ok(DataField::Positional(DataValue::String(token)))
     }
 
-    /// Parse a bare token — reads until ;, }, > (at line start), or EOF.
+    /// Parse a bare token — reads until ;, }, > (at line start), \n, or EOF.
     /// Strips leading/trailing whitespace.
+    ///
+    /// 2026-11-18 (W1-B): `\n` terminates the token — `.dbvl` is line-
+    /// oriented (a record is one line), matching `parse_positional_values`
+    /// which breaks on `\n` before skipping whitespace. Without this, a
+    /// bare token at end-of-line (no trailing `;`) runs into the next line
+    /// and swallows it — e.g. `target.x86_64: ...; haswell` parsed the
+    /// march field as `"haswell\ntarget.aarch64: 32"`.
     fn parse_bare_token(&mut self) -> String {
         let mut s = String::new();
         loop {
             match self.peek_char() {
-                None | Some(';') | Some('}') => break,
+                None | Some(';') | Some('}') | Some('\n') => break,
                 Some('>') if self.is_start_of_line() => break,
                 Some(c) => {
                     self.advance();
@@ -1470,18 +1477,43 @@ mod tests {
     fn characterise_entry_level_interaction() {
         const VALUES: &str = r#"values: { "String": { class: "b"; zero_copy: true; to_op: "t"; from_op: "f"; from_copy: true }; "Int": { class: "s"; layout: "i" }; "Float": { class: "s"; layout: "f" }; "Bool": { class: "s"; layout: "i8" }; "Data": { class: "b"; zero_copy: true }; "Char": { class: "s"; layout: "i32" } }; "#;
         const PROTOCOLS: &str = r#"protocols: { "String": { native: "int64_t"; c_abi: "int64_t" }; "Int": { native: "int64_t"; c_abi: "int64_t" } }; "#;
-        const CONVERSIONS: &str = r#"conversions: { to_abi: { "Int": "{name}" }; from_abi: { "Int": "result_abi" } }; "#;
+        const CONVERSIONS: &str =
+            r#"conversions: { to_abi: { "Int": "{name}" }; from_abi: { "Int": "result_abi" } }; "#;
         const STATE: &str = r#"state: { decl: "BrievState* state"; arg: "state"; ffi_type: "" }; "#;
         let base = r#"types_module: "t.bv"; extension: "h"; bridge_kind: "k"; calling_convention: "c_abi"; "#;
         let cases: Vec<(&str, String)> = vec![
-            ("min: nested map, no trailing semicolon", r#"a: { b: { x: "1" } };"#.to_string()),
-            ("min: nested map + trailing semicolon", r#"a: { b: { x: "1" }; };"#.to_string()),
-            ("min: flat then nested", r#"a: { v: 1; b: { x: "1" } };"#.to_string()),
-            ("min: flat then nested + semi", r#"a: { v: 1; b: { x: "1" }; };"#.to_string()),
-            ("values alone", format!("c: {{ version: 1; {base}{VALUES}}};")),
-            ("values + protocols", format!("c: {{ version: 1; {base}{VALUES}{PROTOCOLS}}};")),
-            ("values + conversions", format!("c: {{ version: 1; {base}{VALUES}{CONVERSIONS}}};")),
-            ("values + state", format!("c: {{ version: 1; {base}{VALUES}{STATE}}};")),
+            (
+                "min: nested map, no trailing semicolon",
+                r#"a: { b: { x: "1" } };"#.to_string(),
+            ),
+            (
+                "min: nested map + trailing semicolon",
+                r#"a: { b: { x: "1" }; };"#.to_string(),
+            ),
+            (
+                "min: flat then nested",
+                r#"a: { v: 1; b: { x: "1" } };"#.to_string(),
+            ),
+            (
+                "min: flat then nested + semi",
+                r#"a: { v: 1; b: { x: "1" }; };"#.to_string(),
+            ),
+            (
+                "values alone",
+                format!("c: {{ version: 1; {base}{VALUES}}};"),
+            ),
+            (
+                "values + protocols",
+                format!("c: {{ version: 1; {base}{VALUES}{PROTOCOLS}}};"),
+            ),
+            (
+                "values + conversions",
+                format!("c: {{ version: 1; {base}{VALUES}{CONVERSIONS}}};"),
+            ),
+            (
+                "values + state",
+                format!("c: {{ version: 1; {base}{VALUES}{STATE}}};"),
+            ),
             (
                 "values + protocols + conversions + state (the real shape)",
                 format!("c: {{ version: 1; {base}{VALUES}{PROTOCOLS}{CONVERSIONS}{STATE}}};"),
@@ -1497,7 +1529,11 @@ mod tests {
         // Every variant must parse; print the table on failure so the interacting
         // pair is visible rather than guessed.
         let failing: Vec<&String> = report.iter().filter(|l| l.contains(": ERR")).collect();
-        assert!(failing.is_empty(), "entry-level shapes:\n{}", report.join("\n"));
+        assert!(
+            failing.is_empty(),
+            "entry-level shapes:\n{}",
+            report.join("\n")
+        );
     }
 
     #[test]
@@ -1521,7 +1557,11 @@ mod tests {
                 r#"a: { "X": { class: "c1" }; "Z": { class: "c2" }; "W": { class: "c3" } };"#,
                 true,
             ),
-            ("two sibling nested maps", r#"a: { x: "1" }; b: { y: "2" };"#, true),
+            (
+                "two sibling nested maps",
+                r#"a: { x: "1" }; b: { y: "2" };"#,
+                true,
+            ),
             // 2026-11-16 (P0 bisection): the shipped C adapter failed on this
             // block with "Expected named field". These cases narrow it: the six
             // class names with one field each, then the real field sets.
@@ -1557,9 +1597,12 @@ mod tests {
                 ));
             }
         }
-        assert!(failures.is_empty(), "shape failures:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "shape failures:\n{}",
+            failures.join("\n")
+        );
     }
-
 
     use super::*;
 

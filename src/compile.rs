@@ -1438,6 +1438,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                         bad_objects: &bad_fn_objects,
                         bootstrap_entry: bootstrap_entry.as_deref(),
                         safe_mode: opts.safe_mode,
+                        march_override: opts.march_override.as_deref(),
                     },
                 )?;
             }
@@ -3383,6 +3384,9 @@ struct LinkInputs<'a> {
     bootstrap_entry: Option<&'a str>,
     /// 2026-11-15 (issue #9): conservative compile profile (--safe).
     safe_mode: bool,
+    /// 2026-11-18 (W1-B): explicit `--march=<cpu>` override. Takes precedence
+    /// over the per-target march in config/targets.dbvl.
+    march_override: Option<&'a str>,
 }
 
 /// 2026-10-27: reject invalid emitted IR before clang/llc. This turns
@@ -3416,6 +3420,7 @@ fn compile_ll_to_binary(
         bad_objects,
         bootstrap_entry,
         safe_mode,
+        march_override,
     } = inputs;
     verify_emitted_ir(ll_path)?;
     let ll_text = std::fs::read_to_string(ll_path)
@@ -3459,12 +3464,33 @@ fn compile_ll_to_binary(
         cmd.args(["-march=x86-64", ll_path]);
     } else {
         cmd.arg("-O3");
-        // 2026-09-13: skip -march=native for cross-compilation targets
-        // (e.g. riscv64-unknown-none) where it's invalid.
+        cmd.arg("-flto");
+        // 2026-11-18 (W1-B, native-flake root cause): the `-march` CPU target
+        // is a deployment-target property, not a build-host property. The
+        // ISA a binary runs on is declared per-target in config/targets.dbvl
+        // (`TargetSettings.march`), never inherited from the machine that
+        // built it. Precedence: (1) `--march=<cpu>` CLI flag, (2) per-target
+        // config, (3) conservative default (`x86-64-v3` for x86_64-linux —
+        // SSE4.2+AVX, widely available, no AVX-512/AMX which is the feature
+        // set that intermittently SIGILLs on GitHub runners under
+        // `-march=native`). Cross-compilation targets get no `-march` (the
+        // `--target` triple selects the assembler/linker; `-march` is an
+        // x86/aarch64 concept, invalid for riscv64/wasm/spirv).
         let is_native = triple.starts_with("x86_64") || triple.contains("linux");
         if is_native {
-            cmd.arg("-march=native");
-            cmd.arg("-flto");
+            // 2026-11-18 (W1-B): default is `haswell` — the concrete CPU
+            // closest to the x86-64-v3 feature set (SSE4.2 + AVX + AVX2 +
+            // FMA). clang/LLVM uses concrete CPU names, not feature-set
+            // levels (`x86-64-v3` is not a valid `-march` value). `haswell`
+            // does NOT require AVX-512/AMX — the feature set that
+            // intermittently SIGILLs on GitHub runners under `-march=native`.
+            let config_march = briev_compiler::config_tuning::target_settings_for(&triple)
+                .march
+                .clone();
+            let march = march_override
+                .or(config_march.as_deref())
+                .unwrap_or("haswell");
+            cmd.arg(format!("-march={}", march));
         }
         cmd.args(["-ffast-math", ll_path]);
     }
