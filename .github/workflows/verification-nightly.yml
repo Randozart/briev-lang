@@ -23,25 +23,20 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install LLVM + clang + Z3
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential z3
-          z3 --version
-      - uses: taiki-e/install-action@v2
+      # 2026-11-18: use the shared setup instead of a hand-rolled toolchain list.
+      # The hand-rolled one had drifted from every other job, and each gap was a
+      # separate red that looked like a code bug:
+      #   * no `spirv-tools` -> every `spirv-val` call panicked
+      #     (`src/backend/spirv/mod.rs:2028`, "No such file or directory"),
+      #     failing `backend::spirv::tests::*`;
+      #   * no `/tmp/opencode` -> the PTX dump tests panicked writing their
+      #     artifacts (the 2026-11-15 red, `backend::ptx::tensor::r16_dump::*`);
+      #   * nextest pinned inline instead of the shared pin.
+      # One action, one list: whatever the next job needs, this job gets too.
+      - uses: ./.github/actions/compiler-tools
         with:
-          tool: cargo-nextest@0.9.151
-      - uses: Swatinem/rust-cache@v2
-      # 2026-11-18: several `#[cfg(test)]` PTX dump tests write debug artifacts
-      # to a hardcoded `/tmp/opencode/…` and `unwrap()` the write (45 references,
-      # e.g. src/backend/ptx/tensor.rs). CI normally gets that directory from
-      # `.github/actions/compiler-tools`, which this job never invokes — so those
-      # tests panicked with "No such file or directory" (the 2026-11-15 red:
-      # `backend::ptx::tensor::r16_dump::*`). Create it here rather than teaching
-      # 45 test sites to tolerate a missing debug path.
-      - name: Create the test artifact directory
-        run: mkdir -p /tmp/opencode
+          native: "true"
+          nextest: "true"
       # The flipped default is HIR; this keeps the one-release opt-out path
       # honest without doubling every PR gate.
       # 2026-11-15: two tests are HIR-specific and must be excluded:
