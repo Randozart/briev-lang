@@ -181,7 +181,6 @@ fn corpus_defn_liveness_parity() {
 /// Run it with `--ignored` to see the failure; it should be un-ignored by
 /// whoever fixes the drift.
 #[test]
-#[ignore = "reproduces BUGS.md 2026-11-16 defn-liveness drift; run with --ignored"]
 fn dir_bv_as_root_does_not_trip_the_liveness_assert() {
     let root = Path::new(PROJECT_ROOT);
     let out = std::env::temp_dir().join("briev_dir_liveness_repro");
@@ -202,5 +201,68 @@ fn dir_bv_as_root_does_not_trip_the_liveness_assert() {
     assert!(
         !stderr.contains("defn-liveness drift"),
         "the HIR/AST defn-liveness drift is still here:\n{stderr}"
+    );
+}
+
+/// A member and an exported defn may share a bare name, and the two liveness
+/// builders reduce that name to one slot. **Both** bodies must still be walked,
+/// in either declaration order.
+///
+/// 2026-11-18: this is the minimal shape behind the `lib/std/os/dir.bv` drift —
+/// `export defn entries` there collides with `std/collections.bv`'s
+/// `obj HashMap { defn entries }`. The AST used first-wins for exported defns
+/// (`index_defn`'s `or_insert`, shared with members) while HIR used last-wins, so
+/// each order lost the *other* body and `helper` disappeared from one live set.
+/// Testing both orders is what makes the fix order-independent rather than
+/// "whichever ordering we happened to test now passes".
+#[test]
+fn a_member_and_an_exported_defn_sharing_a_name_both_contribute() {
+    // Member first, export second — dir.bv's real order (the member arrives via
+    // an import, the export comes from the file being compiled).
+    let member_first = r#"
+obj Bag { defn entries(t: Int) [true][true] { term t; }; };
+export defn entries(x: Int) [true][true] { term helper(x); };
+defn helper(x: Int) [true][true] { term x; };
+"#;
+    assert_parity(member_first, "member-first");
+    assert_live_on_both_sides(member_first, "helper", "member-first");
+
+    // Export first, member second — the reverse. This order used to lose the
+    // export's body on the HIR side.
+    let export_first = r#"
+export defn entries(x: Int) [true][true] { term helper(x); };
+obj Bag { defn entries(t: Int) [true][true] { term t; }; };
+defn helper(x: Int) [true][true] { term x; };
+"#;
+    assert_parity(export_first, "export-first");
+    assert_live_on_both_sides(export_first, "helper", "export-first");
+}
+
+/// `name` must be live in BOTH analyses, not merely agreed-upon-absent.
+///
+/// Parity alone is not enough: the pre-fix bug made both sides agree whenever
+/// they dropped the same body, and a test that only compared the two sets would
+/// have passed on a program where `helper` was live on neither side.
+fn assert_live_on_both_sides(src: &str, name: &str, label: &str) {
+    let items = parse(src);
+    let ast = AstLiveness::build(&items);
+    let hir = HirLiveness::build(&lower_program(&items));
+    assert!(
+        ast.live.contains(name),
+        "{label}: AST lost `{name}` — live={:?}",
+        {
+            let mut v: Vec<&String> = ast.live.iter().collect();
+            v.sort();
+            v
+        }
+    );
+    assert!(
+        hir.live.contains(name),
+        "{label}: HIR lost `{name}` — live={:?}",
+        {
+            let mut v: Vec<&String> = hir.live.iter().collect();
+            v.sort();
+            v
+        }
     );
 }

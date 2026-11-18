@@ -194,6 +194,15 @@ impl<'a> Builder<'a> {
                 .entry(owner.clone())
                 .or_default()
                 .push(c.name.clone());
+        }
+        // 2026-11-18 (HIR/AST defn-liveness drift, dir.bv): `defns` keeps one
+        // body per bare name (last-wins), and a member and a top-level/exported
+        // definition share that slot. Register the body here too whenever it
+        // could lose the slot — for members (AST parity, 2026-10-15) AND for
+        // exported defns, which the AST side lost until this change
+        // (`export defn entries` vs `obj HashMap { defn entries }`).
+        // `index_txn` already does this unconditionally.
+        if c.owner.is_some() || c.exported {
             self.member_bodies
                 .entry(c.name.clone())
                 .or_default()
