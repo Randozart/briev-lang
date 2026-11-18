@@ -15047,3 +15047,42 @@ passed, `hir_storage_class_parity` 2 passed, lib suite 3916 passed.
 The lesson is worth keeping: "reset the cache with the namespace" is the right
 invariant, but the namespace reset is not the same event as "a new function
 body" in this backend.
+
+**Addendum (2026-11-17): both halves of #122 shipped, and the second one was not
+withdrawn.** The correction above covers the width-map half. PR #122 (`8106c7e4`)
+merged at `5c435dea`, which *also* carried a second change: `export_abi::index_program`
+registering an exported top-level `let` in `state_fields`. It was pushed as an
+attempt to fix the parity dissenter, described in the PR as withdrawn because it
+shifts needs-state and moved three `daily_use_smoke` goldens — but the merge
+landed before that withdrawal, so the change is part of `main`.
+
+It is now the *correct* half of a finished pair, not a loose end:
+
+* `d3286af9` ("fix(hir): reconcile exported-let lowering with the export_abi
+  fix") completed it from the other side — HIR lowering now lowers an exported
+  `let` into `globals` carrying the `exported` marker (`hir/lower.rs`), and
+  `hir::storage_class` refuses to call an exported symbol plain. Its own message
+  attributes the AST side to #122 by hash.
+* The rule is now single and stated twice in the same terms: **an exported
+  top-level `let` is host-visible storage, therefore state, therefore never
+  plain.** `dc14aa27` established it for `classify_plain_lets` and HIR lowering;
+  #122 made the needs-state walk say it too; `d3286af9` removed the last walk
+  that disagreed.
+
+**Reverting the `export_abi` half would now be the regressing direction.** With
+HIR holding exported lets as globals, dropping the AST rule flips the parity
+dissent back to `print_char: ast=false hir=Some(true)` — i.e. it re-breaks the
+gate whose entire purpose is to catch two walks disagreeing. The merged
+combination is consistent; the pre-#122 combination was not.
+
+Verified after reconciliation: `main` CI green at `3e72d931` and `1b4c4cba`, and
+locally on `main` `c_driver_node` 1, `rbv_list_each_wasm` 1,
+`hir_needs_state_parity` 2, `daily_use_smoke` goldens all pass.
+
+**And `Native (parity)` flakes.** `269e8997` — a docs-only commit whose parent
+(`1b4c4cba`) was green — failed that job; `git log 1b4c4cba..269e8997` shows it is
+the only commit in the range and it touches no `src/`, `lib/` or `glue/` file, so
+it cannot have changed codegen. Re-running the failed job on the unchanged commit
+went **green**. Treat a lone `Native (parity)` red on a non-code change as a
+harness flake and re-run before bisecting — the same class as the "wasm exit 1"
+red that turned out to be a harness exception.
