@@ -261,6 +261,10 @@ fn print_usage(program: &str) {
     );
     eprintln!("  {} check <file.bv>               Type-check only", name);
     eprintln!(
+        "  {} check --validate <file.bv>    Type-check + validate emitted IR (no link)",
+        name
+    );
+    eprintln!(
         "  {} derive <file.bv>              Synthesize derivation blocks",
         name
     );
@@ -783,6 +787,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         config_dir,
         file_path,
         emit_ir_only,
+        validate_ir: false,
         out_dir,
         optimize_budget,
         emit_beast_stages: emit_beast,
@@ -1169,6 +1174,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         config_dir: None,
         file_path: file_path.clone(),
         emit_ir_only: false,
+        validate_ir: false,
         out_dir: None,
         optimize_budget: 256,
         emit_beast_stages: vec![],
@@ -1835,7 +1841,16 @@ fn render_nav_html(pages: &[(String, String)]) -> String {
 }
 
 fn run_check(args: &[String]) -> Result<(), String> {
-    let file_path = args.first().ok_or("missing file argument")?;
+    // 2026-11-17 (issue #5): `brievc check --validate` runs the backend
+    // normalizer + codegen + `opt -passes=verify` (no link) so a program
+    // whose frontend typechecks but whose emitted IR is invalid is caught
+    // by `check`, not just `build`. Default `check` (no flag) stays
+    // frontend-only and cheap — the conformance sweep depends on that.
+    let validate = args.iter().any(|a| a.as_str() == "--validate");
+    let file_path = args
+        .iter()
+        .find(|a| a.as_str() != "--validate")
+        .ok_or("missing file argument")?;
     let source = {
         let p = std::path::Path::new(file_path);
         let doppel = briev_compiler::derive::Doppelganger::resolve(p);
@@ -1853,6 +1868,17 @@ fn run_check(args: &[String]) -> Result<(), String> {
     let ext = get_extension(file_path);
     if ext == ".dbv" || ext == ".dbvl" {
         return compile::check_data_source(file_path, &source);
+    }
+    if validate {
+        // Run the full build pipeline (frontend + normalizer + codegen) but
+        // stop before linking: `compile_source` with `validate_ir = true`
+        // validates the emitted `.ll` with `opt -passes=verify` and returns.
+        let opts = briev_compiler::pipeline::BuildOptions {
+            file_path: file_path.to_string(),
+            validate_ir: true,
+            ..Default::default()
+        };
+        return compile::compile_source(file_path, &source, &opts);
     }
     compile::check_source(file_path, &source)
 }
