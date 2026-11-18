@@ -120,6 +120,22 @@ Why CI never sees it:
 So: real, open, and invisible to every gate — the worst combination, but also
 not urgent in release terms.
 
+**Measured 2026-11-18 (still live).** `cargo test --test hir_defn_liveness_parity
+-- --ignored` reproduces it on current `main`:
+
+```
+assertion `left == right` failed: HIR/AST defn-liveness drift
+  AST: 83 names (incl. dir_open, dir_close, dir_loop, entries, float_to_str, …)
+  HIR: 24 names
+```
+
+A new `corpus_defn_liveness_parity` walks `tests/tier1` + `lib/std` (154 files,
+0 skipped) and is **green** — because it compares the *raw parse*, where the two
+walks agree. The drift lives on the **resolved** program (prelude merged), which
+is what `src/backend/mod.rs:641` actually compares. That asymmetry is the reason
+the curated shapes never reproduced it either, and it is worth knowing before
+someone writes a fourth test that cannot fail.
+
 ## Plan
 
 Ordered by cost, and by "does it restore the ability to see"? 
@@ -130,7 +146,7 @@ Ordered by cost, and by "does it restore the ability to see"?
 | 2 | Add `mkdir -p /tmp/opencode` to the nightly job (or reuse `compiler-tools`) | without it, fixing (1) just moves the red to the PTX dumps |
 | 2b | Fix the stale `BuildOptions` test initializer | without it the suite cannot compile at all under `--all` |
 | 3 | Re-run the nightly, then triage whatever is genuinely red on the AST path | **done**: 4442/4442 pass, so nothing is genuinely red |
-| 4 | *Then* the drift: extend `hir_defn_liveness_parity` to the corpus (a `corpus_*` variant, following `hir_needs_state_parity`'s pattern), so it is covered before it is fixed | turns an invisible bug into a red test — the same move that caught the exported-let drift |
+| 4 | *Then* the drift: `corpus_defn_liveness_parity` added (green, raw parse) + `dir_bv_as_root_does_not_trip_the_liveness_assert` added **ignored** because it fails | visibility without a red `main`; the ignored test is the repro, to be un-ignored by whoever fixes the drift |
 
 Items 1–2 are workflow-only and cheap. Item 3 is measurement. Item 4 is the
 real work (the `BUGS.md` bisect: `names <- …`, `Free#(x as Ptr<…>)`, or the
