@@ -2241,7 +2241,13 @@ fn codegen(
                 return Err(undelivered
                     .iter()
                     .enumerate()
-                    .map(|(i, m)| if i == 0 { m.clone() } else { format!("error: {m}") })
+                    .map(|(i, m)| {
+                        if i == 0 {
+                            m.clone()
+                        } else {
+                            format!("error: {m}")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join("\n"));
             }
@@ -4062,6 +4068,16 @@ node go [done == false][done == true] {
             verify_bodies: false,
             verify_report: None,
             safe_mode: false,
+            // 2026-11-18: `BuildOptions` gained these two fields after this
+            // helper was written, and nothing noticed because `cargo test --lib`
+            // never compiles the BINARY's test target. The nightly's `--all`
+            // nextest run is the only thing that builds it, so the nightly could
+            // not even compile once the filterset was fixed:
+            //   error[E0063]: missing fields `deny_accel_cpu_fallback` and
+            //   `validate_ir` in initializer of `BuildOptions`
+            // Values match `BuildOptions::default_for(...)`: off.
+            validate_ir: false,
+            deny_accel_cpu_fallback: false,
         }
     }
 

@@ -15,7 +15,16 @@ fn enum_list_elements_survive_later_calls() {
     let out = Path::new("/tmp/opencode/briev-enum_list_lifetime-regression");
     let _ = std::fs::remove_dir_all(out);
 
-    let build = Command::new(Path::new(root).join("target/release/brievc"))
+    // 2026-11-18: use the binary cargo just built, not a hardcoded
+    // `target/release/brievc`. The nightly's AST opt-out suite builds only the
+    // debug profile, so the hardcoded path did not exist there and this test
+    // failed with `build failed:` + an empty stderr — which reads like a compiler
+    // bug rather than a missing file. Locally it "passed" only because a stale
+    // release binary from a previous session happened to be there.
+    // `CARGO_BIN_EXE_brievc` is exported by cargo for integration tests, so the
+    // path and the profile are always the ones under test (dir_smoke.rs and
+    // wasm32_parity.rs already do it this way).
+    let build = Command::new(env!("CARGO_BIN_EXE_brievc"))
         .args([
             "build",
             fixture.to_str().unwrap(),
