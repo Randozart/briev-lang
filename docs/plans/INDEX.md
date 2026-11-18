@@ -80,6 +80,18 @@ fast-forward-only pushes after a fetch) and ships `scripts/sync-main.sh`, which
 refuses off-branch or on a dirty tree, reports what would merge, and prints the
 two known conflict recipes instead of guessing.
 
+**Two remainders: residency branch + GEMM canary (2026-11-18, ACTIVE):**
+`docs/plans/2026-11-18-residency-branch-and-canary.md`. **R1** six UNCONDITIONAL prints (no
+`if verbose` anywhere) across `_2d`/`prime_lazy_buffer` and, decisively, the C driver's
+`briev_dev_opencl_mapped` / `launch_dev2d` — because the Rust-side verbosity is proven
+unreliable in generated runners while the C side demonstrably prints. Three outcomes: a
+named branch and fix; "OpenCL residency is capability-gated by design" (`capabilities = 0`,
+no shared state, no SVM → copies are not removable) documented with the SVM follow-up; or the
+surprising case — a branch that fires without logging — which is itself the bug. **R2** the
+`g0_gemm` canary (recompute the `a`/`b` closed form, check them plus the projection scalars)
+and, crucially, prove it RED under a vendored pre-fix `LocalSize` parse while `BAD=0` — the
+contrast is the gate.
+
 **Residency truth, GEMM canary, pin (2026-11-18, ACTIVE — D1 closed at 0/336):**
 `docs/plans/2026-11-18-residency-canary-pin.md`. **B2** run the `.abv` *runner* (not
 `brievc run`) with `BRIEV_ACCEL_VERBOSE=1` and read which of the three residency fallbacks
