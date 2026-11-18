@@ -215,6 +215,13 @@ fn undefined_call_targets(ir: &str) -> Option<String> {
             if !after.starts_with('(') {
                 continue; // a reference (e.g. a function pointer), not a call target
             }
+            // `@llvm.*` are LLVM's own intrinsics: always available, never
+            // declared in the module. Flagging them made this check reject two
+            // healthy programs (`@llvm.smax.i64`, `@llvm.exp.f32`) — the
+            // allowance ratchet caught it, which is exactly what it is for.
+            if name.starts_with("llvm.") {
+                continue;
+            }
             if !defined.contains(name.as_str()) && !missing.contains(&name) {
                 missing.push(name);
             }
@@ -449,6 +456,9 @@ mod tests {
         assert!(undefined_call_targets(ok).is_none(), "{:?}", undefined_call_targets(ok));
         let indirect = "define i32 @main() {\nentry:\n  %f = load ptr, ptr @cmp_int\n  ret i32 0\n}\n";
         assert!(undefined_call_targets(indirect).is_none(), "a global reference is not a call");
+        // LLVM intrinsics need no declaration in the module.
+        let intrinsic = "define i32 @main() {\nentry:\n  %1 = call i64 @llvm.smax.i64(i64 1, i64 2)\n  ret i32 0\n}\n";
+        assert!(undefined_call_targets(intrinsic).is_none(), "{:?}", undefined_call_targets(intrinsic));
     }
 
     #[test]

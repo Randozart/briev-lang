@@ -740,7 +740,11 @@ impl LlvmBackend {
                         )
                     })
                     .collect();
-                eprintln!("[cm_body] {} statement(s): {}", kinds.len(), kinds.join(" | "));
+                eprintln!(
+                    "[cm_body] {} statement(s): {}",
+                    kinds.len(),
+                    kinds.join(" | ")
+                );
             }
 
             // 2026-07-17: Initialize pending_phi_backedge with identity values.
@@ -2706,18 +2710,27 @@ impl LlvmBackend {
                     // whose column row types as Int; without the pin the
                     // spawn-site wrapper re-wraps the arg into a PRIVATE slot
                     // and payload projections deref address 0.
+                    //
+                    // 2026-11-18 (D1, BUGS.md loop-carried Float): the Event pin
+                    // was the local form of a general rule — THE DECLARED TYPE
+                    // WINS — and applying it only there left every other declared
+                    // local typed from its INITIALISER. `let acc_: Float = 0;`
+                    // registered Int, so `emit_foreach_statement` gave the carrier
+                    // an i64 slot: the accumulator was round-tripped through an
+                    // integer each iteration (sitofp → fadd → fptosi, losing its
+                    // fraction) and the loop backedge read an i64 into `fadd
+                    // float`. The value is coerced with `coerce_register_value` —
+                    // the helper whose doc comment cites this exact case
+                    // (int-literal-float-init) and which the ordinary `let` path
+                    // already uses, so handle-like declared types pass through
+                    // unchanged.
                     if let Statement::Let { ty: Some(dt), .. } = stmt {
-                        if crate::backend::llvm::emit_stmt::is_event_type(dt) {
-                            self.fun.let_binding_types.insert(name.clone(), dt.clone());
-                            self.fun.let_original_types.insert(name.clone(), dt.clone());
-                        } else {
-                            self.fun
-                                .let_binding_types
-                                .insert(name.clone(), reg.ty.clone());
-                            self.fun
-                                .let_original_types
-                                .insert(name.clone(), reg.ty.clone());
-                        }
+                        let coerced = self.coerce_register_value(out, "  ", &reg, dt);
+                        self.fun
+                            .let_bindings
+                            .insert(name.clone(), coerced.name.clone());
+                        self.fun.let_binding_types.insert(name.clone(), dt.clone());
+                        self.fun.let_original_types.insert(name.clone(), dt.clone());
                     } else {
                         self.fun
                             .let_binding_types

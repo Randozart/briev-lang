@@ -1021,3 +1021,60 @@ fn float16_stores_narrow_instead_of_aliasing() {
         "an integer zero is not a half — the carried-copy must be fadd half <zero>:\n{ir}"
     );
 }
+
+/// 2026-11-18 (BUGS.md loop-carried Float): REGRESSION GATE — a composite's
+/// `Float` local keeps its declared type through the loop-carried lowering.
+///
+/// The countable-body `Statement::Let` arm registered a local's type from its
+/// INITIALISER, so `let acc_: Float = 0;` became an `i64` slot: every iteration
+/// round-tripped the accumulator through an integer (`sitofp` → `fadd` → `fptosi`,
+/// losing the fraction) and the loop backedge read an i64 into `fadd float` —
+/// invalid IR that stopped this example from linking at all.
+///
+/// The gate builds the REAL reproducer (`examples/syntax/meta/defn-composite.bv`),
+/// not a bespoke fixture: a smaller twin written during the investigation passed
+/// both with and without the fix, so it would have been decoration.
+#[test]
+fn composite_float_accumulator_keeps_its_declared_type() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let out_dir = Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/defn_composite__facc");
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let fixture = Path::new(PROJECT_ROOT).join("examples/syntax/meta/defn-composite.bv");
+
+    // `--llvm` alone used to return 0 on this program; the verifier now rejects it.
+    let build = Command::new(brievc)
+        .args([
+            "build",
+            &fixture.to_string_lossy(),
+            "--llvm",
+            "--out",
+            &out_dir.to_string_lossy(),
+            "--stdlib-path",
+            &format!("{PROJECT_ROOT}/lib/std"),
+            "--config-dir",
+            &format!("{PROJECT_ROOT}/config"),
+        ])
+        .env("BRIEV_HOME", PROJECT_ROOT)
+        .output()
+        .expect("spawn brievc build");
+    assert!(
+        build.status.success(),
+        "defn-composite must produce valid IR:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let ir = std::fs::read_to_string(out_dir.join("defn-composite.ll")).expect("read emitted IR");
+    assert!(
+        !ir.contains("fptosi"),
+        "the accumulator must not be truncated back to an integer every iteration:\n{ir}"
+    );
+    assert!(
+        ir.contains("alloca float"),
+        "the accumulator's slot must be float, not i64:\n{ir}"
+    );
+}
