@@ -1,0 +1,29 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// ch01_basics — the runnable companion to learn-briev/01-basics.md: variables,
+// arithmetic, when-guards (Briev has no if/else), and the beginprogram
+// convergence. Expected output pinned in ch01_basics.golden.
+import "std/io.bv";
+
+let score: Int = 95;
+let name: String = "Alice";
+
+node entry [beginprogram][true] {
+    when score >= 90 {
+        Print#(name);
+        Print#(" scored A (");
+        Print#(score as String);
+        Print#(")");
+    };
+    when score < 90 {
+        Print#(name);
+        Print#(" scored B (");
+        Print#(score as String);
+        Print#(")");
+    };
+    let doubled: Int = score * 2;
+    Print#("| doubled=");
+    Print#(doubled as String);
+    endprogram Print#("");
+};

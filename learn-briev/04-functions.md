@@ -1,5 +1,8 @@
 # Functions with Contracts
 
+> **Runnable companion:** `learn-briev/examples/04-functions.bv` compiles, runs, and its output is pinned in CI (`tests/learn_briev_examples.rs`) — the machine-checked face of this chapter.
+
+
 Functions (`defn`) are pure computations. Unlike transactions, they don't mutate
 state outside themselves — their result reaches the outside only through a
 caller's assignment.

@@ -1,0 +1,28 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// ch05_data_types — companion to learn-briev/05-data-types.md: enums with
+// payloads, match exhaustiveness, List literals and Count#.
+import "std/io.bv";
+
+enum Shape {
+    Circle(Int),
+    Rect(Int, Int),
+};
+
+defn area(s: Shape) [true][term >= 0] -> Int {
+    match s {
+        Circle(r) => 3 * r * r,
+        Rect(w, h) => w * h,
+    };
+};
+
+node entry [beginprogram][true] {
+    let shapes: List<Shape> = [Circle(2), Rect(3, 4)];
+    Print#(shapes.Count#() as String);
+    Print#("|");
+    Print#(area(shapes[0]) as String);
+    Print#("|");
+    Print#(area(shapes[1]) as String);
+    endprogram Print#("");
+};

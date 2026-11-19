@@ -1,5 +1,8 @@
 # String Manipulation
 
+> **Runnable companion:** `learn-briev/examples/06-string.bv` compiles, runs, and its output is pinned in CI (`tests/learn_briev_examples.rs`) — the machine-checked face of this chapter.
+
+
 Briev provides comprehensive string operations, all implemented natively (no FFI).
 
 ## 0. String and byte literals

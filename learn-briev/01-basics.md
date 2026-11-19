@@ -1,5 +1,8 @@
 # Briev Basics
 
+> **Runnable companion:** `learn-briev/examples/01-basics.bv` compiles, runs, and its output is pinned in CI (`tests/learn_briev_examples.rs`) — the machine-checked face of this chapter.
+
+
 ## 1. State Declarations
 
 All state in Briev is declared globally with `let`:

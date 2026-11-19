@@ -1,5 +1,8 @@
 # Data Types: Collections & Structures
 
+> **Runnable companion:** `learn-briev/examples/05-data-types.bv` compiles, runs, and its output is pinned in CI (`tests/learn_briev_examples.rs`) — the machine-checked face of this chapter.
+
+
 Briev provides powerful built-in data types with O(1) operations.
 
 ## 1. HashMap<K, V>

@@ -1,0 +1,26 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// ch04_functions — companion to learn-briev/04-functions.md: defn with
+// contracts [pre][post], term expressions, and recursion.
+import "std/io.bv";
+
+defn double(x: Int) [x >= 0][term == 2 * x] -> Int {
+    term x + x;
+};
+
+defn fact(n: Int) [n >= 0 && n <= 12][term >= 1] -> Int {
+    when n <= 1 {
+        term 1;
+    };
+    term n * fact(n - 1);
+};
+
+node entry [beginprogram][true] {
+    Print#(double(21) as String);
+    Print#("|");
+    Print#(fact(5) as String);
+    Print#("|");
+    Print#(fact(10) as String);
+    endprogram Print#("");
+};
