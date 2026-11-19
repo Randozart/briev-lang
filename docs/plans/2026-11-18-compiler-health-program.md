@@ -227,7 +227,22 @@ it belongs to is caught by `ir_verify`; the census gate is green after the
 renames; `bash scripts/gate.sh quick` and the full corpus census unchanged
 otherwise.
 
-## 6. P1 — Land the four dogfooding PRs
+## 6. P1 — Land the four dogfooding PRs — ✅ ALL LANDED 2026-11-18
+
+Each was applied to `main` with its review deltas instead of being squash-merged,
+so the hardening is visible as its own commit:
+
+| PR | landed as | delta applied |
+|---|---|---|
+| #126 | `6e2f80150` + `87c2d1d5c` | a `--stdlib-path` with no value now errors (`--stdlib-path requires a path argument`); the duplicate `BRIEV_STDLIB_PATH` fallback removed (the resolver already reads it as rung 2) |
+| #127 | `2abb4b076` | widened from `matches!(pre, BeginProgram)` to any `beginprogram` CONJUNCT — `[beginprogram && done == 0]` still warned and the original arm could not see it; third test added |
+| #125 | `e1f6f1971` | usage on **stdout** (exit 0) for an explicit help request, stderr for misuse; scan stops at `--` so `run app.bv -- --help` is not hijacked; two tests |
+| #128 | `e855c1271` | `serve_accept`'s `[true]` became `[listener.fd >= -4096]`; the tier1 `buf_as_string` no longer frees the buffer it returns (it was a use-after-free behind a vacuous post); `serve_bounded`'s post kept after checking it derives from `buf_new` |
+
+#129 was closed as superseded (§3). All five PRs are closed; their content is on
+`main`.
+
+### Original triage text (kept for context)
 
 Per-PR detail and the exact deltas are in `2026-11-18-open-pr-triage.md`. Summary
 of what changes before each lands:
