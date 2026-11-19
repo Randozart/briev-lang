@@ -1,3 +1,27 @@
+## 2026-11-19 — trunk owners-census regressed +1 conservative drop (2196→2197); kiosk pin advance blocked (OPEN)
+
+The kiosk (briev-kiosk-avatar) `memcheck_ratchet` baseline is
+`releases=73, undecided=0, drops=2196`. Measured 2026-11-19:
+
+* **pinned compiler `df624d41e` → 73 / 0 / 2196** (exactly the baseline — the
+  pin is clean).
+* **trunk `3dccbfc80` (this main) → 73 / 0 / 2197** (+1 conservative drop).
+
+The four memcheck files (`src/analysis/global_lifetime.rs`,
+`src/analysis/allocation.rs`, `src/hir/owned_storage.rs`,
+`src/macros/memcheck.rs`) are **unchanged** in
+`df624d41e..3dccbfc80`, so the +1 drop comes from a broader upstream
+change pulled in by the trunk sync-merge (the census counts owners the pass
+*proves* must not be freed; one more such value now lands in that bucket).
+Not P1 (OpenCL C driver) or P2 (GEMM fixture) — neither touches analysis.
+
+**Consequence:** the kiosk pin must stay at `df624d41e` (commit `dc3ecc0`).
+Advancing it to trunk would take the ratchet from 2196 to 2197, which the
+ratchet forbids (drops may not grow). The +1 drop needs a root-cause
+before the pin may advance: identify the upstream commit that added the
+extra proven-not-freed value, and confirm it is a genuine leak-by-design
+(baseline update) vs. a lost release (regression to fix).
+
 ## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
 
 **Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture
