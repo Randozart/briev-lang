@@ -92,6 +92,7 @@ pub fn execute_intrinsic(
     heap: &mut VirtualHeap,
 ) -> Result<Value, RuntimeError> {
     match name {
+        "Spawn#" | "SpawnWithOutput#" => execute_shell_spawn(name, args, heap),
         // 2026-08-12 (Iterable protocol): `CharCount#(s)` — the UTF8 CHAR
         // count of a String (a computed property, so an intrinsic; `.^Length`
         // is the stored byte count).
@@ -1119,6 +1120,50 @@ fn arg_as_f64(args: &[Value], index: usize) -> Result<f64, RuntimeError> {
         })
 }
 
+/// 2026-11-19: reference semantics for the shell-string process intrinsics.
+/// Match system/popen: inherited stdin/stderr, stdout inherited or captured,
+/// decoded exit status (-1 for a signal/start failure), capture independent of
+/// exit status. A C command ends at its first NUL; captured bytes do not.
+fn execute_shell_spawn(
+    name: &str,
+    args: &[Value],
+    heap: &VirtualHeap,
+) -> Result<Value, RuntimeError> {
+    use std::process::{Command, Stdio};
+    let command = args
+        .first()
+        .and_then(|value| value.string_bytes(heap))
+        .ok_or_else(|| RuntimeError::TypeError {
+            expected: "String command".into(),
+            found: format!("{:?}", args.first()),
+        })?;
+    let command = command.split(|byte| *byte == 0).next().unwrap_or_default();
+    let mut child = Command::new("/bin/sh");
+    child.arg("-c");
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        child.arg(std::ffi::OsStr::from_bytes(command));
+    }
+    #[cfg(not(unix))]
+    child.arg(String::from_utf8_lossy(command).as_ref());
+    child.stdin(Stdio::inherit()).stderr(Stdio::inherit());
+    if name == "Spawn#" {
+        let code = child
+            .stdout(Stdio::inherit())
+            .status()
+            .ok()
+            .and_then(|status| status.code())
+            .unwrap_or(-1);
+        return Ok(Value::int(i64::from(code)));
+    }
+    let bytes = child
+        .output()
+        .map(|output| output.stdout)
+        .unwrap_or_default();
+    Ok(Value::bits(bytes))
+}
+
 fn arg_as_string(args: &[Value], index: usize) -> Result<String, RuntimeError> {
     match args.get(index) {
         Some(Value::Bits(bytes)) => Ok(String::from_utf8_lossy(bytes).to_string()),
@@ -1140,6 +1185,31 @@ fn resolve_address_for_interp(id: &str) -> u64 {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    #[cfg(unix)]
+    fn shell_process_intrinsics_preserve_status_and_capture_bytes() {
+        let mut heap = VirtualHeap::new();
+        for (command, expected) in [("exit 7", 7), ("kill -TERM $$", -1), ("exit 0\0exit 9", 0)] {
+            let argument = Value::bits(command.as_bytes().to_vec());
+            assert_eq!(
+                execute_intrinsic("Spawn#", &[argument], &mut heap)
+                    .unwrap()
+                    .as_i64(),
+                Some(expected)
+            );
+        }
+        let argument = Value::bits(b"printf 'a\\000b'; exit 9".to_vec());
+        let captured = execute_intrinsic("SpawnWithOutput#", &[argument], &mut heap).unwrap();
+        assert_eq!(captured.string_bytes(&heap).unwrap(), b"a\0b");
+        let argument = Value::bits(b"printf '\xff'".to_vec());
+        let captured = execute_intrinsic("SpawnWithOutput#", &[argument], &mut heap).unwrap();
+        assert_eq!(captured.string_bytes(&heap).unwrap(), [255]);
+        for name in ["Spawn#", "SpawnWithOutput#"] {
+            assert!(execute_intrinsic(name, &[], &mut heap).is_err());
+            assert!(execute_intrinsic(name, &[Value::int(0)], &mut heap).is_err());
+        }
+    }
 
     #[test]
     fn test_add_i64() {

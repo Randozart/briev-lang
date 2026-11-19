@@ -4,6 +4,14 @@
 
 **Status:** Living document — updated as the backend evolves.
 
+2026-11-19 (shell process boundary): `Spawn#` and `SpawnWithOutput#` consume the
+NUL-terminated byte region of a Briev String, not its length header. The runtime
+capture helper returns an owned current-ABI `[length][bytes][NUL]` block directly;
+LLVM uses its pointer as the String result. Empty captures own storage too.
+Capture preserves embedded NULs and does not discard stdout on a nonzero exit.
+The interpreter uses the same shell/status/capture semantics. Both intrinsics
+are admitted with executable coverage in `tests/process_spawn.rs`.
+
 2026-11-15 (integration boundary): scalar floating division normalizes
 integer-spelled operands before checking the promoted divisor for zero. The
 check's LLVM type comes from that divisor's Float protocol, including Float64.

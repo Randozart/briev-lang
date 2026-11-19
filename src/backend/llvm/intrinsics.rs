@@ -88,101 +88,48 @@ pub fn emit_intrinsic_call(
 
         "GetEnv#" => return emit_get_env(backend, out, v, args, indent),
         "GetEnvInt#" => return emit_get_env_int(backend, out, v, args, indent),
-        // 2026-08-23 (process.bv revival): process/environment intrinsics.
-        // String returns pack as { i64 len, i64 data-ptr } via the same
-        // pattern as emit_get_env (helpers return malloc'd C strings).
+        // 2026-08-23 (process.bv revival), repaired 2026-11-19: commands
+        // pass their C byte region; capture returns an owned Briev String
+        // block. The retired two-word String ABI must not cross this boundary.
         "Spawn#" => {
             let cmd = backend.emit_expr(out, &args[0], indent);
             let cmd_ptr = backend.string_ptr(out, indent, &cmd);
+            let bytes = backend.fun.gen_reg();
+            writeln!(
+                out,
+                "{indent}{bytes} = getelementptr i8, ptr {cmd_ptr}, i64 8"
+            )
+            .ok();
             let r = backend.fun.gen_reg();
             writeln!(
                 out,
                 "{}{} = call i64 @__briev_spawn(ptr {})",
-                indent, r, cmd_ptr
+                indent, r, bytes
             )
             .ok();
             return BTypedRegister {
-                name: r,
+                name: narrow_int_result(backend, out, &r, indent),
                 ty: Type::int(),
             };
         }
         "SpawnWithOutput#" => {
             let cmd = backend.emit_expr(out, &args[0], indent);
             let cmd_ptr = backend.string_ptr(out, indent, &cmd);
-            let cstr = backend.fun.gen_reg();
+            let bytes = backend.fun.gen_reg();
+            writeln!(
+                out,
+                "{indent}{bytes} = getelementptr i8, ptr {cmd_ptr}, i64 8"
+            )
+            .ok();
+            let result = backend.fun.gen_reg();
             writeln!(
                 out,
                 "{}{} = call ptr @__briev_spawn_output(ptr {})",
-                indent, cstr, cmd_ptr
-            )
-            .ok();
-            let is_null = backend.fun.gen_reg();
-            writeln!(out, "{}{} = icmp eq ptr {}, null", indent, is_null, cstr).ok();
-            let fb = backend.fun.gen_reg();
-            writeln!(out, "{}{} = alloca i8, i64 1", indent, fb).ok();
-            writeln!(out, "{}store i8 0, ptr {}", indent, fb).ok();
-            let safe_ptr = backend.fun.gen_reg();
-            writeln!(
-                out,
-                "{}{} = select i1 {}, ptr {}, ptr {}",
-                indent, safe_ptr, is_null, fb, cstr
-            )
-            .ok();
-            let len = backend.fun.gen_reg();
-            // 2026-09-10 (Family F): cstr_len is a pure-Briev defn (cast_lanes)
-            // — removes the last libc strlen reference from GetCwd#.
-            // 2026-09-23 (stateless-defn mechanism): it is stateless (Load#);
-            // pass %state only when the defn takes it.
-            if backend.ctx.defn_params.contains_key("cstr_len") {
-                let st = if backend.ctx.defn_takes_state("cstr_len") {
-                    "ptr %state, "
-                } else {
-                    ""
-                };
-                writeln!(
-                    out,
-                    "{}{} = call i64 @cstr_len({}ptr {})",
-                    indent, len, st, safe_ptr
-                )
-                .ok();
-            } else {
-                writeln!(
-                    out,
-                    "{}{} = call i64 @strlen(ptr {})",
-                    indent, len, safe_ptr
-                )
-                .ok();
-            }
-            let data_raw = backend.fun.gen_reg();
-            writeln!(
-                out,
-                "{}{} = ptrtoint ptr {} to i64",
-                indent, data_raw, safe_ptr
-            )
-            .ok();
-            let data = backend.fun.gen_reg();
-            writeln!(
-                out,
-                "{}{} = select i1 {}, i64 0, i64 {}",
-                indent, data, is_null, data_raw
-            )
-            .ok();
-            let t1 = backend.fun.gen_reg();
-            writeln!(
-                out,
-                "{}{} = insertvalue {{ i64, i64 }} undef, i64 {}, 0",
-                indent, t1, data
-            )
-            .ok();
-            let t2 = backend.fun.gen_reg();
-            writeln!(
-                out,
-                "{}{} = insertvalue {{ i64, i64 }} %{}, i64 {}, 1",
-                indent, t2, t1, len
+                indent, result, bytes
             )
             .ok();
             return BTypedRegister {
-                name: t2,
+                name: result,
                 ty: Type::string(),
             };
         }
