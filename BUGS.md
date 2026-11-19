@@ -258,7 +258,7 @@ kernel silently stays on the CPU lane. Still open — see the accel-surface resu
 file (`benchmarks/results/2026-11-17-accel-surface-survey.md`), which now makes the
 silence a build warning and a CI error under `--deny-accel-cpu-fallback`.
 
-## 2026-11-18 — OpenCL resident path crashes; the driver entries must not be advertised (OPEN)
+## 2026-11-18 — OpenCL resident path crashes; the driver entries must not be advertised (FIXED 2026-11-19)
 
 Measured on PTL with unconditional probes: with `launch_dev`/`launch_dev2d` in the OpenCL
 driver table, `briev_accel_launch_resident_2d` IS entered, every precondition passes
@@ -266,10 +266,13 @@ driver table, `briev_accel_launch_resident_2d` IS entered, every precondition pa
 the process **dumps core** between `seed_or_sync_scalars` and the driver dispatch (the C
 function's first print never fires).
 
-Most likely cause, from reading the paths: OpenCL's `mapped()` returns `k->staging`, which
-is only set by the **copy path** and points at a `proj_out` buffer that
-`briev_dev_opencl_launch` has already `clReleaseMemObject`'d — so the first dirty-range write
-in `seed_or_sync_scalars` is a use-after-free.
+**Root cause (2026-11-19):** `gdb` backtrace on PTL shows the SIGSEGV inside
+`seed_or_sync_scalars` (called from `briev_accel_launch_resident_2d`). The OpenCL copy path
+did `k->staging = proj_out`, where `proj_out` is the runtime's **local `Vec`** in
+`briev_accel_launch` (`accel_rt.rs:799`) — freed when that priming launch returns. The
+resident path then re-fetches `mapped()` and `seed_or_sync_scalars` writes the dirty ranges
+through that dangling pointer. **Use-after-free.** (The earlier "uaf hypothesis refuted" note
+was wrong: it assumed `proj_out` lives for the process, but it is call-local.)
 
 Two confusions this cost, both worth recording:
 
@@ -279,8 +282,14 @@ Two confusions this cost, both worth recording:
 * two sessions read that copy path as "OpenCL residency is refused by design". It is not: it
   is *broken*.
 
-**Action:** the entries are commented out of the driver table with this measurement beside
-them. Copy path restored on OpenCL (0.027 ms), levelzero unchanged (0.190–0.204 ms).
+**Fix (2026-11-19):** the driver now owns a persistent host window `own_staging` (grown with
+`realloc`, freed in `destroy_kernel`), and `staging` aliases it — mirroring the levelzero
+driver's host-USM staging. A new `opencl_stage_result()` helper copies the device result
+into `own_staging` after each launch. The two resident entries are **re-advertised**.
+
+**Verified (2026-11-19, PTL):** 5× `exit=0`, no crash. OpenCL resident **0.028 ms** (6 runs)
+vs levelzero **0.198 ms** (3 runs) — 7× faster. Output matches levelzero. Verbose confirms
+`resident dispatch global=1048576 local=256 dirty=0 full=1`.
 
 ## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED (OPEN)
 
