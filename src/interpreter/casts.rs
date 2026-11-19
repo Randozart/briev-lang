@@ -3,6 +3,7 @@
 // Type casts reinterpret Value::Bits bytes between type interpretations.
 // IsType checks the byte width for type compatibility.
 
+use super::eval::known_target_protocol_category;
 use crate::ast::{Expr, Type};
 use crate::errors::RuntimeError;
 use crate::interpreter::{Atom, Value, f64_to_bits, i64_to_bits};
@@ -10,23 +11,22 @@ use crate::interpreter::{Atom, Value, f64_to_bits, i64_to_bits};
 /// 2026-08-06 (Slice B): Whether a value is a member of a target type.
 /// Membership is decided by the value's semantic category, not by byte width:
 /// an Int atom is a member of the Int family, a Float atom of the Float
-/// family, raw Bits of `Bit`/String/Data, a `Product` of tuple/collection
+/// family, raw Bits of String, a Data word of Data/Blob, a `Product` of tuple/collection
 /// types, a `Ref` of pointer types. `Union` is a member when any variant is.
 /// Returns an Atom::Bool.
 pub fn eval_is_type(val: &Value, target: &Type) -> Result<Value, RuntimeError> {
     let is_member = match target {
-        Type::Custom(name) => match name.as_str() {
-            "Int" | "UInt" | "Int64" | "UInt64" | "Int32" | "UInt32" | "Int16" | "UInt16"
-            | "Int8" | "UInt8" => matches!(val, Value::Atom(Atom::Int(_))),
-            "Float" | "Float64" | "Float32" | "Double" => {
+        Type::Custom(_) => match known_target_protocol_category(target).as_deref() {
+            Some("Int" | "UInt") => matches!(val, Value::Atom(Atom::Int(_))),
+            Some("Float") => {
                 matches!(val, Value::Atom(Atom::Float(_)))
             }
-            "Bool" => matches!(val, Value::Atom(Atom::Bool(_))),
-            "Char" => matches!(val, Value::Atom(Atom::Char(_))),
-            "String" | "Blob" => matches!(val, Value::Bits(_)),
+            Some("Bool") => matches!(val, Value::Atom(Atom::Bool(_))),
+            Some("Char") => matches!(val, Value::Atom(Atom::Char(_))),
+            Some("String") => matches!(val, Value::Bits(_)),
+            Some("Data" | "Blob") => matches!(val, Value::Data(_)),
             _ => false,
         },
-        Type::Bits(_) => matches!(val, Value::Bits(_)),
         // 2026-09-11 (fundamentals doctrine, Phase A4): the Bit spellings
         // are retired; the Bits content view remains via Type::Bits.
         Type::Bits(_) => matches!(val, Value::Bits(_)),
@@ -45,24 +45,24 @@ pub fn eval_is_type(val: &Value, target: &Type) -> Result<Value, RuntimeError> {
 
 /// Evaluate a type cast: reinterpret Value::Bits bytes between types.
 pub fn eval_cast(val: Value, target: &Type) -> Result<Value, RuntimeError> {
-    match target {
-        Type::Custom(name) if name == "Float" || name == "Float64" => {
+    match (target, known_target_protocol_category(target).as_deref()) {
+        (_, Some("Float")) => {
             let n = val.as_i64().unwrap_or(0);
             Ok(f64_to_bits(n as f64))
         }
-        Type::Custom(name) if name == "Int" || name == "Int64" || name == "Bool" => {
+        (_, Some("Int" | "UInt" | "Bool")) => {
             let bytes = val.bits_to_vec(8);
             Ok(Value::Bits(bytes))
         }
-        Type::Custom(name) if name == "String" => {
+        (_, Some("String")) => {
             let s = bits_to_string(&val);
             Ok(Value::Bits(s.into_bytes()))
         }
         // 2026-09-11 (Phase A4): the Bit cast target is retired; casting to
         // Bits yields the bytes unchanged (the backend's ptrtoint content-view
         // cast is the address of those same bytes).
-        Type::Bits(_) => Ok(val),
-        Type::Custom(name) if name == "Char" => {
+        (Type::Bits(_), _) => Ok(val),
+        (_, Some("Char")) => {
             let code = val.as_i64().unwrap_or(0) as u32;
             let ch = char::from_u32(code).unwrap_or('\0');
             Ok(Value::Bits((ch as u32).to_le_bytes().to_vec()))

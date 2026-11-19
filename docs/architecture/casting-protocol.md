@@ -6,6 +6,23 @@
 
 ---
 
+## Reference evaluation of Data (2026-11-19)
+
+`Value::Data` carries the raw word separately from an Int atom. Its category
+survives bindings, calls and aggregate projection, so a named Data→String
+conversion takes the same encoding door as a directly nested cast. The
+interpreter copies the referenced `[length][bytes]` into its owned String
+value; releasing the source buffer afterwards is valid. Float64 raw words
+round-trip through Data without numeric conversion. Numeric scalar→String
+continues to invoke the stdlib cast lane. The reference numeric Float atom
+still lacks declared storage-format metadata; narrow-format raw casts require
+that separate metadata repair and are not covered by the Float64 guarantee.
+LLVM's Float64→Data door emits the equal-width `double → i64` bitcast; equality
+of bit widths does not require equality of LLVM type spellings.
+Mixed-width Float arithmetic and comparisons promote to the wider operand in
+the shared operand normalizer before template or fallback emission.
+The regression is `tests/interpreter_data_cast.rs`.
+
 ## Overview
 
 Briev writes casts with `as` (`let n = handle as Int;`). Internally the

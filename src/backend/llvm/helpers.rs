@@ -2444,7 +2444,7 @@ impl LlvmBackend {
 
     /// Mixed float/int binop operands: convert the integer side to the
     /// float width (sitofp) so both fcmp/fadd sides agree. Returns None
-    /// when no conversion is needed (same-category operands, non-float
+    /// when no conversion is needed (same-width Float operands, non-float
     /// ops). Ptr sides are left alone — the pointer arms handle them.
     /// 2026-09-02 (plan fundamental-parent-membership): the category
     /// protocol AUTHORIZES `y < 100`-style mixed comparisons (`y:
@@ -2461,6 +2461,9 @@ impl LlvmBackend {
     ) -> Option<(TypedRegister, TypedRegister)> {
         let l_fbits = self.float_category_bits(&l.ty);
         let r_fbits = self.float_category_bits(&r.ty);
+        if let Some(pair) = self.adapt_float_width_operands(out, indent, l, r) {
+            return Some(pair);
+        }
         let mixed = l_fbits.is_some() != r_fbits.is_some();
         if !mixed {
             return None;
@@ -2501,6 +2504,54 @@ impl LlvmBackend {
             TypedRegister { name: t, ty: fty }
         };
         Some((lc, rc))
+    }
+
+    /// 2026-11-19: comparisons and arithmetic may combine two Float protocol
+    /// widths. Promote to the wider operand before either template or fallback
+    /// emission; otherwise a Float64 result compared to a literal emits an
+    /// invalid mixed-width fcmp. Retire when typed operands arrive promoted.
+    fn adapt_float_width_operands(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        left: &TypedRegister,
+        right: &TypedRegister,
+    ) -> Option<(TypedRegister, TypedRegister)> {
+        let left_bits = self.float_category_bits(&left.ty)?;
+        let right_bits = self.float_category_bits(&right.ty)?;
+        if left_bits == right_bits {
+            return None;
+        }
+        let (narrow, wide) = if left_bits < right_bits {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let source = self.llvm_type(&narrow.ty);
+        let target = self.llvm_type(&wide.ty);
+        // Non-IEEE formats use declared conversion lanes, not LLVM fpext.
+        if !matches!(source.as_str(), "half" | "bfloat" | "float" | "double")
+            || !matches!(target.as_str(), "half" | "bfloat" | "float" | "double")
+            || source == target
+        {
+            return None;
+        }
+        let name = self.fun.gen_reg();
+        writeln!(
+            out,
+            "{indent}{name} = fpext {} {} to {}",
+            source, narrow.name, target
+        )
+        .ok();
+        let promoted = TypedRegister {
+            name,
+            ty: wide.ty.clone(),
+        };
+        Some(if left_bits < right_bits {
+            (promoted, right.clone())
+        } else {
+            (left.clone(), promoted)
+        })
     }
 
     /// Normalize mixed integer operands to the wider declared LLVM width.

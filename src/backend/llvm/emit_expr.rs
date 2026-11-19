@@ -11663,6 +11663,12 @@ impl LlvmBackend {
                 }
             }
         }
+        // 2026-09-02 (fundamental-parent-membership): normalize mixed numeric
+        // operands before config and fallback emission. 2026-11-19: do this
+        // before deriving the result width too, so either Float operand order
+        // gives a result stamp matching the actual promoted register.
+        let promoted = self.adapt_mixed_float_operands(out, indent, l, r);
+        let (l, r) = promoted.as_ref().map(|(l, r)| (l, r)).unwrap_or((l, r));
         // 2026-09-02 (plan fundamental-parent-membership): float-ness and
         // width derive from (protocol, metadata) — float_category_bits —
         // never type-name equality (rule 19). Float16 emits `fadd half`
@@ -11712,23 +11718,6 @@ impl LlvmBackend {
         } else {
             Type::int()
         };
-        // 2026-09-02 (plan fundamental-parent-membership): mixed float/int
-        // operands convert the integer side to the float width BEFORE the
-        // config-template dispatch (see adapt_mixed_float_operands) — the
-        // category protocol AUTHORIZES `y < 100`-style mixed comparisons
-        // (`y: Float16`, contract literals), and both the templates and
-        // the fallback arms otherwise emit raw-mixed fcmp/fadd (invalid
-        // IR).
-        let l_owned;
-        let r_owned;
-        let (l, r): (&TypedRegister, &TypedRegister) =
-            if let Some((lc, rc)) = self.adapt_mixed_float_operands(out, indent, l, r) {
-                l_owned = lc;
-                r_owned = rc;
-                (&l_owned, &r_owned)
-            } else {
-                (l, r)
-            };
         // 2026-07-18: Phase 0 — try config-driven dispatch first.
         // The OP_CONFIG maps (op_name, type_name, bytes) → LLVM IR template.
         // If the config has an entry, fill the template and skip hardcoded matches.
@@ -12682,6 +12671,15 @@ impl LlvmBackend {
             // guess from the stamped type.
             self.fun.reg_value_ll.insert(dst.clone(), dst_ll.clone());
             match &step.lane {
+                crate::casting::graph::LaneKind::Bitcast
+                    if (cur_ll.as_str(), dst_ll.as_str()) == ("double", "i64") =>
+                {
+                    // 2026-11-19: the 64-bit Float→Data representation door
+                    // is equal-width, like its inverse below. The old guard
+                    // compared LLVM spellings and panicked on this valid cast.
+                    // Retire when one lowerer covers equal-width scalar kinds.
+                    writeln!(out, "{}{} = bitcast double {} to i64", indent, dst, cur).ok();
+                }
                 crate::casting::graph::LaneKind::Bitcast => {
                     // 2026-08-13 (pack): LLVM `bitcast` requires equal-width
                     // operands. A Bit lane between integer widths of different
