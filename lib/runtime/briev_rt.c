@@ -27,6 +27,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/syscall.h>
 #ifdef __linux__
 #include <sys/utsname.h>
@@ -180,46 +181,13 @@ __attribute__((always_inline)) int64_t __print_float64(double f) {
 
 
 
-// 2026-07-25: ShellCmd# runtime implementation.
-// Runs a shell command via popen() and returns stdout as a Briev String.
-// Expected LLVM signature: call i64 @ShellCmd(i64 %cmd_bstr)
+// 2026-07-25: ShellCmd# runtime implementation. 2026-11-19: share the
+// byte-preserving capture and checked growth used by SpawnWithOutput#.
+// Expected LLVM signature: call i64 @ShellCmd(i64 %cmd_bstr).
+uint8_t* __briev_spawn_output(const uint8_t* cmd);
 int64_t ShellCmd(int64_t cmd_bstr) {
-    // Extract C string from Briev String handle
-    int64_t handle = cmd_bstr & ~3ULL;  // strip tag bits
-    int64_t len = *(int64_t*)(uintptr_t)handle;  // read length prefix
-    char* cstr = (char*)(uintptr_t)(handle + 8);  // data starts after length
-    char* buf = (char*)calloc(len + 32, 1);
-    if (!buf) return 0;
-    memcpy(buf, cstr, len);
-    
-    // Run command via popen
-    FILE* f = popen(buf, "r");
-    free(buf);
-    if (!f) return 0;
-    
-    // Read output into a growing buffer
-    size_t out_cap = 4096;
-    size_t out_len = 0;
-    char* out = (char*)malloc(out_cap);
-    if (!out) { pclose(f); return 0; }
-    while (fgets(out + out_len, out_cap - out_len, f) != NULL) {
-        out_len = strlen(out);
-        if (out_len + 1024 > out_cap) {
-            out_cap *= 2;
-            out = (char*)realloc(out, out_cap);
-            if (!out) { pclose(f); return 0; }
-        }
-    }
-    pclose(f);
-    
-    // Pack as Briev String: {i64 length, i8 data[]}
-    int64_t total = 8 + out_len;
-    int64_t* result = (int64_t*)malloc(total + 8);  // extra padding
-    if (!result) { free(out); return 0; }
-    result[0] = out_len;
-    memcpy(result + 1, out, out_len);
-    free(out);
-    return (int64_t)(uintptr_t)result;
+    const uint8_t* command = (const uint8_t*)(uintptr_t)(cmd_bstr & ~3ULL);
+    return (int64_t)(uintptr_t)__briev_spawn_output(command + 8);
 }
 
 /* ── Install-time host services (Plan 1 HCALL slice, 2026-08-23) ────────
@@ -273,19 +241,40 @@ int64_t __briev_spawn(const uint8_t* cmd) {
     return -1;
 }
 
+// 2026-11-19: a process capture is an owned [i64 length][bytes][NUL] String,
+// including an empty capture. Never return a C-string pointer or a static
+// fallback that callers could mistake for an owned String. Allocation failure
+// aborts rather than returning an invalid String; I/O/start failures yield empty.
+static uint8_t* briev_empty_capture(void) {
+    uint8_t* result = (uint8_t*)calloc(9, 1);
+    if (!result) abort();
+    return result;
+}
+
 uint8_t* __briev_spawn_output(const uint8_t* cmd) {
     FILE* fp = popen((const char*)cmd, "r");
-    if (!fp) return NULL;
+    if (!fp) return briev_empty_capture();
     size_t cap = 4096, len = 0;
-    uint8_t* buf = (uint8_t*)malloc(cap);
-    if (!buf) { pclose(fp); return NULL; }
+    uint8_t* buf = (uint8_t*)malloc(cap + 9);
+    if (!buf) { pclose(fp); abort(); }
     size_t n;
-    while ((n = fread(buf + len, 1, cap - len - 1, fp)) > 0) {
+    while ((n = fread(buf + 8 + len, 1, cap - len, fp)) > 0) {
         len += n;
-        if (cap - len < 2) { cap *= 2; buf = (uint8_t*)realloc(buf, cap); }
+        if (len != cap) continue;
+        if (cap > (SIZE_MAX - 9) / 2 || cap > INT64_MAX / 2) {
+            free(buf); pclose(fp); abort();
+        }
+        size_t next_cap = cap * 2;
+        uint8_t* grown = (uint8_t*)realloc(buf, next_cap + 9);
+        if (!grown) { free(buf); pclose(fp); abort(); }
+        buf = grown;
+        cap = next_cap;
     }
+    int failed = ferror(fp);
     pclose(fp);
-    buf[len] = 0;
+    if (failed) { free(buf); return briev_empty_capture(); }
+    *(int64_t*)buf = (int64_t)len;
+    buf[8 + len] = 0;
     return buf;
 }
 

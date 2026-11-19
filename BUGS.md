@@ -1,3 +1,21 @@
+## 2026-11-19 — shell spawning rejected and capture used a retired String ABI (FIXED)
+
+`run("exit 7")` and `spawn_with_output("printf probe")` from `std/process.bv`
+failed with unsupported `Spawn#`/`SpawnWithOutput#` on `efd99d7b`. Their LLVM
+arms existed outside the normalizer's admitted set, but merely admitting them
+would pass a String length header as a shell command and produce invalid IR for
+capture's retired `{i64, i64}` String representation. Neither intrinsic had
+reference interpreter semantics.
+
+Both engines now execute shell-string commands and preserve capture bytes.
+Native lowering passes the String byte region; the C capture helper returns an
+owned `[i64 length][bytes][NUL]` String. Growth checks both allocation-size and
+signed-length bounds, preserves the old pointer until realloc succeeds, and
+closes streams on failures. The legacy `ShellCmd` helper shares that capture.
+Interpreter unit tests and `tests/process_spawn.rs` cover status, signal exits,
+empty/multiline/long/binary captures, stdlib wrappers and AST/HIR O0/O3 execution
+with optional Valgrind access checks.
+
 ## 2026-11-19 — named Data values recursively entered numeric String casts (FIXED)
 
 The interpreter represented `Data` as an Int atom and recognized the
