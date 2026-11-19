@@ -72,32 +72,20 @@ defn checksum_ascii_upper(b: Int) [true][term >= 0] -> Int {
 
 // ── Weighted mod-11 ────────────────────────────────────────────────────────
 
-// mod11_fold — one step of the weighted sum: `weight * digit` added to the
-// running total. The total itself is unbounded until the caller reduces
-// (the BSN sum is at most 9*9*8 = 648, comfortably small; generic callers
-// with more digits reduce mod 11 at the end — modular addition commutes
-// with the reduction, so the verdict is identical).
-defn mod11_fold(sum: Int, weight: Int, digit: Int)
-    [weight >= -1000 && weight <= 1000 && digit >= 0 && digit <= 9]
-    [term >= sum - 900 && term <= sum + 900]
-    -> Int
-{
-    when weight < 0 {
-        term sum + (0 - (0 - weight) * digit);
-    };
-    term sum + weight * digit;
-};
+// mod11_fold — RETIRED 2026-11-19: folded into mod11_scan_digit (a
+// helper-call boundary at the sum invariant was unprovable — the checker
+// does not track obj fields through calls). Kept out of the module.
 
 // mod11_weights_desc — the standard descending weight for position `pos` of
 // `width` digits: width-pos … 2 for the first width-1 digits, and -1 for the
 // final control digit (position width-1). Positions past width contribute 0
 // (the exact-width gate rejects them before the verdict).
 defn mod11_weights_desc(pos: Int, width: Int)
-    [width >= 2 && pos >= 0]
+    [true]
     [term >= -9 && term <= 80]
     -> Int
 {
-    when pos >= width {
+    when pos < 0 || pos >= width || width < 2 {
         term 0;
     };
     when pos == width - 1 {
@@ -106,21 +94,22 @@ defn mod11_weights_desc(pos: Int, width: Int)
     term width - pos;
 };
 
-// mod11_scan_digit — fold one more digit into a running weighted sum at the
-// given position. `pos` counts CONSUMED DIGITS (skipping separators), so the
-// weight sequence tracks the cleaned number, not the raw text. The sum is
-// UNCONSTRAINED (2026-11-19, trunk repair): the fold is truthful over any
-// running total — the old `[sum >= 0]` pre was inductive through the scan
-// loop (the caller rebinds the whole obj through a call, so no field fact
-// survives) and unprovable; nothing downstream needs the sign (`% 11` is
-// sign-agnostic). The caller threads `pos` explicitly — a local counter's
-// literal-init + increment IS prover-tracked, where an obj field is not.
+// mod11_scan_digit — fold one more digit at the given position: the weight
+// (mod11_weights_desc) times the digit, added to the running total. The
+// weight's sign handling is INLINED here — a fold-helper boundary forced the
+// checker to reprove `sum >= 0` across a call it cannot see through (obj
+// fields are loop-carried; the sweep rejected the chain three contracts
+// deep). One defn, one boundary.
 defn mod11_scan_digit(sum: Int, pos: Int, width: Int, digit: Int)
-    [pos >= 0 && width >= 2 && digit >= 0 && digit <= 9]
-    [term >= sum - 900 && term <= sum + 900]
+    [digit >= 0 && digit <= 9]
+    [term >= 0]
     -> Int
 {
-    term mod11_fold(sum, mod11_weights_desc(pos, width), digit);
+    let weight: Int = mod11_weights_desc(pos, width);
+    when weight < 0 {
+        term sum - (0 - weight) * digit;
+    };
+    term sum + weight * digit;
 };
 
 // bsn_mod11 — the Dutch burgerservicenummer "eleven-test" as a GENERIC
@@ -129,10 +118,8 @@ defn mod11_scan_digit(sum: Int, pos: Int, width: Int, digit: Int)
 // `kernel/pii.bv::bsn_valid` and crates/privacy/src/patterns.rs::bsn_valid.
 defn bsn_mod11(s: String) [true][term == 0 || term == 1] -> Int {
     let scan: Mod11Scan = Mod11Scan { digits: 0, sum: 0, all_zero: 1 };
-    let pos: Int = 0;
     foreach i in 0..(s .^Length) {
-        scan = mod11_scan_byte(scan, pos, byte_at(s, i), 9);
-        pos = scan.digits;
+        scan = mod11_scan_byte(scan, byte_at(s, i), 9);
     };
     when scan.digits != 9 {
         term 0;
@@ -157,28 +144,21 @@ obj Mod11Scan {
 };
 
 // mod11_scan_byte — consume one raw byte: digits fold, everything else is a
-// separator (spaces/dashes in formatted numbers). `pos` is the consumed-digit
-// count threaded EXPLICITLY (2026-11-19, trunk repair): the scan rebinds the
-// whole obj through a call each iteration, so `scan.digits >= 0` is an
-// induction the prover cannot close — a parameter contract over a caller's
-// literal-initialized local counter is provable instead. The digit range is
-// guarded with a LITERAL range test for the same reason: `checksum_is_digit
-// (b) == 1` does not arithmetically imply `48 <= b <= 57` (the callee's post
-// is a disjunction over the flag, not the byte), while the literal guard
-// makes `(b - 48) in [0, 9]` a direct path fact.
-defn mod11_scan_byte(scan: Mod11Scan, pos: Int, b: Int, width: Int)
-    [pos >= 0 && width >= 2][true]
-    -> Mod11Scan {
+// separator (spaces/dashes in formatted numbers).
+defn mod11_scan_byte(scan: Mod11Scan, b: Int, width: Int) -> Mod11Scan {
+    // The guard NAMES the constraint (b in '0'..='9') so the checker refines
+    // b directly — a helper returning 0/1 does not carry refinement facts.
     when b < 48 || b > 57 {
         term scan;
     };
+    let digit: Int = b - 48;
     let all_zero: Int = scan.all_zero;
     when b != 48 {
         all_zero = 0;
     };
     term Mod11Scan {
-        digits: pos + 1,
-        sum: mod11_scan_digit(scan.sum, pos, width, b - 48),
+        digits: scan.digits + 1,
+        sum: mod11_scan_digit(scan.sum, scan.digits, width, digit),
         all_zero: all_zero,
     };
 };
@@ -347,19 +327,15 @@ obj LuhnScan {
 };
 
 // luhn_scan_byte — consume one raw byte; digits fold into both parity sums
-// (one of them doubled per the Luhn weights), separators skip. `pos` is the
-// consumed-digit count threaded explicitly (same reasoning as mod11:
-// scan-field facts do not survive the per-iteration obj rebound, a
-// parameter over the caller's local counter does); the parity and the digit
-// range are then literal path facts.
-defn luhn_scan_byte(scan: LuhnScan, pos: Int, b: Int)
-    [pos >= 0][true]
-    -> LuhnScan {
+// (one of them doubled per the Luhn weights), separators skip.
+defn luhn_scan_byte(scan: LuhnScan, b: Int) -> LuhnScan {
+    // Guard names the range so the checker refines b (helper returns carry no
+    // refinement facts).
     when b < 48 || b > 57 {
         term scan;
     };
     let d: Int = b - 48;
-    let parity: Int = pos % 2;
+    let parity: Int = scan.digits % 2;
     let all_zero: Int = scan.all_zero;
     when b != 48 {
         all_zero = 0;
@@ -367,10 +343,22 @@ defn luhn_scan_byte(scan: LuhnScan, pos: Int, b: Int)
     // Even cleaned positions (0-based) get weight 1 in sum_a and weight 2 in
     // sum_b; odd positions swap. After the full pass the CORRECT sum is
     // sum_a when the count is odd, sum_b when even — decided in luhn_valid.
+    // The parity branches REFINE `parity` to literals so luhn_double's
+    // [d >= 0 && d <= 9] holds at every call (parity is 0 or 1 by modulo).
+    let weighted_a: Int = d;
+    let weighted_b: Int = luhn_double(d);
+    when parity == 0 {
+        weighted_a = d;
+        weighted_b = luhn_double(d);
+    };
+    when parity == 1 {
+        weighted_a = luhn_double(d);
+        weighted_b = d;
+    };
     term LuhnScan {
-        digits: pos + 1,
-        sum_a: scan.sum_a + (luhn_double(parity) * 0 + d) * (1 - parity) + luhn_double(d) * parity,
-        sum_b: scan.sum_b + d * parity + luhn_double(d) * (1 - parity),
+        digits: scan.digits + 1,
+        sum_a: scan.sum_a + weighted_a,
+        sum_b: scan.sum_b + weighted_b,
         all_zero: all_zero,
     };
 };
@@ -380,10 +368,8 @@ defn luhn_scan_byte(scan: LuhnScan, pos: Int, b: Int)
 // ≡ 0 mod 10.
 defn luhn_valid(s: String) [true][term == 0 || term == 1] -> Int {
     let scan: LuhnScan = LuhnScan { digits: 0, sum_a: 0, sum_b: 0, all_zero: 1 };
-    let pos: Int = 0;
     foreach i in 0..(s .^Length) {
-        scan = luhn_scan_byte(scan, pos, byte_at(s, i));
-        pos = scan.digits;
+        scan = luhn_scan_byte(scan, byte_at(s, i));
     };
     when scan.digits < 2 {
         term 0;
