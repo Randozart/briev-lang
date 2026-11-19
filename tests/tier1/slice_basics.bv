@@ -1,0 +1,23 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// slice_basics — SPEC §16.5: contiguous slices are free pointer rebases,
+// strided slices gather. Prints the sliced views of a 0..10 list.
+// spec: 16.5
+import "std/io.bv";
+
+node entry [beginprogram][true] {
+    let data: List<Int> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let mid: List<Int> = data[2:6];
+    let odd: List<Int> = data[1:10:2];
+    let first: List<Int> = data[:3];
+    let tail: List<Int> = data[7:];
+    Print#(mid.Count#() as String);
+    Print#("|");
+    Print#(odd[0] as String);
+    Print#("|");
+    Print#(first[2] as String);
+    Print#("|");
+    Print#(tail[2] as String);
+    endprogram Print#("");
+};

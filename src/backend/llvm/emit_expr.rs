@@ -3253,6 +3253,155 @@ impl LlvmBackend {
             }),
             None => None,
         };
+        // 2026-11-19 (tier-list slice): a slice of a HEAP LIST local/param
+        // (`list[a:b]`, `list[a:b:c]`) previously fell through to the silent
+        // whole-array return — the 2026-08-22 vector bug class on the tier
+        // List layout (found by the F2 fixture campaign, parity: interpreter
+        // 4|1|2|9 vs native 10|0|2|2). Tier-list layout is
+        // `{data_ptr @ 0, len @ 8, cap @ 16}` (slot 0 is the element-column
+        // pointer — the literal builder, append and box_gather all store and
+        // read it that way); the gather's `[len][elems]` output boxes
+        // identically to the state-column route. Additive: the String and
+        // state-Vector paths above are untouched; anything not a List still
+        // falls through unchanged.
+        let list_is_heap_list = matches!(&array_reg.ty, Type::Applied(n, _)
+            if n == "List")
+            && self
+                .ctx
+                .field_index_map
+                .get(array.identifier().unwrap_or(""))
+                .is_none();
+        if list_is_heap_list {
+            let hw = format!("i{}", self.ctx.int_bits);
+            // block ptr from the handle (List handles are target-width ints).
+            let handle = self.ensure_typed_value(
+                out,
+                indent,
+                &hw,
+                &array_reg.name,
+                Some(array_reg.ty.clone()),
+                self.ctx.type_universe.clone().as_ref(),
+            );
+            let block = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = inttoptr {} {} to ptr",
+                indent, block, hw, handle
+            )
+            .ok();
+            // Tier-list layout is {data_ptr @ 0, len @ 8, cap @ 16}: slot 0
+            // is the element-column POINTER (the literal builder, append,
+            // and box_gather all store/read it that way). n = the length at
+            // slot 8; the gather takes the column address as an i64 handle.
+            let len_ptr = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr i8, ptr {}, i64 8",
+                indent, len_ptr, block
+            )
+            .ok();
+            let n_reg = self.fun.gen_reg();
+            writeln!(out, "{}{} = load {}, ptr {}", indent, n_reg, hw, len_ptr).ok();
+            let data = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr i8, ptr {}, i64 0",
+                indent, data, block
+            )
+            .ok();
+            let data_p = self.fun.gen_reg();
+            writeln!(out, "{}{} = load ptr, ptr {}", indent, data_p, data).ok();
+            let data_h = self.fun.gen_reg();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, data_h, data_p).ok();
+            let lo = match start {
+                Some(sx) => emit_view_expr(self, out, sx, indent),
+                None => TypedRegister {
+                    name: {
+                        let z = self.fun.gen_reg();
+                        writeln!(out, "{}{} = add {} 0, 0", indent, z, hw).ok();
+                        z
+                    },
+                    ty: Type::int(),
+                },
+            };
+            let hi = match end {
+                Some(ex) => emit_view_expr(self, out, ex, indent),
+                None => {
+                    // hi absent = "through the end": the length word.
+                    TypedRegister {
+                        name: n_reg.clone(),
+                        ty: Type::int(),
+                    }
+                }
+            };
+            let elem_ty = match &array_reg.ty {
+                Type::Applied(_, args) => args.first().cloned().unwrap_or_else(Type::int),
+                _ => Type::int(),
+            };
+            let lo_i64 = self.ensure_typed_value(
+                out,
+                indent,
+                "i64",
+                &lo.name,
+                Some(lo.ty.clone()),
+                self.ctx.type_universe.clone().as_ref(),
+            );
+            let hi_i64 = self.ensure_typed_value(
+                out,
+                indent,
+                "i64",
+                &hi.name,
+                Some(hi.ty.clone()),
+                self.ctx.type_universe.clone().as_ref(),
+            );
+            let n_i64 = self.ensure_typed_value(
+                out,
+                indent,
+                "i64",
+                &n_reg,
+                Some(Type::int()),
+                self.ctx.type_universe.clone().as_ref(),
+            );
+            let gathered = if let Some(stride_expr) = stride {
+                let st = emit_view_expr(self, out, stride_expr, indent);
+                let st_i64 = self.ensure_typed_value(
+                    out,
+                    indent,
+                    "i64",
+                    &st.name,
+                    Some(st.ty.clone()),
+                    self.ctx.type_universe.clone().as_ref(),
+                );
+                let buf = self.fun.gen_reg();
+                let gp = if self.ctx.defn_takes_state("briev_slice_strided64") {
+                    "ptr %state, "
+                } else {
+                    ""
+                };
+                writeln!(
+                    out,
+                    "{}{} = call ptr @briev_slice_strided64({}i64 {}, i64 {}, i64 {}, i64 {}, i64 {})",
+                    indent, buf, gp, data_h, n_i64, lo_i64, hi_i64, st_i64
+                )
+                .ok();
+                buf
+            } else {
+                let buf = self.fun.gen_reg();
+                let gp = if self.ctx.defn_takes_state("briev_slice_strided64") {
+                    "ptr %state, "
+                } else {
+                    ""
+                };
+                writeln!(
+                    out,
+                    "{}{} = call ptr @briev_slice_strided64({}i64 {}, i64 {}, i64 {}, i64 {}, i64 1)",
+                    indent, buf, gp, data_h, n_i64, lo_i64, hi_i64
+                )
+                .ok();
+                buf
+            };
+            return self.box_gather_as_tier_list(out, indent, &gathered, elem_ty);
+        }
         if let Some((fidx, vec_ty)) = vec_field {
             let n = self.vector_element_count(&vec_ty) as i64;
             let data_ptr = self.emit_state_gep(out, indent, "f", "%state", fidx);
@@ -9326,9 +9475,7 @@ impl LlvmBackend {
                     // cannot run at all. Same question, one owner: the
                     // declared parameter type.
                     if let Some(pt) = fn_params.as_ref().and_then(|p| p.get(i)) {
-                        if let Some(conv) =
-                            self.adapt_arg_to_param(out, indent, &emitted, pt)
-                        {
+                        if let Some(conv) = self.adapt_arg_to_param(out, indent, &emitted, pt) {
                             return Some(conv);
                         }
                     }

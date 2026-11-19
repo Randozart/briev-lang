@@ -1,0 +1,26 @@
+import "std/io.bv";
+
+let column: Int[8];
+// spec: 16.5
+let i: Int = 0;
+
+node entry [beginprogram][true] {
+    column[0] = 3;
+    column[1] = 1;
+    column[2] = 4;
+    column[3] = 1;
+    column[4] = 5;
+    column[5] = 9;
+    column[6] = 2;
+    column[7] = 6;
+    let evens: List<Int> = column[0:8:2];
+    let mid: List<Int> = column[2:6];
+    Print#(evens[0] as String);
+    Print#(",");
+    Print#(evens[3] as String);
+    Print#("|");
+    Print#(mid.Count#() as String);
+    Print#("|");
+    Print#(mid[3] as String);
+    endprogram Print#("");
+};
