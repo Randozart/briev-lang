@@ -156,13 +156,53 @@ fn entry_cmd_wrong_command_skips_node() {
 #[test]
 fn argc_intrinsic_exit_code_matches_process_argc() {
     let argv = ["x", "y", "z"];
-    let (_, code) = build_link_run_argv("argc_exit", COUNTER, &argv);
-    assert_eq!(
-        code,
-        (argv.len() + 1) as i32,
-        "exit code = argc (program name + {} args)",
-        argv.len()
-    );
+    for hir in ["0", "1"] {
+        let (_, code) = build_link_run_argv_hir(&format!("argc_exit_{hir}"), COUNTER, &argv, hir);
+        assert_eq!(code, (argv.len() + 1) as i32, "exit code = process argc");
+    }
+}
+
+#[test]
+fn arg_count_is_unconditional_and_provides_a_nonnegative_result_fact() {
+    use briev_compiler::ast::TopLevel;
+    use briev_compiler::interpreter::{Value, VirtualHeap, eval_expr};
+    use briev_compiler::lexer::tokenize;
+    use briev_compiler::parser::Parser;
+    use std::collections::HashMap;
+
+    let source = std::fs::read_to_string(Path::new(PROJECT_ROOT).join("lib/std/cli.bv")).unwrap();
+    let items = Parser::new(tokenize(&source).unwrap(), &source)
+        .parse_program()
+        .unwrap();
+    let count = items
+        .iter()
+        .find_map(|item| match item {
+            TopLevel::Definition(definition) if definition.name == "arg_count" => Some(definition),
+            _ => None,
+        })
+        .expect("public argument-count function");
+    let mut heap = VirtualHeap::new();
+    let mut bindings = HashMap::new();
+    let functions = HashMap::new();
+    let pre = eval_expr(
+        &count.contract.pre_condition,
+        &mut heap,
+        &mut bindings,
+        &functions,
+    )
+    .expect("argc is callable before its result exists");
+    assert_eq!(pre.as_bool(), Some(true));
+    for result in [-1, 0, 1, 42] {
+        bindings.insert("term".into(), Value::int(result));
+        let post = eval_expr(
+            &count.contract.post_condition,
+            &mut heap,
+            &mut bindings,
+            &functions,
+        )
+        .expect("evaluate result guarantee");
+        assert_eq!(post.as_bool(), Some(result >= 0));
+    }
 }
 
 // ── Interpreter parity (Rule 5) ─────────────────────────────────────────

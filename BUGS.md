@@ -53,6 +53,21 @@ before the pin may advance: identify the upstream commit that added the
 extra proven-not-freed value, and confirm it is a genuine leak-by-design
 (baseline update) vs. a lost release (regression to fix).
 
+## 2026-11-19 — arg_count declared its result guarantee as a precondition (FIXED)
+
+`lib/std/cli.bv` declared `arg_count() [term >= 0] -> Int`; a single bracket
+parses as the precondition. Evaluating that condition before the call fails
+with an undefined `term`, and the actual postcondition is merely `true`.
+The intended guarantee is now `[true][term >= 0]`, preserving nonnegativity
+while making the function unconditionally callable.
+
+Ordinary native callers, including a contracted wrapper, built successfully on
+baseline `efd99d7b`; this is not claimed as a reproduced current-main build
+failure. The regression in `tests/cli_args_test.rs` evaluates the parsed
+contract before the result exists and against negative/nonnegative results.
+Native AST/HIR tests also check the actual process argument count.
+
+
 ## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
 
 **Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture
