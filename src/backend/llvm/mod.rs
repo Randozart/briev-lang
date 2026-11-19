@@ -70,6 +70,16 @@ fn escape_llvm_string(s: &str) -> String {
 /// Defns that may trap/halt directly or through a callee. Calls to these are
 /// observable even when their result is unused; the defn attribute must not
 /// claim `willreturn` or LLVM can delete the whole call.
+///
+/// 2026-11-19 (divergent server loop): the same rule covers DIVERGENCE. A
+/// defn on a recursion cycle whose body never provably converges (no
+/// terminal `term` outside the cycle) may legitimately never return — an
+/// accept loop is exactly that. `willreturn` tells LLVM the call does
+/// return, so the optimizer may treat non-return as UB: at -O3 LTO the
+/// whole program collapsed to a bare `ret` (exit-code garbage, empty
+/// output; e.g. `entry -> serve_forever -> loop2(serve_accept…loop2)`).
+/// Defns in such a cycle are routed to #15 (no `willreturn`) together with
+/// the may-trap set, and their callers inherit it transitively.
 fn compute_transitive_may_trap(items: &[TopLevel]) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
     fn gather<'a>(item: &'a TopLevel, out: &mut Vec<&'a crate::ast::Definition>) {
@@ -106,6 +116,41 @@ fn compute_transitive_may_trap(items: &[TopLevel]) -> std::collections::HashSet<
         }
         called.insert(d.name.as_str(), calls);
     }
+    // 2026-11-19 (divergent server loop): seed the set with every defn on a
+    // recursion cycle. Conservative by design — the sound-and-cheap rule is
+    // "if you participate in a cycle, you may never return", without
+    // proving each cycle actually diverges (a converged-cycle proof would
+    // need the termination analysis the checker does not yet expose to the
+    // backend).
+    for (name, calls) in &called {
+        if calls.contains(*name) {
+            may_trap.insert((*name).to_string());
+        }
+    }
+    // Mutual recursion: a defn is on a cycle exactly when it can reach
+    // itself through the call relation (DFS per defn; call graphs are
+    // small, and the O(V·E) pass runs once per module).
+    for start in called.keys() {
+        // DFS from start's callees; if we reach start again, it's cyclic.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut stack: Vec<&str> = called
+            .get(start)
+            .map(|c| c.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default();
+        while let Some(current) = stack.pop() {
+            if current == *start {
+                may_trap.insert((*start).to_string());
+                break;
+            }
+            if seen.insert(current) {
+                if let Some(next) = called.get(current) {
+                    stack.extend(next.iter().map(|s| s.as_str()));
+                }
+            }
+        }
+    }
+    // Callers of a diverging defn inherit "may never return" transitively
+    // (serve_forever -> loop2: the wrapper also must not claim willreturn).
     close_over_calls(&mut may_trap, &called);
     may_trap
 }
