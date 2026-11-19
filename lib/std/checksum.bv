@@ -1,0 +1,375 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// checksum - identification-number checksums over text, pure Briev.
+//
+// 2026-11-19 (stdlib gap, dogfooding Knooppunt): `kernel/pii.bv` hand-rolled
+// the Dutch BSN eleven-test and the ISO 13616 NL-IBAN mod-97 because no
+// stdlib module carried them; the same folds exist in every identity-checking
+// program. This module extracts and generalises them (the NL-specific checks
+// — exactly 9 digits, "NL" prefix, exactly 18 cleaned characters — stay with
+// the CALLER, who knows which national shape it is validating).
+//
+// THE THREE CHECKSUMS:
+//   * mod11_weighted — the generic weighted mod-11 (BSN is the famous
+//     instance: weights 9..2 descending, control digit −1). `bsn_mod11`
+//     is the thin NL spelling.
+//   * iban_mod97 — ISO 13616: rearrange (move the first 4 characters to the
+//     end), A=10..Z=35, and the whole rearranged number must leave remainder
+//     1 mod 97. Valid for ANY country prefix; `nl_iban_mod97` adds the NL
+//     shape gate (18 cleaned characters, "NL" head).
+//   * luhn — the credit-card / IMEI checksum (weights 2,1,2,1… right to left,
+//     subtract 9 on two-digit products, total ≡ 0 mod 10).
+//
+// EVERY validator returns 0 or 1 (a flag, not a Result): the caller owns the
+// "absent vs present vs invalid" distinction, exactly as the kernel's
+// `bsn_valid` contract spells it (`[term == 0 || term == 1]`). Malformed
+// input (wrong length, foreign characters) is simply "invalid", never a
+// panic — the folds skip or reject, they do not trap.
+//
+// All arithmetic stays in Int with the remainder provably < the modulus, so
+// every fold is `[term >= 0 && term < 97]`-shaped and the checker can pin
+// the loop arithmetic without range tricks.
+//
+// Undo: delete this file; `kernel/pii.bv` keeps its own copies until it
+// migrates, so nothing breaks.
+
+import "std/byte_at.bv";
+
+// ── ASCII helpers (no libc, no regex) ─────────────────────────────────────
+
+// checksum_is_digit — ASCII '0'..'9'.
+defn checksum_is_digit(b: Int) [true][term == 0 || term == 1] -> Int {
+    when b >= 48 && b <= 57 {
+        term 1;
+    };
+    term 0;
+};
+
+// checksum_is_alpha — ASCII 'A'..'Z' (callers uppercase first).
+defn checksum_is_alpha(b: Int) [true][term == 0 || term == 1] -> Int {
+    when b >= 65 && b <= 90 {
+        term 1;
+    };
+    term 0;
+};
+
+// checksum_is_alnum — ASCII digit or uppercase letter (the IBAN cleaning rule).
+defn checksum_is_alnum(b: Int) [true][term == 0 || term == 1] -> Int {
+    when checksum_is_digit(b) == 1 {
+        term 1;
+    };
+    term checksum_is_alpha(b);
+};
+
+// checksum_ascii_upper — lowercase a-z to uppercase; everything else unchanged.
+defn checksum_ascii_upper(b: Int) [true][term >= 0] -> Int {
+    when b >= 97 && b <= 122 {
+        term b - 32;
+    };
+    term b;
+};
+
+// ── Weighted mod-11 ────────────────────────────────────────────────────────
+
+// mod11_fold — one step of the weighted sum: `weight * digit` added to the
+// running total. The total itself is unbounded until the caller reduces
+// (the BSN sum is at most 9*9*8 = 648, comfortably small; generic callers
+// with more digits reduce mod 11 at the end — modular addition commutes
+// with the reduction, so the verdict is identical).
+defn mod11_fold(sum: Int, weight: Int, digit: Int)
+    [sum >= 0 && weight >= -1000 && weight <= 1000 && digit >= 0 && digit <= 9]
+    [term >= 0]
+    -> Int
+{
+    when weight < 0 {
+        term sum + (0 - (0 - weight) * digit);
+    };
+    term sum + weight * digit;
+};
+
+// mod11_weights_desc — the standard descending weight for position `pos` of
+// `width` digits: width-pos … 2 for the first width-1 digits, and -1 for the
+// final control digit (position width-1). Positions past width contribute 0
+// (the exact-width gate rejects them before the verdict).
+defn mod11_weights_desc(pos: Int, width: Int)
+    [width >= 2 && pos >= 0]
+    [term >= -9 && term <= 80]
+    -> Int
+{
+    when pos >= width {
+        term 0;
+    };
+    when pos == width - 1 {
+        term 0 - 1;
+    };
+    term width - pos;
+};
+
+// mod11_scan_digit — fold one more digit into a running weighted sum at the
+// given position. `pos` counts CONSUMED DIGITS (skipping separators), so the
+// weight sequence tracks the cleaned number, not the raw text.
+defn mod11_scan_digit(sum: Int, pos: Int, width: Int, digit: Int)
+    [sum >= 0 && pos >= 0 && width >= 2 && digit >= 0 && digit <= 9]
+    [term >= 0]
+    -> Int
+{
+    term mod11_fold(sum, mod11_weights_desc(pos, width), digit);
+};
+
+// bsn_mod11 — the Dutch burgerservicenummer "eleven-test" as a GENERIC
+// mod-11 flag: exactly 9 digits, not all zero, weighted sum ≡ 0 mod 11
+// (weights 9·d1 … 2·d8, control digit −1·d9). Same arithmetic as
+// `kernel/pii.bv::bsn_valid` and crates/privacy/src/patterns.rs::bsn_valid.
+defn bsn_mod11(s: String) [true][term == 0 || term == 1] -> Int {
+    let scan: Mod11Scan = Mod11Scan { digits: 0, sum: 0, all_zero: 1 };
+    foreach i in 0..(s .^Length) {
+        scan = mod11_scan_byte(scan, byte_at(s, i), 9);
+    };
+    when scan.digits != 9 {
+        term 0;
+    };
+    when scan.all_zero == 1 {
+        term 0;
+    };
+    when scan.sum % 11 != 0 {
+        term 0;
+    };
+    term 1;
+};
+
+// obj Mod11Scan { digits, sum, all_zero } — the fold state for one pass over
+// the candidate text. `digits` counts consumed digits (separators skip),
+// `all_zero` latches 0 at the first non-zero digit (an all-zero number of
+// any length passes the mod test vacuously and must be rejected).
+obj Mod11Scan {
+    digits: Int;
+    sum: Int;
+    all_zero: Int;
+};
+
+// mod11_scan_byte — consume one raw byte: digits fold, everything else is a
+// separator (spaces/dashes in formatted numbers).
+defn mod11_scan_byte(scan: Mod11Scan, b: Int, width: Int) -> Mod11Scan {
+    when checksum_is_digit(b) == 0 {
+        term scan;
+    };
+    let all_zero: Int = scan.all_zero;
+    when b != 48 {
+        all_zero = 0;
+    };
+    term Mod11Scan {
+        digits: scan.digits + 1,
+        sum: mod11_scan_digit(scan.sum, scan.digits, width, b - 48),
+        all_zero: all_zero,
+    };
+};
+
+// ── ISO 13616 mod-97 (IBAN) ────────────────────────────────────────────────
+
+// obj IbanScan { chars, rem, first, second } — the two-pass fold state.
+//   chars  — cleaned (alphanumeric, uppercased) characters seen
+//   rem    — running remainder of the REARRANGED number mod 97
+//   first  — cleaned char[0]; second — cleaned char[1] (the country gate)
+obj IbanScan {
+    chars: Int;
+    rem: Int;
+    first: Int;
+    second: Int;
+};
+
+// fold97 — one mod-97 step: digits contribute one decimal place, letters
+// their A=10…Z=35 value. A character outside A-Z/0-9 leaves the remainder
+// unchanged (the alphanumeric filter makes that unreachable — the arm is
+// kept because the checker wants the fold total).
+defn fold97(rem: Int, upper: Int) [true][term >= 0 && term < 97] -> Int {
+    when checksum_is_digit(upper) == 1 {
+        term (rem * 10 + (upper - 48)) % 97;
+    };
+    when checksum_is_alpha(upper) == 1 {
+        term (rem * 100 + (upper - 65 + 10)) % 97;
+    };
+    term rem;
+};
+
+// iban_pass_in_range — which clean positions belong to this pass: pass 0
+// takes p < 4 (country+check digits, folded LAST — the ISO rearrangement),
+// pass 1 takes p >= 4 (the account body, folded FIRST).
+defn iban_pass_in_range(p: Int, pass: Int) [true][term == 0 || term == 1] -> Int {
+    when pass == 0 && p < 4 {
+        term 1;
+    };
+    when pass == 1 && p >= 4 {
+        term 1;
+    };
+    term 0;
+};
+
+// iban_char — record the first two cleaned characters (the country gate) and
+// fold the character when this pass owns its position range.
+defn iban_char(state: IbanScan, upper: Int, pass: Int) -> IbanScan {
+    let p: Int = state.chars;
+    let first: Int = state.first;
+    let second: Int = state.second;
+    when p == 0 {
+        first = upper;
+    };
+    when p == 1 {
+        second = upper;
+    };
+    let in_pass: Int = iban_pass_in_range(p, pass);
+    when in_pass == 0 {
+        term IbanScan {
+            chars: p + 1,
+            rem: state.rem,
+            first: first,
+            second: second,
+        };
+    };
+    term IbanScan {
+        chars: p + 1,
+        rem: fold97(state.rem, upper),
+        first: first,
+        second: second,
+    };
+};
+
+// iban_pass_byte — consume one raw byte of the candidate IBAN in one pass.
+defn iban_pass_byte(state: IbanScan, b: Int, pass: Int) -> IbanScan {
+    let upper: Int = checksum_ascii_upper(b);
+    when checksum_is_alnum(upper) == 0 {
+        term state;
+    };
+    term iban_char(state, upper, pass);
+};
+
+// iban_mod97 — ISO 13616 for ANY prefix: the cleaned text must have at least
+// 5 characters (a country prefix + at least one body character), start with
+// two letters, and the rearranged number must leave remainder 1 mod 97.
+// `nl_iban_mod97` is the Dutch spelling with the exact-length gate.
+defn iban_mod97(s: String) [true][term == 0 || term == 1] -> Int {
+    let state: IbanScan = IbanScan { chars: 0, rem: 0, first: 0, second: 0 };
+    foreach i in 0..(s .^Length) {
+        state = iban_pass_byte(state, byte_at(s, i), 1);
+    };
+    // Second pass counts the same characters again from position 0, folding
+    // the first four (country + check digits) LAST — the rearrangement.
+    let head: IbanScan = IbanScan { chars: 0, rem: state.rem, first: state.first, second: state.second };
+    foreach i in 0..(s .^Length) {
+        head = iban_pass_byte(head, byte_at(s, i), 0);
+    };
+    when state.chars < 5 {
+        term 0;
+    };
+    when checksum_is_alpha(head.first) == 0 {
+        term 0;
+    };
+    when checksum_is_alpha(head.second) == 0 {
+        term 0;
+    };
+    when head.rem != 1 {
+        term 0;
+    };
+    term 1;
+};
+
+// nl_iban_mod97 — the Dutch IBAN shape: exactly 18 cleaned characters with
+// the "NL" head, mod-97 remainder 1. Same arithmetic as
+// `kernel/pii.bv::iban_mod97` and crates/privacy/src/patterns.rs::nl_iban_mod97.
+defn nl_iban_mod97(s: String) [true][term == 0 || term == 1] -> Int {
+    let state: IbanScan = IbanScan { chars: 0, rem: 0, first: 0, second: 0 };
+    foreach i in 0..(s .^Length) {
+        state = iban_pass_byte(state, byte_at(s, i), 1);
+    };
+    let head: IbanScan = IbanScan { chars: 0, rem: state.rem, first: state.first, second: state.second };
+    foreach i in 0..(s .^Length) {
+        head = iban_pass_byte(head, byte_at(s, i), 0);
+    };
+    when state.chars != 18 {
+        term 0;
+    };
+    when head.first != 78 {
+        term 0;
+    }; // 'N'
+    when head.second != 76 {
+        term 0;
+    }; // 'L'
+    when head.rem != 1 {
+        term 0;
+    };
+    term 1;
+};
+
+// ── Luhn (mod-10, credit cards / IMEI) ────────────────────────────────────
+
+// luhn_double — double a digit and subtract 9 when the doubling reached 10
+// (equivalent to summing the two decimal digits of the product).
+defn luhn_double(d: Int) [d >= 0 && d <= 9][term >= 0 && term <= 9] -> Int {
+    let doubled: Int = d * 2;
+    when doubled > 9 {
+        term doubled - 9;
+    };
+    term doubled;
+};
+
+// obj LuhnScan { digits, sum, all_zero } — right-to-left weighting done as a
+// left-to-right pass by weighting position (width-1-pos): even offsets from
+// the RIGHT get 1, odd offsets get 2. Because the width is unknown during the
+// scan, the fold stores per-position parities is NOT possible in a single
+// pass — instead the standard trick: accumulate BOTH parities' sums and pick
+// the one matching the final digit count (the parity of the check-digit
+// position). `luhn_scan_byte` maintains sum_even (weights applied at even
+// cleaned positions) and sum_odd likewise; `luhn_valid` selects by
+// `digits % 2`.
+obj LuhnScan {
+    digits: Int;
+    sum_a: Int;
+    sum_b: Int;
+    all_zero: Int;
+};
+
+// luhn_scan_byte — consume one raw byte; digits fold into both parity sums
+// (one of them doubled per the Luhn weights), separators skip.
+defn luhn_scan_byte(scan: LuhnScan, b: Int) -> LuhnScan {
+    when checksum_is_digit(b) == 0 {
+        term scan;
+    };
+    let d: Int = b - 48;
+    let all_zero: Int = scan.all_zero;
+    when b != 48 {
+        all_zero = 0;
+    };
+    // Even cleaned positions (0-based) get weight 1 in sum_a and weight 2 in
+    // sum_b; odd positions swap. After the full pass the CORRECT sum is
+    // sum_a when the count is odd, sum_b when even — decided in luhn_valid.
+    term LuhnScan {
+        digits: scan.digits + 1,
+        sum_a: scan.sum_a + (luhn_double(scan.digits % 2) * 0 + d) * (1 - scan.digits % 2) + luhn_double(d) * (scan.digits % 2),
+        sum_b: scan.sum_b + d * (scan.digits % 2) + luhn_double(d) * (1 - scan.digits % 2),
+        all_zero: all_zero,
+    };
+};
+
+// luhn_valid — the generic Luhn verdict: at least 2 digits (a single digit
+// cannot carry a check position), not all zero, and the parity-correct sum
+// ≡ 0 mod 10.
+defn luhn_valid(s: String) [true][term == 0 || term == 1] -> Int {
+    let scan: LuhnScan = LuhnScan { digits: 0, sum_a: 0, sum_b: 0, all_zero: 1 };
+    foreach i in 0..(s .^Length) {
+        scan = luhn_scan_byte(scan, byte_at(s, i));
+    };
+    when scan.digits < 2 {
+        term 0;
+    };
+    when scan.all_zero == 1 {
+        term 0;
+    };
+    let sum: Int = scan.sum_a;
+    when scan.digits % 2 == 0 {
+        sum = scan.sum_b;
+    };
+    when sum % 10 != 0 {
+        term 0;
+    };
+    term 1;
+};

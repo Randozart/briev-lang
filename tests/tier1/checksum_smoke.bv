@@ -1,0 +1,12 @@
+// checksum smoke — the three validators against known-good/known-bad.
+// Golden: bsn(1 0) iban(1 0) luhn(1 0) nl(1) -> "10101101 10101101 10 1"
+import "std/checksum.bv";
+
+node entry [beginprogram][true] {
+    Print#(bsn_mod11("111222333"));
+    Print#(bsn_mod11("111222334"));
+    Print#(nl_iban_mod97("NL91ABNA0417164300"));
+    Print#(nl_iban_mod97("NL91ABNA0417164301"));
+    Print#(luhn_valid("4532015112830366"));
+    Print#(luhn_valid("4532015112830367"));
+};
