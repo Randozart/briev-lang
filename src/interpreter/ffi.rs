@@ -29,6 +29,7 @@ pub enum Marshalled {
 /// sequences, Ref to its pointee. Closures and void have no payload form.
 pub fn marshal_value(v: &Value) -> Marshalled {
     match v {
+        Value::Data(bits) => Marshalled::Int(*bits as i64),
         Value::Atom(Atom::Int(n)) => Marshalled::Int(*n),
         Value::Atom(Atom::Float(f)) => Marshalled::Float(*f),
         Value::Atom(Atom::Bool(b)) => Marshalled::Bool(*b),

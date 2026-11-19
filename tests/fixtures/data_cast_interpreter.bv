@@ -1,0 +1,40 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+defn data_identity(value: Data) -> Data { term value; };
+defn text_from_data(value: Data) -> String { term value as String; };
+defn probe_data() -> Bool {
+    let address: Int = Alloc#(12) as Int;
+    Store#(address, 3, 8);
+    Store#(address + 8, 97, 1);
+    Store#(address + 9, 0, 1);
+    Store#(address + 10, 98, 1);
+    Store#(address + 11, 0, 1);
+    let raw: Data = address as Data;
+    let returned: Data = data_identity(raw);
+    let pair: (Data, Int) = (returned, 1);
+    let text: String = text_from_data(pair.0);
+    Free#(address as Ptr<Bit<8>>);
+    when text .^Length != 3 || text[0] != 97 || text[1] != 0 || text[2] != 98 { term false; };
+    let number: Int = -42;
+    let word: Data = number as Data;
+    when word .^^Bytes != 8 { term false; };
+    when (word as Int) != number { term false; };
+    when ((word as UInt) as Int) != number { term false; };
+    when ((65 as Data) as Char) != 'A' { term false; };
+    when !((1 as Data) as Bool) || ((256 as Data) as Bool) { term false; };
+    when (((511 as Data) as Bit<8>) as Int) != 255 { term false; };
+    let float_word: Data = (1.5 as Float64) as Data;
+    when (float_word as Int) != 4609434218613702656 { term false; };
+    when (float_word as Float64) != 1.5 { term false; };
+    when 1.5 != (float_word as Float64) { term false; };
+    when (float_word as Float64) + 0.5 != 2.0 { term false; };
+    when 0.5 + (float_word as Float64) != 2.0 { term false; };
+    term int_to_str(-42) == "-42" && int_to_str(0) == "0" && int_to_str(12345) == "12345";
+};
+test data_words { expect probe_data(); };
+node main [beginprogram][true] {
+    when !probe_data() { endprogram 1; };
+    println!("data_cast_ok");
+    endprogram;
+};

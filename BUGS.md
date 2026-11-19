@@ -1,3 +1,33 @@
+## 2026-11-19 — named Data values recursively entered numeric String casts (FIXED)
+
+The interpreter represented `Data` as an Int atom and recognized the
+Data→String encoding door only from nested cast syntax. `int_to_str` binds
+its buffer as `d: Data` before `d as String`, so formatting even one integer
+recursively formatted buffer addresses until the process stack overflowed.
+A small JSON round trip reproduced this on `efd99d7b`, including with a
+64 MiB stack. GDB showed repeated `call_user_fn("int_to_str")` frames.
+
+Raw Data now has its own value category, retained through local bindings,
+arguments, returns and aggregate projection. Data→String reads the represented
+buffer, while scalar→String uses the stdlib formatting lane. Data↔Float64
+preserves raw bits rather than performing numeric conversion. The regression
+`tests/interpreter_data_cast.rs` exercises these boundaries, freeing the source
+buffer before reading its String copy, and the original nested JSON round trip.
+Its native oracle also exposed the missing equal-width `double → i64` bitcast
+for Float64→Data; LLVM now emits that representation cast alongside its inverse.
+Comparing that Float64 result to a Float literal then exposed missing mixed
+Float-width normalization. The shared operand path now widens the narrower
+Float for both operand orders before arithmetic/comparison emission.
+
+## 2026-11-19 — interpreter Float atoms omit raw storage width (OPEN)
+
+`((1.5 as Float) as Data) as Int` yields the native binary32 word `1069547520`,
+but its interpreter assertion fails on both `efd99d7b` and the Data-category
+repair. `Atom::Float(f64)` retains the numeric value without its declared
+storage format. Narrow raw-word parity requires that metadata through bindings,
+calls, returns and arithmetic; recognizing cast syntax is insufficient.
+Tracked at https://github.com/Randozart/briev-lang/issues/137.
+
 ## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
 
 **Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture

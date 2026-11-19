@@ -1,0 +1,12 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/json.bv";
+defn roundtrip() -> Bool {
+    let text: String = "{\"a\":[1,2,3],\"b\":{\"c\":\"kept\"}}";
+    let first: JsonValue = match json_parse(text) { Ok(v) => v, Err(_) => Null() };
+    let encoded: String = match json_stringify(first) { Ok(s) => s, Err(_) => "error" };
+    let second: JsonValue = match json_parse(encoded) { Ok(v) => v, Err(_) => Null() };
+    term match json_stringify(second) { Ok(s) => s == text, Err(_) => false };
+};
+test reparse { expect roundtrip(); };

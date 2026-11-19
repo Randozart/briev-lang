@@ -695,8 +695,14 @@ pub struct EventSlot {
 /// index from that map. Tuples and list literals stay unnamed (`names: None`).
 #[derive(Debug, Clone)]
 pub enum Value {
-    /// The sole representational storage cell for opaque program data.
+    /// Variable-width byte storage for inline strings and opaque program data.
     Bits(Vec<u8>),
+
+    /// 2026-11-19: raw Data word, distinct from its numeric interpretation.
+    /// Carry the category through bindings, calls and aggregates so Data→String
+    /// reads the represented buffer instead of formatting its address as Int.
+    /// Retire this dynamic tag when interpreter operands retain static types.
+    Data(u64),
 
     /// 2026-07-14: Typed value variants for generic op dispatch.
     /// These allow the interpreter to distinguish int from float values
@@ -916,6 +922,7 @@ impl Value {
         use Value::*;
         match (self, other) {
             (Bits(a), Bits(b)) => a == b,
+            (Data(a), Data(b)) => a == b,
             (Atom(a), Atom(b)) => a == b,
             (
                 Product {
@@ -1027,6 +1034,7 @@ impl Value {
     // values (zero_bits(4), zext of 1-byte bool) convert correctly.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
+            Value::Data(bits) => Some(*bits as i64),
             Value::Atom(Atom::Int(n)) => Some(*n),
             Value::Atom(Atom::Bool(b)) => Some(if *b { 1 } else { 0 }),
             Value::Atom(Atom::Char(c)) => Some(*c as i64),
@@ -1043,6 +1051,7 @@ impl Value {
     /// Extract first 8 bytes as f64.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
+            Value::Data(bits) => Some(f64::from_bits(*bits)),
             Value::Atom(Atom::Float(f)) => Some(*f),
             Value::Atom(Atom::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
             Value::Atom(Atom::Char(c)) => Some(*c as i64 as f64),
