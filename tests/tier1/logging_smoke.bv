@@ -1,0 +1,15 @@
+// logging smoke — stderr lines appear BEFORE exit (unbuffered), levels gate.
+// Golden (stdout): "abc" (the level gate skipping log_debug at default level).
+// The log lines themselves go to stderr; the smoke asserts stdout purity + a
+// debug-after-lower reaching stderr.
+import "std/io/logging.bv";
+
+node entry [beginprogram][true] {
+    log_info("server up");
+    log_debug("invisible at default level");
+    log_set_level(0);
+    log_debug("now visible");
+    log_warn("slow client");
+    log_error("bad request");
+    Print#(3 * 33 + 6);
+};

@@ -287,18 +287,34 @@ fn tier1_corpus_compiles_links_and_runs() {
 
     let mut ran = 0;
     let mut lib = 0;
+    let mut pinned = 0;
     for name in &fixtures {
         let src = std::fs::read_to_string(dir.join(format!("{name}.bv"))).unwrap();
         if is_library_surface(&src) {
             build_library(name);
             lib += 1;
-        } else {
-            // BOUND exercises the env lane (get_env_int!) where used.
-            build_link_run(name, "corpus", &[("BOUND", "5")]);
-            ran += 1;
+            continue;
+        }
+        // BOUND exercises the env lane (get_env_int!) where used.
+        let out = build_link_run(name, "corpus", &[("BOUND", "5")]);
+        ran += 1;
+        // F3 golden convention (2026-11-19): a fixture with a sidecar
+        // <name>.golden must print exactly that stdout. The same convention
+        // already exists in load_prerequisites/tier2; this wires it into the
+        // daily-use tier1 harness so "must not crash" can be upgraded to
+        // "must print this" by adding one file.
+        let golden = dir.join(format!("{name}.golden"));
+        if let Ok(expect) = std::fs::read_to_string(&golden) {
+            pinned += 1;
+            assert_eq!(
+                out, expect,
+                "{name}: stdout drifted from tests/tier1/{name}.golden"
+            );
         }
     }
-    eprintln!("tier1 E2E: {ran} program fixtures ran, {lib} library fixtures built");
+    eprintln!(
+        "tier1 E2E: {ran} program fixtures ran, {lib} library fixtures built, {pinned} golden-pinned"
+    );
 }
 
 #[test]
@@ -927,7 +943,8 @@ fn constants_gate_golden_output() {
 #[test]
 fn accel_declaration_is_never_dropped_silently() {
     let brievc = env!("CARGO_BIN_EXE_brievc");
-    let out_dir = Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/accel_lane_report__gate");
+    let out_dir =
+        Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/accel_lane_report__gate");
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
     let fixture = Path::new(PROJECT_ROOT).join("tests/tier1/accel_lane_report.bv");
@@ -1122,11 +1139,7 @@ fn literal_int_at_float_param_converts_and_keeps_the_value() {
         eprintln!("SKIP: clang not available");
         return;
     }
-    let out = build_link_run(
-        "literal_float_coercion",
-        "value",
-        &[],
-    );
+    let out = build_link_run("literal_float_coercion", "value", &[]);
     assert_eq!(
         out, "7",
         "fround(7) must convert to 7.0 and print 7: {out:?}"

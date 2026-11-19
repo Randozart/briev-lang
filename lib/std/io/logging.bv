@@ -1,0 +1,101 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// logging - levelled logging to UNBUFFERED stderr for long-running programs.
+//
+// 2026-11-19 (stdlib gap, dogfooding Knooppunt): Briev's stdout is a 64 KiB
+// custom buffer flushed only at program end (cast_lanes.bv stdout_flush in
+// `.end`), so a healthy SERVER prints nothing while it runs and a
+// killed one loses every print. Debugging `kernel/routing_service.bv`
+// meant xxd-ing binary junk out of a pipe; the fix is to log to stderr,
+// which `write_all(fd 2)` already writes DIRECT (unbuffered syscall per
+// line). This module is the thin, levelled surface over that.
+//
+// SEMANTICS:
+//   * Every write is a complete `write(2)` of one line — atomic enough for
+//     sequential servers, interleaves per-line under concurrency.
+//   * stderr is line-unbuffered BY CONSTRUCTION (fd-2 path in write_all);
+//     nothing here buffers, so `log_info` output is visible from another
+//     terminal even while the process runs.
+//   * `log_flush_stdout` re-exports the stdout flush for endprogram paths
+//     that want buffered prints out BEFORE the exit syscall.
+//   * Levels are checked against `log_level` (a plain `let`, settable with
+//     `log_set_level`): 0=debug 1=info 2=warn 3=error. Default: info.
+//     `log_debug` is compiled in but skipped unless the level is lowered —
+//     keep it cheap; there is no macro elision yet.
+//
+// LINE FORMAT: `<LEVEL_TAG> <message>` with a trailing newline. Tags are
+// fixed 2-character tokens (`D `, `I `, `W `, `E `) so lines stay greppable
+// without a timestamp dependency (os/time.bv now_ns is available for
+// callers that want one).
+//
+// Undo: delete this file; users go back to calling eprint_str directly.
+
+import "std/ffi/io.bv";
+import "std/string_builder.bv";
+
+// The minimum level that passes the gate. Plain storage, NOT in %State:
+// logging is plumbing, exactly like the stdout buffer (SPEC §8.1 plain
+// class) — carrying it through reactive txns would defeat their state
+// promotion for no machine-visible reason.
+let log_level: Int = 1;
+
+// log_set_level - lower/raise the gate: 0=debug 1=info 2=warn 3=error.
+defn log_set_level(level: Int) [level >= 0 && level <= 3] -> Void {
+    log_level = level;
+    term;
+};
+
+// log_line - emit `<tag> <msg>\n` to stderr in ONE write. The builder is
+// Malloc-backed and freed before return; nothing outlives the call.
+defn log_line(tag: String, msg: String) -> Void {
+    let sb: StringBuilder = new_builder();
+    sb = append_str(sb, tag);
+    sb = append_str(sb, " ");
+    sb = append_str(sb, msg);
+    sb = append_str(sb, "\n");
+    let line: String = to_string(sb);
+    let _r: Int = eprint_str(line);
+    Free#(line as Ptr<Bit<8>>);
+    term;
+};
+
+// log_debug - level 0. Diagnostics that only matter while hunting a bug.
+defn log_debug(msg: String) -> Void {
+    when log_level <= 0 {
+        log_line("D", msg);
+    };
+    term;
+};
+
+// log_info - level 1 (default). Normal operational events (listen, accept).
+defn log_info(msg: String) -> Void {
+    when log_level <= 1 {
+        log_line("I", msg);
+    };
+    term;
+};
+
+// log_warn - level 2. Recoverable oddities (a skipped malformed request).
+defn log_warn(msg: String) -> Void {
+    when log_level <= 2 {
+        log_line("W", msg);
+    };
+    term;
+};
+
+// log_error - level 3. Failures that cost a request or the process.
+defn log_error(msg: String) -> Void {
+    when log_level <= 3 {
+        log_line("E", msg);
+    };
+    term;
+};
+
+// log_flush_stdout - push the buffered stdout out NOW instead of at program
+// end. The endprogram path flushes automatically; this is for long-running
+// programs that print to stdout mid-flight (progress lines) and want them
+// visible while alive. Re-export of cast_lanes' stdout_flush via ffi/io.
+defn log_flush_stdout() [true][term >= 0] -> Int {
+    term stdout_flush();
+};
