@@ -4061,80 +4061,17 @@ node go [done == false][done == true] {
     /// 2026-08-11 (view wiring): a minimal webstack BuildOptions for the
     /// compile_view unit tests.
     fn webstack_opts(file_path: &str) -> BuildOptions {
+        // 2026-11-18: hand-written defaults missed verify_ir, validate_ir and
+        // deny_accel_cpu_fallback. Library-only tests never compiled this binary
+        // fixture, so the nightly workspace gate discovered the missing fields.
+        // 2026-11-19: march_override repeated the same E0063 failure. Inherit
+        // defaults and override only the view fixture's actual differences;
+        // retire this helper if the tests use a shared webstack-options builder.
         BuildOptions {
-            run: false,
-            config_dir: None,
             file_path: file_path.to_string(),
-            emit_ir_only: false,
-            // 2026-11-18: `verify_ir` joined `BuildOptions` (default ON, see
-            // `impl Default` in pipeline.rs). This helper is one of the
-            // hand-rolled literals that trap already warns about — it duplicates
-            // the field set piecewise, so a new field breaks the bin test target
-            // (`error[E0063]: missing field 'verify_ir'`) instead of falling back
-            // to the default. Set it to the documented default rather than
-            // guessing; the webstack path never reaches IR verification.
-            verify_ir: true,
-            out_dir: None,
-            optimize_budget: 256,
-            emit_beast_stages: vec![],
-            emit_hir: false,
             backend: BackendKind::Webstack,
-            no_stdlib: false,
-            stdlib_path: None,
-            disable_plugins: vec![],
-            enable_plugins: vec![],
-            trg_unresolved_action: TrgUnresolvedAction::Warn,
-            explain_causality: false,
-            extra_objects: vec![],
-            shared: false,
-            library_mode: false,
-            keep_all_defns: false,
             int_bits: 32,
-            glue_config: None,
-            stack_threshold: 4096,
-            allow_read: false,
-            allow_write: false,
-            allow_run: false,
-            allow_sys_query: false,
-            allow_net: false,
-            macro_budget: 0,
-            dump_vfs: false,
-            update_lockfile: false,
-            dump_traces: false,
-            diff_mode: false,
-            sysquery_overrides: std::collections::HashMap::new(),
-            target: None,
-            sysquery_pairs: vec![],
-            sysquery_files: vec![],
-            style_css: None,
-            view_html: None,
-            view_bindings: vec![],
-            ssr: false,
-            dev: false,
-            split: false,
-            accel_cpu_fallback: None,
-            accel_mode: None,
-            isr_mechanism: None,
-            triple_override: None,
-            linker_script_override: None,
-            all_targets: false,
-            entry_override: None,
-            raw_bin: false,
-            no_link: false,
-            web_page_key: None,
-            verify_bodies: false,
-            verify_report: None,
-            safe_mode: false,
-            // 2026-11-18: `BuildOptions` gained these two fields after this
-            // helper was written, and nothing noticed because `cargo test --lib`
-            // never compiles the BINARY's test target. The nightly's `--all`
-            // nextest run is the only thing that builds it, so the nightly could
-            // not even compile once the filterset was fixed:
-            //   error[E0063]: missing fields `deny_accel_cpu_fallback` and
-            //   `validate_ir` in initializer of `BuildOptions`
-            // Values match `BuildOptions::default_for(...)`: off.
-            validate_ir: false,
-            deny_accel_cpu_fallback: false,
+            ..BuildOptions::default()
         }
     }
 

@@ -1,3 +1,15 @@
+## 2026-11-19 — webstack test options drifted and blocked workspace compilation (FIXED)
+
+The binary's `webstack_opts` fixture listed every BuildOptions field manually.
+Adding `march_override` left it incomplete, so `cargo test --workspace` failed
+with E0063 before any tests ran. Hosted Workspace tests on PR #136 reproduced
+the failure at `src/compile.rs:4064`. This repeated the earlier missing-field
+failures documented in the same helper; library-only tests do not build it.
+
+The fixture now inherits `BuildOptions::default()` and overrides only its path,
+Webstack backend and 32-bit integer width. Every other old explicit value
+matched the default. Existing binary/view tests exercise these options.
+
 ## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
 
 **Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture
