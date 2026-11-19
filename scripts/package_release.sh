@@ -31,7 +31,9 @@ while IFS= read -r -d '' dir; do
 done < <(find lib -mindepth 1 -maxdepth 1 -type d -print0)
 # The compiler probes config/ relative to its working directory. Ship the full
 # baked policy set so a package extraction is self-contained.
-cp -R config "$staging/config"
+# 2026-11-19: the destination already exists; copy contents (including hidden
+# resources) rather than nesting another config directory inside it.
+cp -R config/. "$staging/config/"
 # System stage plugins are searched in CWD first, then beside the resource
 # root. A self-contained package must ship them.
 cp -R plugins "$staging/plugins"
