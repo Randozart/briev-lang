@@ -1091,17 +1091,28 @@ pub fn emit_kernel(
         }
     }
 
+    // 2026-11-19 (P4): lift the WG scratch word before the final `lower`
+    // uses — the field is set once (pre-emission) and never mutates, and
+    // reading it here ends `lower`'s &mut builder borrow so the function
+    // epilogue below can use `builder` again. The interface comment below
+    // explains why the word must be in the entry-point interface.
+    let wg_scratch_word = lower.wg_scratch;
     lower.builder.builder.branch(exit_bb);
     lower.builder.begin_block(Some(exit_bb));
     builder.ret();
     builder.end_function();
 
-    // Entry-point interface lists every Input/Output + SSBO variable.
+    // Entry-point interface lists every Input/Output + SSBO variable —
+    // and (2026-11-19 P4) the WG reduce scratch: the Vulkan environment
+    // requires every module-scope variable the entry point references to
+    // be listed (spirv-val: "Interface variable id ... is not listed as
+    // an interface"; the driver surfaces it as "compute pipeline failed").
     let interface: Vec<Word> = [global_id_var, local_id_var]
         .into_iter()
         .flatten()
         .chain(builder.state_interface(ssbo_var).into_iter())
         .chain(image_vars.values().copied())
+        .chain(wg_scratch_word.into_iter())
         .collect();
     builder.set_entry_point(func_id, kernel_name, ExecutionModel::GLCompute, &interface);
     // Cooperative row kernels (plan 2026-09-01-cooperative-row-kernels):

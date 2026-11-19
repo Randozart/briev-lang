@@ -388,100 +388,7 @@ mod tests {
     /// the butterfly is what carries them to the shared array.
     #[test]
     fn test_sum_idiom_lowers_subgroup_iadd() {
-        let mut meta = std::collections::HashMap::new();
-        meta.insert(
-            "accel".into(),
-            crate::ast::PropertyValue::String("try_all".into()),
-        );
-        let program = vec![
-            TopLevel::ModuleMetadata(meta),
-            TopLevel::StateDecl(StateDecl {
-                name: "i".into(),
-                ty: Type::int(),
-                span: None,
-            }),
-            state_decl("a", 4096),
-            state_decl("y", 64),
-            TopLevel::Transaction(Transaction {
-                variadic_param: None,
-                name: "sum".into(),
-                is_reactive: true,
-                is_async: false,
-                type_params: vec![],
-                parameters: vec![],
-                output_type: None,
-                outputs: vec![],
-                contract: Contract {
-                    pre_condition: Expr::BinaryOp(
-                        BinaryOpKind::Lt,
-                        Box::new(Expr::Identifier("i".into())),
-                        Box::new(Expr::Decimal(64)),
-                    ),
-                    post_condition: Expr::Bool(true),
-                    watchdog: None,
-                    explicit: false,
-                    span: None,
-                    post_authority: false,
-                },
-                body: vec![
-                    Statement::Let {
-                        name: "acc".into(),
-                        names: vec![],
-                        ty: Some(Type::int()),
-                        expr: Some(Expr::Decimal(0)),
-                        modifiers: vec![],
-                    },
-                    Statement::Foreach {
-                        item: "k".into(),
-                        list: Box::new(Expr::Range {
-                            start: Box::new(Expr::Decimal(0)),
-                            end: Box::new(Expr::Decimal(1024)),
-                            inclusive: false,
-                        }),
-                        body: vec![Statement::Assign(
-                            Expr::Identifier("acc".into()),
-                            Expr::BinaryOp(
-                                BinaryOpKind::Add,
-                                Box::new(Expr::Identifier("acc".into())),
-                                Box::new(Expr::Index(
-                                    Box::new(Expr::Identifier("a".into())),
-                                    Box::new(Expr::BinaryOp(
-                                        BinaryOpKind::Add,
-                                        Box::new(Expr::BinaryOp(
-                                            BinaryOpKind::Mul,
-                                            Box::new(Expr::Identifier("i".into())),
-                                            Box::new(Expr::Decimal(1024)),
-                                        )),
-                                        Box::new(Expr::Identifier("k".into())),
-                                    )),
-                                )),
-                            ),
-                        )],
-                        modifiers: vec![],
-                    },
-                    Statement::Assign(
-                        Expr::Index(
-                            Box::new(Expr::Identifier("y".into())),
-                            Box::new(Expr::Identifier("i".into())),
-                        ),
-                        Expr::Identifier("acc".into()),
-                    ),
-                    Statement::Assign(
-                        Expr::Identifier("i".into()),
-                        Expr::BinaryOp(
-                            BinaryOpKind::Add,
-                            Box::new(Expr::Identifier("i".into())),
-                            Box::new(Expr::Decimal(1)),
-                        ),
-                    ),
-                ],
-                metadata: std::collections::HashMap::new(),
-                derivation: None,
-                modifiers: vec![],
-                span: None,
-                doc: None,
-            }),
-        ];
+        let program = sum_fold_program();
         let analysis = analyze(&program);
         let shape = eligible_shape(&analysis, "sum").clone();
         assert!(
@@ -618,6 +525,135 @@ mod tests {
                 ops2
             );
         }
+    }
+
+    /// 2026-11-19 (P4): the fold kernel's MODULE must pass spirv-val — the
+    /// PTL Vulkan driver answered the butterfly with "compute pipeline
+    /// failed" (a validity/driver rule spirv-val can name); the opcode
+    /// census alone does not gate this.
+    #[test]
+    fn test_p4_wg_fold_module_passes_spirv_val() {
+        if !std::process::Command::new("spirv-val")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            eprintln!("spirv-val not found — skipping");
+            return;
+        }
+        let program = sum_fold_program();
+        let analysis = analyze(&program);
+        let shape = eligible_shape(&analysis, "sum").clone();
+        let mut builder = SpirvBuilder::new();
+        emit_kernel(
+            &mut builder,
+            "main",
+            &shape,
+            &program,
+            true,
+            &crate::backend::spirv::kernel::KernelSurface::default(),
+        )
+        .expect("fold lane emit must compile");
+        let _dis = validate_and_disassemble(&builder.build().unwrap(), "p4_wg_fold");
+    }
+
+    /// The §12 W3 sum-fold program (4096 rows × 1024 Int elements), shared
+    /// by the opcode-census test and the P4 spirv-val gate.
+    fn sum_fold_program() -> Vec<TopLevel> {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "accel".into(),
+            crate::ast::PropertyValue::String("try_all".into()),
+        );
+        vec![
+            TopLevel::ModuleMetadata(meta),
+            TopLevel::StateDecl(StateDecl {
+                name: "i".into(),
+                ty: Type::int(),
+                span: None,
+            }),
+            state_decl("a", 4096),
+            state_decl("y", 64),
+            TopLevel::Transaction(Transaction {
+                variadic_param: None,
+                name: "sum".into(),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: Contract {
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(64)),
+                    ),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    explicit: false,
+                    span: None,
+                    post_authority: false,
+                },
+                body: vec![
+                    Statement::Let {
+                        name: "acc".into(),
+                        names: vec![],
+                        ty: Some(Type::int()),
+                        expr: Some(Expr::Decimal(0)),
+                        modifiers: vec![],
+                    },
+                    Statement::Foreach {
+                        item: "k".into(),
+                        list: Box::new(Expr::Range {
+                            start: Box::new(Expr::Decimal(0)),
+                            end: Box::new(Expr::Decimal(1024)),
+                            inclusive: false,
+                        }),
+                        body: vec![Statement::Assign(
+                            Expr::Identifier("acc".into()),
+                            Expr::BinaryOp(
+                                BinaryOpKind::Add,
+                                Box::new(Expr::Identifier("acc".into())),
+                                Box::new(Expr::Index(
+                                    Box::new(Expr::Identifier("a".into())),
+                                    Box::new(Expr::BinaryOp(
+                                        BinaryOpKind::Add,
+                                        Box::new(Expr::BinaryOp(
+                                            BinaryOpKind::Mul,
+                                            Box::new(Expr::Identifier("i".into())),
+                                            Box::new(Expr::Decimal(1024)),
+                                        )),
+                                        Box::new(Expr::Identifier("k".into())),
+                                    )),
+                                )),
+                            ),
+                        )],
+                        modifiers: vec![],
+                    },
+                    Statement::Assign(
+                        Expr::Index(
+                            Box::new(Expr::Identifier("y".into())),
+                            Box::new(Expr::Identifier("i".into())),
+                        ),
+                        Expr::Identifier("acc".into()),
+                    ),
+                    Statement::Assign(
+                        Expr::Identifier("i".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("i".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    ),
+                ],
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                modifiers: vec![],
+                span: None,
+                doc: None,
+            }),
+        ]
     }
 
     /// 2026-11-08 (P1): a float fold lowers to the F-family subgroup reduce
