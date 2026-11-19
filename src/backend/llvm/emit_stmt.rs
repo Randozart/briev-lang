@@ -425,8 +425,25 @@ fn emit_bare_term_stop(backend: &mut LlvmBackend, out: &mut String, indent: &str
         writeln!(out, "{}br label %{}", indent, abort).ok();
     } else if let Some(ref post) = backend.fun.callable_txn_post_label {
         writeln!(out, "{}br label %{}", indent, post).ok();
-    } else {
+    } else if backend.fun.fn_ret_ty == "void" {
         writeln!(out, "{}ret void", indent).ok();
+    } else {
+        // 2026-11-19 (bare term in a value-returning defn): the interpreter
+        // treats a bare `term;` as TermReturn(None) — the caller receives an
+        // empty value and keeps running (verified: probe(0) -> term; passes,
+        // probe(5) -> term 5 works, both in one program). The native path
+        // emitted `ret void` inside `define i64 @probe`, which LLVM's own
+        // verifier rejects. Return the typed zero, the convention the
+        // Rollback arm already established, so both engines agree the call
+        // completes with an empty value.
+        let zero = if backend.fun.fn_ret_ty == "float" || backend.fun.fn_ret_ty == "double" {
+            "0.0".to_string()
+        } else if backend.fun.fn_ret_ty == "ptr" {
+            "null".to_string()
+        } else {
+            "0".to_string()
+        };
+        writeln!(out, "{}ret {} {}", indent, backend.fun.fn_ret_ty, zero).ok();
     }
     backend.fun.terminated = true;
 }

@@ -1,0 +1,26 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// literal_float_coercion — a Decimal literal at a Float parameter.
+//
+// 2026-11-19 (literal coercion ABI): the typechecker admits `fround(7)` via
+// try_coerce_via_parse (the same acceptance `let d: Float64 = -3.25` relies
+// on), so the emitter must keep the promise: sitofp the literal to the
+// parameter's float representation before the call. Before the fix the module
+// carried `call float @fround(i64 %lit)` against `define float @fround(float)`
+// and the emitted-module check rejected the program.
+//
+// The golden is the printed integer: fround(7) converts to 7.0, and the
+// `as Int` round-trip prints 7. A bit-reinterpreted float would print
+// something entirely different (1088421888-ish), so this value distinguishes
+// a real conversion from passing the integer bits through a float register.
+
+defn fround(x: Float) [true][term >= 0.0 || term < 0.0] -> Float {
+    term x;
+};
+
+node entry [beginprogram][true] {
+    let r: Float = fround(7);
+    Print#(r as Int as String);
+    endprogram Print#("");
+};

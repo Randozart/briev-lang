@@ -2651,6 +2651,46 @@ impl LlvmBackend {
         }
     }
 
+    /// Adapt a call argument to the callee's declared parameter representation.
+    ///
+    /// Returns `Some(reg)` when a representation conversion was EMITTED, `None`
+    /// when the argument already matches (or no rule applies). Today the one
+    /// rule is integer -> float: the typechecker admits a Decimal literal at a
+    /// Float parameter (`try_coerce_via_parse` — `fround(7)` is designed to
+    /// work), and the emitter must keep that promise with a `sitofp`/`fpext`
+    /// instead of passing the integer bits into a float register. Widths are
+    /// taken from the callee's declared LLVM type, so Float32 and Float64
+    /// parameters both convert correctly.
+    pub(crate) fn adapt_arg_to_param(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &TypedRegister,
+        param_ty: &Type,
+    ) -> Option<TypedRegister> {
+        let param_ll = self.llvm_type(param_ty);
+        let param_is_float = param_ll == "float" || param_ll == "double";
+        if !param_is_float {
+            return None;
+        }
+        let src_ll = self.llvm_type(&reg.ty);
+        let src_is_int = src_ll.starts_with('i');
+        if !src_is_int {
+            return None; // already float-class, or pointer/aggregate: no rule
+        }
+        let converted = self.fun.gen_reg();
+        if param_ll == "double" && src_ll == "i32" {
+            // sitofp has no i32->double form issue, but keep the order explicit.
+            writeln!(out, "{}{} = sitofp {} {} to double", indent, converted, src_ll, reg.name).ok();
+        } else {
+            writeln!(out, "{}{} = sitofp {} {} to {}", indent, converted, src_ll, reg.name, param_ll).ok();
+        }
+        Some(TypedRegister {
+            name: converted,
+            ty: param_ty.clone(),
+        })
+    }
+
     pub(crate) fn adapt_to_i64(
         &mut self,
         out: &mut String,

@@ -9314,6 +9314,24 @@ impl LlvmBackend {
                             return Some(self.wrap_union_value(out, indent, &emitted, pt));
                         }
                     }
+                    // 2026-11-19 (literal coercion ABI): the typechecker
+                    // ADMITS a Decimal literal at a Float parameter
+                    // (`try_coerce_via_parse` — `fround(7)` is designed to
+                    // work), which is a promise that the emitter must keep:
+                    // convert the argument to the declared representation
+                    // instead of passing the integer bits into a float
+                    // parameter. Without this the emitted module carries
+                    // `call float @f(i64 %lit)` against `define float @f(float)`,
+                    // which the emitted-module check rejects — the program
+                    // cannot run at all. Same question, one owner: the
+                    // declared parameter type.
+                    if let Some(pt) = fn_params.as_ref().and_then(|p| p.get(i)) {
+                        if let Some(conv) =
+                            self.adapt_arg_to_param(out, indent, &emitted, pt)
+                        {
+                            return Some(conv);
+                        }
+                    }
                     Some(emitted)
                 })
                 .collect::<Option<Vec<_>>>()?

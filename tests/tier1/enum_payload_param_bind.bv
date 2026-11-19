@@ -1,0 +1,28 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// enum_payload_param_bind — a payload containing a type param binds it from
+// the argument's structure (issue #135), and the bound payload aliases
+// correctly (issue #134).
+//
+// `Packed([4, 5])` for `enum Basket<T> { Packed(List<T>) }` used to fail
+// `expected List<T> … found List<Int>`: the constructor's param-binding branch
+// only fired when the WHOLE payload type was the bare param, so a
+// collection-wrapped param kept a free `T`. `unify_free_params` walks the
+// declared payload against the argument's type and binds T := Int.
+
+import "std/collections.bv";
+
+enum Basket<T> { Packed(List<T>), Missing, };
+
+defn make() -> Basket<Int> { term Packed([4, 5]); };
+
+defn total(value: Basket<Int>) -> Int {
+    term match value { Packed(xs) => xs.Count#(), Missing => 0 - 1 };
+};
+
+node entry [beginprogram][true] {
+    let values: Basket<Int> = make();
+    Print#(total(values) as String);
+    endprogram Print#("");
+};

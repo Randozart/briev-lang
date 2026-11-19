@@ -49,7 +49,10 @@ const AF_INET:     Int = 2;
 // ML-daemon RPC surface (length-prefixed JSON over SOCK_STREAM).
 const AF_UNIX:     Int = 1;
 const SOCK_STREAM: Int = 1;
-const IPPROTO_TCP: Int = 0;
+// IPPROTO_TCP is 6 (RFC 793). It was 0 here since d2ecdaf91 — 0 is
+// IPPROTO_IP, which the kernel happens to accept for AF_INET+SOCK_STREAM, so
+// sockets still worked; explicit IPPROTO_TCP=6 is the correct spelling.
+const IPPROTO_TCP: Int = 6;
 
 // ── shutdown(2) "how" ─────────────────────────────────────────────────────
 // SHUT_RDWR tears down both directions at once (the usual "I am done with

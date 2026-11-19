@@ -2908,6 +2908,48 @@ pub(crate) fn types_compatible(declared: &Type, value: &Type, ctx: &TypecheckCon
 /// 2026-08-23 (enum-construction plan): type a variant constructor call.
 /// `Ok(x)` under `Result<T,E>`: payload x:T binds T; E comes from the
 /// contextual output type or defaults Void-with-note.
+/// Unify free type params of a declared payload type against an argument's
+/// concrete type. `Ok(true)` = every difference was explained by a binding (or
+/// the types already agree); `Ok(false)` = a structural mismatch a binding
+/// cannot explain — report it.
+///
+/// `Packed(List<T>)` constructed with `[4, 5]`: declared `List<T>` against
+/// `List<Int>` — same constructor, so unify the element lists and bind
+/// `T := Int`. Substitutions already made bind first (`T` bound by an earlier
+/// payload position must agree here too). No name matching: the walk is driven
+/// by the types' own constructors (Rule 15).
+fn unify_free_params(
+    declared: &Type,
+    actual: &Type,
+    params: &[String],
+    subst: &mut HashMap<String, Type>,
+) -> bool {
+    if let Type::Custom(pn) = declared {
+        if params.contains(pn) {
+            if let Some(bound) = subst.get(pn) {
+                return bound == actual;
+            }
+            subst.insert(pn.clone(), actual.clone());
+            return true;
+        }
+    }
+    match (declared, actual) {
+        (Type::Applied(dc, dt), Type::Applied(ac, at)) if dc == ac && dt.len() == at.len() => dt
+            .iter()
+            .zip(at)
+            .all(|(d, a)| unify_free_params(d, a, params, subst)),
+        (Type::Tuple(dt), Type::Tuple(at)) if dt.len() == at.len() => dt
+            .iter()
+            .zip(at)
+            .all(|(d, a)| unify_free_params(d, a, params, subst)),
+        (Type::Generic(dc, dt), Type::Generic(ac, at)) if dc == ac && dt.len() == at.len() => dt
+            .iter()
+            .zip(at)
+            .all(|(d, a)| unify_free_params(d, a, params, subst)),
+        _ => declared == actual,
+    }
+}
+
 fn infer_variant_construction(
     enum_name: &str,
     variant: &str,
@@ -2954,6 +2996,18 @@ fn infer_variant_construction(
                 subst.insert(pn.clone(), aty.clone());
                 continue;
             }
+        }
+        // 2026-11-19 (issue #135): a payload whose declared type CONTAINS a
+        // param — `Packed(List<T>)` — must bind that param from the argument's
+        // structure, not fail `List<T>` vs `List<Int>`. The param-ty branch
+        // above only fires when the WHOLE payload type is the bare param, so
+        // every collection-wrapped payload kept a free `T` and the comparison
+        // below failed. Walk the declared type against the argument's type:
+        // same-shape Applied/Generic constructors unify element-wise; a param
+        // position binds. Unbound params afterwards fall through to the
+        // contextual unification below.
+        if unify_free_params(pty, &aty, params.as_slice(), &mut subst) {
+            continue;
         }
         if !types_compatible(pty, &aty, ctx) && aty != *pty {
             return Err(TypeError::TypeMismatch {
