@@ -1,0 +1,48 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/collections.bv";
+
+enum Basket { Packed(List<Int>), Missing, };
+enum Wrapper<T> { Value(T), };
+enum Bundle { Named(String, List<Int>), Nested(List<List<Int>>), };
+
+defn total(values: List<Int>) -> Int {
+    let result: Int = 0;
+    foreach i in 0..values.Count#() { result = result + values[i]; };
+    term result;
+};
+
+defn basket_total(value: Basket) -> Int {
+    term match value { Packed(xs) => total(xs), Missing => -1 };
+};
+
+defn bundle_total(value: Bundle) -> Int {
+    term match value {
+        Named(label, xs) => total(xs),
+        Nested(rows) => total(rows[0]) + total(rows[1]),
+    };
+};
+
+defn make() -> Basket { term Packed([4, 5]); };
+defn wrapped() -> Wrapper<List<Int>> { term Value([11, 12]); };
+defn wrapped_total(value: Wrapper<List<Int>>) -> Int {
+    term match value { Value(xs) => total(xs) };
+};
+
+defn probe() -> Bool {
+    let nonempty: Basket = Packed([1, 2, 3]);
+    let empty: Basket = Packed([]);
+    let named: Bundle = Named("numbers", [6, 7]);
+    let nested: Bundle = Nested([[8], [9, 10]]);
+    term basket_total(nonempty) == 6 && basket_total(empty) == 0 &&
+        basket_total(make()) == 9 && bundle_total(named) == 13 &&
+        bundle_total(nested) == 27 && wrapped_total(wrapped()) == 23;
+};
+
+test enum_collection_literals { expect probe(); };
+node main [beginprogram][true] {
+    when !probe() { endprogram 1; };
+    println!("contextual_enum_collections_ok");
+    endprogram;
+};

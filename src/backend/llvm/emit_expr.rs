@@ -197,6 +197,7 @@ use std::fmt::Write;
 pub(crate) enum TupleElems<'a> {
     Ast(&'a [Expr]),
     Hir(&'a [crate::hir::expr::HirExpr]),
+    Contextual(&'a [Expr], &'a [Type]),
 }
 
 /// 2026-11-05 (H4 slice D): dual-fueled match arms — `Ast` keeps the legacy
@@ -3991,7 +3992,9 @@ impl LlvmBackend {
         // Dynamic elements (vars, fields, calls) stay inline: their registers
         // are body-defined and cannot dominate a preheader definition.
         let const_elements = match elems {
-            TupleElems::Ast(exprs) => exprs.iter().all(is_compile_time_const),
+            TupleElems::Ast(exprs) | TupleElems::Contextual(exprs, _) => {
+                exprs.iter().all(is_compile_time_const)
+            }
             TupleElems::Hir(items) => items.iter().all(is_hir_compile_time_const),
         };
         if self.fun.defer_struct_allocas && const_elements {
@@ -4016,7 +4019,7 @@ impl LlvmBackend {
         indent: &str,
     ) -> TypedRegister {
         let count = match elems {
-            TupleElems::Ast(exprs) => exprs.len(),
+            TupleElems::Ast(exprs) | TupleElems::Contextual(exprs, _) => exprs.len(),
             TupleElems::Hir(items) => items.len(),
         };
         let mut element_types = Vec::with_capacity(count);
@@ -4038,6 +4041,9 @@ impl LlvmBackend {
             for i in 0..count {
                 let e = match elems {
                     TupleElems::Ast(exprs) => self.emit_expr(out, &exprs[i], indent),
+                    TupleElems::Contextual(exprs, types) => {
+                        self.emit_contextual_operand(out, &exprs[i], types.get(i), indent)
+                    }
                     TupleElems::Hir(items) => self
                         .emit_hir_operand(out, &items[i], indent)
                         .expect("lossless tuple element"),
@@ -8895,10 +8901,14 @@ impl LlvmBackend {
         payload: EnumPayload<'_>,
     ) -> Option<String> {
         let value = if payload.args.len() == 1 {
-            self.emit_expr(out, &payload.args[0], indent)
+            self.emit_contextual_operand(out, &payload.args[0], payload.expected, indent)
         } else {
             let tuple = self.fun.gen_reg();
-            self.emit_tuple(out, &tuple, &TupleElems::Ast(payload.args), indent)
+            let elems = match payload.expected {
+                Some(Type::Tuple(types)) => TupleElems::Contextual(payload.args, types),
+                _ => TupleElems::Ast(payload.args),
+            };
+            self.emit_tuple(out, &tuple, &elems, indent)
         };
         let handle_llvm = self.llvm_type(&value.ty);
         let word = if matches!(handle_llvm.as_str(), "i8" | "i16" | "i32") {
@@ -9256,20 +9266,13 @@ impl LlvmBackend {
             args.iter()
                 .enumerate()
                 .map(|(i, a)| -> Option<TypedRegister> {
-                    if let Some(param_tys) = &fn_params {
-                        if let Some(pt) = param_tys.get(i) {
-                            let has_collection_parameter_type = self.tier2_collection_type(pt)
-                                || matches!(pt, Type::Custom(_) | Type::Applied(_, _));
-                            if matches!(a, crate::ast::Expr::List(_))
-                                && has_collection_parameter_type
-                            {
-                                if let Some((reg, _)) =
-                                    self.construct_local_collection(out, indent, pt, a)
-                                {
-                                    return Some(reg);
-                                }
-                            }
-                        }
+                    if let Some(reg) = self.try_emit_contextual_literal(
+                        out,
+                        a,
+                        fn_params.as_ref().and_then(|p| p.get(i)),
+                        indent,
+                    ) {
+                        return Some(reg);
                     }
                     // 2026-08-18 (BUGS.md defn-param mutation): a POOLED
                     // INSTANCE used as a VALUE (a defn argument) has no scalar
@@ -10262,16 +10265,53 @@ impl LlvmBackend {
         expected_result: Option<&Type>,
         indent: &str,
     ) -> TypedRegister {
-        if matches!(body, Expr::List(_)) {
-            if let Some(expected) = expected_result {
-                if let Some((value, _)) =
-                    self.construct_local_collection(out, indent, expected, body)
-                {
-                    return value;
-                }
-            }
+        self.emit_contextual_operand(out, body, expected_result, indent)
+    }
+
+    /// 2026-11-19: preserve declared aggregate context at materialization
+    /// boundaries. Enum payloads, tuple fields and collection elements need
+    /// the same construction operators as typed call arguments and bindings.
+    /// Retire when every literal carries its verified concrete type in HIR.
+    pub(super) fn emit_contextual_operand(
+        &mut self,
+        out: &mut String,
+        expr: &Expr,
+        expected: Option<&Type>,
+        indent: &str,
+    ) -> TypedRegister {
+        let saved = self.fun.expected_enum_type.clone();
+        if let Some(ty) = expected {
+            self.fun.expected_enum_type = Some(ty.clone());
         }
-        self.emit_expr(out, body, indent)
+        let value = self
+            .try_emit_contextual_literal(out, expr, expected, indent)
+            .unwrap_or_else(|| self.emit_expr(out, expr, indent));
+        self.fun.expected_enum_type = saved;
+        value
+    }
+
+    fn try_emit_contextual_literal(
+        &mut self,
+        out: &mut String,
+        expr: &Expr,
+        expected: Option<&Type>,
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        match (expr, expected?) {
+            (Expr::List(_), ty) => self
+                .construct_local_collection(out, indent, ty, expr)
+                .map(|(value, _)| value),
+            (Expr::Tuple(exprs), Type::Tuple(types)) => {
+                let register = self.fun.gen_reg();
+                Some(self.emit_tuple(
+                    out,
+                    &register,
+                    &TupleElems::Contextual(exprs, types),
+                    indent,
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// 2026-08-06 (Phase 7): lower a match expression. The scrutinee is

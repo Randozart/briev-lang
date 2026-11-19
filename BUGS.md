@@ -1,3 +1,18 @@
+## 2026-11-19 — collection literals lose their enum payload context (FIXED)
+
+`Array([IntVal(3)])` passed type checking but panicked in LLVM emission:
+`a bare list literal reached codegen without a collection type`. Ordinary
+typed call arguments already constructed through collection operators, while
+enum payload emission discarded the resolved payload type. Tuple payload fields
+and nested collection elements lost the same information.
+
+Contextual operand materialization now propagates the declared payload/tuple
+field/collection insertion type to the existing collection construction path.
+It shares the typed literal path with call arguments and match results, without
+recognizing any enum or collection name. `tests/contextual_enum_collections.rs`
+checks interpreter assertions and native AST/HIR at O0/O3, plus Valgrind when
+installed, for empty/nonempty, generic, tuple and nested payloads.
+
 ## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
 
 **Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture

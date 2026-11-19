@@ -682,7 +682,13 @@ impl LlvmBackend {
     /// arrow path (the AST variant delegates here).
     pub(super) fn insert_element_type_name(&self, name: &str) -> Option<crate::ast::Type> {
         let full_ty = self.resolve_id_type(name)?;
-        let (base, args) = match &full_ty {
+        self.insert_element_type_for(&full_ty)
+    }
+
+    /// Resolve the insertion operand from a declared collection type, also
+    /// before a literal has a binding name (2026-11-19 contextual literals).
+    fn insert_element_type_for(&self, full_ty: &Type) -> Option<Type> {
+        let (base, args) = match full_ty {
             crate::ast::Type::Custom(n) => (n.clone(), Vec::new()),
             crate::ast::Type::Applied(n, a) => (n.clone(), a.clone()),
             _ => return None,
@@ -2879,8 +2885,9 @@ impl LlvmBackend {
                 ));
             }
             if let Some(member) = init_member {
-                let arg_tmp = self.fun.gen_reg();
-                let first = self.emit_expr_inner(out, &arg_tmp, &elems[0], indent);
+                let element_type = self.insert_element_type_for(briev_ty);
+                let first =
+                    self.emit_contextual_operand(out, &elems[0], element_type.as_ref(), indent);
                 let out_tmp = self.fun.gen_reg();
                 self.emit_member_body(
                     out,
@@ -2897,8 +2904,8 @@ impl LlvmBackend {
             }
             if let Some(member) = insert_member {
                 for e in elems.iter().skip(1) {
-                    let arg_tmp = self.fun.gen_reg();
-                    let ar = self.emit_expr_inner(out, &arg_tmp, e, indent);
+                    let element_type = self.insert_element_type_for(briev_ty);
+                    let ar = self.emit_contextual_operand(out, e, element_type.as_ref(), indent);
                     let out_tmp = self.fun.gen_reg();
                     self.emit_member_body(
                         out,
