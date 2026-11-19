@@ -118,7 +118,12 @@ REFUTED 2026-11-18 (`BAD=220`/`sum=0` on NEO); the P4 plan
 (`docs/plans/2026-11-19-p4-fsum-approx-portable-workgroup-reduce.md`) supersedes it with a
 portable workgroup shared-memory + `ControlBarrier` + lane-0 reduce (device-width
 independent), isolated to `emit_subgroup_reduce` (the GEMM/coopmat path emits its own
-`OpGroupNonUniform` directly and is unaffected). **B2** read which of the
+`OpGroupNonUniform` directly and is unaffected). **B1 DONE 2026-11-19 (P4, `6e147ada2`+
+`7ae635eb5`)**: landed + device-verified — `g0_fsum_approx` OpenCL bad=0, G0 PASS all
+lanes, licensed lane 0.067 ms (budget 0.106); the device caught the missing
+entry-point-interface entry for the WG scratch (Vulkan: "compute pipeline failed"), now
+pinned by `test_p4_wg_fold_module_passes_spirv_val`;
+results: `benchmarks/results/2026-11-19-p4-fsum-approx-butterfly.md`. **B2** read which of the
 three residency fallbacks fires (the logging landed 2026-11-18). **B3** the GEMM
 input-integrity canary, and prove it bites by rebuilding the old `local_total` parse —
 `G0_GEMM_BAD=0` was green *before* the 16× fix too.

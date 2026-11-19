@@ -1,8 +1,12 @@
 # P4: `g0_fsum_approx` OpenCL — portable workgroup reduce for the `approx` fold lane
 
-**2026-11-19, scoped; implementation design added 2026-11-19 after the backend
-research pass (this is the scoping doc, per "write the plan before
-plan-driven work").**
+**2026-11-19 — DONE. Landed `6e147ada2` + `7ae635eb5`; device-verified; results in
+`benchmarks/results/2026-11-19-p4-fsum-approx-butterfly.md`; BUGS.md entry marked
+FIXED. Summary: G0 PASS on all lanes; `g0_fsum_approx` OpenCL bad=0 (was WRONG);
+licensed lane 0.067 ms (budget 0.106); the device caught one thing the static gates
+could not — the WG scratch `OpVariable` must be listed in the entry-point interface
+(Vulkan surfaces the omission as "compute pipeline failed"; spirv-val names it) —
+now pinned by `test_p4_wg_fold_module_passes_spirv_val`.**
 
 ## Step 0 — sync precondition (researched 2026-11-19)
 
