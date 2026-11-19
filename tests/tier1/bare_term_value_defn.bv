@@ -1,0 +1,25 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// bare_term_value_defn — a `when` guard ending in bare `term;` inside a
+// VALUE-returning defn. 2026-11-19: the native path emitted `ret void` into
+// `define i64 @probe` (rejected by the verifier); the interpreter treats the
+// bare term as TermReturn(None) — the caller receives an empty value. The
+// native path now returns the typed zero. Golden: probe(0) -> 0 (the empty
+// value), probe(5) -> 5 (the real term).
+
+defn probe(x: Int) -> Int {
+    when x == 0 {
+        term;
+    };
+    term x;
+};
+
+node entry [beginprogram][true] {
+    let r: Int = probe(0);
+    let s: Int = probe(5);
+    Print#(r as String);
+    Print#(",");
+    Print#(s as String);
+    endprogram Print#("");
+};
