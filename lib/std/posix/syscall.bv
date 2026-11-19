@@ -46,7 +46,11 @@ export const SYS_FUTEX:         Int = 202;
 export const SYS_MLOCK:         Int = 149;
 export const SYS_MUNLOCK:       Int = 150;
 export const SYS_GETRLIMIT:     Int = 97;
-export const SYS_SETRLIMIT:     Int = 98;
+// 2026-11-19 (header-conformance audit): was 98 = __NR_getrusage, a
+// transcription error since the table landed; __NR_setrlimit = 160 on
+// x86_64 (asm/unistd_64.h). No caller existed, so nothing ran the wrong
+// syscall — pinned by tests/stdlib_header_conformance.rs.
+export const SYS_SETRLIMIT:     Int = 160;
 export const SYS_MKSTEMP:       Int = 85;
 export const SYS_CLOCK_GETTIME: Int = 228;
 export const SYS_NANOSLEEP:      Int = 35;
