@@ -308,3 +308,50 @@ fn float64_division_and_printing_preserve_the_runtime_abi() {
         }
     }
 }
+
+/// Dogfooding gap G1 (2026-11-18): a help flag after the subcommand.
+///
+/// `brievc check --help` used to treat `--help` as the input FILE and fail with
+/// "cannot read '--help'", so every flag list was undiscoverable without reading
+/// src/main.rs. An explicit help request is a success: usage on **stdout**, exit
+/// 0, nothing on stderr.
+#[test]
+fn a_help_flag_after_the_subcommand_prints_usage_to_stdout() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    for (label, argv) in [
+        ("check --help", vec!["check", "--help"]),
+        ("build -h", vec!["build", "-h"]),
+    ] {
+        let out = Command::new(brievc)
+            .args(&argv)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn brievc {label}: {e}"));
+        assert!(out.status.success(), "{label} must exit 0: {out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("Usage:"), "{label} usage on stdout: {stdout}");
+        assert!(
+            stdout.contains("build <file.bv>"),
+            "{label} must list the subcommands: {stdout}"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "{label} must not write to stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// A help flag AFTER `--` belongs to the program being run, not to us.
+#[test]
+fn a_help_flag_after_the_double_dash_is_not_our_usage() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let out = Command::new(brievc)
+        .args(["run", "--", "--help"])
+        .output()
+        .expect("spawn brievc run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("Usage:"),
+        "`--help` past `--` must not print our usage block: {stdout}"
+    );
+}

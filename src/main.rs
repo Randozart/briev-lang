@@ -19,15 +19,24 @@ use compile::BeastFilter;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        print_usage(&args[0]);
+        print_usage(std::io::stderr(), &args[0]);
         return;
     }
     // 2026-11-18 (dogfooding gap G1): `brievc <cmd> --help` used to treat the
-    // flag as the input FILE and fail with "cannot read '--help'". Any
-    // -h/--help anywhere prints the usage and exits 0 — additive, and no
-    // subcommand's behaviour changes otherwise.
-    if args[2..].iter().any(|a| a == "-h" || a == "--help") {
-        print_usage(&args[0]);
+    // flag as the input FILE and fail with "cannot read '--help'". A help flag
+    // among the subcommand's own arguments prints the usage and exits 0.
+    //
+    // Only tokens BEFORE a `--` count: everything after it belongs to the
+    // compiled program (`brievc run app.bv -- --help` is a request to pass
+    // `--help` through, not a request for our usage block). Usage goes to
+    // stdout here because an explicit help request is a success; the
+    // `args.len() < 2` misuse above keeps writing to stderr.
+    if args[2..]
+        .iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| a == "-h" || a == "--help")
+    {
+        print_usage(std::io::stdout(), &args[0]);
         return;
     }
 
@@ -95,7 +104,7 @@ fn main() {
         "install-highlighter" => run_install_highlighter(&args[2..]),
         "freshness" => run_freshness_check(),
         "help" | "--help" | "-h" => {
-            print_usage(&args[0]);
+            print_usage(std::io::stdout(), &args[0]);
             Ok(())
         }
         "version" | "--version" | "-V" => {
@@ -132,223 +141,223 @@ fn run_targets() -> Result<(), String> {
     Ok(())
 }
 
-fn print_usage(program: &str) {
+fn print_usage(mut out: impl std::io::Write, program: &str) {
     let name = Path::new(program)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("briev-compiler");
-    eprintln!("Briev Compiler");
-    eprintln!("Usage:");
-    eprintln!(
+    writeln!(out, "Briev Compiler").ok();
+    writeln!(out, "Usage:").ok();
+    writeln!(out, 
         "  {} build <file.bv>                 Compile a Briev source file",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} lsp                             Run the language server (stdio; VS Code extension)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} test <file|dir>                 Run *.bv tests (exit 0 passes; <name>.golden pins stdout)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --llvm           Emit LLVM IR only, no binary",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --config-dir <d>  Set config directory",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --out <dir>      Set output directory",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.rbv> --split          Emit separate web assets (default: one bundled HTML)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --emit-beast [stage]  Emit AST (.beast) / IR (.ir) snapshots",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --emit-hir             Emit canonical HIR at Typed/Provenanced",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --no-std          Disable prelude (all prelude-family plugins)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --keep-all-defns  Emit every defn (diagnostic: liveness A/B)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --verify-bodies  Prove each txn/defn body satisfies its own [pre][post]",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --stdlib-path <p>   Set stdlib search path",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --disable-plugin <name>  Disable a system plugin by name",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --enable-plugin <name>   Enable only specific plugins",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --macro-budget <n>       Set instruction limit for macros (0 = unlimited)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-read             Allow macros to read files",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-write            Allow macros to write files",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-run              Allow macros to execute shell commands",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-sys-query        Allow macros to query host hardware",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-net              Allow macros network access",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --dump-vfs               Print virtual filesystem contents after build",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --dump-traces            Print macro expansion traces after build",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --diff                   Show macro changes (dry-run, no output)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} targets                            List extension→target support rows",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --target <name>           Build for a specific target profile from folio.toml",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --accel-cpu-fallback <n>  Min work items for GPU dispatch; below n runs the CPU loop",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --sysquery <key=value>    Override a SysQuery$ result (repeatable, highest priority)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --sysquery-file <path>    Load SysQuery$ overrides from a key=value file",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --update-lockfile        Regenerate macro-lock.toml from plugin files",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} audit [file.bv]                Scan for $ intrinsic usage and capability requirements",
         name
     );
-    eprintln!("  {} check <file.bv>               Type-check only", name);
-    eprintln!(
+    writeln!(out, "  {} check <file.bv>               Type-check only", name);
+    writeln!(out, 
         "  {} check --validate <file.bv>    Type-check + validate emitted IR (no link)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} derive <file.bv>              Synthesize derivation blocks",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} derive --stochastic <file.bv> Synthesize + MCMC superoptimize (writes .opt.bv)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} accept <file.bv>              Fold synthesized bodies into source",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} library <file.bv>             Compile to .a library",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} export <file.bv> <lang> [--out <dir>]  Generate a GLUE bridge for <lang>",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} doc <file.bv>                  Generate HTML documentation from doc comments",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} link <library.so/a/o>         Analyze a foreign library for frgn declarations",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config list                   List available config profiles",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config show                   Show active config profile",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config set <name>             Switch to a config profile",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config init <name>            Create a new config profile",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} bounty <file.bv>              Package a .bounty for install-time compilation",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} init <name>                   Create a new project",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} install-deps                 Download optional deps (z3, dwarfdump)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} install-highlighter [--vsix-only]  Build & install the syntax highlighter .vsix for VS Code / VSCodium",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} vocab [path]                 Emit the canonical language vocabulary manifest (default: stdout)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} grammar <path>               Regenerate the TextMate grammar keyword/type patterns from the vocab",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} fmt <file> [--stdout|--check]  Format a source file canonically (round-trip safe)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} freshness                     Check the brievc binary is newer than src/ + config/ (stale-binary guard)",
         name
     );
-    eprintln!("  {} help                          Show this help", name);
+    writeln!(out, "  {} help                          Show this help", name);
 }
 
 /// 2026-08-05 (Phase 1): emit the canonical language vocabulary manifest for
@@ -892,7 +901,7 @@ fn route_by_extension(args: &[String]) -> Result<(), String> {
         return run_bad(&args[1..]);
     }
     eprintln!("unknown command: {}", args[1]);
-    print_usage(&args[0]);
+    print_usage(std::io::stderr(), &args[0]);
     Ok(())
 }
 
