@@ -26,7 +26,9 @@
 // str_to_float live in cast_lanes.bv, which the prelude DOES inject.
 
 // arg_count — argc (the program name included).
-defn arg_count() [term >= 0] -> Int {
+// 2026-11-19: nonnegativity describes the returned value, not a prerequisite
+// on an as-yet unbound `term`. Keep it in the postcondition bracket.
+defn arg_count() [true][term >= 0] -> Int {
     term Argc#();
 };
 
