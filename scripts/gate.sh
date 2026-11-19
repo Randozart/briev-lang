@@ -18,6 +18,17 @@ cd "$(dirname "$0")/.."
 mode=${1:-quick}
 case "$mode" in
   quick|verifier)
+    # 2026-11-18 (W5): compile the BIN target's test cfg before running suites.
+    # `cargo nextest --lib` never builds `#[cfg(test)]` of a binary target, so a
+    # `BuildOptions { .. }` literal in a bin test module can rot (a missing field
+    # is `error[E0063]`) while this gate stays green. That happened three times
+    # (`verify_ir`, `deny_accel_cpu_fallback`+`validate_ir`, `march_override`),
+    # each time reddening `Workspace tests` on main for every branch. The cost is
+    # a no-op on a warm tree; the value is the class of error `--lib` cannot see.
+    if ! cargo check -p briev-compiler --all-targets --message-format=short; then
+      echo "gate: FAILED — 'cargo check --all-targets' (a target does not compile)" >&2
+      exit 1
+    fi
     exec python3 -B scripts/gate.py "$@"
     ;;
   full)
