@@ -36,13 +36,20 @@ node entry [beginprogram][true] {
     // Growing sink — same generic, tiny cap forces reallocation mid-write.
     let grow0: GrowBuf = grow_new(2);
     let grow1: GrowBuf = write_tagged(grow0, 4660, "Hi");
-    Print#(grow_get_u8(grow1, 0));
-    Print#(grow_get_u8(grow1, 1));
-    Print#(grow_get_u8(grow1, 2));
-    Print#(grow_get_u8(grow1, 3));
+    // 2026-11-18 (issue #133 follow-up): `grow_get_u8` requires `off < buf.len`,
+    // and a generic writer's postcondition does not state how many bytes it
+    // appended, so the guard states what this test knows: write_tagged wrote
+    // 2 + len("Hi") + 1 bytes. The call used to sit inside `Print#(...)`, where
+    // arguments were never typechecked — the obligation was never raised.
+    when grow1.len >= 5 {
+        Print#(grow_get_u8(grow1, 0));
+        Print#(grow_get_u8(grow1, 1));
+        Print#(grow_get_u8(grow1, 2));
+        Print#(grow_get_u8(grow1, 3));
+        Print#(grow_get_u8(grow1, 4));
+    };
     // 2026-10-18: `endprogram <expr>` binds the exit status to the value
     // (print's library return is an incidental Int, not a status) — print,
     // then end bare (status 0).
-    Print#(grow_get_u8(grow1, 4));
     endprogram;
 };

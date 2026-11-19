@@ -1,7 +1,7 @@
 let greeting: String = "Hello";
 
 txn greet [greeting != ""][term == greeting] {
-  endprogram Print#(greeting .#Size);
+  endprogram Print#(greeting .^Length);
 };
 
 txn set_greeting [greeting != "Hello, World!"][greeting == "Hello, World!"] {

@@ -341,7 +341,11 @@ defn ws_copy_payload(buf: GrowBuf, src: Int, len: Int, key: Int, mask: Bool, i0:
 // The payload copy walks ws_payload_byte (the one payload accessor), so the
 // whole-frame-fit precondition is discharged by the explicit guard below —
 // an over-read is impossible by construction, not by convention.
-defn ws_message(buf: ByteBuf, off: Int) -> WsMessage {
+// 2026-11-18 (issue #133 follow-up): `off` is a byte offset into `buf`; every
+// callee below indexes from it, so state the domain instead of leaving the
+// call gate to guess. Adding it here (rather than a guard at each index) is what
+// makes `off >= 0` available all the way down to `ws_payload_byte`.
+defn ws_message(buf: ByteBuf, off: Int) [off >= 0] -> WsMessage {
     let decoded: Result<WsFrame, String> = ws_decode(buf, off);
     match decoded {
         Ok(f) => ws_message_complete(buf, off, f),
@@ -353,7 +357,7 @@ defn ws_message(buf: ByteBuf, off: Int) -> WsMessage {
 // materialize the unmasked payload. Split out of ws_message so the match's
 // arms share the WsMessage type (an Err arm cannot return a WsFrame), and so
 // the fit-guard's fact is in scope for the ws_payload_byte copy loop.
-defn ws_message_complete(buf: ByteBuf, off: Int, frame: WsFrame) -> WsMessage {
+defn ws_message_complete(buf: ByteBuf, off: Int, frame: WsFrame) [off >= 0] -> WsMessage {
     // Explicit guard (not ws_frame_fits()): the solver carries THIS condition
     // as a fact into the copy loop, discharging ws_payload_byte's contract.
     when off + frame.header_len + frame.payload_len > buf.len {

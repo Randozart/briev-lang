@@ -45,9 +45,14 @@ node entry [beginprogram][true] {
     // cares — it threads the returned sink through each write. Same bytes out.
     let grow_empty: GrowBuf = grow_new(2);
     let grow: GrowBuf = frame(grow_empty, 258, "Ok");
-    Print#(grow_get_u8(grow, 0));
-    Print#(grow_get_u8(grow, 1));
-    Print#(grow_get_u8(grow, 2));
-    Print#(grow_get_u8(grow, 3));
-    endprogram Print#(grow_get_u8(grow, 4));
+    // 2026-11-18 (issue #133 follow-up): `grow_get_u8` requires `off < buf.len`;
+    // `frame` is generic over the sink, so its contract cannot state the length
+    // it appended. The guard states what this program knows (2 + "Ok" + NUL = 5).
+    when grow.len >= 5 {
+        Print#(grow_get_u8(grow, 0));
+        Print#(grow_get_u8(grow, 1));
+        Print#(grow_get_u8(grow, 2));
+        Print#(grow_get_u8(grow, 3));
+        endprogram Print#(grow_get_u8(grow, 4));
+    };
 };

@@ -72,7 +72,13 @@ fn scalar_constant_bytes_do_not_alias_constant_storage() {
             let other: Ptr = Malloc#(32);
             Store#(memory,FLAG,8);
             let value: Int = Load#(memory,8);
-            Store#(other+value,memory,8);
+            // 2026-11-18 (issue #133 follow-up): `other + value` is Ptr + Int,
+            // which is not a defined operation — the expression sat inside a
+            // `Store#(...)` argument, where arguments were never inferred, so
+            // the ill-typed arithmetic was never reported. Spell the pointer
+            // offset the way the language defines it.
+            let slot: Ptr = ((other as Int) + value) as Ptr;
+            Store#(slot,memory,8);
             term 0;
         };
         let done: Bool = false;

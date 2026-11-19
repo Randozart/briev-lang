@@ -348,7 +348,11 @@ fn native_trace(binary: &Path, case: &Case) -> Result<Vec<i64>, String> {
 fn compare(case: &Case, directory: &Path) -> Result<(), String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let source = format!(
-        "{}\nnode entry [beginprogram][true] {{\nPrint#(step(GetEnvInt#(\"SIM_STATE\"), GetEnvInt#(\"SIM_EVENT\")));\nterm;\n}};\n",
+        // 2026-11-18 (issue #133 follow-up): `GetEnvInt#` was retired in favour
+        // of the `get_env_int!` macro, but the generated program sat inside
+        // `Print#(...)`, whose arguments were never typechecked — so this
+        // generator kept emitting the retired spelling and stayed green.
+        "{}\nnode entry [beginprogram][true] {{\nPrint#(step(get_env_int!(\"SIM_STATE\"), get_env_int!(\"SIM_EVENT\")));\nterm;\n}};\n",
         function(case)
     );
     let path = directory.join("transition.bv");
