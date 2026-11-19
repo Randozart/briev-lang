@@ -1,6 +1,7 @@
 // accel_lane_report.bv — a declared accel body must never be dropped silently.
 //
 // 2026-11-17 (accel-surface survey): seven corpus programs declared
+// spec: 9.7
 // `async accel node` and emitted no kernel and no diagnostic — the node ran on
 // the CPU lane while the source claimed device execution, so every timing was a
 // CPU number. The eligibility gate only ever spoke on the *emission* path.

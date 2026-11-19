@@ -891,6 +891,15 @@ defn coll_hi_fix(h: Int, lo: Int) [true][term >= 0] -> Int {
     term h;
 };
 
+// coll_strided_len — the Python-style [lo:hi) element count for stride s:
+// ceil(span/s) when span > 0, else 0 (hi == lo selects nothing).
+defn coll_strided_len(span: Int, s: Int) [s >= 1][term >= 0] -> Int {
+    when span <= 0 {
+        term 0;
+    };
+    term (span + s - 1) / s;
+};
+
 // briev_slice_range_f32 — f32 range slice: 4-byte elements widened into
 // i64 bit-pattern slots (List<Float> convention).
 out defn briev_slice_range_f32(data: Int, n: Int, lo: Int, hi: Int)
@@ -934,7 +943,12 @@ out defn briev_slice_strided64(data: Int, n: Int, lo: Int, hi: Int, step: Int)
     let h: Int = coll_hi_fix(h0, l);
     let s: Int = coll_step_fix(step);
     let span: Int = h - l;
-    let len: Int = span / s + 1;
+    // 2026-11-19 (exclusive stop): SPEC §16.5 is Python-style — [lo:hi)
+    // selects i < hi, so the count is ceil(span/s), 0 when hi <= lo. The
+    // old `span / s + 1` was inclusive-stop (a 1-element off-by-one at
+    // every stop; found by the F2 fixture campaign's interpreter/native
+    // parity probe). coll_len_fix keeps the 0-on-negative guard.
+    let len: Int = coll_strided_len(span, s);
     let len0: Int = coll_len_fix(h, l, len);
     let obuf: Int = Alloc#(8 * (1 + len0)) as Int;
     Store#(obuf, len0, 8);
@@ -980,7 +994,12 @@ out defn briev_slice_strided_f32(data: Int, n: Int, lo: Int, hi: Int, step: Int)
     let h: Int = coll_hi_fix(h0, l);
     let s: Int = coll_step_fix(step);
     let span: Int = h - l;
-    let len: Int = span / s + 1;
+    // 2026-11-19 (exclusive stop): SPEC §16.5 is Python-style — [lo:hi)
+    // selects i < hi, so the count is ceil(span/s), 0 when hi <= lo. The
+    // old `span / s + 1` was inclusive-stop (a 1-element off-by-one at
+    // every stop; found by the F2 fixture campaign's interpreter/native
+    // parity probe). coll_len_fix keeps the 0-on-negative guard.
+    let len: Int = coll_strided_len(span, s);
     let len0: Int = coll_len_fix(h, l, len);
     let obuf: Int = Alloc#(8 * (1 + len0)) as Int;
     Store#(obuf, len0, 8);

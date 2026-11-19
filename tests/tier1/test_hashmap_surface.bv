@@ -1,3 +1,4 @@
+// spec: 16.3
 // 2026-08-18 (Phase E): the FULL HashMap op surface in one reactive node —
 // insert/get/contains/remove/Count#/keys/values/entries/foreach over the
 // entries() List. Expected output:

@@ -1,3 +1,4 @@
+// spec: 16.2
 // 2026-10-23: String-concat cleanup blocks inside a nested match arm must
 // become the phi predecessor; stale arm labels are invalid IR.
 import "std/json.bv";

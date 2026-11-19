@@ -1,3 +1,32 @@
+## 2026-11-19 — slicing a heap List returned the WHOLE list (FIXED) and the strided slice helper was inclusive-stop (FIXED)
+
+`list[2:6]` on a heap `List<Int>` local fell through `emit_slice_with_array`
+without a matching arm (only String and 1-D state `Vector` columns had one)
+and returned the UNsliced array — the same silent-whole-array class the
+2026-08-22 vector fix closed for state columns. Found by the F2 fixture
+campaign's interpreter/native parity probe: interpreter printed `4|1|2|9`,
+native printed `10|0|2|2` (the full list; `mid.Count#()` = 10).
+
+Fix: a tier-list arm in `emit_slice_with_array` — the layout is
+`{data_ptr @ 0, len @ 8, cap @ 16}` (verified against the literal builder,
+append and `box_gather` stores), so the arm loads the slot-0 pointer and the
+slot-8 length and routes through the existing `briev_slice_strided64` gather,
+boxing the result with `box_gather_as_tier_list`.
+
+The parity probe ALSO caught a second, older bug the new arm inherited: the
+strided helper `briev_slice_strided64`/`_f32` (both stdlib copies) computed
+`len = (hi-lo)/step + 1` — INCLUSIVE stop — while SPEC §16.5, the interpreter
+(`slice_indices`: `while i < hi`), and the contiguous `briev_slice_range64`
+(`len = hi - lo`) are all Python-style EXCLUSIVE. Every strided slice was one
+element too long, on both the new List route and the pre-existing state-column
+route (unpinned — `slice_reduce.bv` is a self-consistent checksum bench, and
+no golden asserted a count). Fixed to `coll_strided_len(span, s) =
+ceil(span/s)`, 0 when `hi <= lo`; the state-column probe now prints `3,2|4|9`
+(evens `[3,4,5,2]`, mid count 4), agreeing with the interpreter.
+
+Fixtures: `tests/tier1/slice_basics.bv` (golden `4|1|2|9`) and
+`tests/tier1/state_column_slice.bv` (golden `3,2|4|9`); both engines agree.
+
 ## 2026-11-19 — shell spawning rejected and capture used a retired String ABI (FIXED)
 
 `run("exit 7")` and `spawn_with_output("printf probe")` from `std/process.bv`

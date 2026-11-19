@@ -1,6 +1,7 @@
 // ByteSink trait — end-to-end gate (net stack, design D).
 //
 // 2026-10-15 (fullstack-webapp net stack): lib/std/net/bytes.bv exposes one
+// spec: 8.6
 // ByteSink trait with required put_u8/put_bytes and derived DEFAULT writers
 // (put_u16_be/put_u32_be/put_cstr), implemented by two concrete buffers — the
 // FIXED ByteBuf (room precondition, stable ptr) and the GROWING GrowBuf

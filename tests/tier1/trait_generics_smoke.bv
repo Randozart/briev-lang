@@ -1,3 +1,4 @@
+// spec: 8.6
 // Static trait-constrained generics — end-to-end gate (SPEC §8.6).
 //
 // 2026-10-13 (trait-system branch): the native build+link+run net for the

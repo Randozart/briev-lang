@@ -1,3 +1,4 @@
+// spec: 16.2
 // Unicode search/case gate — 2026-11-10 (kiosk W1).
 // Byte/char confusion: search used CharCount# (chars) as byte bounds, and
 // to_lower_str re-encoded UTF-8 continuation bytes (mojibake). This pins:

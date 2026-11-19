@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 14.1
 // Proof 3 condition 2 (2026-11-03): an enum handle stored inside a heap tuple
 // image must own its image; the tuple/list can outlive the producing frame.
 // `churn` reuses the stack region, so the dangling enum image is read unless

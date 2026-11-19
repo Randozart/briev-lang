@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 14.1
 // A state enum must own its complete value. Write it, then consume it in the
 // same bounded firing so the fixture terminates deterministically.
 enum Mode { Active(Int), Idle };

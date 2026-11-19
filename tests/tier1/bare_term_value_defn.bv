@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 9.1
 // bare_term_value_defn — a `when` guard ending in bare `term;` inside a
 // VALUE-returning defn. 2026-11-19: the native path emitted `ret void` into
 // `define i64 @probe` (rejected by the verifier); the interpreter treats the

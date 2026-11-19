@@ -1,3 +1,4 @@
+// spec: 16.2
 let saved: String = "hi";
 export defn state_str(name: String) -> String {
     term saved;

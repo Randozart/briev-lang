@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 14.3
 // Arena enablement (2026-11-03): a folded counted loop with `Alloc#` must use
 // the bump arena and produce valid IR. Regression for "Alloc# never selects
 // the arena" (two analysis passes clobbered the strategy id) and for the

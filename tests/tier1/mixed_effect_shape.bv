@@ -1,6 +1,7 @@
 // mixed_effect_shape — regression fixture for the effect-shape selector.
 // Two sync-group loops in one program:
 //   * `direct` is direct Float arithmetic -> escaped effect context;
+// spec: 9.4
 //   * `temp`  captures old values in lets first    -> stateless SROA shape.
 // The program-level selector picks escaped because `direct` is present; the
 // The Float fields still drive effect selection, but the printed values are

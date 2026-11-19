@@ -1,3 +1,4 @@
+// spec: 9.5
 // 2026-08-18 (Phase D): PiggyBank happy path — put 3 coins, smash, verify the
 // drained list. Expected output:
 //   size-of-drained = 3, sum = 6, jar empty after smash (second smash = 0)

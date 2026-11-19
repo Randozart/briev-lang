@@ -1,3 +1,4 @@
+// spec: 14.2
 obj Holder { p: Ptr<Bit<8>>; }
 import { print_int } from "std/io";
 defn make(p: Ptr<Bit<8>>) -> Holder { term Holder { p: p }; };

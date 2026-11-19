@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 14.1
 // Authored by Otto Westerlund (@odecode); adopted with attribution.
 enum Choice { Value(Int), Empty };
 obj Envelope { payload: Choice; };

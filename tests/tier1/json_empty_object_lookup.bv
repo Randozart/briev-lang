@@ -1,6 +1,7 @@
 // 2026-10-23: a missing key in an EMPTY object must return Err; find_pair's
 // convergence loop never runs, so handle_object owns the empty boundary.
 import "std/json.bv";
+// spec: 16.3
 import "std/io";
 
 defn lookup() -> String {

@@ -1,6 +1,7 @@
 // contains() early-match gate — 2026-11-10 (kiosk W1).
 // Regression: the txn POST required i == len, so a match before the end could
 // never commit and the reactor spun. Golden: 1 1 1 0 0 1 (match, prefix, whole,
+// spec: 11.3
 // absent, partial-at-end, longer needle).
 import "std/string.bv";
 

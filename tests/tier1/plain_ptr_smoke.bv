@@ -1,3 +1,4 @@
+// spec: 14.2
 plain let p: Ptr<Int> = 0 as Ptr<Int>;
 let done: Bool = false;
 import { print_int } from "std/io";

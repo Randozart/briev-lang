@@ -1,3 +1,4 @@
+// spec: 19.1
 // unix socket loopback — end-to-end gate (kiosk W1, 2026-11-10).
 //
 // lib/std/net/socket.bv gained Unix-domain support for the local ML-daemon

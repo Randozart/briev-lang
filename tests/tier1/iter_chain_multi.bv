@@ -1,3 +1,5 @@
+// iter_chain_multi — chain three heterogeneous lists (SPEC §11.4).
+// spec: 11.4
 obj A { x: Int; };
 obj B { y: Int; };
 
