@@ -1,3 +1,4 @@
+// spec: 16.2
 export defn greet(name: String) -> String {
     term name;
 };

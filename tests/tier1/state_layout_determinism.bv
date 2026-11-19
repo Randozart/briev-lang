@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 // 2026-11-16 (IR determinism, M6): the `%State` layout must be byte-identical
 // in every process. The recorded drift was "a field at index 8 in one build, 9
+// spec: 9.5
 // in the other" (BUGS.md 2026-11-16), which shifts every register name derived
 // from a field index (`%ip_N`) and every GEP past it. The orderings that could
 // do that came from hash containers:

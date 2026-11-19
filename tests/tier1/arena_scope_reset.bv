@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 14.3
 // Arena scope-lifetime reset (2026-11-03): a bounded loop where each Alloc#
 // is a body-local let used only by non-retaining intrinsics may reset the
 // arena at the iteration boundary (sound reuse). Expected sum(0..999)=499500.

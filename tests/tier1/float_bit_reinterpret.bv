@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 // 2026-11-17 (BUGS.md 2026-11-15, "Data-to-Float width mismatch emits an
 // invalid bitcast"): the Data→Float route is a REINTERPRETATION of the low 32
+// spec: 15.6
 // bits, so `(0x40490FDB as Data) as Float` must be π. The bitcast lane used to
 // fall through to `bitcast i64 %v to float`, which LLVM rejects outright (a
 // bitcast may not change width), so this program did not compile at all.

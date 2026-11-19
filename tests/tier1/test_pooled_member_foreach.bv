@@ -1,3 +1,4 @@
+// spec: 11.4
 // 2026-08-18 (pooled-member foreach): `foreach x in obj.items` where `items`
 // is a pooled member List field. Previously the tier-2 iterable resolution
 // only looked up BARE names (slot `{prefix}.items`, column type

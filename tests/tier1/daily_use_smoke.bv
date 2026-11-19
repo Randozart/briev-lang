@@ -1,6 +1,7 @@
 // Daily-use smoke test — verifies the core language paths that a user
 // would hit on day one: string ops, collections, env, arithmetic,
 // sync<group> nodes, println! inside when-guards.
+// spec: 9.4
 //
 // This is the regression gate for the SyncGroup plugin gap (env, print,
 // inline_frgn) and the struct-typed field init (Stack<Int,256> = 0).

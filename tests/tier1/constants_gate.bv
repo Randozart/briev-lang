@@ -1,6 +1,7 @@
 // std/constants.bv gate — named constants compile, fold, and keep their values.
 //
 // Each limit is asserted at runtime against the literal it names, and the
+// spec: 8.1
 // golden output pins the failure count at 0, so a drifted constants module
 // fails this fixture instead of silently shifting a bound. Contract folding
 // is exercised too: clamp_byte's [pre][post] name U8_MAX, and the program

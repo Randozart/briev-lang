@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 16.1
 // literal_float_coercion — a Decimal literal at a Float parameter.
 //
 // 2026-11-19 (literal coercion ABI): the typechecker admits `fround(7)` via

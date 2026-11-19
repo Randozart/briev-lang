@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 14.1
 obj Payload { value: Int; padding: Int; };
 obj Holder { payload: Payload; };
 enum Outcome { Found(Payload), Missing };

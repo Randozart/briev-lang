@@ -1,3 +1,4 @@
+// spec: 16.2
 // Test Char type — everyday-features gate.
 // Migrated 2026-10-12 from the pre-`when` `[cond] { ... }` block form
 // (the old guards had not parsed on the current surface since the

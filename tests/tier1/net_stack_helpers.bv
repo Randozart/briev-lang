@@ -1,6 +1,7 @@
 // Net-stack helper golden fixture — PR #26 reconciliation (2026-10-20).
 //
 // Canonical answers end to end through the COMPILED pipeline (the interpreter
+// spec: 9.1
 // covers the other three helpers; Base64 is compiled-path only — its encoder
 // delegates to a callable `txn`, which the interpreter does not execute yet —
 // BUGS.md 2026-10-20):

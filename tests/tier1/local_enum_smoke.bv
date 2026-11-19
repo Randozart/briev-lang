@@ -1,6 +1,7 @@
 enum Pick {
     Some(Int),
     None
+// spec: 8.3
 };
 
 defn pick(x: Int) -> Int {

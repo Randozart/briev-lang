@@ -1,3 +1,4 @@
+// spec: 16.3
 // SPSC ring fixture smoke — monotonic indices, full/empty, masked wrap.
 import { SpscRing, sring_new, sring_push, sring_pop, sring_free } from "std/atomic";
 import { is_ok, is_err, unwrap } from "std/result";

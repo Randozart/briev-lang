@@ -1,6 +1,7 @@
 // Pooled object globals pin — 2026-10-20 (workstream C).
 //
 // Top-level obj bindings unpack into pool columns (one ROW per instance). This
+// spec: 8.1
 // pins three defects fixed together:
 //   - runtime initializers were never seeded (every column stayed zero, so
 //     `.len` read 0);

@@ -1,6 +1,7 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+// spec: 15.4
 // Otto Westerlund's flat Matrix/Vector/IntVec primitives, adopted with
 // renamed Matrix/Vector types so they coexist with the GPU shape types.
 import "std/matrix.bv";

@@ -1,6 +1,7 @@
 // Arena fixture smoke — reference semantics, bump, alignment, reset.
 import { Arena, arena_init, arena_alloc, arena_alloc_aligned, arena_reset } from "std/memory/arena";
 import { print_int } from "std/io";
+// spec: 14.3
 import { print_str } from "std/io";
 
 // The allocator's contract is the static obligation; these guards make the

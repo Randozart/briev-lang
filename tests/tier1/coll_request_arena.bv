@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// spec: 8.10
 // Request-block alignment, overflow fallback, retired ownership and reuse.
 import "std/io.bv";
 node entry [beginprogram][true] {

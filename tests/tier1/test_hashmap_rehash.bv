@@ -1,3 +1,4 @@
+// spec: 16.3
 // test_hashmap_rehash.bv — verify HashMap rehashes when full.
 // Creates a HashMap with capacity 4, inserts 8 elements (triggers at least one
 // rehash at element 5), then verifies all 8 are retrievable.

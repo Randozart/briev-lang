@@ -1,6 +1,7 @@
 // const String global pin — PR #23 regression gate.
 //
 // 2026-10-19 (PR #23): a module-level `const Name: String = "lit";` was
+// spec: 8.1
 // emitted as `@Name = constant ptr null`, so every read dereferenced null and
 // segfaulted. The fix interns the constant's literal into the @str.N table and
 // emits the global as an alias, matching body-level string literals. This
