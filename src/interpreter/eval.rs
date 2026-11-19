@@ -153,7 +153,14 @@ pub fn eval_expr(
                 // the reference engine. `Blob` keeps the raw-word door.
                 "Blob" => match &v {
                     Value::Bits(bytes) => {
-                        let mut data = (bytes.len() as i64).to_le_bytes().to_vec();
+                        // 2026-11-19 (regression follow-up): the block a Data
+                        // word addresses is `[i64 len][bytes][NUL]` — that is
+                        // the layout every consumer assumes (`fresh_string`
+                        // reads `(word as Int) + 8`, the backend stores an i64
+                        // header). This door used to allocate a 1-byte length
+                        // prefix, so `fresh_string("")`'s `Copy#` read at
+                        // offset 8 fell off a 2-byte block. Match the ABI.
+                        let mut data = 0_i64.to_le_bytes().to_vec();
                         data.extend_from_slice(bytes);
                         data.push(0);
                         let addr = heap.allocate(data.len());
@@ -168,10 +175,27 @@ pub fn eval_expr(
                 },
                 // `Data` ITSELF (`x as Data`) stays the raw-word door — it is
                 // the type the 142 fixture rounds through (`address as Data`,
-                // `number as Data`). Only Ptr spellings keep identity, because
-                // the casting graph resolves Ptr under the Data protocol while
-                // the value is still just an address.
+                // `number as Data`) and what `fresh_string` depends on:
+                // `(text as Data) as Int` must yield the heap address of the
+                // [i64 len][bytes][NUL] block, because the caller Copy#s from
+                // word+8. A Bits source therefore allocates the block exactly
+                // like the Blob arm (61 -> block at addr, NOT word 61: the old
+                // identity made `as Int` read the CHAR CODE as an address and
+                // every fresh_string after the 142 merge died in Copy#). Only
+                // Ptr spellings keep identity, because the casting graph
+                // resolves Ptr under the Data protocol while the value is
+                // still just an address.
                 "Data" if matches!(ty, Type::Custom(n) if n == "Data") => match &v {
+                    Value::Bits(bytes) => {
+                        let mut data = 0_i64.to_le_bytes().to_vec();
+                        data.extend_from_slice(bytes);
+                        data.push(0);
+                        let addr = heap.allocate(data.len());
+                        heap.write(addr, &data).map_err(|_| {
+                            RuntimeError::HeapError("String→Data storage write failed".into())
+                        })?;
+                        Ok(Value::Data(addr))
+                    }
                     Value::Atom(Atom::Float(number)) => Ok(Value::Data(number.to_bits())),
                     Value::Atom(_) => Ok(Value::Data(v.as_i64().unwrap_or(0) as u64)),
                     _ => Ok(v),
