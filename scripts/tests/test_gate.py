@@ -69,6 +69,13 @@ class SelectionControls(unittest.TestCase):
         self.assertEqual(set(solver.only), set(SOLVER_TESTS))
         self.assertEqual(len(prepared(solver, SOLVER_TESTS, SOLVER_TESTS)["selected"]), 3)
 
+    def test_call_fact_regressions_are_required_by_both_gates(self):
+        for mode in ("quick", "verifier"):
+            matches = [suite for group in phases(mode) for suite in group
+                       if suite.package == "briev-verify" and suite.name == "call_fact_scope"]
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].filters(), [])
+
     def test_typed_regression_is_required_without_enabling_unrelated_ignored_cases(self):
         required = "floating_increment_is_not_proven_by_integer_bitvectors"
         for mode in ("quick", "verifier"):

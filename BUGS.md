@@ -1,3 +1,125 @@
+## 2026-11-19 — shell spawning rejected and capture used a retired String ABI (FIXED)
+
+`run("exit 7")` and `spawn_with_output("printf probe")` from `std/process.bv`
+failed with unsupported `Spawn#`/`SpawnWithOutput#` on `efd99d7b`. Their LLVM
+arms existed outside the normalizer's admitted set, but merely admitting them
+would pass a String length header as a shell command and produce invalid IR for
+capture's retired `{i64, i64}` String representation. Neither intrinsic had
+reference interpreter semantics.
+
+Both engines now execute shell-string commands and preserve capture bytes.
+Native lowering passes the String byte region; the C capture helper returns an
+owned `[i64 length][bytes][NUL]` String. Growth checks both allocation-size and
+signed-length bounds, preserves the old pointer until realloc succeeds, and
+closes streams on failures. The legacy `ShellCmd` helper shares that capture.
+Interpreter unit tests and `tests/process_spawn.rs` cover status, signal exits,
+empty/multiline/long/binary captures, stdlib wrappers and AST/HIR O0/O3 execution
+with optional Valgrind access checks.
+
+## 2026-11-19 — webstack test options drifted and blocked workspace compilation (FIXED)
+
+The binary's `webstack_opts` fixture listed every BuildOptions field manually.
+Adding `march_override` left it incomplete, so `cargo test --workspace` failed
+with E0063 before any tests ran. Hosted Workspace tests on PR #136 reproduced
+the failure at `src/compile.rs:4064`. This repeated the earlier missing-field
+failures documented in the same helper; library-only tests do not build it.
+
+The fixture now inherits `BuildOptions::default()` and overrides only its path,
+Webstack backend and 32-bit integer width. Every other old explicit value
+matched the default. Existing binary/view tests exercise these options.
+
+## 2026-11-19 — trunk owners-census regressed +1 conservative drop (2196→2197); kiosk pin advance blocked (OPEN)
+
+## 2026-11-19 — named Data values recursively entered numeric String casts (FIXED)
+
+The interpreter represented `Data` as an Int atom and recognized the
+Data→String encoding door only from nested cast syntax. `int_to_str` binds
+its buffer as `d: Data` before `d as String`, so formatting even one integer
+recursively formatted buffer addresses until the process stack overflowed.
+A small JSON round trip reproduced this on `efd99d7b`, including with a
+64 MiB stack. GDB showed repeated `call_user_fn("int_to_str")` frames.
+
+Raw Data now has its own value category, retained through local bindings,
+arguments, returns and aggregate projection. Data→String reads the represented
+buffer, while scalar→String uses the stdlib formatting lane. Data↔Float64
+preserves raw bits rather than performing numeric conversion. The regression
+`tests/interpreter_data_cast.rs` exercises these boundaries, freeing the source
+buffer before reading its String copy, and the original nested JSON round trip.
+Its native oracle also exposed the missing equal-width `double → i64` bitcast
+for Float64→Data; LLVM now emits that representation cast alongside its inverse.
+Comparing that Float64 result to a Float literal then exposed missing mixed
+Float-width normalization. The shared operand path now widens the narrower
+Float for both operand orders before arithmetic/comparison emission.
+
+## 2026-11-19 — interpreter Float atoms omit raw storage width (OPEN)
+
+`((1.5 as Float) as Data) as Int` yields the native binary32 word `1069547520`,
+but its interpreter assertion fails on both `efd99d7b` and the Data-category
+repair. `Atom::Float(f64)` retains the numeric value without its declared
+storage format. Narrow raw-word parity requires that metadata through bindings,
+calls, returns and arithmetic; recognizing cast syntax is insufficient.
+Tracked at https://github.com/Randozart/briev-lang/issues/137.
+
+## 2026-11-19 — collection literals lose their enum payload context (FIXED)
+
+`Array([IntVal(3)])` passed type checking but panicked in LLVM emission:
+`a bare list literal reached codegen without a collection type`. Ordinary
+typed call arguments already constructed through collection operators, while
+enum payload emission discarded the resolved payload type. Tuple payload fields
+and nested collection elements lost the same information.
+
+Contextual operand materialization now propagates the declared payload/tuple
+field/collection insertion type to the existing collection construction path.
+It shares the typed literal path with call arguments and match results, without
+recognizing any enum or collection name. `tests/contextual_enum_collections.rs`
+checks interpreter assertions and native AST/HIR at O0/O3, plus Valgrind when
+installed, for empty/nonempty, generic, tuple and nested payloads.
+
+## 2026-11-19 — release archives nested configuration under config/config (FIXED)
+
+`scripts/package_release.sh` created the destination `config/` directory before
+`cp -R config "$staging/config"`, so the v0.2.0 archive contained
+`config/config/targets.toml` instead of the compiler's expected
+`config/targets.toml`. Copying `config/.` into the existing destination preserves
+the complete tree, including dotfiles, at the required resource root.
+
+`tests/release_package.rs` executes the real packager with a fixture Cargo build,
+extracts and checks the archive and its checksum, verifies nested/hidden config
+and runtime resources, and checks repeatability after a stale staging file.
+The test fails on `efd99d7b` because the extracted direct config file is absent.
+
+## 2026-11-19 — contracted-call facts were hoisted across guards and writes
+
+**Reproduced.** A truthful helper `[a > 0][term == a && term > 0] { term a; }`
+let the body prover certify `[x == 0][term == 999] { x = 1; term helper(x); }`,
+which returns 1 and satisfies the helper's precondition at the actual call.
+Putting `helper(x)` inside `when false` likewise certified an unrelated return 0
+as 999. Removing that unreachable call correctly refuted the caller. Both routes
+were reproduced through the public typed API and compiler CLI. The baseline
+fails seven new regression tests, including guard/lazy-RHS and saved-result cases.
+
+**Cause/fix.** Contract lowering collected all postcondition facts and prepended
+them as entry gates. Correct snapshot conversion therefore captured arguments
+from the wrong state and applied unexecuted calls' facts to every path. The new
+private call-lowering phase emits prefixes immediately before their containing
+statement. Guard bodies keep their own prefixes; AND/OR RHS facts are guarded by
+the corresponding execution condition. Arguments are frozen by the existing
+Gate snapshot discipline before an enclosing assignment can overwrite them.
+Atoms are fresh against user bindings, and fact admission permits actual result
+atoms rather than arbitrary names sharing a prefix. Malformed call arities do
+not acquire postcondition facts.
+
+API tests and CLI exit/report tests reject the two original false proofs while
+preserving their correct contracts. Extra controls cover conditional paths,
+short-circuiting, nested calls, later writes and generated-name collisions. The
+new API suite is required by both quick and verifier gates. The production Kani
+guard-constructor harness covers Boolean leaves and AND/OR/eager-add with all
+three covers; recursive lowering, state maps and the call graph remain unproved.
+Callee contracts and source call-precondition obligations retain their existing
+modular trust boundary. SMT SAT counterexamples retain the advisory policy.
+See the [repair plan](docs/plans/2026-11-19-120252-call-contract-fact-soundness.md).
+
+
 ## 2026-11-19 — trunk owners-census regressed +1 conservative drop (2196→2197); kiosk pin advance blocked (OPEN)
 
 The kiosk (briev-kiosk-avatar) `memcheck_ratchet` baseline is
@@ -21,6 +143,21 @@ ratchet forbids (drops may not grow). The +1 drop needs a root-cause
 before the pin may advance: identify the upstream commit that added the
 extra proven-not-freed value, and confirm it is a genuine leak-by-design
 (baseline update) vs. a lost release (regression to fix).
+
+## 2026-11-19 — arg_count declared its result guarantee as a precondition (FIXED)
+
+`lib/std/cli.bv` declared `arg_count() [term >= 0] -> Int`; a single bracket
+parses as the precondition. Evaluating that condition before the call fails
+with an undefined `term`, and the actual postcondition is merely `true`.
+The intended guarantee is now `[true][term >= 0]`, preserving nonnegativity
+while making the function unconditionally callable.
+
+Ordinary native callers, including a contracted wrapper, built successfully on
+baseline `efd99d7b`; this is not claimed as a reproduced current-main build
+failure. The regression in `tests/cli_args_test.rs` evaluates the parsed
+contract before the result exists and against negative/nonnegative results.
+Native AST/HIR tests also check the actual process argument count.
+
 
 ## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
 

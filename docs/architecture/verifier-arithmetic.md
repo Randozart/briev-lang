@@ -181,3 +181,30 @@ regressions preserve latest writes and reject rebound stale values. Structural
 equality recursively rejects Unknown, including pointer-identical trees. Field
 maps, object alias semantics and these adapters are not covered by the eleven
 primitive Kani obligations.
+
+
+## Contract-call fact timing and scope
+
+The private `verify/calls.rs` lowering phase turns supported contracted calls
+into per-occurrence result atoms. It emits their Gate facts at the statement's
+execution point, before that statement changes an argument. Gate conversion
+freezes values through the shared snapshot converter. A call inside a guarded
+body cannot constrain a path that skips that body. The RHS of `&&` contributes
+facts only when its rewritten left operand holds; `||` uses its negation. Prefix
+paths contain only proof facts, and do not change generated native code.
+
+The prior global-prefix implementation applied future call facts to entry values
+and to branches that never executed them. Contradictory assumptions could make
+arbitrary postconditions vacuously true. The required `call_fact_scope` API suite
+and compiler `verify_report` regressions reject those false proofs and preserve
+valid live/saved/nested call results. Result atoms avoid user binding names; a
+callee's unrelated identifier cannot become an allowed fact by sharing `call#`.
+
+`contracted_rhs_guard_matches_short_circuit_execution` checks the production
+RHS guard constructor for arbitrary Boolean leaves and AND/OR/eager-add cases,
+with three cover obligations. Its recursive AST destructors are outside that
+harness. The complete lowering, symbolic state transitions and callee body
+correctness are separate obligations. Modular declared contracts and source
+call-precondition checks remain premises; a Proven caller is not a closed
+call-graph or native refinement certificate. Input-dependent SMT SAT results
+remain advisory, while the two concrete repaired cases remain hard violations.

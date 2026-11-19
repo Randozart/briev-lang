@@ -400,3 +400,40 @@ name — which is now also the one the checker validates against. Renaming
 `len`/`to_string` would therefore buy no safety, and a census gate would force a
 mechanical rename of the collection/string/string-builder surface with no
 behavioural gain. Recorded here as a cleanup, not a P0.
+
+## 12. What the new gates found on their first run
+
+The emitted-module check was written to catch issue #133. It caught #133's
+mechanism, and then four defects nobody was looking for — which is the argument
+for a gate over a patch:
+
+| found by | defect | consequence today |
+|---|---|---|
+| `async_compiled_events_test` | `emit_toplevel` called `@briev_event_alloc_impl(ptr %state, i64 …)` while the definition takes one parameter | every port-out event carried the **state pointer** as its payload |
+| `thread_pin` ×5 | `loop_engine` passed `ptr %state` to `wait_for_trigger`, an `out defn` with **zero** parameters | harmless (the callee ignores it) but ill-typed |
+| audit of the same pattern | `watchdog_fail` ×3 and `rt_getcwd` ×1 hardcoded the state prefix | latent; would have become the event bug the moment those helpers took data |
+| corpus sweep (width-exact mode) | `char_to_str` called with a truncated `i32` against an `i64` declaration — 7 programs; five `ptr`/`i64` handle positions | latent (same register); recorded, not yet retired |
+
+All of the first three share one cause: **the hidden leading `state` argument was
+re-derived by hand at each emitter** instead of asked once. `LlvmContext::state_prefix`
+is now that single question. Fixed in `1f1e73523`; CI on `a0bb555f1` is the first
+fully green run in this thread (all 15 jobs, including `Workspace tests` and
+`Default gates`).
+
+## 13. State of the program
+
+Done: §3 (main unbroken), §4 (gate closed, proven to bite), §5 (issue #133
+diagnosed, fixed, tested, closed), §6 (all five PRs resolved), §7 items 1 and 2
+(issues #5/#7/#8 closed with evidence; dogfooding ledger written).
+
+Remaining, in priority order:
+
+1. **Call-site ABI retirement** — `state_prefix` covers the state argument; the
+   width-aware cases from §12 (`char_to_str`'s `i32`, the five `ptr`/`i64`
+   handle positions) still rely on the class exemption. Retire them by coercing
+   an argument to the callee's declared type at emission, then tighten the
+   exemption to exact widths.
+2. **G2** (`term;` in a `when` guard reads as a checkpoint, not an exit) —
+   advisory today; promote to an error once the corpus is migrated.
+3. **#132** (glue `protocols.bv` never imports the module defining its ops) —
+   the same shape as #133 and a natural home for the emitted-module check.

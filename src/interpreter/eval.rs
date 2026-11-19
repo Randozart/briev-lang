@@ -143,7 +143,15 @@ pub fn eval_expr(
                 // 2026-11-14 (#96): the String→Data door exposes a real
                 // [length][bytes][NUL] block. Bits are inline interpreter
                 // strings, not pointer bits; fresh_string copies n+1 bytes.
-                "Blob" | "Data" => match &v {
+                // 2026-11-19 (ptr_trickery regression): `Data`-category covers
+                // Ptr too — the casting graph resolves `Ptr<Int>` under the Data
+                // protocol (a pointer IS raw data), and `type_to_protocol`
+                // deliberately declines to special-case Ptr (see its 2026-07-30
+                // comment). A pointer cast must stay a scalar holding the
+                // address: `Value::Data` here made `UART_DR + 4` compare
+                // `Data(..) != Atom(Int(..))` and broke pointer arithmetic in
+                // the reference engine. `Blob` keeps the raw-word door.
+                "Blob" => match &v {
                     Value::Bits(bytes) => {
                         let mut data = (bytes.len() as i64).to_le_bytes().to_vec();
                         data.extend_from_slice(bytes);
@@ -152,11 +160,29 @@ pub fn eval_expr(
                         heap.write(addr, &data).map_err(|_| {
                             RuntimeError::HeapError("String→Data storage write failed".into())
                         })?;
-                        Ok(i64_to_bits(addr as i64))
+                        Ok(Value::Data(addr))
                     }
+                    Value::Atom(Atom::Float(number)) => Ok(Value::Data(number.to_bits())),
+                    Value::Atom(_) => Ok(Value::Data(v.as_i64().unwrap_or(0) as u64)),
                     _ => Ok(v),
                 },
-                "Int" => match v {
+                // `Data` ITSELF (`x as Data`) stays the raw-word door — it is
+                // the type the 142 fixture rounds through (`address as Data`,
+                // `number as Data`). Only Ptr spellings keep identity, because
+                // the casting graph resolves Ptr under the Data protocol while
+                // the value is still just an address.
+                "Data" if matches!(ty, Type::Custom(n) if n == "Data") => match &v {
+                    Value::Atom(Atom::Float(number)) => Ok(Value::Data(number.to_bits())),
+                    Value::Atom(_) => Ok(Value::Data(v.as_i64().unwrap_or(0) as u64)),
+                    _ => Ok(v),
+                },
+                "Data" if matches!(ty, Type::Applied(base, _) if base == "Ptr")
+                    || matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) =>
+                {
+                    Ok(v)
+                },
+                "Int" | "UInt" => match v {
+                    Value::Data(bits) => Ok(Value::int(bits as i64)),
                     Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Int(if b { 1 } else { 0 }))),
                     Value::Atom(Atom::Char(c)) => Ok(Value::Atom(Atom::Int(c as i64))),
                     // 2026-11-10 (fuzz finding): `f as Int` must TRUNCATE a
@@ -166,6 +192,7 @@ pub fn eval_expr(
                     _ => Ok(v),
                 },
                 "Float" => match v {
+                    Value::Data(bits) => Ok(Value::float(f64::from_bits(bits))),
                     Value::Atom(Atom::Bool(b)) => {
                         Ok(Value::Atom(Atom::Float(if b { 1.0 } else { 0.0 })))
                     }
@@ -176,9 +203,16 @@ pub fn eval_expr(
                     _ => Ok(v),
                 },
                 "Char" => match v {
+                    Value::Data(bits) => {
+                        Ok(Value::char(char::from_u32(bits as u32).unwrap_or('?')))
+                    }
                     Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Char(
                         char::from_u32(n as u32).unwrap_or('?'),
                     ))),
+                    _ => Ok(v),
+                },
+                "Bool" => match v {
+                    Value::Data(bits) => Ok(Value::bool(bits as u8 != 0)),
                     _ => Ok(v),
                 },
                 // 2026-10-20 (interpreter parity trio): the casting graph's
@@ -186,17 +220,18 @@ pub fn eval_expr(
                 // a cast fell through to identity, so `65 as Char as String`
                 // yielded the Char atom itself (`CharCount#` = 0), breaking
                 // base64_encode and every lane consumer in the reference
-                // engine. Two shapes:
-                //   1. `(addr as Data) as String` — the Blob→String door: the
-                //      address is a `[len: i64][bytes]` buffer, viewed as a
-                //      String (mirrors the backend's reinterpretation).
+                // engine. Two value categories:
+                //   1. Data — the Blob→String door: the word addresses a
+                //      `[len: i64][bytes]` buffer, copied into a String.
                 //   2. a scalar source — dispatch the graph's ExtCall lane
                 //      (char_to_str / int_to_str / float_to_str / bool_to_str).
                 "String" => {
-                    if let Expr::Cast(inner, mid_ty) = expr.as_ref() {
-                        if matches!(target_protocol_category(mid_ty).as_str(), "Blob" | "Data") {
-                            return Ok(door_string_from_addr(&v, heap));
-                        }
+                    // 2026-11-19: named/returned Data must retain its category.
+                    // Inspecting nested cast syntax lost that category through
+                    // bindings and made int_to_str recursively format its own
+                    // buffer address. Retire with typed interpreter execution.
+                    if let Value::Data(bits) = v {
+                        return Ok(door_string_from_addr(&Value::int(bits as i64), heap));
                     }
                     let lane = match &v {
                         Value::Atom(Atom::Char(_)) => "char_to_str",
@@ -1142,6 +1177,7 @@ fn describe_value(v: &Value) -> String {
         // 2026-08-22 (Phase 7b): ports and instances describe by identity.
         Value::EventQ(_) => "event port".into(),
         Value::Instance { type_name, .. } => format!("{} instance", type_name),
+        Value::Data(_) => "Data".into(),
         Value::Void => "void".into(),
         Value::Ref(_) => "reference".into(),
         Value::Closure { .. } => "closure".into(),
@@ -1576,7 +1612,9 @@ fn eval_reflect(
             // non-string type_size path. The strict JSON integer accumulator
             // derives its minimum from `0 .^^Bytes`; returning Void made the
             // reference reject every integer parse.
-            Value::Atom(Atom::Int(_)) | Value::Atom(Atom::Float(_)) => Ok(Value::int(8)),
+            Value::Data(_) | Value::Atom(Atom::Int(_)) | Value::Atom(Atom::Float(_)) => {
+                Ok(Value::int(8))
+            }
             Value::Atom(Atom::Bool(_)) => Ok(Value::int(1)),
             Value::Atom(Atom::Char(_)) => Ok(Value::int(4)),
             _ => Ok(Value::Void),
@@ -1625,6 +1663,7 @@ fn reflect_type_code(v: &Value) -> i64 {
             })
         }
         Value::Sum { .. } => 6,
+        Value::Data(_) => 4,
         Value::Ref(_) => 7,
         Value::Closure { .. } => 8,
         Value::Range { .. } => 10,
@@ -1978,6 +2017,12 @@ fn print_value(value: &Value, heap: &mut VirtualHeap) -> Result<(), RuntimeError
 /// matching. The lazily-built default universe covers the bootstrap
 /// primitives; custom types resolve to "Bit" (identity reinterpretation).
 fn target_protocol_category(ty: &Type) -> String {
+    known_target_protocol_category(ty).unwrap_or_else(|| "Data".into())
+}
+
+/// Preserve the distinction between a registered Data category and an unknown
+/// type when testing membership; unknown types are only identity-cast fallbacks.
+pub(super) fn known_target_protocol_category(ty: &Type) -> Option<String> {
     use std::sync::OnceLock;
     static CTX: OnceLock<(
         crate::casting::graph::CastingGraph,
@@ -1989,7 +2034,10 @@ fn target_protocol_category(ty: &Type) -> String {
             crate::type_universe::TypeUniverse::new(),
         )
     });
-    graph.type_to_protocol(universe, ty).0
+    if ty.universe_key().is_some_and(|key| !universe.contains(key)) {
+        return None;
+    }
+    Some(graph.type_to_protocol(universe, ty).0)
 }
 
 /// Evaluate args[0] and decode it as a string (Bits) for env-var keys.
@@ -1998,6 +2046,7 @@ fn target_protocol_category(ty: &Type) -> String {
 /// is a zero-width domain; Bits<64> is identity.
 fn eval_bits_cast(v: Value, bits: u64) -> Value {
     match v {
+        Value::Data(word) => eval_bits_cast(Value::int(word as i64), bits),
         Value::Atom(Atom::Int(n)) => {
             let masked = if bits < 64 {
                 let mask = if bits == 0 { 0u64 } else { (1u64 << bits) - 1 };

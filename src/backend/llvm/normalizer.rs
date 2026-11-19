@@ -145,6 +145,10 @@ fn build_supported_ops() -> HashSet<String> {
     for name in &[
         "GetEnv#",
         "GetEnvInt#",
+        // 2026-11-19: admitted with executable interpreter/native regressions;
+        // both process arms now use the current String boundary ABI.
+        "Spawn#",
+        "SpawnWithOutput#",
         "ToInt#",
         "ToFloat#",
         "ToString#",

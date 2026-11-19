@@ -77,6 +77,20 @@ pub fn render_protocols(target: &GlueTarget, descriptor_path: &str) -> String {
     );
     header
         .push_str("//\n// Ownership of a specific call is declared per `frgn`, not here (D1).\n\n");
+    // 2026-11-19 (issue #132): the axioms name the lane ops (`str_to_c` /
+    // `cstr_to_briev` / …), which live in the descriptor's `types_module`. Import
+    // it so a program importing this file directly resolves those names — before
+    // this, a consumer got "use of undefined value '@str_to_c'" because nothing
+    // declared the op the axiom calls. The ops are in the helpers module, NOT
+    // the main adapter module, because the main adapter module imports this file
+    // (a cycle if this file imported it back). Empty types_module (test targets
+    // built via `target_with`) emits no import, preserving the old output.
+    if !target.types_module.as_os_str().is_empty() {
+        header.push_str(&format!(
+            "import \"{}\";\n\n",
+            target.types_module.to_string_lossy()
+        ));
+    }
     format!("{header}{declarations}\n{protocols}")
 }
 
@@ -249,10 +263,18 @@ mod tests {
         let target = crate::glue::config::load_glue_language("c").expect("c adapter loads");
         let out = render_protocols(&target, "lib/glue/c/glue.dbv");
         assert!(
-            out.contains("type CStr: String<C_String> { };"),
+            out.contains("type CStr: String<C_String> { };\n\nproto C_String: String {"),
             "the shipped descriptor must produce the hand-written declaration, got:\n{out}"
         );
         assert!(out.contains("str_to_c(#Lh)"), "{out}");
         assert!(out.contains("cstr_to_briev(#Lh)"), "{out}");
+        // 2026-11-19 (issue #132): the axioms name ops defined in the
+        // descriptor's types_module; the rendered file must import it, or a
+        // consumer importing protocols.bv alone gets `use of undefined value
+        // '@str_to_c'`.
+        assert!(
+            out.contains("import \"glue/c/types.bv\";"),
+            "the generated file must import the ops module, got:\n{out}"
+        );
     }
 }

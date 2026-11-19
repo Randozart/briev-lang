@@ -271,6 +271,7 @@ macro_rules! z3_profile_record {
     ($post:expr, $result:expr) => {};
 }
 
+mod calls;
 mod interval;
 use interval::{Interval as Bound, Relation};
 
@@ -590,15 +591,17 @@ pub fn verify_bodies_with_types(
         // unsupported expression". Conversions stay, so they keep being skipped.
         let value_types = declared_value_types(item);
         let normalized_body = normalize_representation_casts(body, &value_types);
-        // Contracted calls become opaque atoms and their declared postconditions
-        // become leading facts (`gate`s) on every path. A callee whose body can
-        // never be summarised — a memory read, a recursion — still contributes
-        // what it declares, which is the project's stated source of truth.
-        let (rewritten, call_facts) =
-            substitute_contracted_calls(&normalized_body, &contracts, name);
-        let mut with_facts: Vec<Statement> = call_facts.into_iter().map(Statement::Gate).collect();
-        with_facts.extend(rewritten);
-        let body: &[Statement] = &with_facts;
+        // 2026-11-19: facts belong to the call's evaluation point and path.
+        // Gate snapshotting must see current arguments, before the surrounding
+        // assignment changes them; branch-local calls cannot constrain entry.
+        let lowered = calls::lower(
+            &normalized_body,
+            &contracts,
+            name,
+            contract,
+            value_types.keys(),
+        );
+        let body: &[Statement] = &lowered;
         if let Some(reason) = crate::domain::unsupported_declaration(item, resolve, &globals) {
             report.skipped.push(format!("{name}: {reason}"));
             continue;
@@ -836,152 +839,6 @@ fn tuple_arity(output: Option<&crate::ast::OutputType>) -> usize {
     }
 }
 
-/// Replace contracted calls with opaque atoms and return the facts they carry.
-///
-/// Each occurrence gets its own atom: two identical calls are two evaluations
-/// (memory may differ between them), so sharing an atom would let `a - b` fold to
-/// zero — a false proof. The atom is named after the callee and a counter, which
-/// is stable within one body and never compared across bodies.
-///
-/// A call to the declaration under verification (`self_name`) contributes nothing:
-/// a self-referential contract would be the guess this prover exists to avoid.
-fn substitute_contracted_calls(
-    body: &[Statement],
-    contracts: &CallContracts,
-    self_name: &str,
-) -> (Vec<Statement>, Vec<Expr>) {
-    let mut facts = Vec::new();
-    let mut counter = 0usize;
-    let rewritten = rewrite_stmts(body, contracts, self_name, &mut facts, &mut counter);
-    (rewritten, facts)
-}
-
-fn rewrite_stmts(
-    body: &[Statement],
-    contracts: &CallContracts,
-    self_name: &str,
-    facts: &mut Vec<Expr>,
-    counter: &mut usize,
-) -> Vec<Statement> {
-    body.iter()
-        .map(|stmt| rewrite_stmt(stmt, contracts, self_name, facts, counter))
-        .collect()
-}
-
-fn rewrite_stmt(
-    stmt: &Statement,
-    contracts: &CallContracts,
-    self_name: &str,
-    facts: &mut Vec<Expr>,
-    counter: &mut usize,
-) -> Statement {
-    let mut e = |x: &Expr| rewrite_expr(x, contracts, self_name, facts, counter);
-    match stmt {
-        Statement::Assign(lhs, rhs) => Statement::Assign(lhs.clone(), e(rhs)),
-        Statement::Let {
-            name,
-            names,
-            ty,
-            expr,
-            modifiers,
-        } => Statement::Let {
-            name: name.clone(),
-            names: names.clone(),
-            ty: ty.clone(),
-            expr: expr.as_ref().map(|x| e(x)),
-            modifiers: modifiers.clone(),
-        },
-        Statement::Guarded(c, inner) => Statement::Guarded(
-            e(c),
-            rewrite_stmts(inner, contracts, self_name, facts, counter),
-        ),
-        Statement::Term(Some(x)) => Statement::Term(Some(e(x))),
-        Statement::EndProgram(Some(x)) => Statement::EndProgram(Some(e(x))),
-        Statement::Tail(x) => Statement::Tail(e(x)),
-        Statement::Gate(c) => Statement::Gate(e(c)),
-        Statement::Check(c) => Statement::Check(e(c)),
-        Statement::Expression(x) => Statement::Expression(e(x)),
-        other => other.clone(),
-    }
-}
-
-/// One expression's contracted-call substitution.
-fn rewrite_expr(
-    expr: &Expr,
-    contracts: &CallContracts,
-    self_name: &str,
-    facts: &mut Vec<Expr>,
-    counter: &mut usize,
-) -> Expr {
-    match expr {
-        Expr::Call(name, args, id) => {
-            let args: Vec<Expr> = args
-                .iter()
-                .map(|a| rewrite_expr(a, contracts, self_name, facts, counter))
-                .collect();
-            let usable = name != self_name && contracts.contains_key(name);
-            if !usable {
-                return Expr::Call(name.clone(), args, *id);
-            }
-            let (params, post, arity) = &contracts[name];
-            *counter += 1;
-            // One atom per result field. A single-valued callee keeps the single
-            // atom it always had; a tuple-returning callee yields `arity` atoms,
-            // returned as a tuple so `bind_output` splits `term.0`/`term.1` from
-            // them — the call-site half of value-summaries phase 2.
-            let atoms: Vec<Expr> = if *arity <= 1 {
-                vec![Expr::Identifier(format!("call#{counter}#{name}"))]
-            } else {
-                (0..*arity)
-                    .map(|field| Expr::Identifier(format!("call#{counter}#{name}#{field}")))
-                    .collect()
-            };
-            // The declared postcondition, with parameters substituted by the
-            // (already rewritten) arguments and each result hole replaced by
-            // this call's per-field atom.
-            facts.extend(post_facts_for_atom(params, post, &args, &atoms));
-            if atoms.len() == 1 {
-                atoms.into_iter().next().expect("one atom")
-            } else {
-                Expr::Tuple(atoms)
-            }
-        }
-        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
-            *kind,
-            Box::new(rewrite_expr(l, contracts, self_name, facts, counter)),
-            Box::new(rewrite_expr(r, contracts, self_name, facts, counter)),
-        ),
-        Expr::UnaryOp(kind, inner) => Expr::UnaryOp(
-            *kind,
-            Box::new(rewrite_expr(inner, contracts, self_name, facts, counter)),
-        ),
-        Expr::Cast(inner, ty) => Expr::Cast(
-            Box::new(rewrite_expr(inner, contracts, self_name, facts, counter)),
-            ty.clone(),
-        ),
-        Expr::Field(base, f) => Expr::Field(
-            Box::new(rewrite_expr(base, contracts, self_name, facts, counter)),
-            f.clone(),
-        ),
-        Expr::MethodCall(recv, m, args, id) => Expr::MethodCall(
-            Box::new(rewrite_expr(recv, contracts, self_name, facts, counter)),
-            m.clone(),
-            args.iter()
-                .map(|a| rewrite_expr(a, contracts, self_name, facts, counter))
-                .collect(),
-            *id,
-        ),
-        Expr::Index(base, idx) => Expr::Index(
-            Box::new(rewrite_expr(base, contracts, self_name, facts, counter)),
-            Box::new(rewrite_expr(idx, contracts, self_name, facts, counter)),
-        ),
-        Expr::Consume(inner) => Expr::Consume(Box::new(rewrite_expr(
-            inner, contracts, self_name, facts, counter,
-        ))),
-        other => other.clone(),
-    }
-}
-
 /// Postcondition facts for a call whose result is an opaque atom.
 ///
 /// Conjuncts of the declared postcondition that speak about the result, with the
@@ -1001,6 +858,7 @@ fn post_facts_for_atom(params: &[String], post: &Expr, args: &[Expr], atoms: &[E
     for arg in args {
         allowed.extend(free_idents(arg));
     }
+    allowed.extend(atoms.iter().flat_map(free_idents));
     let mut out = Vec::new();
     for conjunct in conjuncts {
         if !mentions_ident(&conjunct, "term") {
@@ -1008,9 +866,7 @@ fn post_facts_for_atom(params: &[String], post: &Expr, args: &[Expr], atoms: &[E
         }
         let substituted = substitute_params(&conjunct, params, args);
         let replaced = replace_result(&substituted, atoms);
-        let only_ours = free_idents(&replaced)
-            .iter()
-            .all(|id| allowed.contains(id) || id.starts_with("call#"));
+        let only_ours = free_idents(&replaced).iter().all(|id| allowed.contains(id));
         if only_ours {
             out.push(replaced);
         }
@@ -1689,7 +1545,6 @@ fn verify_one_with_term_sort(
     }
     BodyOutcome::Proven
 }
-
 
 /// A refutation needs a feasible execution path. Failure to find a witness or
 /// decide feasibility cannot turn an unreachable branch into a hard error.

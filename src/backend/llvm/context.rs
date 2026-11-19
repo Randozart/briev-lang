@@ -602,6 +602,24 @@ impl CompilerContext {
         self.defn_params.contains_key(name)
             && self.defn_needs_state.get(name).copied().unwrap_or(true)
     }
+    /// The hidden leading state argument for a call to `name`, as IR text.
+    ///
+    /// A STATE-TAKING definition is emitted with a leading `ptr %state`
+    /// parameter; a stateless one is not. Every call site must ask, because
+    /// getting it wrong passes an extra argument that the callee never declared —
+    /// and the ABI happily accepts it, so the callee reads the state pointer
+    /// where it expected the payload. This existed as an inline `if` in
+    /// `emit_expr` while `emit_toplevel` hardcoded the state form, which is how
+    /// `@briev_event_alloc_impl(ptr %state, i64 …)` came to call a one-parameter
+    /// definition (caught by `ir_verify::mismatched_call_signatures`).
+    pub fn state_prefix(&self, name: &str) -> &'static str {
+        if self.defn_takes_state(name) {
+            "ptr %state, "
+        } else {
+            ""
+        }
+    }
+
     /// 2026-07-29: Derive target float register count from LLVM target triple.
     /// Returns `usize::MAX` for virtual-register targets (WASM).
     /// See docs/plans/2026-07-29-phi-register-pressure-capping.md.

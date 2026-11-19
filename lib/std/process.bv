@@ -5,6 +5,10 @@
 // setenv/getcwd/chdir). Commands are shell-interpreted single strings;
 // pass arguments inside the command string. Result members use exhaustive
 // match (no member syntax on enums).
+// 2026-11-19: Spawn#/SpawnWithOutput# are admitted by LLVM and implemented
+// by the reference interpreter. Captures preserve stdout bytes even for a
+// nonzero shell exit; status-only calls return the exit code or -1 on a signal.
+// The runtime owns the conversion to the current Briev String block ABI.
 
 import "std/result";
 

@@ -4,6 +4,8 @@
 //
 // Ownership of a specific call is declared per `frgn`, not here (D1).
 
+import "glue/c/types.bv";
+
 type CStr: String<C_String> { };
 
 proto C_String: String {
