@@ -1,3 +1,16 @@
+## 2026-11-19 — release archives nested configuration under config/config (FIXED)
+
+`scripts/package_release.sh` created the destination `config/` directory before
+`cp -R config "$staging/config"`, so the v0.2.0 archive contained
+`config/config/targets.toml` instead of the compiler's expected
+`config/targets.toml`. Copying `config/.` into the existing destination preserves
+the complete tree, including dotfiles, at the required resource root.
+
+`tests/release_package.rs` executes the real packager with a fixture Cargo build,
+extracts and checks the archive and its checksum, verifies nested/hidden config
+and runtime resources, and checks repeatability after a stale staging file.
+The test fails on `efd99d7b` because the extracted direct config file is absent.
+
 ## 2026-11-19 — contracted-call facts were hoisted across guards and writes
 
 **Reproduced.** A truthful helper `[a > 0][term == a && term > 0] { term a; }`
