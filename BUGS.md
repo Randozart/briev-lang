@@ -28,6 +28,30 @@ storage format. Narrow raw-word parity requires that metadata through bindings,
 calls, returns and arithmetic; recognizing cast syntax is insufficient.
 Tracked at https://github.com/Randozart/briev-lang/issues/137.
 
+## 2026-11-19 — trunk owners-census regressed +1 conservative drop (2196→2197); kiosk pin advance blocked (OPEN)
+
+The kiosk (briev-kiosk-avatar) `memcheck_ratchet` baseline is
+`releases=73, undecided=0, drops=2196`. Measured 2026-11-19:
+
+* **pinned compiler `df624d41e` → 73 / 0 / 2196** (exactly the baseline — the
+  pin is clean).
+* **trunk `3dccbfc80` (this main) → 73 / 0 / 2197** (+1 conservative drop).
+
+The four memcheck files (`src/analysis/global_lifetime.rs`,
+`src/analysis/allocation.rs`, `src/hir/owned_storage.rs`,
+`src/macros/memcheck.rs`) are **unchanged** in
+`df624d41e..3dccbfc80`, so the +1 drop comes from a broader upstream
+change pulled in by the trunk sync-merge (the census counts owners the pass
+*proves* must not be freed; one more such value now lands in that bucket).
+Not P1 (OpenCL C driver) or P2 (GEMM fixture) — neither touches analysis.
+
+**Consequence:** the kiosk pin must stay at `df624d41e` (commit `dc3ecc0`).
+Advancing it to trunk would take the ratchet from 2196 to 2197, which the
+ratchet forbids (drops may not grow). The +1 drop needs a root-cause
+before the pin may advance: identify the upstream commit that added the
+extra proven-not-freed value, and confirm it is a genuine leak-by-design
+(baseline update) vs. a lost release (regression to fix).
+
 ## 2026-11-17 — wasm32: a `Ptr`-parameter defn emits a handle at the wrong width (OPEN)
 
 **Reproduced.** `cargo test --test rbv_list_each_wasm` (fixture
@@ -288,7 +312,7 @@ kernel silently stays on the CPU lane. Still open — see the accel-surface resu
 file (`benchmarks/results/2026-11-17-accel-surface-survey.md`), which now makes the
 silence a build warning and a CI error under `--deny-accel-cpu-fallback`.
 
-## 2026-11-18 — OpenCL resident path crashes; the driver entries must not be advertised (OPEN)
+## 2026-11-18 — OpenCL resident path crashes; the driver entries must not be advertised (FIXED 2026-11-19)
 
 Measured on PTL with unconditional probes: with `launch_dev`/`launch_dev2d` in the OpenCL
 driver table, `briev_accel_launch_resident_2d` IS entered, every precondition passes
@@ -296,10 +320,13 @@ driver table, `briev_accel_launch_resident_2d` IS entered, every precondition pa
 the process **dumps core** between `seed_or_sync_scalars` and the driver dispatch (the C
 function's first print never fires).
 
-Most likely cause, from reading the paths: OpenCL's `mapped()` returns `k->staging`, which
-is only set by the **copy path** and points at a `proj_out` buffer that
-`briev_dev_opencl_launch` has already `clReleaseMemObject`'d — so the first dirty-range write
-in `seed_or_sync_scalars` is a use-after-free.
+**Root cause (2026-11-19):** `gdb` backtrace on PTL shows the SIGSEGV inside
+`seed_or_sync_scalars` (called from `briev_accel_launch_resident_2d`). The OpenCL copy path
+did `k->staging = proj_out`, where `proj_out` is the runtime's **local `Vec`** in
+`briev_accel_launch` (`accel_rt.rs:799`) — freed when that priming launch returns. The
+resident path then re-fetches `mapped()` and `seed_or_sync_scalars` writes the dirty ranges
+through that dangling pointer. **Use-after-free.** (The earlier "uaf hypothesis refuted" note
+was wrong: it assumed `proj_out` lives for the process, but it is call-local.)
 
 Two confusions this cost, both worth recording:
 
@@ -309,8 +336,14 @@ Two confusions this cost, both worth recording:
 * two sessions read that copy path as "OpenCL residency is refused by design". It is not: it
   is *broken*.
 
-**Action:** the entries are commented out of the driver table with this measurement beside
-them. Copy path restored on OpenCL (0.027 ms), levelzero unchanged (0.190–0.204 ms).
+**Fix (2026-11-19):** the driver now owns a persistent host window `own_staging` (grown with
+`realloc`, freed in `destroy_kernel`), and `staging` aliases it — mirroring the levelzero
+driver's host-USM staging. A new `opencl_stage_result()` helper copies the device result
+into `own_staging` after each launch. The two resident entries are **re-advertised**.
+
+**Verified (2026-11-19, PTL):** 5× `exit=0`, no crash. OpenCL resident **0.028 ms** (6 runs)
+vs levelzero **0.198 ms** (3 runs) — 7× faster. Output matches levelzero. Verbose confirms
+`resident dispatch global=1048576 local=256 dirty=0 full=1`.
 
 ## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED (OPEN)
 

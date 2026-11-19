@@ -90,6 +90,13 @@ echo "== g0: elementwise =="
 run_gate g0_elem vulkan
 echo "== g0: gemm 512^3 =="
 run_gate g0_gemm vulkan
+# 2026-11-19 (P2): the tiled-GEMM correctness rung. Asserts CANARY_BAD=0 (input
+# integrity) + GPU_SUM==CPU_SUM + compiled-on-vulkan. NOT a 16x-class gate on PTL
+# (that class is clamped-silent here — see
+# benchmarks/results/2026-11-19-g2-gemm-tiled-bite.md); it is a GEMM correctness
+# rung and the canary is the 16x detector on non-clamping devices.
+echo "== g2: gemm 512^3 tiled (GEMM correctness rung) =="
+run_gate g2_gemm_tiled vulkan
 echo "== g0: sum idiom (§12 W3) =="
 run_gate g0_sum vulkan
 echo "== g0: min/max idioms (§12 W3.1) =="

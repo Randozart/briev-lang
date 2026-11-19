@@ -1,0 +1,136 @@
+// g2_gemm_tiled.bv — the 16x over-dispatch regression gate (tiled GEMM).
+//
+// 2026-11-19 (P2, residency-branch-and-canary plan §P2). `g0_gemm` proved the
+// full-coverage input-integrity canary is a real check but left it UNPROVEN
+// as a regression gate for the 16x class: its kernel was not shown to take
+// the 2-D-local-size dispatch path where `briev_dev_vulkan.c`'s pre-fix
+// `local_total = X` (instead of `X*Y*Z`) over-dispatched every tiled GEMM by
+// 16x and stored 16x outside its output tile range (commit b2d2776f9).
+//
+// This fixture is the same 512^3 `matmul!` shape, which the tiled coopmat
+// tier lowers to `OpExecutionMode LocalSize 16 16 1` (256 invocations/work-
+// group). The two differences from `g0_gemm`:
+//   1. The label is `G2_TILED_BAD` so the gate can assert its own line.
+//   2. The header + STATUS below record the bite experiment: vendoring the
+//      pre-fix parse (X-only) MUST drive `CANARY_BAD>0` while the sampled
+//      outputs stay `G2_TILED_BAD=0` — that is what makes the canary a real
+//      regression gate rather than decoration.
+//
+// STATUS (2026-11-19, measured on PTL): UNPROVEN as a 16x-class gate ON PTL.
+// The fixture is a correct 512^3 tiled-GEMM rung (G2_TILED_BAD=0, CANARY_BAD=0,
+// GPU_SUM==CPU_SUM on the post-fix Vulkan lane, ~0.107-0.30 ms) and is wired into
+// g0.sh as a correctness rung. But it CANNOT prove the 16x over-dispatch class on
+// this device: with the pre-fix `local_total = X` vendored (verified baked in: the
+// pre-fix binary has 0 `imul`s in the parse, the post-fix 2), an interleaved A/B on
+// the Arc B390 shows pre==post on BOTH gpu_time (~0.29 ms) and CANARY_BAD (=0).
+// The 16x surplus workgroups' out-of-bounds stores are CLAMPED by the device
+// (robustBufferAccess), so they neither corrupt the a/b inputs the canary checks
+// nor cost measurable kernel time here. The earlier "0.107 vs 0.30" split was a
+// device-idle artifact, not a signal. On a NON-clamping device (the RTX 3060 class
+// where b2d2776f9 was measured) the same OOB spray corrupts neighbours and the
+// full-coverage canary DOES fire. So the canary is a real input-integrity check, but
+// its 16x-class detection is device-dependent and silent on PTL. Do not cite it as a
+// 16x regression gate for PTL; it is a GEMM correctness rung here.
+//
+// See benchmarks/results/2026-11-19-g2-gemm-tiled-bite.md for the full A/B record.
+//
+// Run with `ulimit -s 65536` (BUGS.md 2026-11-06).
+
+import "std/numeric.bv";
+
+const M: Int = 512;
+const N: Int = 512;
+const K: Int = 512;
+const MN: Int = 262144;
+const NS: Int = 4096;  // sampled outputs, spread over the matrix
+
+let i: Int = 0;
+let k: Int = 0;
+let phase: Int = 0;
+let bad: Int = 0;
+let canary_bad: Int = 0;
+let gpu_sum: Float = 0.0;
+let cpu_sum: Float = 0.0;
+
+let a: Float[262144];
+let b: Float[262144];
+let y: Float[262144];
+
+// init (CPU): deterministic closed form (exact in f32); 4096 per transaction.
+async node init [phase == 0 && i < MN][i == MN] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        a[idx] = ((idx * 7) % 13) as Float * 0.125 - 0.5;
+        b[idx] = ((idx * 3) % 11) as Float * 0.25 - 1.0;
+    };
+    i = i + 4096;
+    term;
+};
+
+async node init_done [phase == 0 && i == MN][phase == 1] {
+    phase = 1;
+    i = 0;
+    term;
+};
+
+// device lane: the tiled coopmat GEMM (LocalSize 16 16 1 on the 512^3 shape).
+async accel node gemm [phase == 1 && i < MN][i == MN] {
+    matmul!(a, b, y, M, N, K, i, Float);
+    i = i + 1;
+    term;
+};
+
+async node gemm_done [phase == 1 && i == MN][phase == 2] {
+    phase = 2;
+    k = 0;
+    term;
+};
+
+// host reference: every NS-th output element, recomputed as a CPU dot.
+async node verify [phase == 2 && k < NS][k == NS] {
+    let idx: Int = k * (MN / NS);
+    let row: Int = idx / N;
+    let col: Int = idx % N;
+    let acc: Float = 0;
+    foreach kk in 0..K {
+        acc = acc + a[row * K + kk] * b[kk * N + col];
+    };
+    cpu_sum = cpu_sum + acc;
+    gpu_sum = gpu_sum + y[idx];
+    when acc != y[idx] { bad = bad + 1; };
+    k = k + 1;
+    term;
+};
+
+async node verify_done [phase == 2 && k == NS][phase = 3] {
+    phase = 3;
+    term;
+};
+
+// FULL-COVERAGE input-integrity canary: recompute the closed form for every
+// a/b element and count mismatches. A write that lands in either array is
+// counted, regardless of where the sampled output check looks. Batched like
+// `init` (4096 per transaction).
+async node canary [phase == 3 && i < MN][i == MN] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        let want_a: Float = ((idx * 7) % 13) as Float * 0.125 - 0.5;
+        let want_b: Float = ((idx * 3) % 11) as Float * 0.25 - 1.0;
+        when a[idx] != want_a { canary_bad = canary_bad + 1; };
+        when b[idx] != want_b { canary_bad = canary_bad + 1; };
+    };
+    i = i + 4096;
+    term;
+};
+
+async node canary_done [phase == 3 && i == MN][phase = 4] {
+    phase = 4;
+    term;
+};
+
+async node report [phase == 4 && bad >= 0 && canary_bad >= 0
+                   && gpu_sum >= 0.0 - 1000000000000.0
+                   && cpu_sum >= 0.0 - 1000000000000.0][true] {
+    endprogram println!("G2_TILED_BAD={} GPU_SUM={} CPU_SUM={} Y0={} YN={} CANARY_BAD={}",
+                        bad, gpu_sum, cpu_sum, y[0], y[MN - 1], canary_bad);
+};
