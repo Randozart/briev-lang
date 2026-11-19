@@ -1105,3 +1105,30 @@ fn server_loop_golden_output() {
         "server lifecycle golden drifted: {out:?}"
     );
 }
+
+/// 2026-11-19 (literal coercion ABI): a Decimal literal at a Float parameter.
+///
+/// The typechecker deliberately admits this (`try_coerce_via_parse` — the
+/// same acceptance `let d: Float64 = -3.25` relies on), so the emitter must
+/// keep the promise and convert: `sitofp i64 %lit to float` before the call.
+/// Without the conversion the module carried `call float @f(i64 %lit)`
+/// against `define float @f(float)` — the emitted-module check rejected it,
+/// so programs using the accepted form could not run at all. The VALUE
+/// assertion (7, not a bit-reinterpreted float) distinguishes a real
+/// conversion from passing the integer bits through a float register.
+#[test]
+fn literal_int_at_float_param_converts_and_keeps_the_value() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run(
+        "literal_float_coercion",
+        "value",
+        &[],
+    );
+    assert_eq!(
+        out, "7",
+        "fround(7) must convert to 7.0 and print 7: {out:?}"
+    );
+}
