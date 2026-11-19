@@ -1,0 +1,19 @@
+// 2026-11-19 (issue #132): a program that imports ONLY the generated protocol
+// file and crosses the String boundary. The axioms name `str_to_c`/`cstr_to_briev`,
+// which live in `glue/c/types.bv`; the generated `protocols.bv` must import that
+// module so this builds without an explicit `import "glue/c.bv"`. Before the fix,
+// `--llvm` rejected the module with "use of undefined value '@str_to_c'".
+import "glue/c/protocols.bv";
+import "std/io.bv";
+
+frgn c_strlen(s: CStr) -> Int from #Link<libc>;
+
+let done: Bool = false;
+
+node main [!done][done] {
+    let s: String = "hi";
+    let n: Int = c_strlen(s);
+    Print#(n);
+    done = true;
+    endprogram;
+};
