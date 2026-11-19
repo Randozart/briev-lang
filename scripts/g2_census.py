@@ -45,6 +45,12 @@ def classify(path: str):
         ]
         if not body or body[-1] != "term;":
             continue
+        # 2026-11-19 (census gate): the trailing class is defined exactly as
+        # the G2 warning's own condition — statements after the guard IN THE
+        # SAME BODY. A node/loop-final guard (`};` follows) is block-final:
+        # bare `term;` there ends the step, which is the convergence
+        # checkpoint the step machines rely on, and the warning does not
+        # fire (tests/g2_census_gate.rs pins the corpus counts).
         after = [
             a.strip()
             for a in lines[j + 1 :]
