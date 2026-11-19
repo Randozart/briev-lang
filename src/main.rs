@@ -1887,12 +1887,14 @@ fn run_check(args: &[String]) -> Result<(), String> {
     // `check_source_with_options`. Also accept the sibling env var the
     // resolver already honours in the other commands.
     let flags = parse_check_flags(args);
+    if let Some(error) = flags.error {
+        return Err(error);
+    }
     let file_path = flags.file_path.ok_or("missing file argument")?;
-    let stdlib_path = flags.stdlib_path.or_else(|| {
-        std::env::var("BRIEV_STDLIB_PATH")
-            .ok()
-            .filter(|p| !p.is_empty())
-    });
+    // No `BRIEV_STDLIB_PATH` fallback here: `ImportResolver::resolve_stdlib_root`
+    // already consults it as its second source, so reading it twice would create
+    // two places that must agree. The flag is the only thing `check` was missing.
+    let stdlib_path = flags.stdlib_path;
     let source = {
         let p = std::path::Path::new(&file_path);
         let doppel = briev_compiler::derive::Doppelganger::resolve(p);
@@ -1934,23 +1936,30 @@ struct CheckFlags {
     file_path: Option<String>,
     /// The `--stdlib-path` value, when supplied.
     stdlib_path: Option<String>,
+    /// A flag that was given without its value.
+    error: Option<String>,
 }
 
 fn parse_check_flags(args: &[String]) -> CheckFlags {
     let mut flags = CheckFlags {
         file_path: None,
         stdlib_path: None,
+        error: None,
     };
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--stdlib-path" => {
-                if let Some(value) = args.get(index + 1) {
-                    flags.stdlib_path = Some(value.clone());
-                    index += 2;
-                } else {
-                    break;
-                }
+                // A flag with no value is a mistake, not a no-op: silently
+                // stopping here reported "missing file argument" for
+                // `check --stdlib-path` and ignored the flag entirely when the
+                // file came first. `build` already says this precisely.
+                let Some(value) = args.get(index + 1) else {
+                    flags.error = Some("--stdlib-path requires a path argument".to_string());
+                    return flags;
+                };
+                flags.stdlib_path = Some(value.clone());
+                index += 2;
             }
             other if other != "--validate" && flags.file_path.is_none() => {
                 flags.file_path = Some(other.to_string());
