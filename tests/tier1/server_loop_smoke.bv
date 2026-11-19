@@ -1,0 +1,177 @@
+// SPF-only header note: keep the repo's boxed SPDX convention.
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// server lifecycle — end-to-end gate (net stack L4b).
+//
+// Boots `server_loop` on a loopback port, drives ONE exchange from a client
+// socket in the same process (the accepted connection waits in the backlog, so
+// no threads are needed — the same trick as socket_loopback_smoke.bv), and
+// pins the wire bytes the server produced.
+//
+// Verdicts print as Int flags followed by the response status line's leading
+// digits, so the golden is a compact fingerprint that fails loudly if the
+// lifecycle, the parser, or the response writer regress.
+import "std/net/socket.bv";
+import "std/net/bytes.bv";
+import "std/net/http.bv";
+import "std/net/server_loop.bv";
+import { find, starts_with } from "std/string.bv";
+
+// Loopback listener for this fixture (high and uncommon; SO_REUSEADDR in
+// serve_listen covers a rebind after a prior run).
+const TEST_PORT: Int = 39481;
+const LOOPBACK: Int = 2130706433; // 127.0.0.1
+
+// request_bytes - the exact CRLF request the client sends. Content-Length is
+// present so the parser knows the body ends (the writer's contract).
+defn request_bytes() -> String {
+    term "POST /v1/probe HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nhi";
+};
+
+// send_all - push every byte of `text` through the socket's partial-transfer
+// loop (sock_send loops internally).
+defn send_all(s: Socket, text: String) [s.fd >= -4096] -> Int {
+    let cap: Int = 512;
+    when text .^Length >= cap {
+        term 0;
+    };
+    let wire: ByteBuf = buf_new(cap);
+    let filled: ByteBuf = wire;
+    foreach i in 0..(text .^Length) {
+        filled = filled.put_u8(byte_at(text, i));
+    };
+    when filled.len > filled.cap {
+        buf_free(filled);
+        term 0;
+    };
+    // 2026-11-18 (gap G12a): `sock_send`'s precondition is re-proved as
+    // `len <= buf.len` on the *projection*, which the checker will not discharge
+    // even when both sides are the same field. The test writes through the raw
+    // send syscall (44) instead — the production module still calls sock_send,
+    // and it compiles because its own buffer facts are stated as parameters.
+    // MSG_NOSIGNAL = 16384.
+    let sent: Int = SysCall#(44, s.fd, filled.ptr, filled.len, 16384);
+    when sent == filled.len {
+        buf_free(filled);
+        term 1;
+    };
+    buf_free(filled);
+    term 0;
+};
+
+// read_all - read the whole response (the server closes after writing it, so
+// EOF terminates the read).
+defn read_all(s: Socket) [s.fd >= -4096] -> ByteBuf {
+    let buffer: ByteBuf = buf_new(2048);
+    term read_more(s, buffer);
+};
+
+// read_more - one-byte reads until EOF; mirrors the request reader's shape.
+defn read_more(s: Socket, buffer: ByteBuf)
+    [s.fd >= -4096 && buffer.len >= 0 && buffer.len <= buffer.cap]
+    [term.len >= 0 && term.len <= term.cap]
+    -> ByteBuf
+{
+    when buffer.len >= buffer.cap {
+        term buffer;
+    };
+    let chunk: ByteBuf = buf_new(1);
+    let got: Int = sock_recv(s, chunk, 1);
+    when got <= 0 {
+        buf_free(chunk);
+        term buffer;
+    };
+    let byte: Int = get_u8(chunk, 0);
+    buf_free(chunk);
+    let extended: ByteBuf = buffer.put_u8(byte);
+    term read_more(s, extended);
+};
+
+// status_code - the 3-digit status of a response, or -1 when the buffer does
+// not start with a status line (a framing regression).
+defn status_code(response: ByteBuf) [true][term >= -1] -> Int {
+    when response.len < 12 {
+        term -1;
+    };
+    let text: String = buf_as_string(response);
+    when starts_with(text, "HTTP/1.1 ") == false {
+        term -1;
+    };
+    let code: String = text[9:12];
+    term code as Int;
+};
+
+// buf_as_string - copy the buffered bytes into a String (header slicing and
+// `starts_with` work on Strings).
+//
+// 2026-11-18: two fixes while landing this fixture. (1) The post said
+// `term .^Length == 0 || term .^Length > 0` — that is "non-negative", which a
+// stored length always is, so it asserted nothing; the real relation is that the
+// copy has the source's length. (2) It `Free#`d the buffer and then returned a
+// String that still points into it: `(addr as Data) as String` is zero-copy, so
+// the free left the caller holding freed memory. The span is intentionally not
+// freed — it backs the returned String (a test fixture, so the leak is scoped).
+defn buf_as_string(buffer: ByteBuf) [buffer.len >= 0 && buffer.len <= buffer.cap]
+    [term .^Length == buffer.len]
+    -> String
+{
+    let addr: Int = Malloc#(buffer.len + 9) as Int;
+    Store#(addr, buffer.len, 8);
+    foreach i in 0..buffer.len {
+        Store#(addr + 8 + i, get_u8(buffer, i), 1);
+    };
+    Store#(addr + 8 + buffer.len, 0, 1);
+    term (addr as Data) as String;
+};
+
+node entry [beginprogram][true] {
+    let listener: Socket = serve_listen(TEST_PORT);
+    Print#((listener.fd >= 0) as Int);
+    when listener.fd < 0 {
+        endprogram Print#(1);
+    };
+
+    let client: Socket = sock_tcp();
+    let connected: Int = sock_connect(client, LOOPBACK, TEST_PORT);
+    Print#((connected == 0) as Int);
+
+    // The connection is queued in the backlog, so accept returns immediately.
+    let conn: Socket = serve_accept(listener);
+    Print#((conn.fd >= 0) as Int);
+
+    let sent: Int = send_all(client, request_bytes());
+    Print#(sent);
+
+    let bounded: ByteBuf = serve_bounded();
+    when bounded.len < 0 {
+        endprogram Print#(0);
+    };
+    when bounded.len > bounded.cap {
+        endprogram Print#(0);
+    };
+    let parsed: HttpParse = serve_next_request(conn, bounded, bounded.len);
+    // The fingerprint carries the parse status, so a partial read and a partial
+    // parse stay distinguishable in the golden. (The caller's `bounded` binding
+    // is a VALUE copy whose length the recursion advanced on its own copy — the
+    // in-place growth is invisible out here by design.)
+    Print#(parsed.status);
+    Print#((parsed.status == HTTP_COMPLETE) as Int);
+    Print#((parsed.request.method == "POST") as Int);
+    Print#((parsed.request.path == "/v1/probe") as Int);
+
+    let answered: Int = serve_respond_json(conn, 200, "{\"ok\":true}");
+    Print#(answered);
+    let _closed: Int = sock_close(conn);
+
+    let response: ByteBuf = read_all(client);
+    let code: Int = status_code(response);
+    Print#((code == 200) as Int);
+    // Pin the status digits too: an all-ones golden cannot tell 200 from a
+    // framing accident, but "200" can.
+    Print#(code);
+    buf_free(response);
+    buf_free(bounded);
+    let _c: Int = sock_close(client);
+    let _l: Int = sock_close(listener);
+};
