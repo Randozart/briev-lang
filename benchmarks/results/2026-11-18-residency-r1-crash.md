@@ -1,4 +1,4 @@
-# R1: the OpenCL resident path is reachable — and it dumps core
+# R1: the OpenCL resident path is reachable — and it dumps core (FIXED 2026-11-19)
 
 **2026-11-18, PTL.** Six *unconditional* prints (the verbose gate is proven unreliable in a
 generated runner), then removed. `ceil_elem_f32.abv` → emitted runner, `BRIEV_ACCEL_DEVICE=opencl`:
@@ -27,23 +27,47 @@ timeout: the monitored command dumped core
    zero, so `resident_ops_missing` was true and the copy path ran — which I twice read as
    "residency is refused by design".
 
-## Action taken
+## Root cause (found 2026-11-19)
 
-The two entries are **no longer advertised** in the driver table, with the measurement
-written into the comment beside the commented-out lines. Verified after the change: OpenCL
-is back on the copy path (0.027 ms, no crash) and levelzero is unchanged (0.190–0.204 ms,
-staging buffer allocated). Nothing is left claiming a residency the code cannot deliver.
+`gdb` backtrace on PTL:
 
-## Next step, precisely
+```
+Thread 1 "bin3" received signal SIGSEGV, Segmentation fault.
+#0  0x00007ffff7bb2107 in ?? () from /usr/lib/libc.so.6
+#1  0x000055555556a679 in briev_accel_rt::accel_rt::seed_or_sync_scalars ()
+#2  0x000055555556d043 in briev_accel_launch_resident_2d ()
+#3  0x000055555556a1ce in main ()
+```
 
-Debug in this order:
+The fault is inside `seed_or_sync_scalars`, which `copy_nonoverlapping`s the scalar fields
+into the pointer returned by the driver's `mapped()`. The OpenCL copy path
+(`briev_dev_opencl_launch`) did `k->staging = proj_out`, where `proj_out` is the
+runtime's **local `Vec`** in `briev_accel_launch` (`accel_rt.rs:799`) — freed when that
+priming launch returns. The resident path then re-fetches `mapped()` and writes the dirty
+ranges through that dangling pointer. **Use-after-free**, exactly where the crash landed.
 
-1. `seed_or_sync_scalars` — it takes `mapped` (the driver's staging pointer) and the
-   descriptor's dirty ranges. OpenCL's `mapped()` returns `k->staging`, which is only set by
-   the *copy path*; if the prime set it to a `proj_out` buffer that
-   `briev_dev_opencl_launch` has already released, the first dirty-range write is a
-   use-after-free — the most likely cause given the crash lands exactly there.
-2. Only then re-check `launch_dev2d`'s own assumptions (persistent `cl_mem`, `proj_bytes`).
+The earlier "uaf hypothesis refuted" note was wrong: it assumed `proj_out` lives for the
+process, but it is a call-local `Vec`.
 
-Certificate for whoever picks this up: the prints are the instrument, and the instrument now
-works — three sessions of hypothesis were replaced by one run once the gate stopped lying.
+## Fix (2026-11-19)
+
+The driver now owns a persistent host window `own_staging` (grown with `realloc`, freed in
+`destroy_kernel`), and `staging` aliases it — mirroring the levelzero driver's host-USM
+staging. A new `opencl_stage_result()` helper copies the device result into `own_staging`
+after each launch, so `mapped()` always returns valid, driver-owned memory. The two
+resident entries are **re-advertised** in the driver table.
+
+## Verified results (2026-11-19, PTL)
+
+| Device | Path | Time (ms) | Runs |
+|--------|------|-----------|------|
+| OpenCL (fixed) | resident | 0.028 | 6 |
+| levelzero | resident | 0.198 | 3 |
+
+- 5× `exit=0`, no crash. Verbose confirms `resident dispatch global=1048576 local=256 dirty=0 full=1`.
+- OpenCL output matches levelzero output (identical `coll_arena` fields).
+
+## Status: FIXED (2026-11-19)
+
+The crash is fixed. OpenCL residency is live and 7× faster than levelzero. See `BUGS.md`
+for the updated entry.

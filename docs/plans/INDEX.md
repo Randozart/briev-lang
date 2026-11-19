@@ -113,9 +113,12 @@ correctness is measured.
 `emit_countable_main`; so the empty map was never a missed walk, that path pre-declares
 nothing. Step 1 is two env-gated prints (body statement kinds; slot type when declared ≠
 chosen), then the fix by case, with the rule recorded: **a slot is typed by its
-declaration, the initialiser is coerced.** **B1** the OpenCL `fsum_approx` bug — emit the
-reduce at `Scope::Workgroup` (`emit_subgroup_reduce` hard-codes Subgroup; identical where
-`LocalSize ==` subgroup size, so levelzero cannot regress). **B2** read which of the
+declaration, the initialiser is coerced.** **B1** the OpenCL `fsum_approx` bug — the hardware `Scope::Workgroup` reduce was
+REFUTED 2026-11-18 (`BAD=220`/`sum=0` on NEO); the P4 plan
+(`docs/plans/2026-11-19-p4-fsum-approx-portable-workgroup-reduce.md`) supersedes it with a
+portable workgroup shared-memory + `ControlBarrier` + lane-0 reduce (device-width
+independent), isolated to `emit_subgroup_reduce` (the GEMM/coopmat path emits its own
+`OpGroupNonUniform` directly and is unaffected). **B2** read which of the
 three residency fallbacks fires (the logging landed 2026-11-18). **B3** the GEMM
 input-integrity canary, and prove it bites by rebuilding the old `local_total` parse —
 `G0_GEMM_BAD=0` was green *before* the 16× fix too.
