@@ -353,10 +353,19 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         // Function calls - can't track
         Expr::Call(_, _, _) => SymbolicValue::Unknown,
 
-        // Unary operations
-        Expr::UnaryOp(UnaryOpKind::Neg, _)
-        | Expr::UnaryOp(UnaryOpKind::Not, _)
-        | Expr::UnaryOp(UnaryOpKind::BitNot, _) => SymbolicValue::Unknown,
+        // A constant negation folds to a literal so a negative bound
+        // (`term >= -1000`, `acc >= -1`) is decided by the interval verdict
+        // instead of falling through to the solver with a `Neg` node it cannot
+        // encode. Wrap semantics match `literal_word` in the body prover.
+        Expr::UnaryOp(UnaryOpKind::Neg, inner) => match inner.as_ref() {
+            Expr::Decimal(value) => SymbolicValue::Literal(value.wrapping_neg(), "int".to_string()),
+            _ => SymbolicValue::Unknown,
+        },
+
+        // Other unary operations produce no trackable value.
+        Expr::UnaryOp(UnaryOpKind::Not, _) | Expr::UnaryOp(UnaryOpKind::BitNot, _) => {
+            SymbolicValue::Unknown
+        }
 
         // Compound and complex expressions
         Expr::List(_)
@@ -803,6 +812,28 @@ pub fn eval_symbolic_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A constant negation folds to a literal so a negative bound
+    /// (`term >= -1000`) is decidable by the interval verdict instead of
+    /// falling through to the solver with a `Neg` node it cannot encode.
+    #[test]
+    fn constant_negation_folds_to_a_literal() {
+        let state = SymbolicState::empty();
+        let expr = Expr::UnaryOp(UnaryOpKind::Neg, Box::new(Expr::Decimal(1000)));
+        assert_eq!(
+            eval_symbolic(&expr, &state),
+            SymbolicValue::int_literal(-1000)
+        );
+    }
+
+    /// A negated non-constant stays opaque: folding it would invent a value the
+    /// model does not have.
+    #[test]
+    fn negated_identifier_is_unknown() {
+        let state = SymbolicState::empty();
+        let expr = Expr::UnaryOp(UnaryOpKind::Neg, Box::new(Expr::Identifier("x".into())));
+        assert_eq!(eval_symbolic(&expr, &state), SymbolicValue::Unknown);
+    }
 
     #[test]
     fn test_literal_creation() {

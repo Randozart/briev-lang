@@ -215,7 +215,15 @@ subgroup size, clinfo, glslang, cgroup) → P1 four-arm A/B over
 `spirv_coopmat × spirv_coopmat_f16acc` plus an explicit-finish run (settles X4) →
 P2 that kernel → P3 NEO residency → P5 K3 enforceability check.
 
-**pf_exp, the uninitialised float slot, and tonight's PTL queue (2026-11-17, ACTIVE):**
+**pf_exp — RESOLVED 2026-11-18 (`407c7d790`):** the tuple-summary web (phase 2 of
+`2026-11-15-value-summaries.md` §3.2) landed as per-field summaries + tuple-aware
+call-site facts + constant-negation folding, and `pf_exp` is now PROVEN
+(`lib/std` `goals_unproven` 99 → 10, `goals_violated` 0). The digit loop now
+saturates at 1000 so the `±1000` post is true without changing `str_to_float`
+output (A/B byte-identical). See
+`docs/plans/2026-11-18-w4-pf-exp-tuple-induction.md`. History:
+
+**pf_exp, the uninitialised float slot, and tonight's PTL queue (2026-11-17):**
 `docs/plans/2026-11-17-pf-exp-float-slot-and-ptl-queue.md` — three follow-ups to the
 device-free queue. (A) `pf_exp` is 172 of the corpus's 207 unproven goals, and the
 multiplicity is the prelude re-contributing one contract to every native unit, not

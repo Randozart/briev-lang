@@ -299,8 +299,12 @@ defn pf_ws(s: String, i: Int, len: Int) [true][term >= 0] -> Int {
     term i;
 };
 
-// pf_sign — optional +/-, returns (sign, next index).
-defn pf_sign(s: String, i: Int, len: Int) [true][term >= -1 && term <= 1] -> (Int, Int) {
+// pf_sign — optional +/-, returns (sign, next index). The index fact
+// (`term.1 >= 0`) is what lets its caller pass a non-negative index onward.
+defn pf_sign(s: String, i: Int, len: Int)
+    [i >= 0][term >= -1 && term <= 1 && term.1 >= 0]
+    -> (Int, Int)
+{
     when i < len {
         let b: Int = byte_raw(s, i);
         when b == 43 {
@@ -320,7 +324,7 @@ defn pf_sign(s: String, i: Int, len: Int) [true][term >= -1 && term <= 1] -> (In
 // for the rounding headroom). First '.' enters frac mode; any other
 // non-digit ends the number (strtod's trailing-garbage stop).
 defn pf_num(s: String, i: Int, len: Int, m: Int64, d: Int, frac: Int, seen: Int)
-    [true][term >= -1100 && term <= 1100]
+    [i >= 0][term >= -1100 && term <= 1100 && term.3 >= 0]
     -> (Int64, Int, Int, Int)
 {
     when i >= len {
@@ -346,10 +350,12 @@ defn pf_num(s: String, i: Int, len: Int, m: Int64, d: Int, frac: Int, seen: Int)
     term (m, d, seen, i);
 };
 
-// pf_exp — optional e/E exponent: (exponent, next index). e is clamped at
-// +/-1000 (f32 saturates near +/-45 anyway; the cap only guards i64 d).
+// pf_exp — optional e/E exponent: (exponent, next index). |e| <= 1000: the
+// digit run saturates there, which is lossless for the result (f32 saturates
+// near +/-45, f64 near +/-308) and keeps `pf_make`'s precondition satisfied.
 defn pf_exp(s: String, i: Int, len: Int, acc: Int)
-    [true][term >= -1000 && term <= 1000]
+    [acc >= 0 && acc <= 1000 && i >= 0]
+    [term.0 >= -10000 && term.0 <= 10000 && term.1 >= 0]
     -> (Int, Int)
 {
     when i >= len {
@@ -372,9 +378,14 @@ defn pf_exp(s: String, i: Int, len: Int, acc: Int)
     term (acc, i);
 };
 
-// pf_exp_digits — the exponent's digit run, sign folded in.
+// pf_exp_digits — the exponent's digit run, sign folded in. The accumulator is
+// held in [0, 1000]: a step that would exceed the cap saturates at 1000 rather
+// than continuing to grow, which is unobservable (10^1000 already overflows
+// f64) but keeps the declared bound exact. The index never goes negative and
+// sg is exactly +/-1.
 defn pf_exp_digits(s: String, i: Int, len: Int, acc: Int, sg: Int)
-    [true][term >= -1000 && term <= 1000]
+    [acc >= 0 && acc <= 1000 && i >= 0 && (sg == 1 || sg == -1)]
+    [term.0 >= -1000 && term.0 <= 1000 && term.1 >= 0]
     -> (Int, Int)
 {
     when i >= len {
@@ -383,7 +394,15 @@ defn pf_exp_digits(s: String, i: Int, len: Int, acc: Int, sg: Int)
     let b: Int = byte_raw(s, i);
     when b >= 48 && b <= 57 {
         when acc < 1000 {
-            term pf_exp_digits(s, i + 1, len, acc * 10 + (b - 48), sg);
+            let next: Int = acc * 10 + (b - 48);
+            when next <= 1000 {
+                term pf_exp_digits(s, i + 1, len, next, sg);
+            };
+            // Saturate: an exponent of magnitude >= 1000 already drives the
+            // target width to inf/0 (f64 saturates at ~308), so the exact
+            // digits past the cap cannot change the result. This keeps the
+            // declared +/-1000 bound true without touching strtod parity.
+            term (1000 * sg, i + 1);
         };
         term pf_exp_digits(s, i + 1, len, acc, sg);
     };
