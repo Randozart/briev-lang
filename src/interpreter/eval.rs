@@ -143,7 +143,15 @@ pub fn eval_expr(
                 // 2026-11-14 (#96): the String→Data door exposes a real
                 // [length][bytes][NUL] block. Bits are inline interpreter
                 // strings, not pointer bits; fresh_string copies n+1 bytes.
-                "Blob" | "Data" => match &v {
+                // 2026-11-19 (ptr_trickery regression): `Data`-category covers
+                // Ptr too — the casting graph resolves `Ptr<Int>` under the Data
+                // protocol (a pointer IS raw data), and `type_to_protocol`
+                // deliberately declines to special-case Ptr (see its 2026-07-30
+                // comment). A pointer cast must stay a scalar holding the
+                // address: `Value::Data` here made `UART_DR + 4` compare
+                // `Data(..) != Atom(Int(..))` and broke pointer arithmetic in
+                // the reference engine. `Blob` keeps the raw-word door.
+                "Blob" => match &v {
                     Value::Bits(bytes) => {
                         let mut data = (bytes.len() as i64).to_le_bytes().to_vec();
                         data.extend_from_slice(bytes);
@@ -157,6 +165,21 @@ pub fn eval_expr(
                     Value::Atom(Atom::Float(number)) => Ok(Value::Data(number.to_bits())),
                     Value::Atom(_) => Ok(Value::Data(v.as_i64().unwrap_or(0) as u64)),
                     _ => Ok(v),
+                },
+                // `Data` ITSELF (`x as Data`) stays the raw-word door — it is
+                // the type the 142 fixture rounds through (`address as Data`,
+                // `number as Data`). Only Ptr spellings keep identity, because
+                // the casting graph resolves Ptr under the Data protocol while
+                // the value is still just an address.
+                "Data" if matches!(ty, Type::Custom(n) if n == "Data") => match &v {
+                    Value::Atom(Atom::Float(number)) => Ok(Value::Data(number.to_bits())),
+                    Value::Atom(_) => Ok(Value::Data(v.as_i64().unwrap_or(0) as u64)),
+                    _ => Ok(v),
+                },
+                "Data" if matches!(ty, Type::Applied(base, _) if base == "Ptr")
+                    || matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) =>
+                {
+                    Ok(v)
                 },
                 "Int" | "UInt" => match v {
                     Value::Data(bits) => Ok(Value::int(bits as i64)),
