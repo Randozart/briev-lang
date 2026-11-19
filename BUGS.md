@@ -1,3 +1,34 @@
+## 2026-11-19 — contracted-call facts were hoisted across guards and writes
+
+**Reproduced.** A truthful helper `[a > 0][term == a && term > 0] { term a; }`
+let the body prover certify `[x == 0][term == 999] { x = 1; term helper(x); }`,
+which returns 1 and satisfies the helper's precondition at the actual call.
+Putting `helper(x)` inside `when false` likewise certified an unrelated return 0
+as 999. Removing that unreachable call correctly refuted the caller. Both routes
+were reproduced through the public typed API and compiler CLI. The baseline
+fails seven new regression tests, including guard/lazy-RHS and saved-result cases.
+
+**Cause/fix.** Contract lowering collected all postcondition facts and prepended
+them as entry gates. Correct snapshot conversion therefore captured arguments
+from the wrong state and applied unexecuted calls' facts to every path. The new
+private call-lowering phase emits prefixes immediately before their containing
+statement. Guard bodies keep their own prefixes; AND/OR RHS facts are guarded by
+the corresponding execution condition. Arguments are frozen by the existing
+Gate snapshot discipline before an enclosing assignment can overwrite them.
+Atoms are fresh against user bindings, and fact admission permits actual result
+atoms rather than arbitrary names sharing a prefix. Malformed call arities do
+not acquire postcondition facts.
+
+API tests and CLI exit/report tests reject the two original false proofs while
+preserving their correct contracts. Extra controls cover conditional paths,
+short-circuiting, nested calls, later writes and generated-name collisions. The
+new API suite is required by both quick and verifier gates. The production Kani
+guard-constructor harness covers Boolean leaves and AND/OR/eager-add with all
+three covers; recursive lowering, state maps and the call graph remain unproved.
+Callee contracts and source call-precondition obligations retain their existing
+modular trust boundary. SMT SAT counterexamples retain the advisory policy.
+See the [repair plan](docs/plans/2026-11-19-120252-call-contract-fact-soundness.md).
+
 ## 2026-11-19 — trunk owners-census regressed +1 conservative drop (2196→2197); kiosk pin advance blocked (OPEN)
 
 The kiosk (briev-kiosk-avatar) `memcheck_ratchet` baseline is

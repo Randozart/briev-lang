@@ -109,3 +109,45 @@ fn endpoint_guards_are_safe_and_reversed_false_contracts_are_rejected() {
         "{report}"
     );
 }
+
+#[test]
+fn contract_call_facts_stay_on_their_path_and_capture_the_current_argument() {
+    let callee = "defn health_positive(a: Int) [a > 0][term == a && term > 0] -> Int { term a; };";
+    for (body, expected) in [
+        ("when false { health_positive(x); }; term 0;", 0),
+        ("x = 1; term health_positive(x);", 1),
+        (
+            "when x > 0 && health_positive(x) > 0 { term 0; }; term 0;",
+            0,
+        ),
+        (
+            "when x == 0 || health_positive(x) > 0 { term 0; }; term 0;",
+            0,
+        ),
+    ] {
+        for (post, should_prove) in [(999, false), (expected, true)] {
+            let source = format!(
+                "{callee} defn health_caller(x: Int) [x == 0][term == {post}] -> Int {{ {body} }};"
+            );
+            let (code, report) = run(&source);
+            let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+            let proven = value["proven"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["name"] == "health_caller");
+            assert_eq!(proven, should_prove, "{source}\n{report}");
+            assert_eq!(code, if should_prove { 0 } else { 1 }, "{source}\n{report}");
+            if !should_prove {
+                assert!(
+                    value["violated"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["name"] == "health_caller"),
+                    "{report}"
+                );
+            }
+        }
+    }
+}

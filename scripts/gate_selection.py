@@ -59,7 +59,8 @@ TYPED_BOUNDARY_TESTS = (
 def phases(mode):
     verifier = [
         [Suite("briev-verify", "lib", "briev_verify"),
-         Suite("briev-verify", "test", "arithmetic_boundary")],
+         Suite("briev-verify", "test", "arithmetic_boundary"),
+         Suite("briev-verify", "test", "call_fact_scope")],
         [Suite("briev-verify", "test", "solver_boundary", only=SOLVER_TESTS)],
         [Suite("briev-verify", "test", "typed_boundary", only=TYPED_BOUNDARY_TESTS)],
     ]
