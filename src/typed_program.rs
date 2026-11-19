@@ -385,15 +385,26 @@ fn eval_b(e: &BExpr, env: &Env) -> bool {
 }
 
 fn eval_f(e: &FExpr, a: f64, b: f64) -> f64 {
+    // 2026-11-19 (issue #137): plain `Float` is binary32 storage (the
+    // universe row bits=32; the backend computes f32 locals in f32), so the
+    // MODEL computes in f32 too — division rounds to binary32, exactly what
+    // the reference and native engines produce. The result widens losslessly
+    // for the f64 comparison slot.
+    // Every operation rounds its result to binary32 (the storage width);
+    // operands arrive already binary32 (widened losslessly into f64 for the
+    // arithmetic itself).
+    fn r32(v: f64) -> f64 {
+        f64::from(v as f32)
+    }
     match e {
-        FExpr::Lit(v) => *v,
-        FExpr::Param(0) => a,
-        FExpr::Param(_) => b,
-        FExpr::Add(l, r) => eval_f(l, a, b) + eval_f(r, a, b),
-        FExpr::Sub(l, r) => eval_f(l, a, b) - eval_f(r, a, b),
-        FExpr::Mul(l, r) => eval_f(l, a, b) * eval_f(r, a, b),
-        FExpr::Div(l, d) => eval_f(l, a, b) / d,
-        FExpr::Neg(l) => -eval_f(l, a, b),
+        FExpr::Lit(v) => r32(*v),
+        FExpr::Param(0) => r32(a),
+        FExpr::Param(_) => r32(b),
+        FExpr::Add(l, r) => r32(eval_f(l, a, b) + eval_f(r, a, b)),
+        FExpr::Sub(l, r) => r32(eval_f(l, a, b) - eval_f(r, a, b)),
+        FExpr::Mul(l, r) => r32(eval_f(l, a, b) * eval_f(r, a, b)),
+        FExpr::Div(l, d) => r32(eval_f(l, a, b) / d),
+        FExpr::Neg(l) => r32(-eval_f(l, a, b)),
     }
 }
 

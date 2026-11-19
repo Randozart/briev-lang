@@ -346,6 +346,30 @@ fn divergent_cycle_defns_lack_willreturn() {
     );
 }
 
+/// 2026-11-19 (issue #137): Float32 storage width — the reference engine
+/// must store plain `Float`/`Float32` values as binary32 (the universe's
+/// bits=32 row, the same fact codegen reads), so the raw-word door
+/// reproduces the native binary32 pattern. The test-block file asserts the
+/// round trips on the interpreter; the tier1 fixture
+/// `float32_storage_width.bv` pins the native side against the same oracle
+/// values via its `.golden`.
+#[test]
+fn float32_storage_width_interpreter_matches_native() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let fixture = Path::new(PROJECT_ROOT).join("tests/tier1/float32_storage_width_tests.bv");
+    let run = Command::new(brievc)
+        .arg("test")
+        .arg(fixture.to_string_lossy().as_ref())
+        .output()
+        .expect("failed to spawn brievc test");
+    assert!(
+        run.status.success(),
+        "float32 storage width: interpreter test-blocks failed:\n{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[test]
 fn tier1_corpus_compiles_links_and_runs() {
     if !has("clang") {
