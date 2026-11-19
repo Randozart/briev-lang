@@ -1,0 +1,153 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// server_loop - the connection lifecycle an HTTP/1.1 server needs, extracted.
+//
+// WHY THIS EXISTS (2026-11-18, dogfooding Knooppunt on Briev): every in-tree
+// HTTP app re-implements the same steps by hand - bind+listen, accept, read one
+// complete request, write one JSON response. `examples/apps/task_board` carries
+// its own `read_request` / `send_response` / `respond_json`. The net stack has
+// the PARSER (`net/http.bv`) but no lifecycle, so each app pays the same tax and
+// the copies drift. This module owns the lifecycle; parsing and response bytes
+// stay in `net/http.bv`.
+//
+// HONEST SCOPE (read before trusting the name):
+//   * SEQUENTIAL accept loop: one connection is read, answered and closed before
+//     the next accept. It is NOT poll-multiplexed - `net/nonblocking.bv` and
+//     `os/poll.bv` exist but nothing composes them yet (the net campaign's own
+//     next step). Every connection therefore gets a bounded receive budget
+//     (SERVE_RECV_TIMEOUT_S) so a silent client cannot pin the loop.
+//   * HTTP/1.1 with `Connection: close`: one request per connection. Keep-alive
+//     and pipelining are NOT implemented, and the response says so.
+//   * Request bodies are read per Content-Length only (`net/http.bv` behaviour):
+//     a chunked request body is not decoded.
+//
+// READING ORDER: serve_listen -> serve_accept -> serve_next_request ->
+// serve_respond_json. The application owns the accept loop (a few lines), so no
+// function-value plumbing is needed.
+//
+// Undo: delete this module and its tier1 test; nothing depends on it yet.
+import "std/net/socket.bv";
+import "std/net/bytes.bv";
+import "std/net/http.bv";
+
+// How many pending connections the kernel may queue before refusing.
+const SERVE_BACKLOG: Int = 16;
+
+// Per-connection receive budget (seconds). The loop is sequential, so this
+// bound is what keeps a silent client from pinning the server.
+const SERVE_RECV_TIMEOUT_S: Int = 2;
+
+// Largest request buffered (headers + body). Beyond this the request is refused
+// rather than growing without bound.
+const SERVE_MAX_REQUEST_BYTES: Int = 8192;
+
+// serve_listen - create a listening socket on `port` with SO_REUSEADDR (so a
+// quick restart rebinds over TIME_WAIT). Returns a Socket: fd >= 0 on success,
+// or a CLOSED Socket with fd == -1 on any failure (the caller checks fd).
+defn serve_listen(port: Int) [port > 0 && port < 65536][term.fd >= -4096] -> Socket {
+    let listener: Socket = sock_tcp();
+    when listener.fd < 0 {
+        term listener;
+    };
+    let reuse: Int = sock_set_reuseaddr(listener);
+    let bound: Int = sock_bind_listen(listener, port, SERVE_BACKLOG);
+    when bound < 0 {
+        let closed: Int = sock_close(listener);
+        check closed >= -4096;
+        term Socket { fd: -1 };
+    };
+    when reuse < 0 {
+        let closed: Int = sock_close(listener);
+        check closed >= -4096;
+        term Socket { fd: -1 };
+    };
+    term listener;
+};
+
+// serve_accept - take the next pending connection and give it the bounded
+// receive budget. Returns a Socket with fd < 0 when nothing is pending or the
+// accept failed (the caller loops).
+// `listener.fd` is read on the first line, so the socket domain is the honest
+// precondition — `[true]` asserted nothing and let an unpinned fd through.
+defn serve_accept(listener: Socket) [listener.fd >= -4096][term.fd >= -4096] -> Socket {
+    when listener.fd < 0 {
+        term Socket { fd: -1 };
+    };
+    let conn: Socket = sock_accept(listener);
+    when conn.fd < 0 {
+        term conn;
+    };
+    let budget: Int = sock_set_recv_timeout(conn, SERVE_RECV_TIMEOUT_S);
+    when budget < 0 {
+        let closed: Int = sock_close(conn);
+        check closed >= -4096;
+        term Socket { fd: -1 };
+    };
+    term conn;
+};
+
+// serve_next_request - read until ONE complete request has arrived or the
+// buffer fills. `fed` is the byte count so far (a plain Int: the recursion's
+// arithmetic stays provable, unlike a buffer whose length a mutation advanced).
+//
+// ONE BYTE PER recv() mirrors the in-tree `task_board` reader, which is the
+// shape the contract checker accepts for a mutating buffer. It costs one
+// syscall per request byte (~200 syscalls for a typical JSON control request) —
+// acceptable here and logged as a follow-up (a chunked read needs the growth to
+// be provable across the loop; see the Knooppunt gap register G12b).
+defn serve_next_request(conn: Socket, buf: ByteBuf, fed: Int)
+    [conn.fd >= -4096 && fed >= 0 && fed == buf.len && fed <= buf.cap]
+    [term.len >= 0 && term.len <= term.cap]
+    -> HttpParse
+{
+    let parsed: HttpParse = http_parse_request(buf, fed);
+    when parsed.status == HTTP_COMPLETE {
+        term parsed;
+    };
+    when fed >= buf.cap {
+        term parsed;
+    };
+    let chunk: ByteBuf = buf_new(1);
+    let got: Int = sock_recv(conn, chunk, 1);
+    when got <= 0 {
+        buf_free(chunk);
+        term parsed;
+    };
+    let byte: Int = get_u8(chunk, 0);
+    buf_free(chunk);
+    let extended: ByteBuf = buf.put_u8(byte);
+    term serve_next_request(conn, extended, fed + 1);
+};
+
+// serve_respond_json - write one complete JSON response. `http_json_response`
+// already emits `Connection: close`, so the caller closes afterwards. Returns 1
+// when the whole response reached the socket, 0 otherwise.
+defn serve_respond_json(conn: Socket, status: Int, body: String)
+    [conn.fd >= -4096 && status >= 100 && status <= 599]
+    -> Int
+{
+    let response: GrowBuf = http_json_response(status, body);
+    let wire: ByteBuf = ByteBuf {
+        ptr: response.ptr,
+        len: response.len,
+        cap: response.cap,
+    };
+    when response.len > wire.len {
+        grow_free(response);
+        term 0;
+    };
+    let sent: Int = sock_send(conn, wire, response.len);
+    grow_free(response);
+    when sent == wire.len {
+        term 1;
+    };
+    term 0;
+};
+
+// serve_bounded - the buffer every request is read into, sized by the module
+// bound. Exposed so the application's loop reads the same limit the module
+// documents.
+defn serve_bounded() [true][term.len == 0 && term.len <= term.cap] -> ByteBuf {
+    term buf_new(SERVE_MAX_REQUEST_BYTES);
+};

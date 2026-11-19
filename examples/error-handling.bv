@@ -43,7 +43,14 @@ node run [i < 3][i == 3] {
     };
     when i == 2 {
         // Ok(8/2) flows through the constructor + match machinery.
-        let final = parse_and_divide(8);
-        endprogram Print#(safe_divide(final, 1));
+        // 2026-11-18: `final` is a Result, not an Int — this call used to sit
+        // inside `Print#(...)`, where arguments were never typechecked, so the
+        // mismatch reached codegen. Unwrap it the way the comment intends.
+        let final: Result<Int, String> = parse_and_divide(8);
+        let quotient: Int = match final {
+            Ok(value) => value,
+            Err(_) => 0 - 1,
+        };
+        endprogram Print#(safe_divide(quotient, 1));
     };
 };

@@ -244,6 +244,18 @@ pub fn check_convergence_safety(
     if matches!(pre, Expr::Bool(true)) {
         return results;
     }
+    // 2026-11-18 (dogfooding gap G4): a one-shot PROGRAM ENTRY
+    // (`node entry [beginprogram][true]`) runs exactly once by definition —
+    // its body ends the process, so the "reactive txn must converge" check
+    // does not apply. Without this the check warned on EVERY CLI program
+    // ("body writes to [nothing] … will run forever"), which was a false
+    // alarm for the only deliberately non-reactive transaction there is.
+    // Widen beyond the bare marker: `beginprogram` is a CONJUNCT
+    // (`node entry [beginprogram && done == 0]`), and that shape warned too —
+    // `matches!` on the whole expression only caught the degenerate spelling.
+    if contains_beginprogram(pre) {
+        return results;
+    }
 
     let pre_vars = collect_var_names(pre);
     let write_vars = collect_write_vars(body);
@@ -286,9 +298,90 @@ pub fn check_convergence_safety(
     results
 }
 
+/// Does the precondition carry a `beginprogram` conjunct anywhere?
+///
+/// A `beginprogram` node is a one-shot program entry: the execution model
+/// (docs/architecture/briev-execution-model.md, "`beginprogram` — Entry Sugar")
+/// states that its precondition is evaluated ONCE and never re-checked. So the
+/// convergence argument below ("the precondition never advances, therefore it
+/// re-fires forever") does not apply to it — the node cannot re-fire at all.
+/// Plain `node`/`txn` declarations are untouched; the residue of a
+/// `[beginprogram && i < N]` entry is the entry LOOP's bound, not a
+/// convergence goal, which is why the whole precondition is skipped rather than
+/// the stripped remainder being analysed.
+fn contains_beginprogram(pre: &Expr) -> bool {
+    match pre {
+        Expr::BeginProgram => true,
+        Expr::BinaryOp(BinaryOpKind::And, a, b) => {
+            contains_beginprogram(a) || contains_beginprogram(b)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beginprogram_entry_skips_convergence_warning() {
+        // Dogfooding gap G4 (2026-11-18): a one-shot program entry
+        // (`node entry [beginprogram][true]`) runs exactly once by definition,
+        // yet the convergence check warned on EVERY CLI program because the
+        // entry writes nothing its entry precondition depends on. The entry is
+        // the one deliberately non-reactive transaction — it must not be
+        // analysed for reactivity convergence.
+        let no_txns = std::collections::HashMap::new();
+        let results = check_convergence_safety("entry", true, &Expr::BeginProgram, &[], &no_txns);
+        assert!(results.is_empty(), "entry must not warn: {results:?}");
+    }
+
+    #[test]
+    fn beginprogram_conjunct_entry_also_skips_convergence_warning() {
+        // Dogfooding gap G4, widened (2026-11-18): the entry marker is a
+        // CONJUNCT, so the common spelling is `[beginprogram && done == 0]`.
+        // `matches!(pre, Expr::BeginProgram)` missed it and the run-forever
+        // false alarm survived for every entry carrying a state condition.
+        let no_txns = std::collections::HashMap::new();
+        let pre = Expr::BinaryOp(
+            BinaryOpKind::And,
+            Box::new(Expr::BeginProgram),
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(Expr::Identifier("done".to_string())),
+                Box::new(Expr::Decimal(0.into())),
+            )),
+        );
+        let results = check_convergence_safety("entry", true, &pre, &[], &no_txns);
+        assert!(
+            results.is_empty(),
+            "a beginprogram conjunct makes the txn one-shot: {results:?}"
+        );
+    }
+
+    #[test]
+    fn reactive_body_that_never_advances_still_warns() {
+        // The guard is narrow: a genuinely reactive txn whose body does not
+        // touch its precondition (and no other txn does either) must still
+        // warn — the G4 escape hatch applies to [beginprogram], nothing else.
+        let no_txns = std::collections::HashMap::new();
+        // A comparison precondition over `counter`; body writes `other`, so
+        // this txn cannot converge on its own and no other txn helps it.
+        let pre = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("counter".to_string())),
+            Box::new(Expr::Decimal(0.into())),
+        );
+        let body = [Statement::Assign(
+            Expr::Identifier("other".to_string()),
+            Expr::Decimal(1.into()),
+        )];
+        let results = check_convergence_safety("loop", true, &pre, &body, &no_txns);
+        assert!(
+            results.iter().any(|(severity, _)| *severity == "error"),
+            "non-advancing reactive txn must be a hard error: {results:?}"
+        );
+    }
 
     #[test]
     fn test_provenance_identifier() {

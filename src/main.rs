@@ -12,14 +12,31 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use briev_compiler::library;
-use briev_compiler::target::{BackendKind, TargetConfig, get_extension};
+use briev_compiler::target::{get_extension, BackendKind, TargetConfig};
 use briev_compiler::vocab;
 use compile::BeastFilter;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        print_usage(&args[0]);
+        print_usage(std::io::stderr(), &args[0]);
+        return;
+    }
+    // 2026-11-18 (dogfooding gap G1): `brievc <cmd> --help` used to treat the
+    // flag as the input FILE and fail with "cannot read '--help'". A help flag
+    // among the subcommand's own arguments prints the usage and exits 0.
+    //
+    // Only tokens BEFORE a `--` count: everything after it belongs to the
+    // compiled program (`brievc run app.bv -- --help` is a request to pass
+    // `--help` through, not a request for our usage block). Usage goes to
+    // stdout here because an explicit help request is a success; the
+    // `args.len() < 2` misuse above keeps writing to stderr.
+    if args[2..]
+        .iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| a == "-h" || a == "--help")
+    {
+        print_usage(std::io::stdout(), &args[0]);
         return;
     }
 
@@ -87,7 +104,7 @@ fn main() {
         "install-highlighter" => run_install_highlighter(&args[2..]),
         "freshness" => run_freshness_check(),
         "help" | "--help" | "-h" => {
-            print_usage(&args[0]);
+            print_usage(std::io::stdout(), &args[0]);
             Ok(())
         }
         "version" | "--version" | "-V" => {
@@ -124,223 +141,223 @@ fn run_targets() -> Result<(), String> {
     Ok(())
 }
 
-fn print_usage(program: &str) {
+fn print_usage(mut out: impl std::io::Write, program: &str) {
     let name = Path::new(program)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("briev-compiler");
-    eprintln!("Briev Compiler");
-    eprintln!("Usage:");
-    eprintln!(
+    writeln!(out, "Briev Compiler").ok();
+    writeln!(out, "Usage:").ok();
+    writeln!(out, 
         "  {} build <file.bv>                 Compile a Briev source file",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} lsp                             Run the language server (stdio; VS Code extension)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} test <file|dir>                 Run *.bv tests (exit 0 passes; <name>.golden pins stdout)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --llvm           Emit LLVM IR only, no binary",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --config-dir <d>  Set config directory",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --out <dir>      Set output directory",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.rbv> --split          Emit separate web assets (default: one bundled HTML)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --emit-beast [stage]  Emit AST (.beast) / IR (.ir) snapshots",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --emit-hir             Emit canonical HIR at Typed/Provenanced",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --no-std          Disable prelude (all prelude-family plugins)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --keep-all-defns  Emit every defn (diagnostic: liveness A/B)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --verify-bodies  Prove each txn/defn body satisfies its own [pre][post]",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --stdlib-path <p>   Set stdlib search path",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --disable-plugin <name>  Disable a system plugin by name",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --enable-plugin <name>   Enable only specific plugins",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --macro-budget <n>       Set instruction limit for macros (0 = unlimited)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-read             Allow macros to read files",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-write            Allow macros to write files",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-run              Allow macros to execute shell commands",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-sys-query        Allow macros to query host hardware",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --allow-net              Allow macros network access",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --dump-vfs               Print virtual filesystem contents after build",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --dump-traces            Print macro expansion traces after build",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --diff                   Show macro changes (dry-run, no output)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} targets                            List extension→target support rows",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --target <name>           Build for a specific target profile from folio.toml",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --accel-cpu-fallback <n>  Min work items for GPU dispatch; below n runs the CPU loop",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --sysquery <key=value>    Override a SysQuery$ result (repeatable, highest priority)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --sysquery-file <path>    Load SysQuery$ overrides from a key=value file",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} build <file.bv> --update-lockfile        Regenerate macro-lock.toml from plugin files",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} audit [file.bv]                Scan for $ intrinsic usage and capability requirements",
         name
     );
-    eprintln!("  {} check <file.bv>               Type-check only", name);
-    eprintln!(
+    writeln!(out, "  {} check <file.bv>               Type-check only", name);
+    writeln!(out, 
         "  {} check --validate <file.bv>    Type-check + validate emitted IR (no link)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} derive <file.bv>              Synthesize derivation blocks",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} derive --stochastic <file.bv> Synthesize + MCMC superoptimize (writes .opt.bv)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} accept <file.bv>              Fold synthesized bodies into source",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} library <file.bv>             Compile to .a library",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} export <file.bv> <lang> [--out <dir>]  Generate a GLUE bridge for <lang>",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} doc <file.bv>                  Generate HTML documentation from doc comments",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} link <library.so/a/o>         Analyze a foreign library for frgn declarations",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config list                   List available config profiles",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config show                   Show active config profile",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config set <name>             Switch to a config profile",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} config init <name>            Create a new config profile",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} bounty <file.bv>              Package a .bounty for install-time compilation",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} init <name>                   Create a new project",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} install-deps                 Download optional deps (z3, dwarfdump)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} install-highlighter [--vsix-only]  Build & install the syntax highlighter .vsix for VS Code / VSCodium",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} vocab [path]                 Emit the canonical language vocabulary manifest (default: stdout)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} grammar <path>               Regenerate the TextMate grammar keyword/type patterns from the vocab",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} fmt <file> [--stdout|--check]  Format a source file canonically (round-trip safe)",
         name
     );
-    eprintln!(
+    writeln!(out, 
         "  {} freshness                     Check the brievc binary is newer than src/ + config/ (stale-binary guard)",
         name
     );
-    eprintln!("  {} help                          Show this help", name);
+    writeln!(out, "  {} help                          Show this help", name);
 }
 
 /// 2026-08-05 (Phase 1): emit the canonical language vocabulary manifest for
@@ -884,7 +901,7 @@ fn route_by_extension(args: &[String]) -> Result<(), String> {
         return run_bad(&args[1..]);
     }
     eprintln!("unknown command: {}", args[1]);
-    print_usage(&args[0]);
+    print_usage(std::io::stderr(), &args[0]);
     Ok(())
 }
 
@@ -1811,7 +1828,11 @@ fn find_changed_rbv(
     walk_rbv(dir, &mut newest);
     newest.and_then(
         |(mtime, path)| {
-            if mtime > *since { Some(path) } else { None }
+            if mtime > *since {
+                Some(path)
+            } else {
+                None
+            }
         },
     )
 }
@@ -1881,40 +1902,94 @@ fn run_check(args: &[String]) -> Result<(), String> {
     // by `check`, not just `build`. Default `check` (no flag) stays
     // frontend-only and cheap — the conformance sweep depends on that.
     let validate = args.iter().any(|a| a.as_str() == "--validate");
-    let file_path = args
-        .iter()
-        .find(|a| a.as_str() != "--validate")
-        .ok_or("missing file argument")?;
+    // 2026-11-18 (dogfooding gap G0): `--stdlib-path` was accepted by
+    // `build`/`run` but silently ignored by `check` — a file outside the
+    // Briev tree could never be typechecked. Parse it here and hand it to
+    // `check_source_with_options`. Also accept the sibling env var the
+    // resolver already honours in the other commands.
+    let flags = parse_check_flags(args);
+    if let Some(error) = flags.error {
+        return Err(error);
+    }
+    let file_path = flags.file_path.ok_or("missing file argument")?;
+    // No `BRIEV_STDLIB_PATH` fallback here: `ImportResolver::resolve_stdlib_root`
+    // already consults it as its second source, so reading it twice would create
+    // two places that must agree. The flag is the only thing `check` was missing.
+    let stdlib_path = flags.stdlib_path;
     let source = {
-        let p = std::path::Path::new(file_path);
+        let p = std::path::Path::new(&file_path);
         let doppel = briev_compiler::derive::Doppelganger::resolve(p);
         if doppel != p {
             std::fs::read_to_string(&doppel)
                 .map_err(|e| format!("cannot read '{}': {}", doppel.display(), e))?
         } else {
-            std::fs::read_to_string(file_path)
+            std::fs::read_to_string(&file_path)
                 .map_err(|e| format!("cannot read '{}': {}", file_path, e))?
         }
     };
     // 2026-08-09 (Phase 13, SPEC 22.6): `briev check file.dbv|file.dbvl`
     // dispatches to the Data Briev check (parse + validate asserted schemas),
     // not the .bv source pipeline.
-    let ext = get_extension(file_path);
+    let ext = get_extension(file_path.as_str());
     if ext == ".dbv" || ext == ".dbvl" {
-        return compile::check_data_source(file_path, &source);
+        return compile::check_data_source(file_path.as_str(), &source);
     }
     if validate {
         // Run the full build pipeline (frontend + normalizer + codegen) but
         // stop before linking: `compile_source` with `validate_ir = true`
         // validates the emitted `.ll` with `opt -passes=verify` and returns.
         let opts = briev_compiler::pipeline::BuildOptions {
-            file_path: file_path.to_string(),
+            file_path: file_path.clone(),
             validate_ir: true,
+            stdlib_path: stdlib_path.clone(),
             ..Default::default()
         };
-        return compile::compile_source(file_path, &source, &opts);
+        return compile::compile_source(&file_path, &source, &opts);
     }
-    compile::check_source(file_path, &source)
+    compile::check_source_with_options(&file_path, &source, stdlib_path)
+}
+
+/// The sub-command flags `check` understands: the optional validate flag,
+/// the optional stdlib path, and the file. Parsed once, additively, with the
+/// flag pair consumed in one hop (no nested scan).
+struct CheckFlags {
+    /// The file argument (the first non-flag token).
+    file_path: Option<String>,
+    /// The `--stdlib-path` value, when supplied.
+    stdlib_path: Option<String>,
+    /// A flag that was given without its value.
+    error: Option<String>,
+}
+
+fn parse_check_flags(args: &[String]) -> CheckFlags {
+    let mut flags = CheckFlags {
+        file_path: None,
+        stdlib_path: None,
+        error: None,
+    };
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--stdlib-path" => {
+                // A flag with no value is a mistake, not a no-op: silently
+                // stopping here reported "missing file argument" for
+                // `check --stdlib-path` and ignored the flag entirely when the
+                // file came first. `build` already says this precisely.
+                let Some(value) = args.get(index + 1) else {
+                    flags.error = Some("--stdlib-path requires a path argument".to_string());
+                    return flags;
+                };
+                flags.stdlib_path = Some(value.clone());
+                index += 2;
+            }
+            other if other != "--validate" && flags.file_path.is_none() => {
+                flags.file_path = Some(other.to_string());
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    flags
 }
 
 fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {

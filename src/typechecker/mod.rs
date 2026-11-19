@@ -2037,6 +2037,23 @@ pub fn infer_type_only(expr: &Expr, ctx: &mut TypecheckContext) -> Result<Type, 
     infer_expression(expr, ctx).map(|(ty, _)| ty)
 }
 
+/// Infer an argument, letting a declared parameter type steer the inference.
+///
+/// Enum-variant construction is the case that needs it: `Ok(7)` alone has a free
+/// error type, so comparing it to `Result<Int, String>` fails unless the expected
+/// type is handed in. Every other expression is inferred as before.
+fn infer_argument(arg: &Expr, expected: Option<&Type>, ctx: &mut TypecheckContext) -> Result<Type, TypeError> {
+    if let (Expr::Call(name, args, _), Some(expected)) = (arg, expected) {
+        if let Some(enum_name) = ctx.variant_defs.get(name).cloned() {
+            if !ctx.defined_fns.contains(name) {
+                let bare = name.rsplit("::").next().unwrap_or(name).to_string();
+                return infer_variant_construction(&enum_name, &bare, args, Some(expected), ctx);
+            }
+        }
+    }
+    infer_type_only(arg, ctx)
+}
+
 /// Infer the type of a function/intrinsic call.
 fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<Type, TypeError> {
     // 2026-08-23 (enum-construction plan): a call naming a declared ENUM
@@ -2070,7 +2087,7 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
                 });
             }
             let bare = name.rsplit("::").next().unwrap_or(name).to_string();
-            return infer_variant_construction(&enum_name, &bare, args, ctx);
+            return infer_variant_construction(&enum_name, &bare, args, None, ctx);
         }
     }
     // Intrinsic call (ends with #): look up signature
@@ -2237,8 +2254,9 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
                 // the per-defn bounds registry (S1).
                 check_type_param_bounds(name, &params, &args_conc, ctx)?;
                 for (i, arg) in args.iter().enumerate() {
-                    let arg_ty = infer_type_only(arg, ctx)?;
-                    if let Some(param_ty) = ctx.fn_param_types.get(name).and_then(|p| p.get(i)) {
+                    let declared = ctx.fn_param_types.get(name).and_then(|p| p.get(i)).cloned();
+                    let arg_ty = infer_argument(arg, declared.as_ref(), ctx)?;
+                    if let Some(param_ty) = declared.as_ref() {
                         let subst_ty = substitute_type_params(param_ty, &params, &args_conc);
                         if arg_ty != subst_ty && !try_coerce_via_parse(arg, &arg_ty, &subst_ty, ctx)
                         {
@@ -2258,7 +2276,11 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
     }
     let param_types = ctx.fn_param_types.get(name).cloned().unwrap_or_default();
     for (i, arg) in args.iter().enumerate() {
-        let arg_ty = infer_type_only(arg, ctx)?;
+        // The declared parameter type steers the inference: a variant
+        // construction passed here (`classify(Ok(A(7)))`) must learn its
+        // unbound type params from the parameter, or it compares as a free
+        // `Result<J, E>` against `Result<J, String>` (issue #133 follow-up).
+        let arg_ty = infer_argument(arg, param_types.get(i), ctx)?;
         if let Some(param_ty) = param_types.get(i) {
             // 2026-08-09 (Phase 12, SPEC §18.2): the meld admission is removed —
             // only an explicit coercion path admits the pair.
@@ -2673,13 +2695,33 @@ fn infer_intrinsic_call(
             }
         }
     }
-    for (i, (_, param_ty)) in sig.parameters.iter().enumerate() {
-        let arg_ty = infer_type_only(&args[i], ctx)?;
+    // 2026-11-18 (issue #133): iterate the ARGUMENTS, not the signature.
+    // A type-inferred intrinsic declares no parameters (`void Print#()`,
+    // `SysCall#`), so the old `for … in sig.parameters` loop inferred nothing
+    // and a nested call inside `Print#(len("abc"))` reached codegen without
+    // ever being typechecked — the checker never saw `len`, the backend bound
+    // it by name to the StringBuilder overload, and the emitted call passed a
+    // String where a builder handle was declared (SIGSEGV at run time). An
+    // argument that is never inferred is an argument that is never checked.
+    for (i, arg) in args.iter().enumerate() {
+        let declared = sig.parameters.get(i);
+        // A bare identifier in an UNTYPED position is a token, not a value:
+        // `Alloc#(want, Malloc)` names its allocation source that way. Those
+        // cannot emit a call, so skipping them loses no check. Everything else
+        // — a nested call above all — is inferred, because an argument that is
+        // never inferred is an argument that is never typechecked.
+        if declared.is_none() && matches!(arg, Expr::Identifier(_)) {
+            continue;
+        }
+        let arg_ty = infer_argument(arg, declared.map(|(_, ty)| ty), ctx)?;
+        let Some((_, param_ty)) = declared else {
+            continue; // type-inferred / variadic tail: inferred, nothing to compare
+        };
         let arg_str = format!("{}", arg_ty);
         let param_str = format!("{}", param_ty);
         if arg_str != param_str {
             // 2026-07-20: Check for Parse op coercion before reporting error
-            if !try_coerce_via_parse(&args[i], &arg_ty, param_ty, ctx) {
+            if !try_coerce_via_parse(arg, &arg_ty, param_ty, ctx) {
                 return Err(TypeError::TypeMismatch {
                     expected: param_str,
                     found: arg_str,
@@ -2870,6 +2912,7 @@ fn infer_variant_construction(
     enum_name: &str,
     variant: &str,
     args: &[Expr],
+    expected: Option<&Type>,
     ctx: &mut TypecheckContext,
 ) -> Result<Type, TypeError> {
     // Payload arity from the __variant_ slot's tuple type.
@@ -2929,8 +2972,14 @@ fn infer_variant_construction(
                 .unwrap_or_else(|| Type::Custom(pn.clone()))
         })
         .collect();
-    // Unify the remaining (unbound) params against the contextual type.
-    if let Some(out) = &ctx.current_output_type {
+    // Unify the remaining (unbound) params against the contextual type: the
+    // caller's parameter type when the construction is an ARGUMENT (`classify(
+    // Ok(A(7)))` against `Result<J, String>`), otherwise the enclosing defn's
+    // return type. Without the argument-side expectation, `Ok(..)` keeps a free
+    // error type and every such call site is a spurious mismatch — which is what
+    // surfaced when intrinsic arguments started being typechecked (issue #133).
+    let contextual = expected.or(ctx.current_output_type.as_ref());
+    if let Some(out) = contextual {
         if let Type::Applied(base, out_args) = out {
             if base == enum_name && out_args.len() == type_args.len() {
                 for (i, ta) in type_args.iter_mut().enumerate() {
@@ -4251,6 +4300,17 @@ fn collect_inline_call_post_facts(expr: &Expr, ctx: &TypecheckContext, out: &mut
                     ));
                 }
             }
+            // 2026-11-18 (issue #133 follow-up): an intrinsic's range is compiler
+            // knowledge, not a declared contract, so it has to be supplied here.
+            // A `Load#(ptr, W)` reads W bytes as an integer — the result is in
+            // [0, 2^(8W) - 1] whatever the memory holds. The interval prover has
+            // no arithmetic for that mask (`x & 255`), so without this fact every
+            // `[b >= 0]` precondition fed by a byte load is unprovable — which is
+            // exactly what `Store#(dst + j, fold_lower_byte(Load#(src + j, 1)), 1)`
+            // in std/string.bv ran into once call arguments started being
+            // typechecked. Same bound the body verifier already uses
+            // (`load_range_value` in briev-verify).
+            out.extend(intrinsic_load_bounds(callee, args, expr));
             for arg in args {
                 collect_inline_call_post_facts(arg, ctx, out);
             }
@@ -4275,6 +4335,41 @@ fn collect_inline_call_post_facts(expr: &Expr, ctx: &TypecheckContext, out: &mut
         }
         _ => {}
     }
+}
+
+/// The range of an intrinsic memory load, as facts about the call expression.
+///
+/// `Load#(p, W)` yields an unsigned W-byte integer, so `0 <= Load#(p, W) <=
+/// 2^(8W) - 1`. Only a literal width is used: a computed width has no static
+/// range worth stating. Returns no fact for any other intrinsic.
+fn intrinsic_load_bounds(callee: &str, args: &[Expr], call: &Expr) -> Vec<Expr> {
+    if callee != "Load#" {
+        return Vec::new();
+    }
+    let Some(Expr::Decimal(width)) = args.get(1) else {
+        return Vec::new();
+    };
+    let Ok(bytes) = u32::try_from(*width) else {
+        return Vec::new();
+    };
+    if bytes == 0 || bytes > 8 {
+        return Vec::new();
+    }
+    let mask = (1_i64 << (8 * bytes)) - 1;
+    let upper = Expr::Decimal(mask.into());
+    let zero = Expr::Decimal(0.into());
+    vec![
+        Expr::BinaryOp(
+            BinaryOpKind::Ge,
+            Box::new(call.clone()),
+            Box::new(zero.clone()),
+        ),
+        Expr::BinaryOp(
+            BinaryOpKind::Le,
+            Box::new(call.clone()),
+            Box::new(upper),
+        ),
+    ]
 }
 
 /// 2026-10-26: dev-only guard audit. For `when !(cond) { trap; }`, ask the
