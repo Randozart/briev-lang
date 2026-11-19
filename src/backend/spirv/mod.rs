@@ -372,9 +372,20 @@ mod tests {
         &entry.shape
     }
 
-    /// §12 W3 (2026-11-06): the Sum idiom lowers to the subgroup reduce —
-    /// GroupNonUniformIAdd, LocalSize 32 (one row per subgroup), and the
-    /// detector finds the fold in a real analyzed program.
+    /// 2026-11-19 (P4): the portable workgroup butterfly — count the
+    /// Workgroup-barriers, confirm no `OpGroupNonUniform*` hardware reduce
+    /// and no `OpFAdd`/`OpFMax`/`OpFMin` fold inside the kernel, and
+    /// confirm the `briev_wg_red` WG scratch OpVariable is declared.
+    /// (The scratch variable's name isn't in the dr::Module — the WG
+    /// OpVariable is the declaration; the barrier+select shape is the
+    /// proof.)
+    /// 2026-11-19 (P4), superseding the §12 W3 (2026-11-06) assertion
+    /// that the Sum idiom lowers to the hardware `GroupNonUniformIAdd` —
+    /// that form was device-subgroup-width-dependent (NEO OpenCL: 16 ≠ 32),
+    /// and P4 replaces it with the portable shared-memory butterfly for
+    /// the cooperative row-fold lane. The int fold's kind-matched combine
+    /// ops (IAdd/IMul/SMin/SMax) are still emitted INSIDE the butterfly —
+    /// the butterfly is what carries them to the shared array.
     #[test]
     fn test_sum_idiom_lowers_subgroup_iadd() {
         let mut meta = std::collections::HashMap::new();
@@ -507,9 +518,27 @@ mod tests {
                 }
             }
         }
+        // P4 (2026-11-19): the cooperative row-fold lane lowers to the
+        // PORTABLE workgroup butterfly, not the hardware
+        // `GroupNonUniformIAdd` — that form was device-subgroup-width-
+        // dependent (NEO OpenCL: subgroup width 16 ≠ LocalSize 32).
+        // The butterfly's evidence: ≥ 6 `OpControlBarrier` (1 store +
+        // 5 tree-step barriers), zero `OpGroupNonUniform*`, and a
+        // `briev_wg_red[32]` WG OpVariable (the scratch array).
+        let barrier_count = ops
+            .iter()
+            .filter(|o| **o == rspirv::spirv::Op::ControlBarrier)
+            .count();
         assert!(
-            ops.contains(&rspirv::spirv::Op::GroupNonUniformIAdd),
-            "the sum lane must lower to GroupNonUniformIAdd; ops={:?}",
+            barrier_count >= 6,
+            "butterfly must emit 6+ ControlBarriers (store + 5 tree steps); got {barrier_count}"
+        );
+        assert!(
+            !ops.contains(&rspirv::spirv::Op::GroupNonUniformIAdd)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformSMin)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformSMax)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformIMul),
+            "the cooperative row-fold lane must NOT lower to a hardware GroupNonUniform reduce on P4; ops={:?}",
             ops
         );
         // LocalSize 32 — one row per 32-lane subgroup (the flat-1D
@@ -570,9 +599,22 @@ mod tests {
                     }
                 }
             }
+            // P4: the butterfly's evidence is the barrier count (store +
+            // 5 tree steps) plus the ABSENCE of the hardware GroupNonUniform
+            // reduce. The combine op (IAdd/IMul/SMin/SMax) is emitted inside
+            // the tree — for Min/Max it's a GLSL ExtInst, not a plain opcode,
+            // so the barrier count is the uniform assertion for all kinds.
+            let barriers2 = ops2
+                .iter()
+                .filter(|o| **o == rspirv::spirv::Op::ControlBarrier)
+                .count();
             assert!(
-                ops2.contains(&want_op),
-                "{kind_name} lane must lower to {want_op:?}; ops={:?}",
+                barriers2 >= 6,
+                "{kind_name} lane must lower via the P4 butterfly (6+ barriers); got {barriers2}"
+            );
+            assert!(
+                !ops2.contains(&want_op),
+                "{kind_name} lane must NOT lower to the hardware {want_op:?} on P4; ops={:?}",
                 ops2
             );
         }
@@ -730,9 +772,23 @@ mod tests {
                 }
             }
         }
+        // 2026-11-19 (P4): the approx float fold lowers to the PORTABLE
+        // workgroup butterfly, not the hardware GroupNonUniformFAdd —
+        // that form was device-subgroup-width-dependent (NEO OpenCL:
+        // subgroup width 16 ≠ LocalSize 32, the g0_fsum_approx WRONG).
+        let barriers = ops
+            .iter()
+            .filter(|o| **o == rspirv::spirv::Op::ControlBarrier)
+            .count();
         assert!(
-            ops.contains(&rspirv::spirv::Op::GroupNonUniformFAdd),
-            "approx float fold must lower to GroupNonUniformFAdd; ops={:?}",
+            barriers >= 6,
+            "approx float fold must lower via the P4 butterfly (6+ barriers); got {barriers}"
+        );
+        assert!(
+            !ops.contains(&rspirv::spirv::Op::GroupNonUniformFAdd)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformFMax)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformFMin),
+            "approx float fold must NOT lower to a hardware GroupNonUniform reduce on P4; ops={:?}",
             ops
         );
 
