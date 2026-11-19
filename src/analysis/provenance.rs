@@ -250,7 +250,10 @@ pub fn check_convergence_safety(
     // does not apply. Without this the check warned on EVERY CLI program
     // ("body writes to [nothing] … will run forever"), which was a false
     // alarm for the only deliberately non-reactive transaction there is.
-    if matches!(pre, Expr::BeginProgram) {
+    // Widen beyond the bare marker: `beginprogram` is a CONJUNCT
+    // (`node entry [beginprogram && done == 0]`), and that shape warned too —
+    // `matches!` on the whole expression only caught the degenerate spelling.
+    if contains_beginprogram(pre) {
         return results;
     }
 
@@ -295,6 +298,27 @@ pub fn check_convergence_safety(
     results
 }
 
+/// Does the precondition carry a `beginprogram` conjunct anywhere?
+///
+/// A `beginprogram` node is a one-shot program entry: the execution model
+/// (docs/architecture/briev-execution-model.md, "`beginprogram` — Entry Sugar")
+/// states that its precondition is evaluated ONCE and never re-checked. So the
+/// convergence argument below ("the precondition never advances, therefore it
+/// re-fires forever") does not apply to it — the node cannot re-fire at all.
+/// Plain `node`/`txn` declarations are untouched; the residue of a
+/// `[beginprogram && i < N]` entry is the entry LOOP's bound, not a
+/// convergence goal, which is why the whole precondition is skipped rather than
+/// the stripped remainder being analysed.
+fn contains_beginprogram(pre: &Expr) -> bool {
+    match pre {
+        Expr::BeginProgram => true,
+        Expr::BinaryOp(BinaryOpKind::And, a, b) => {
+            contains_beginprogram(a) || contains_beginprogram(b)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +334,29 @@ mod tests {
         let no_txns = std::collections::HashMap::new();
         let results = check_convergence_safety("entry", true, &Expr::BeginProgram, &[], &no_txns);
         assert!(results.is_empty(), "entry must not warn: {results:?}");
+    }
+
+    #[test]
+    fn beginprogram_conjunct_entry_also_skips_convergence_warning() {
+        // Dogfooding gap G4, widened (2026-11-18): the entry marker is a
+        // CONJUNCT, so the common spelling is `[beginprogram && done == 0]`.
+        // `matches!(pre, Expr::BeginProgram)` missed it and the run-forever
+        // false alarm survived for every entry carrying a state condition.
+        let no_txns = std::collections::HashMap::new();
+        let pre = Expr::BinaryOp(
+            BinaryOpKind::And,
+            Box::new(Expr::BeginProgram),
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(Expr::Identifier("done".to_string())),
+                Box::new(Expr::Decimal(0.into())),
+            )),
+        );
+        let results = check_convergence_safety("entry", true, &pre, &[], &no_txns);
+        assert!(
+            results.is_empty(),
+            "a beginprogram conjunct makes the txn one-shot: {results:?}"
+        );
     }
 
     #[test]
