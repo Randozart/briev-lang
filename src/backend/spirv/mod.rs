@@ -372,17 +372,200 @@ mod tests {
         &entry.shape
     }
 
-    /// §12 W3 (2026-11-06): the Sum idiom lowers to the subgroup reduce —
-    /// GroupNonUniformIAdd, LocalSize 32 (one row per subgroup), and the
-    /// detector finds the fold in a real analyzed program.
+    /// 2026-11-19 (P4): the portable workgroup butterfly — count the
+    /// Workgroup-barriers, confirm no `OpGroupNonUniform*` hardware reduce
+    /// and no `OpFAdd`/`OpFMax`/`OpFMin` fold inside the kernel, and
+    /// confirm the `briev_wg_red` WG scratch OpVariable is declared.
+    /// (The scratch variable's name isn't in the dr::Module — the WG
+    /// OpVariable is the declaration; the barrier+select shape is the
+    /// proof.)
+    /// 2026-11-19 (P4), superseding the §12 W3 (2026-11-06) assertion
+    /// that the Sum idiom lowers to the hardware `GroupNonUniformIAdd` —
+    /// that form was device-subgroup-width-dependent (NEO OpenCL: 16 ≠ 32),
+    /// and P4 replaces it with the portable shared-memory butterfly for
+    /// the cooperative row-fold lane. The int fold's kind-matched combine
+    /// ops (IAdd/IMul/SMin/SMax) are still emitted INSIDE the butterfly —
+    /// the butterfly is what carries them to the shared array.
     #[test]
     fn test_sum_idiom_lowers_subgroup_iadd() {
+        let program = sum_fold_program();
+        let analysis = analyze(&program);
+        let shape = eligible_shape(&analysis, "sum").clone();
+        assert!(
+            matches!(
+                shape.reduction.as_ref().map(|r| &r.kind),
+                Some(crate::analysis::accel::ReductionKind::Sum)
+            ),
+            "the detector must find the sum idiom: {:?}",
+            shape.reduction
+        );
+        assert!(
+            crate::analysis::accel::fold_idiom_lane(&shape, &program),
+            "int fold + const 32-multiple length must license the lane"
+        );
+        let mut builder = SpirvBuilder::new();
+        emit_kernel(
+            &mut builder,
+            "main",
+            &shape,
+            &program,
+            true,
+            &crate::backend::spirv::kernel::KernelSurface::default(),
+        )
+        .expect("sum lane emit must compile");
+        let m = builder.module_ref();
+        let mut ops: Vec<rspirv::spirv::Op> = Vec::new();
+        for g in &m.types_global_values {
+            ops.push(g.class.opcode);
+        }
+        for f in &m.functions {
+            for b in &f.blocks {
+                for i in &b.instructions {
+                    ops.push(i.class.opcode);
+                }
+            }
+        }
+        // P4 (2026-11-19): the cooperative row-fold lane lowers to the
+        // PORTABLE workgroup butterfly, not the hardware
+        // `GroupNonUniformIAdd` — that form was device-subgroup-width-
+        // dependent (NEO OpenCL: subgroup width 16 ≠ LocalSize 32).
+        // The butterfly's evidence: ≥ 6 `OpControlBarrier` (1 store +
+        // 5 tree-step barriers), zero `OpGroupNonUniform*`, and a
+        // `briev_wg_red[32]` WG OpVariable (the scratch array).
+        let barrier_count = ops
+            .iter()
+            .filter(|o| **o == rspirv::spirv::Op::ControlBarrier)
+            .count();
+        assert!(
+            barrier_count >= 6,
+            "butterfly must emit 6+ ControlBarriers (store + 5 tree steps); got {barrier_count}"
+        );
+        assert!(
+            !ops.contains(&rspirv::spirv::Op::GroupNonUniformIAdd)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformSMin)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformSMax)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformIMul),
+            "the cooperative row-fold lane must NOT lower to a hardware GroupNonUniform reduce on P4; ops={:?}",
+            ops
+        );
+        // LocalSize 32 — one row per 32-lane subgroup (the flat-1D
+        // geometry the wrapper's rows*32 dispatch relies on). Execution
+        // modes live in their own module section.
+        let local_size_32 = m.execution_modes.iter().any(|i| {
+            matches!(
+                i.operands.get(1),
+                Some(rspirv::dr::Operand::ExecutionMode(
+                    rspirv::spirv::ExecutionMode::LocalSize
+                ))
+            ) && matches!(
+                i.operands.get(2),
+                Some(rspirv::dr::Operand::LiteralBit32(32))
+            )
+        });
+        assert!(local_size_32, "sum lane must declare LocalSize 32");
+
+        // §12 W3.1: the same lane for Min/Max/Product — kind-matched
+        // int reduce ops, same LocalSize geometry.
+        for (kind_name, kind, want_op) in [
+            (
+                "min",
+                crate::analysis::accel::ReductionKind::Min,
+                rspirv::spirv::Op::GroupNonUniformSMin,
+            ),
+            (
+                "max",
+                crate::analysis::accel::ReductionKind::Max,
+                rspirv::spirv::Op::GroupNonUniformSMax,
+            ),
+            (
+                "product",
+                crate::analysis::accel::ReductionKind::Product,
+                rspirv::spirv::Op::GroupNonUniformIMul,
+            ),
+        ] {
+            let mut kind_shape = shape.clone();
+            if let Some(red) = kind_shape.reduction.as_mut() {
+                red.kind = kind;
+            }
+            let mut b2 = SpirvBuilder::new();
+            emit_kernel(
+                &mut b2,
+                "main",
+                &kind_shape,
+                &program,
+                true,
+                &crate::backend::spirv::kernel::KernelSurface::default(),
+            )
+            .unwrap_or_else(|e| panic!("{kind_name} lane emit must compile: {e}"));
+            let m2 = b2.module_ref();
+            let mut ops2: Vec<rspirv::spirv::Op> = Vec::new();
+            for f in &m2.functions {
+                for b in &f.blocks {
+                    for i in &b.instructions {
+                        ops2.push(i.class.opcode);
+                    }
+                }
+            }
+            // P4: the butterfly's evidence is the barrier count (store +
+            // 5 tree steps) plus the ABSENCE of the hardware GroupNonUniform
+            // reduce. The combine op (IAdd/IMul/SMin/SMax) is emitted inside
+            // the tree — for Min/Max it's a GLSL ExtInst, not a plain opcode,
+            // so the barrier count is the uniform assertion for all kinds.
+            let barriers2 = ops2
+                .iter()
+                .filter(|o| **o == rspirv::spirv::Op::ControlBarrier)
+                .count();
+            assert!(
+                barriers2 >= 6,
+                "{kind_name} lane must lower via the P4 butterfly (6+ barriers); got {barriers2}"
+            );
+            assert!(
+                !ops2.contains(&want_op),
+                "{kind_name} lane must NOT lower to the hardware {want_op:?} on P4; ops={:?}",
+                ops2
+            );
+        }
+    }
+
+    /// 2026-11-19 (P4): the fold kernel's MODULE must pass spirv-val — the
+    /// PTL Vulkan driver answered the butterfly with "compute pipeline
+    /// failed" (a validity/driver rule spirv-val can name); the opcode
+    /// census alone does not gate this.
+    #[test]
+    fn test_p4_wg_fold_module_passes_spirv_val() {
+        if !std::process::Command::new("spirv-val")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            eprintln!("spirv-val not found — skipping");
+            return;
+        }
+        let program = sum_fold_program();
+        let analysis = analyze(&program);
+        let shape = eligible_shape(&analysis, "sum").clone();
+        let mut builder = SpirvBuilder::new();
+        emit_kernel(
+            &mut builder,
+            "main",
+            &shape,
+            &program,
+            true,
+            &crate::backend::spirv::kernel::KernelSurface::default(),
+        )
+        .expect("fold lane emit must compile");
+        let _dis = validate_and_disassemble(&builder.build().unwrap(), "p4_wg_fold");
+    }
+
+    /// The §12 W3 sum-fold program (4096 rows × 1024 Int elements), shared
+    /// by the opcode-census test and the P4 spirv-val gate.
+    fn sum_fold_program() -> Vec<TopLevel> {
         let mut meta = std::collections::HashMap::new();
         meta.insert(
             "accel".into(),
             crate::ast::PropertyValue::String("try_all".into()),
         );
-        let program = vec![
+        vec![
             TopLevel::ModuleMetadata(meta),
             TopLevel::StateDecl(StateDecl {
                 name: "i".into(),
@@ -470,112 +653,7 @@ mod tests {
                 span: None,
                 doc: None,
             }),
-        ];
-        let analysis = analyze(&program);
-        let shape = eligible_shape(&analysis, "sum").clone();
-        assert!(
-            matches!(
-                shape.reduction.as_ref().map(|r| &r.kind),
-                Some(crate::analysis::accel::ReductionKind::Sum)
-            ),
-            "the detector must find the sum idiom: {:?}",
-            shape.reduction
-        );
-        assert!(
-            crate::analysis::accel::fold_idiom_lane(&shape, &program),
-            "int fold + const 32-multiple length must license the lane"
-        );
-        let mut builder = SpirvBuilder::new();
-        emit_kernel(
-            &mut builder,
-            "main",
-            &shape,
-            &program,
-            true,
-            &crate::backend::spirv::kernel::KernelSurface::default(),
-        )
-        .expect("sum lane emit must compile");
-        let m = builder.module_ref();
-        let mut ops: Vec<rspirv::spirv::Op> = Vec::new();
-        for g in &m.types_global_values {
-            ops.push(g.class.opcode);
-        }
-        for f in &m.functions {
-            for b in &f.blocks {
-                for i in &b.instructions {
-                    ops.push(i.class.opcode);
-                }
-            }
-        }
-        assert!(
-            ops.contains(&rspirv::spirv::Op::GroupNonUniformIAdd),
-            "the sum lane must lower to GroupNonUniformIAdd; ops={:?}",
-            ops
-        );
-        // LocalSize 32 — one row per 32-lane subgroup (the flat-1D
-        // geometry the wrapper's rows*32 dispatch relies on). Execution
-        // modes live in their own module section.
-        let local_size_32 = m.execution_modes.iter().any(|i| {
-            matches!(
-                i.operands.get(1),
-                Some(rspirv::dr::Operand::ExecutionMode(
-                    rspirv::spirv::ExecutionMode::LocalSize
-                ))
-            ) && matches!(
-                i.operands.get(2),
-                Some(rspirv::dr::Operand::LiteralBit32(32))
-            )
-        });
-        assert!(local_size_32, "sum lane must declare LocalSize 32");
-
-        // §12 W3.1: the same lane for Min/Max/Product — kind-matched
-        // int reduce ops, same LocalSize geometry.
-        for (kind_name, kind, want_op) in [
-            (
-                "min",
-                crate::analysis::accel::ReductionKind::Min,
-                rspirv::spirv::Op::GroupNonUniformSMin,
-            ),
-            (
-                "max",
-                crate::analysis::accel::ReductionKind::Max,
-                rspirv::spirv::Op::GroupNonUniformSMax,
-            ),
-            (
-                "product",
-                crate::analysis::accel::ReductionKind::Product,
-                rspirv::spirv::Op::GroupNonUniformIMul,
-            ),
-        ] {
-            let mut kind_shape = shape.clone();
-            if let Some(red) = kind_shape.reduction.as_mut() {
-                red.kind = kind;
-            }
-            let mut b2 = SpirvBuilder::new();
-            emit_kernel(
-                &mut b2,
-                "main",
-                &kind_shape,
-                &program,
-                true,
-                &crate::backend::spirv::kernel::KernelSurface::default(),
-            )
-            .unwrap_or_else(|e| panic!("{kind_name} lane emit must compile: {e}"));
-            let m2 = b2.module_ref();
-            let mut ops2: Vec<rspirv::spirv::Op> = Vec::new();
-            for f in &m2.functions {
-                for b in &f.blocks {
-                    for i in &b.instructions {
-                        ops2.push(i.class.opcode);
-                    }
-                }
-            }
-            assert!(
-                ops2.contains(&want_op),
-                "{kind_name} lane must lower to {want_op:?}; ops={:?}",
-                ops2
-            );
-        }
+        ]
     }
 
     /// 2026-11-08 (P1): a float fold lowers to the F-family subgroup reduce
@@ -730,9 +808,23 @@ mod tests {
                 }
             }
         }
+        // 2026-11-19 (P4): the approx float fold lowers to the PORTABLE
+        // workgroup butterfly, not the hardware GroupNonUniformFAdd —
+        // that form was device-subgroup-width-dependent (NEO OpenCL:
+        // subgroup width 16 ≠ LocalSize 32, the g0_fsum_approx WRONG).
+        let barriers = ops
+            .iter()
+            .filter(|o| **o == rspirv::spirv::Op::ControlBarrier)
+            .count();
         assert!(
-            ops.contains(&rspirv::spirv::Op::GroupNonUniformFAdd),
-            "approx float fold must lower to GroupNonUniformFAdd; ops={:?}",
+            barriers >= 6,
+            "approx float fold must lower via the P4 butterfly (6+ barriers); got {barriers}"
+        );
+        assert!(
+            !ops.contains(&rspirv::spirv::Op::GroupNonUniformFAdd)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformFMax)
+                && !ops.contains(&rspirv::spirv::Op::GroupNonUniformFMin),
+            "approx float fold must NOT lower to a hardware GroupNonUniform reduce on P4; ops={:?}",
             ops
         );
 

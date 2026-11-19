@@ -112,6 +112,28 @@ impl FoldCombine {
     }
 }
 
+/// 2026-11-19 (P4): declare the portable workgroup reduce scratch — a
+/// module-global `OpArray [32]` of `elem` (Workgroup storage), the
+/// butterfly's staging area (lower.rs `emit_wg_butterfly`). Mirrors the
+/// GEMM shared-array pattern above (`shared_a`, `emit_global`). 32 slots
+/// — the guarded tree steps read only `lane+offset ≤ 31`, and the array
+/// sizes to the cooperative kernel's `LocalSize` (32, below). Undo P4:
+/// delete this + the `wg_scratch` field/plumbing + the butterfly block.
+fn declare_wg_reduce_scratch(builder: &mut SpirvBuilder, elem: &Type) -> Result<Word, String> {
+    let len = builder.u32_const(32);
+    let elem_ty = builder.lower_type(elem)?;
+    let arr_ty = builder.builder.type_array(elem_ty, len);
+    let ptr = builder.ptr_class(StorageClass::Workgroup, arr_ty);
+    let id = builder.gen_id();
+    builder.emit_global(Instruction::new(
+        spirv::Op::Variable,
+        Some(ptr),
+        Some(id),
+        vec![Operand::StorageClass(StorageClass::Workgroup)],
+    ));
+    Ok(id)
+}
+
 /// 2026-11-06 (§12 W3/W3.1): synthesize the cooperative row-fold body —
 /// strided (lane + t·32) reads of the folded buffer, one partial per lane,
 /// one kind-matched cross-lane reduce (uniform across the subgroup), one
@@ -597,6 +619,12 @@ pub fn emit_kernel(
     // body BEFORE local collection, so the generic declaration/emission
     // machinery handles everything. The synthesis must precede the entry
     // block's OpVariables; by the emission branch it is too late.
+    // 2026-11-19 (P4): the portable workgroup reduce scratch — declared
+    // per cooperative row kernel, element type follows the fold's numeric
+    // kind (see `declare_wg_reduce_scratch`). `None` until a reduction
+    // branch claims it; plumbed to the lowerer AFTER the cooperative
+    // demotion check below (a demoted kernel must keep the hardware path).
+    let mut wg_scratch: Option<Word> = None;
     let shape_owned;
     let shape = if cooperative
         && matches!(
@@ -635,6 +663,17 @@ pub fn emit_kernel(
             ));
         }
         let fold_is_float = !crate::analysis::accel::fold_buffer_is_int(items, &red.row_buf);
+        // 2026-11-19 (P4): the row reduce lowers to the portable workgroup
+        // butterfly (lower.rs `emit_wg_butterfly`) — the scratch element
+        // follows the fold's numeric kind.
+        wg_scratch = Some(declare_wg_reduce_scratch(
+            builder,
+            &(if fold_is_float {
+                Type::float()
+            } else {
+                Type::int()
+            }),
+        )?);
         shape_owned = synthesize_reduce_stmts(shape, red, inner_len as u64, fold_is_float);
         &shape_owned
     } else if cooperative
@@ -672,6 +711,10 @@ pub fn emit_kernel(
             ));
         }
         shape_owned = synthesize_softmax_stmts(shape, red, inner_len as u64);
+        // 2026-11-19 (P4): the softmax's two cross-lane reduces (FMax
+        // phase, FAdd phase) both take the portable butterfly — the
+        // phases re-store every scratch slot, so they cannot interfere.
+        wg_scratch = Some(declare_wg_reduce_scratch(builder, &Type::float())?);
         &shape_owned
     } else {
         shape
@@ -939,6 +982,12 @@ pub fn emit_kernel(
         bind_work_item_index(&mut lower, index_var, shape.work_cols);
     }
 
+    // 2026-11-19 (P4): the butterfly only on a TRULY cooperative kernel —
+    // the demotion above (a counter-decomposing body falls back to the
+    // 64-lane flat path) must keep the hardware reduce, where the device
+    // subgroup width equals the workgroup size by construction.
+    lower.wg_scratch = if cooperative { wg_scratch } else { None };
+
     // 2026-08-31 (plan abv-gpu-by-default): BOUNDS GUARD. The host dispatches
     // ceil(N / LocalSize) workgroups, so up to LocalSize-1 extra invocations
     // run; each must exit before touching state when its global id exceeds
@@ -1042,17 +1091,28 @@ pub fn emit_kernel(
         }
     }
 
+    // 2026-11-19 (P4): lift the WG scratch word before the final `lower`
+    // uses — the field is set once (pre-emission) and never mutates, and
+    // reading it here ends `lower`'s &mut builder borrow so the function
+    // epilogue below can use `builder` again. The interface comment below
+    // explains why the word must be in the entry-point interface.
+    let wg_scratch_word = lower.wg_scratch;
     lower.builder.builder.branch(exit_bb);
     lower.builder.begin_block(Some(exit_bb));
     builder.ret();
     builder.end_function();
 
-    // Entry-point interface lists every Input/Output + SSBO variable.
+    // Entry-point interface lists every Input/Output + SSBO variable —
+    // and (2026-11-19 P4) the WG reduce scratch: the Vulkan environment
+    // requires every module-scope variable the entry point references to
+    // be listed (spirv-val: "Interface variable id ... is not listed as
+    // an interface"; the driver surfaces it as "compute pipeline failed").
     let interface: Vec<Word> = [global_id_var, local_id_var]
         .into_iter()
         .flatten()
         .chain(builder.state_interface(ssbo_var).into_iter())
         .chain(image_vars.values().copied())
+        .chain(wg_scratch_word.into_iter())
         .collect();
     builder.set_entry_point(func_id, kernel_name, ExecutionModel::GLCompute, &interface);
     // Cooperative row kernels (plan 2026-09-01-cooperative-row-kernels):

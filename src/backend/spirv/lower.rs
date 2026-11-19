@@ -64,6 +64,17 @@ pub struct FnLowerer<'a> {
     pub global_id_var: Option<Word>,
     /// BuiltIn LocalInvocationId input variable (pre-threaded or lazy).
     pub local_id_var: Option<Word>,
+    /// 2026-11-19 (P4): portable workgroup reduce scratch — the
+    /// module-global `OpArray f32|i64 [32]` (Workgroup storage) that the
+    /// cooperative 32-lane row-fold / softmax kernels reduce into instead
+    /// of the hardware `OpGroupNonUniform*` (subgroup width ≠ 32 on the
+    /// NEO OpenCL lane — the `g0_fsum_approx` WRONG, BUGS.md 2026-11-18).
+    /// 32 slots: the guarded tree steps (`lane < offset`) read only
+    /// `lane+offset ≤ 31`. Declared per kernel by `emit_kernel` and set
+    /// after the cooperative demotion check (kernel.rs:930); GEMM/coopmat
+    /// never reach this field (they return at kernel.rs:902 and emit
+    /// their own `OpGroupNonUniform`).
+    pub wg_scratch: Option<Word>,
     /// 2026-09-01 (M2.1): gl_WorkGroupID — the tiled GEMM's tile coordinates.
     pub workgroup_id_var: Option<Word>,
     /// 2026-08-31 (plan abv-gpu-by-default): module consts materialized as
@@ -120,6 +131,28 @@ pub struct FnLowerer<'a> {
     pub image_types: HashMap<String, Word>,
 }
 
+#[derive(PartialEq, Copy, Clone)]
+/// 2026-11-19 (P4): the combine ops of the portable workgroup butterfly
+/// (`emit_wg_butterfly`). Add/Mul follow the operand's float/int kind;
+/// Max/Min take the GLSL min/max helpers. The float FMul form is NOT here —
+/// it keeps the hardware `OpGroupNonUniformFMul` (see the gate in
+/// `emit_subgroup_reduce` + the plan licence table).
+enum WgButterflyOp {
+    Add,
+    Mul,
+    Max,
+    Min,
+}
+
+/// 2026-11-19 (P4): the combine operands of the butterfly's tree steps.
+/// Bundled into a context struct (Datalog Rule 4 — ≤5 params).
+struct WgCombine<'b> {
+    ty_id: Word,
+    a: Word,
+    b: Word,
+    vty: &'b Type,
+}
+
 impl<'a> FnLowerer<'a> {
     pub fn new(builder: &'a mut SpirvBuilder, state_fields: Vec<StateField>) -> Self {
         FnLowerer {
@@ -131,6 +164,7 @@ impl<'a> FnLowerer<'a> {
             state_offsets: Vec::new(),
             global_id_var: None,
             local_id_var: None,
+            wg_scratch: None,
             workgroup_id_var: None,
             consts: HashMap::new(),
             const_int_values: HashMap::new(),
@@ -1029,6 +1063,23 @@ impl<'a> FnLowerer<'a> {
         if !self.builder.is_float_type(&vty)? {
             return self.err(format!("{} is a float reduction", name));
         }
+        // 2026-11-19 (P4): the cooperative row kernels carry `wg_scratch` —
+        // their cross-lane reduce lowers to the portable workgroup
+        // butterfly (`emit_wg_butterfly`), correct at any device subgroup
+        // width (the NEO OpenCL subgroup is 16, not the 32 the kernel
+        // assumes). `SubgroupFMul#` keeps the hardware form: floating
+        // multiplication is not exactly associative and no PTL lane
+        // exercises a float-product fold (plan
+        // 2026-11-19-p4-fsum-approx §licence table).
+        if self.wg_scratch.is_some() && name != "SubgroupFMul#" {
+            let op = match name {
+                "SubgroupFAdd#" => WgButterflyOp::Add,
+                "SubgroupFMax#" => WgButterflyOp::Max,
+                _ => WgButterflyOp::Min,
+            };
+            let (res, res_ty) = self.emit_wg_butterfly(op, v, &vty)?;
+            return Ok((res, res_ty));
+        }
         let op = match name {
             "SubgroupFMul#" => spirv::Op::GroupNonUniformFMul,
             "SubgroupFMax#" => spirv::Op::GroupNonUniformFMax,
@@ -1037,14 +1088,15 @@ impl<'a> FnLowerer<'a> {
         };
         let ty_id = self.type_id(&vty)?;
         let res = self.builder.gen_id();
-        // 2026-11-18 (BUGS.md / g0_fsum_approx on OpenCL): WORKGROUP scope, not
-        // SUBGROUP. The row kernels launch one 32-invocation workgroup per row and
-        // every invocation participates in the fold, so workgroup scope is what the
-        // code means. Subgroup scope is only equivalent when the device's subgroup
-        // width happens to equal the workgroup size — true on Vulkan/levelzero
-        // (measured 32), NOT on NEO's OpenCL (16 on Xe), where each subgroup reduced
-        // its own half and both wrote the row: `g0_fsum_approx` reported WRONG on
-        // that lane while `exact` (no subgroup op) was correct on both.
+        // 2026-11-19 (P4), replacing the 2026-11-18 note: that block tried
+        // a hardware WORKGROUP-scope reduce and was refuted on PTL
+        // (G0_SUM_BAD=220, GPU_SUM=0 — the driver no-ops it; BUGS.md
+        // 2026-11-18), reverted to Subgroup, but the comment was left
+        // contradicting the code. Subgroup scope now serves only the
+        // kernels without `wg_scratch`; its device-width caveats are why
+        // P4 exists. Undo P4: delete the gate above + `emit_wg_butterfly`
+        // + the kernel.rs scratch declaration; this hardware form is the
+        // rollback.
         let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
         self.builder.emit(Instruction::new(
             op,
@@ -1077,6 +1129,20 @@ impl<'a> FnLowerer<'a> {
                 "{name} is an integer reduction — float folds are not licensed (§12 gate 3)"
             ));
         }
+        // 2026-11-19 (P4): the int family is wrapped-exact (associative by
+        // construction — gate 3), so the whole family takes the portable
+        // butterfly when `wg_scratch` is declared (kernel cooperative
+        // 32-lane rows only).
+        if self.wg_scratch.is_some() {
+            let op = match name {
+                "SubgroupIAdd#" => WgButterflyOp::Add,
+                "SubgroupIMul#" => WgButterflyOp::Mul,
+                "SubgroupSMin#" => WgButterflyOp::Min,
+                _ => WgButterflyOp::Max,
+            };
+            let (res, res_ty) = self.emit_wg_butterfly(op, v, &vty)?;
+            return Ok((res, res_ty));
+        }
         let op = match name {
             "SubgroupIMul#" => spirv::Op::GroupNonUniformIMul,
             "SubgroupSMin#" => spirv::Op::GroupNonUniformSMin,
@@ -1097,6 +1163,171 @@ impl<'a> FnLowerer<'a> {
             ],
         ));
         Ok((res, vty))
+    }
+
+    /// 2026-11-19 (P4): the portable workgroup reduce — see `wg_scratch`
+    /// for the why. `OpSelect`-guarded tree (no control-flow blocks):
+    /// store `scratch[lane]=v`, barrier, then 5 steps
+    /// `scratch[lane] = sel(lane<o, scratch[lane] OP scratch[lane+o],
+    /// scratch[lane])` for `o ∈ [16,8,4,2,1]` with a barrier after each —
+    /// the guard leaves the dead slots `[o..31]` untouched, so every
+    /// `lane+o` read stays `≤ 31` and every barrier is non-divergent.
+    /// `scratch[0]` is the uniform 32-lane result. Combine op: float
+    /// add/mul → FAdd/IMul, min/max → the GLSL forms (`glsl_fmaxmin` /
+    /// `glsl_smaxmin`, the same helpers `Min#`/`Max#` lower to).
+    fn emit_wg_butterfly(
+        &mut self,
+        op: WgButterflyOp,
+        v: Word,
+        vty: &Type,
+    ) -> Result<(Word, Type), String> {
+        let ty_id = self.type_id(vty)?;
+        // lane = GetGlobalId#(0) & 31 — the exact form the synthesized row
+        // bodies already use (i64 surface; the intrinsic at lower.rs:1280).
+        let lane_expr = Expr::BinaryOp(
+            crate::ast::BinaryOpKind::BitAnd,
+            Box::new(Expr::Call(
+                "GetGlobalId#".into(),
+                vec![Expr::Decimal(0)],
+                None,
+            )),
+            Box::new(Expr::Decimal(31)),
+        );
+        let (lane, _lane_ty) = self.emit_expr(&lane_expr)?;
+        let zero = self.builder.i64_const(0);
+        let site = self.wg_scratch_elem(lane, vty)?;
+        self.wg_store(site, v);
+        self.wg_barrier();
+        for offset in [16u64, 8, 4, 2, 1] {
+            let off = self.builder.i64_const(offset);
+            let idx = self.wg_iadd(lane, off)?;
+            let sa = self.wg_scratch_elem(lane, vty)?;
+            let sb = self.wg_scratch_elem(idx, vty)?;
+            let a = self.wg_load(sa, ty_id)?;
+            let b = self.wg_load(sb, ty_id)?;
+            let c = self.wg_combine(op, WgCombine { ty_id, a, b, vty })?;
+            let cmp = self.builder.lower_type(&Type::Bits(1))?;
+            let lt = self.builder.gen_id();
+            self.builder.emit(Instruction::new(
+                spirv::Op::SLessThan,
+                Some(cmp),
+                Some(lt),
+                vec![Operand::IdRef(lane), Operand::IdRef(off)],
+            ));
+            let sel = self.builder.gen_id();
+            self.builder.emit(Instruction::new(
+                spirv::Op::Select,
+                Some(ty_id),
+                Some(sel),
+                vec![Operand::IdRef(lt), Operand::IdRef(c), Operand::IdRef(a)],
+            ));
+            self.wg_store(site, sel);
+            self.wg_barrier();
+        }
+        // scratch[0] — uniform across the 32 lanes.
+        let zsite = self.wg_scratch_elem(zero, vty)?;
+        let res = self.wg_load(zsite, ty_id)?;
+        Ok((res, vty.clone()))
+    }
+
+    /// 2026-11-19 (P4): one `scratch[i]` site — `OpAccessChain` over the
+    /// WG scratch variable, the `shared_ptr` shape from gemm.rs:508.
+    fn wg_scratch_elem(&mut self, idx: Word, vty: &Type) -> Result<Word, String> {
+        let scratch = self
+            .wg_scratch
+            .ok_or("workgroup reduce scratch is not declared")?;
+        let ty_id = self.type_id(vty)?;
+        let elem_ptr = self
+            .builder
+            .ptr_class(spirv::StorageClass::Workgroup, ty_id);
+        let id = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::AccessChain,
+            Some(elem_ptr),
+            Some(id),
+            vec![Operand::IdRef(scratch), Operand::IdRef(idx)],
+        ));
+        Ok(id)
+    }
+
+    /// 2026-11-19 (P4): the GEMM barrier form (gemm.rs:626) — scope
+    /// Workgroup (2), semantics SequentiallyConsistent | UniformMemory.
+    fn wg_barrier(&mut self) {
+        let scope = self.builder.u32_const(2);
+        let sem = self.builder.u32_const(0x108);
+        self.builder.emit(Instruction::new(
+            spirv::Op::ControlBarrier,
+            None,
+            None,
+            vec![
+                Operand::IdRef(scope),
+                Operand::IdRef(scope),
+                Operand::IdRef(sem),
+            ],
+        ));
+    }
+
+    /// 2026-11-19 (P4): WG scratch load/store helpers.
+    fn wg_store(&mut self, site: Word, val: Word) {
+        self.builder.emit(Instruction::new(
+            spirv::Op::Store,
+            None,
+            None,
+            vec![Operand::IdRef(site), Operand::IdRef(val)],
+        ));
+    }
+
+    fn wg_load(&mut self, site: Word, ty_id: Word) -> Result<Word, String> {
+        let id = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::Load,
+            Some(ty_id),
+            Some(id),
+            vec![Operand::IdRef(site)],
+        ));
+        Ok(id)
+    }
+
+    /// 2026-11-19 (P4): i64 lane arithmetic (`lane + offset`).
+    fn wg_iadd(&mut self, a: Word, b: Word) -> Result<Word, String> {
+        let ty_id = self.type_id(&Type::int())?;
+        let id = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::IAdd,
+            Some(ty_id),
+            Some(id),
+            vec![Operand::IdRef(a), Operand::IdRef(b)],
+        ));
+        Ok(id)
+    }
+
+    /// 2026-11-19 (P4): the butterfly's combine instruction, float-aware.
+    fn wg_combine(&mut self, op: WgButterflyOp, c: WgCombine<'_>) -> Result<Word, String> {
+        match op {
+            WgButterflyOp::Max | WgButterflyOp::Min => {
+                let max = op == WgButterflyOp::Max;
+                return Ok(if self.builder.is_float_type(c.vty)? {
+                    self.builder.glsl_fmaxmin(c.ty_id, c.a, c.b, max)
+                } else {
+                    self.builder.glsl_smaxmin(c.ty_id, c.a, c.b, max)
+                });
+            }
+            _ => {}
+        }
+        let opcode = match (op, self.builder.is_float_type(c.vty)?) {
+            (WgButterflyOp::Add, true) => spirv::Op::FAdd,
+            (WgButterflyOp::Add, false) => spirv::Op::IAdd,
+            // Mul is int-only on this path (float FMul stays hardware).
+            _ => spirv::Op::IMul,
+        };
+        let id = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            opcode,
+            Some(c.ty_id),
+            Some(id),
+            vec![Operand::IdRef(c.a), Operand::IdRef(c.b)],
+        ));
+        Ok(id)
     }
 
     /// ShuffleDown/ShuffleXor: (value, lane-selector) → OpGroupNonUniform*.

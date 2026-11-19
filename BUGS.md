@@ -452,7 +452,7 @@ into `own_staging` after each launch. The two resident entries are **re-advertis
 vs levelzero **0.198 ms** (3 runs) — 7× faster. Output matches levelzero. Verbose confirms
 `resident dispatch global=1048576 local=256 dirty=0 full=1`.
 
-## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED (OPEN)
+## 2026-11-18 — g0_fsum_approx is WRONG on OpenCL; the workgroup-scope fix is REFUTED — FIXED 2026-11-19 by the portable butterfly (P4)
 
 `g0_fsum_approx` prints `WRONG` on the NEO/OpenCL lane while `g0_fsum_exact` and both
 levelzero lanes are correct. The two fixtures differ only by the `approx` licence and the
@@ -471,6 +471,19 @@ not 16 (typical for NEO on Xe).
 Remaining candidates, both needing the device: make the workgroup and subgroup coincide
 (emit `LocalSize` equal to the reported subgroup width — a dispatch decision) or lower the
 fold through shared memory + `ControlBarrier` + a lane-0 store.
+
+**FIXED 2026-11-19 (P4, commits `6e147ada2` + `7ae635eb5`)**: the second candidate —
+the portable workgroup shared-memory butterfly — landed and passed the device gate.
+`g0_fsum_approx` OpenCL is now `bad=0 SUM=ok` (was WRONG), all other lanes unchanged,
+and the licensed `ceil_reduce_approx_f16` lane measures **0.067 ms** (budget was
+≤ 0.106 ms — the butterfly is faster than the hardware form it replaced).
+One device-caught follow-up: the WG scratch `OpVariable` must be listed in the
+entry-point interface (spirv-val names the rule; the Vulkan driver only said
+"compute pipeline failed") — pinned by `test_p4_wg_fold_module_passes_spirv_val`.
+Full protocol + numbers: `benchmarks/results/2026-11-19-p4-fsum-approx-butterfly.md`.
+GEMM/coopmat is untouched by construction (returns before the cooperative path;
+emits its own `OpGroupNonUniform` at 256 lanes). `SubgroupFMul#` keeps the
+hardware form (float × is not exactly associative; no lane exercises it).
 
 ## 2026-11-17 — a loop-carried Float accumulator is read as an i64 (invalid IR)
 
