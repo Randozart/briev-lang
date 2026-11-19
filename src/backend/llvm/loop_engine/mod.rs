@@ -340,7 +340,13 @@ impl LlvmBackend {
             // handled by the previous branch and run a proper loop.
             writeln!(out, "  br label %.end").ok();
         } else {
-            writeln!(out, "  call i64 @wait_for_trigger(ptr %state)").ok();
+            // Ask whether `wait_for_trigger` takes the state pointer: it is a
+            // stateless `out defn wait_for_trigger()` (syscall 24 takes no
+            // state), so passing `ptr %state` gave LLVM a one-argument call to a
+            // zero-parameter definition — accepted by the ABI, invisible to the
+            // verifier, caught by `ir_verify::mismatched_call_signatures`.
+            let st = self.ctx.state_prefix("wait_for_trigger");
+            writeln!(out, "  call i64 @wait_for_trigger({st})").ok();
             writeln!(out, "  br label %.exit_check").ok();
         }
         writeln!(out, ".end:").ok();

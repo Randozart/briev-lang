@@ -704,7 +704,10 @@ impl LlvmBackend {
                 } else if wd.is_required {
                     // 2026-09-10 (Family I): pure-Briev defn takes the hidden %state and
                     // returns i64 (defns cannot be void).
-                    writeln!(out, "  call i64 @watchdog_fail(ptr %state)").ok();
+                    // Ask the callee: `watchdog_fail()` is stateless, so a
+                    // hardcoded `ptr %state` is an argument it never declared.
+                    let wd_state = self.ctx.state_prefix("watchdog_fail");
+                    writeln!(out, "  call i64 @watchdog_fail({wd_state})").ok();
                 }
                 writeln!(out, "  br label %{}", exit_label).ok();
             } else {
@@ -1289,7 +1292,10 @@ impl LlvmBackend {
                     // Required watchdog with no handler: error exit (the Briev
                     // watchdog_fail defn — i64, stateful; core-usable purge fixed
                     // the old void @__watchdog_fail shape here).
-                    writeln!(out, "  call i64 @watchdog_fail(ptr %state)").ok();
+                    // Ask the callee: `watchdog_fail()` is stateless, so a
+                    // hardcoded `ptr %state` is an argument it never declared.
+                    let wd_state = self.ctx.state_prefix("watchdog_fail");
+                    writeln!(out, "  call i64 @watchdog_fail({wd_state})").ok();
                 }
                 writeln!(out, "  br label %.cde_{}", c0).ok();
             } else {

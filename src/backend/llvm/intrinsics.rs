@@ -207,7 +207,8 @@ pub fn emit_intrinsic_call(
             let cstr = backend.fun.gen_reg();
             if backend.ctx.defn_params.contains_key("rt_getcwd") {
                 let cwd_i = backend.fun.gen_reg();
-                writeln!(out, "{}{} = call i64 @rt_getcwd(ptr %state)", indent, cwd_i).ok();
+                let cwd_state = backend.ctx.state_prefix("rt_getcwd");
+                writeln!(out, "{}{} = call i64 @rt_getcwd({cwd_state})", indent, cwd_i).ok();
                 writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cstr, cwd_i).ok();
             } else {
                 writeln!(out, "{}{} = call ptr @__briev_getcwd()", indent, cstr).ok();

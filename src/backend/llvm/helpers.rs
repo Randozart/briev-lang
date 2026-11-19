@@ -3717,7 +3717,8 @@ impl LlvmBackend {
             };
             self.emit_user_call(out, &call_reg, &on_fire.handler, &args, indent);
         } else if wd.is_required {
-            writeln!(out, "{}call i64 @watchdog_fail(ptr %state)", indent).ok();
+            let wd_state = self.ctx.state_prefix("watchdog_fail");
+            writeln!(out, "{}call i64 @watchdog_fail({wd_state})", indent).ok();
         }
         writeln!(out, "{}br label %{}", indent, g.exit_label).ok();
         writeln!(out, "{}:", g.hold_label).ok();

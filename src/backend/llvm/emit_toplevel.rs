@@ -3546,9 +3546,13 @@ impl LlvmBackend {
                     "{indent}{events_i} = ptrtoint ptr @__briev_events to i64"
                 )
                 .ok();
+                // Ask whether the helper takes the state pointer; a stateless
+                // definition takes one parameter and an unconditional
+                // `ptr %state, ` passes an argument it never declared.
+                let st = self.ctx.state_prefix("briev_event_alloc_impl");
                 writeln!(
                     out,
-                    "{indent}{id} = call i64 @briev_event_alloc_impl(ptr %state, i64 {events_i})"
+                    "{indent}{id} = call i64 @briev_event_alloc_impl({st}i64 {events_i})"
                 )
                 .ok();
                 let slot_idx = match self.ctx.field_index_map.get(&format!("{base}.{pname}")) {

@@ -8422,11 +8422,7 @@ impl LlvmBackend {
                         "{indent}{events_i} = ptrtoint ptr @__briev_events to i64"
                     )
                     .ok();
-                    let st = if self.ctx.defn_takes_state("briev_event_alloc_impl") {
-                        "ptr %state, "
-                    } else {
-                        ""
-                    };
+                    let st = self.ctx.state_prefix("briev_event_alloc_impl");
                     writeln!(
                         out,
                         "{indent}{id} = call i64 @briev_event_alloc_impl({st}i64 {events_i})"
