@@ -16,6 +16,20 @@ Interpreter unit tests and `tests/process_spawn.rs` cover status, signal exits,
 empty/multiline/long/binary captures, stdlib wrappers and AST/HIR O0/O3 execution
 with optional Valgrind access checks.
 
+## 2026-11-19 — webstack test options drifted and blocked workspace compilation (FIXED)
+
+The binary's `webstack_opts` fixture listed every BuildOptions field manually.
+Adding `march_override` left it incomplete, so `cargo test --workspace` failed
+with E0063 before any tests ran. Hosted Workspace tests on PR #136 reproduced
+the failure at `src/compile.rs:4064`. This repeated the earlier missing-field
+failures documented in the same helper; library-only tests do not build it.
+
+The fixture now inherits `BuildOptions::default()` and overrides only its path,
+Webstack backend and 32-bit integer width. Every other old explicit value
+matched the default. Existing binary/view tests exercise these options.
+
+## 2026-11-19 — trunk owners-census regressed +1 conservative drop (2196→2197); kiosk pin advance blocked (OPEN)
+
 ## 2026-11-19 — named Data values recursively entered numeric String casts (FIXED)
 
 The interpreter represented `Data` as an Int atom and recognized the
