@@ -5401,45 +5401,63 @@ fn collect_contract_checks<'a>(
 /// Rejection is the default. Anything the matcher cannot prove is an error
 /// naming the collection, the failing half, and the guard to write.
 fn check_checkfree_defns(items: &[TopLevel], errors: &mut Vec<TypeError>) {
-    for item in items {
-        let defn = match item {
-            TopLevel::Definition(d) => d,
-            TopLevel::Export(e) => match e.inner.as_ref() {
-                TopLevel::Definition(d) => d,
-                _ => continue,
-            },
-            _ => continue,
-        };
-        if !defn.modifiers.iter().any(|m| m.name == "checkfree") {
-            continue;
-        }
-        // Declared types, for the F2-by-index-type half and fixed-Vector
-        // lengths. Best-effort on purpose: a miss makes the check STRICTER,
-        // never unsound, which is the only direction that is safe to be lazy.
-        let mut types: HashMap<String, Type> = HashMap::new();
-        for (pname, pty) in &defn.parameters {
-            types.insert(pname.clone(), pty.clone());
-        }
-        collect_annotated_lets(&defn.body, &mut types);
-        // The defn's own precondition dominates the whole body (it is the
-        // caller's obligation, discharged at every call site).
-        let mut facts = crate::proof_engine::callgate::facts_of(&defn.contract.pre_condition);
-        // Each site is captured WITH the facts that dominated it — the walk's
-        // fact stack is popped as it unwinds, so the diagnostic must be built
-        // from the snapshot, never from the stack's final state.
-        let mut sites: Vec<(Expr, Vec<Expr>)> = Vec::new();
-        {
-            let mut sink = |e: &Expr, facts: &[Expr]| {
-                if subscript_undischarged(e, facts, &types) {
-                    sites.push((e.clone(), facts.to_vec()));
-                }
-            };
-            walk_scoped_stmts(&defn.body, &mut facts, &mut sink);
-        }
-        for (site, at_facts) in sites {
-            errors.push(checkfree_error(&defn.name, &site, &at_facts, &types));
-        }
+    for defn in checkfree_defns(items) {
+        errors.extend(checkfree_defn_obligation(defn));
     }
+}
+
+/// The definitions carrying the modifier — top-level or re-exported. The
+/// export wrapper is unwrapped because `export defn` is the same promise.
+fn checkfree_defns(items: &[TopLevel]) -> Vec<&Definition> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevel::Definition(d) => Some(d),
+            TopLevel::Export(e) => match e.inner.as_ref() {
+                TopLevel::Definition(d) => Some(d),
+                _ => None,
+            },
+            _ => None,
+        })
+        .filter(|d| d.modifiers.iter().any(|m| m.name == "checkfree"))
+        .collect()
+}
+
+/// One defn's obligation: collect the subscripts no fact discharges, each
+/// WITH the facts that dominated it. The walk's fact stack is popped as it
+/// unwinds, so a diagnostic built after the walk would describe the wrong
+/// program point — the snapshot is the only correct input.
+fn checkfree_defn_obligation(defn: &Definition) -> Vec<TypeError> {
+    let types = declared_types_of(defn);
+    // The defn's own precondition dominates the whole body: it is the
+    // caller's obligation, discharged at every call site.
+    let mut facts = crate::proof_engine::callgate::facts_of(&defn.contract.pre_condition);
+    let mut sites: Vec<(Expr, Vec<Expr>)> = Vec::new();
+    {
+        let mut sink = |e: &Expr, facts: &[Expr]| {
+            if subscript_undischarged(e, facts, &types) {
+                sites.push((e.clone(), facts.to_vec()));
+            }
+        };
+        walk_scoped_stmts(&defn.body, &mut facts, &mut sink);
+    }
+    sites
+        .into_iter()
+        .map(|(site, at_facts)| checkfree_error(&defn.name, &site, &at_facts, &types))
+        .collect()
+}
+
+/// The declared type of every name in scope: parameters plus annotated
+/// `let`s. Best-effort on purpose — a miss makes the check STRICTER, never
+/// unsound, which is the only direction that is safe to be lazy.
+fn declared_types_of(defn: &Definition) -> HashMap<String, Type> {
+    let mut types: HashMap<String, Type> = defn
+        .parameters
+        .iter()
+        .map(|(name, ty)| (name.clone(), ty.clone()))
+        .collect();
+    collect_annotated_lets(&defn.body, &mut types);
+    types
 }
 
 /// Walk statements carrying the dominating fact stack. `Guarded` pushes its
@@ -5666,6 +5684,30 @@ fn fixed_vector_len(receiver: &Expr, types: &HashMap<String, Type>) -> Option<us
     }
 }
 
+/// Which half of the proof is missing, in the author's terms. Guard clauses,
+/// not a chain: each condition owns exactly one explanation.
+fn failing_half(
+    receiver: &Expr,
+    index: &Expr,
+    coll: &str,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> String {
+    if coll_name(receiver).is_none() {
+        return "the subscripted value is not a named binding, so no count is known".to_string();
+    }
+    if fixed_vector_len(receiver, types).is_some() {
+        return format!("`{coll}` is a fixed Vector, but the index is not a literal inside it");
+    }
+    if !lower_bounded(receiver, index, facts, types) {
+        return format!(
+            "no dominating guard establishes `0 <= {index}`, and the index is not \
+             declared `u32 in {coll}` — the lower half of the range is unproven"
+        );
+    }
+    format!("no dominating guard establishes `{index} < {coll}.Count#()`")
+}
+
 /// The diagnostic: what failed, on which collection, and the guard to write.
 fn checkfree_error(
     defn: &str,
@@ -5679,18 +5721,7 @@ fn checkfree_error(
         };
     };
     let coll = coll_name(receiver).unwrap_or("<expression>");
-    let detail = if coll_name(receiver).is_none() {
-        "the subscripted value is not a named binding, so no count is known".to_string()
-    } else if fixed_vector_len(receiver, types).is_some() {
-        format!("`{coll}` is a fixed Vector, but the index is not a literal inside it")
-    } else if !lower_bounded(receiver, index, facts, types) {
-        format!(
-            "no dominating guard establishes `0 <= {index}`, and the index is not \
-             declared `u32 in {coll}` — the lower half of the range is unproven"
-        )
-    } else {
-        format!("no dominating guard establishes `{index} < {coll}.Count#()`")
-    };
+    let detail = failing_half(receiver, index, coll, facts, types);
     TypeError::FFIError {
         message: format!(
             "checkfree `{defn}`: the subscript on `{coll}` is not provably in-bounds — {detail}. \
