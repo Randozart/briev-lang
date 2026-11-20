@@ -1,0 +1,77 @@
+// evented smoke — poll-multiplexed connections over one loop, deterministic.
+//
+// Golden: the fd-order visit trace of one pass with readiness simulated by
+// registration order + poll events, the EAGAIN/EINTR spellings, and the
+// unregister-does-not-shift-order fact. Printed one value per line.
+//
+// WHY A REAL SERVER ISN'T HERE: poll(2) readiness depends on the kernel and
+// other processes; the tier1 corpus must stay deterministic on every machine.
+// The DETERMINISTIC parts of the evented model — registration-order visit,
+// errno spellings, slot stability, bounded-step shapes — are exactly what
+// this fixture pins without a network. The live multiplexed loop is proven
+// by the routing service build (kernel/routing_service.bv, knooppunt) and
+// the manual evented_server example.
+import "std/os/poll.bv";
+import "std/net/evented.bv";
+
+// visit_trace - one pass over the set: which slots fired, in index order.
+// This is the loop body every evented server shares (evented_wait's count
+// is deterministic GIVEN the events; the visit order is deterministic ALWAYS).
+defn visit_trace(set: PollSet, fired: Int, count: Int) -> Int {
+    let visits: Int = 0;
+    foreach i in 0..count {
+        when evented_ready(set, i) {
+            visits = visits + 1;
+            Print#(i);
+        };
+    };
+    term visits;
+};
+
+node entry [beginprogram][true] {
+    // errno spellings named once (the module's ABI table).
+    Print#(0 - 11 == -11);            // true - the EAGAIN value shape
+    Print#(-11);                       // -11 (EVENTED_EAGAIN)
+    Print#(-4);                        // -4  (EVENTED_EINTR)
+
+    // A real PollSet of 4 slots; register fds in scrambled order to prove
+    // VISIT order is INDEX order, not fd order (registration-order contract).
+    // is_err gate first: the match-on-obj-with-diverging-arm shape trips a
+    // lowering defect (phi dangling when one arm exits) - filed upstream;
+    // unwrap-after-guard is the checker-approved shape today.
+    let r: Result<PollSet,Int> = poll_new(4);
+    when is_err(r) {
+        Print#(0 - 1000);
+        endprogram Print#("");
+    };
+    let set: PollSet = unwrap(r);
+    evented_register(set, 0, 41);  // listener fd (first)
+    evented_register(set, 1, 44);
+    evented_register(set, 2, 47);
+    evented_register(set, 3, 52);
+
+    // Simulate readiness: slots 1 and 3 fired this pass (kernel would set
+    // the revents; Store# writes the same ABI field poll_events reads).
+    // Re-spelled EVENTED_IN (1) - the field write must use the ABI value.
+    Store#(set.address + 1 * 8 + 6, 1, 2);
+    Store#(set.address + 3 * 8 + 6, 1, 2);
+
+    let wait: Int = poll_wait(set, 0);   // timeout 0: poll, do not park.
+    Print#(wait >= 0);                // true - finite wait returns a count
+
+    // THE determinism pin: slots 1 then 3, then the visit count.
+    let visits: Int = visit_trace(set, 2, 4);
+    Print#(visits);
+
+    // Unregister does not shift order: slot 1 goes unused, the NEXT pass
+    // visits slot 3 first among the fired (slot 1 silent), same indices.
+    evented_unregister(set, 1);
+    let visits2: Int = visit_trace(set, 1, 4);
+    Print#(visits2);
+
+    // evented_close on a dead fd (-1) is the documented no-op (returns 0).
+    Print#(evented_close(Socket { fd: -1 }));
+
+    poll_free(set);
+    endprogram Print#("");
+};

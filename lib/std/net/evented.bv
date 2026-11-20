@@ -1,0 +1,152 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// evented - poll-multiplexed connection handling composed from the net stack
+// (net campaign, 2026-11-20). `server_loop.bv`'s own header names this as the
+// next step: "not poll-multiplexed - os/poll.bv exists but nothing composes
+// them yet."
+//
+// WHAT THIS ADDS over server_loop: a listener can hold MANY connections at
+// once; poll(2) tells us which are ready; each ready connection advances by
+// ONE bounded nonblocking step (recv-once/send-once). A slow or silent client
+// no longer pins the loop: every step returns immediately (EAGAIN spelled as
+// EVENTED_EAGAIN), and the loop simply moves on to the next ready fd.
+//
+// DETERMINISM CONTRACT (why this is testable): poll(2) reports readiness in
+// REGISTRATION ORDER (index order of the PollSet), and the module's iteration
+// is index order - so for a fixed registration order and fixed readiness, the
+// visit order is fixed. Handlers are plain defns the application owns; the
+// module never stores function values (the checker has no function values -
+// server_loop.bv header, same decision).
+//
+// OWNERSHIP CONTRACT: the PollSet never owns fds ("polling never owns the
+// fds" - os/poll.bv). The program owns every Socket it registers; closing is
+// the program's job, through evented_close (which makes the LOCAL copy dead
+// defensively). Wave 2 (fd linearity) turns that discipline into a checker
+// fact; this module documents it and behaves correctly without it.
+//
+// RELATIONSHIP TO THE SEGMENT SCHEDULER: independent on purpose. An evented
+// handler MAY be a spawned task advanced by `yield;` - the two compose
+// because poll_wait is just another syscall in a segment - but nothing here
+// requires it. The smoke fixture pins the plain-loop composition first.
+import "std/os/poll.bv";
+import "std/net/socket.bv";
+import "std/net/nonblocking.bv";
+import "std/net/bytes.bv";
+
+// ── errno spellings (Linux x86_64) - named ONCE so "would block" is a
+// checkable value, not a magic negative. The syscall family returns -errno
+// (socket.bv header), so these compare NEGATED.
+const EVENTED_EAGAIN: Int = -11;
+const EVENTED_EWOULDBLOCK: Int = -11; // same value on Linux, both spellings
+const EVENTED_EINTR: Int = -4;
+
+// poll(2) event masks, re-spelled from os/poll.bv so the evented API is
+// self-contained (poll.bv's are private consts; re-deriving keeps module
+// boundaries honest - same values, single ABI).
+const EVENTED_IN: Int = 1;
+const EVENTED_OUT: Int = 4;
+const EVENTED_ERROR: Int = 8;
+const EVENTED_HANGUP: Int = 16;
+
+// evented_listener - a NONBLOCKING listening socket on `port` with
+// SO_REUSEADDR (quick restart rebinds over TIME_WAIT). Result<Socket,Int>
+// carries the socket or the -errno; Err distinguishes failure from the
+// closed-Socket convention because a listener error is a boot failure,
+// not a per-connection condition.
+defn evented_listener(port: Int) [port > 0 && port < 65536] -> Result<Socket,Int> {
+    let listener: Socket = sock_tcp_nonblocking();
+    when listener.fd < 0 {
+        term Err(listener.fd);
+    };
+    let reuse: Int = sock_set_reuseaddr(listener);
+    when reuse < 0 {
+        term Err(reuse);
+    };
+    // backlog 16 mirrors server_loop's SERVE_BACKLOG.
+    let bound: Int = sock_bind_listen(listener, port, 16);
+    when bound < 0 {
+        term Err(bound);
+    };
+    term Ok(listener);
+};
+
+// evented_accept - accept(2) on a NONBLOCKING listener. Returns the new
+// connection socket (fd >= 0) or a Socket with the -errno; EVENTED_EAGAIN
+// means "no pending connection" and is the loop's normal "skip" signal.
+// The new socket inherits O_NONBLOCK from the listener (Linux accept(2)
+// rule), so every later step on it is bounded.
+defn evented_accept(listener: Socket) [listener.fd >= -4096] -> Socket {
+    when listener.fd < 0 {
+        term Socket { fd: -1 };
+    };
+    term sock_accept(listener);
+};
+
+// evented_register - put one fd into the set at `index` for POLL_IN.
+// Registration order IS visit order (determinism contract) - callers
+// register listeners first, then connections, and keep indices stable.
+defn evented_register(set: PollSet, index: Int, fd: Int) -> Void {
+    poll_set(set, index, fd, EVENTED_IN);
+};
+
+// evented_unregister - mark the slot unused (fd = -1, kernel ignores it).
+// The slot keeps its index: later registrations do not shift visit order.
+defn evented_unregister(set: PollSet, index: Int) -> Void {
+    poll_set(set, index, -1, 0);
+};
+
+// evented_wait - ONE bounded wait over the whole set. Returns the poll(2)
+// count (> 0: that many slots have events; 0: timeout; EVENTED_EINTR: a
+// signal arrived - the PollSet is untouched, just call again; other
+// negatives: -errno). Finite timeout only: a timeout of 0 is the honest
+// "poll, do not park" (the evented loop never parks forever - the timeout
+// budget belongs to the application).
+defn evented_wait(set: PollSet, timeout_ms: Int) -> Int {
+    term poll_wait(set, timeout_ms);
+};
+
+// evented_ready - did slot `index` fire POLL_IN this pass? (Errors and
+// hangups are reported as readable too - the caller's recv-once will see
+// the truth; that keeps the hot path one bit wide.)
+defn evented_ready(set: PollSet, index: Int) -> Bool {
+    term (poll_events(set, index) & (EVENTED_IN | EVENTED_ERROR | EVENTED_HANGUP)) != 0;
+};
+
+// evented_recv_once - ONE bounded read into the buffer's free tail. Returns:
+//   > 0  bytes appended (buffer.len advanced by exactly that many),
+//   0    peer EOF (the clean half-close signal),
+//   EVENTED_EAGAIN  no bytes right now - NOT an error, try again after the
+//                   next readiness edge,
+//   < -1  a real -errno recv failure.
+// The EAGAIN-after-POLL_IN case is impossible for the same readiness edge
+// (kernel poll/recv contract - invariant 2 of the plan) and is still
+// returned honestly rather than hidden.
+defn evented_recv_once(socket: Socket, buffer: ByteBuf) -> Int {
+    when buffer.len >= buffer.cap {
+        term 0 - EVENTED_EAGAIN; // full buffer: report the "would block" shape? no - full is full.
+    };
+    term sock_recv_once(socket, buffer, buffer.cap - buffer.len);
+};
+
+// evented_send_once - ONE bounded write of buf's logical bytes. Returns
+// bytes sent (>= 0, possibly a SHORT count - the caller keeps the tail) or
+// -errno. Short writes are the normal case on nonblocking sockets; the
+// caller re-registers for POLL_OUT or simply retries on the next edge.
+defn evented_send_once(socket: Socket, buffer: ByteBuf) -> Int {
+    term sock_send_once(socket, buffer, 0, buffer.len);
+};
+
+// evented_close - close(2) one socket. Returns the syscall result (0 or
+// -errno). Defensive local dead-marking: the CALLER'S binding is a value
+// copy, so this cannot reach the caller's binding (obj assignment is by
+// value); the fd is closed at the kernel exactly once per call. Wave 2's
+// [[linear]] check is what makes double-close a COMPILE error - until then
+// this module documents the discipline and the smoke fixture pins the
+// single-close shape.
+defn evented_close(socket: Socket) -> Int {
+    when socket.fd < 0 {
+        term 0;
+    };
+    term sock_close(socket);
+};
