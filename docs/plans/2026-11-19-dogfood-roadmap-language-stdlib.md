@@ -1,6 +1,17 @@
 # Briev roadmap from the Knooppunt dogfood — language + stdlib (2026-11-19)
 
-**Status:** EXECUTION RECORD (2026-11-20). Rescued from session-only
+**Status:** EXECUTION RECORD (2026-11-20).
+
+**Update 2026-11-20 (evented-net, PR #147):** the concurrency half of
+this roadmap's runtime gaps got its first wave. `feat/evented-net`
+lands the composition `server_loop.bv`'s header named: poll-multiplexed
+connections (`std/net/evented.bv`), fd linearity as a checker fact
+(`attr linear` + analysis::obj_linear), the io/pure strand
+classification (analysis::strand — the fact source L1 needs to upgrade
+#15's conservative #15 routing), and the chunked provable read (G12b
+closed at the stdlib layer). L2 (chunked read) is effectively DONE in
+this PR; L1's fact source is landed, convergence pending; S4 (signals)
+and true async-I/O-under-await remain open. Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
 main via PR #146 `fee5ce003` — checksum ladder kept in the integration
 merge); S5 CANCELLED (argv/env already covered by `cli.bv` + `env.bv`);
