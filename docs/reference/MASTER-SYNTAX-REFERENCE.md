@@ -104,6 +104,15 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | `test` | Top-level test block: `test domain { … };` (typecheck-only; reference interpreter runs it) |
 | `expect` | Test assertion inside a test block: `expect <bool>;` |
 | `when` | Runtime guarded block |
+| `defer` | Cleanup registered for the enclosing transaction/process scope: block form `defer { … };`, runs LIFO on `term`, `rollback`, fallthrough and the `endprogram` boundary |
+
+### Index types (Goose-borrowed, no new keyword)
+
+`u32 in xs` (also spelled `UInt in xs`) types an index VALUE bound to the
+collection `xs`: construction only from `xs.Count#()` or a same-typed
+value; a subscript through it is statically in-bounds (§15.4a). `in` is
+the existing `foreach` binding word, reused in type position — no new
+lexical token.
 
 ### Literals & units
 
@@ -326,6 +335,7 @@ variable; v1 Int-only, plan `2026-10-01-atomic-element-rmw.md`):
 | `Cast#` | `[legacy]` compiler-internal cast pipeline; `(Type)expr` lowers to `Expr::Cast`, not a call |
 | `GetEnv#` | `[legacy]` removed; use `get_env!` |
 | `GetEnvInt#` | `[legacy]` removed; use `get_env_int!` |
+| `ClockMonotonicNs#` | `CLOCK_MONOTONIC` nanoseconds as one `Int` (`sec*1e9+nsec`, domain `[0, i64::MAX]`); syscall number routed per triple via the compiler's table (x86_64 228, asm-generic/aarch64 113) |
 | `TaskCall#` | async segment dispatch: threads the machine's state into a segment fn (Family H machine) |
 | `Asm#` | two-mode asm: abstract ops lowered per target via config/asm-lowering.dbvl, or raw templates (Family F; raw forbidden in strict profiles) |
 | `Len#` | `[legacy]` alias; use `Length#` |
