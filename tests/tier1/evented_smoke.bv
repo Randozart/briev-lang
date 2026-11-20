@@ -12,6 +12,7 @@
 // by the routing service build (kernel/routing_service.bv, knooppunt) and
 // the manual evented_server example.
 import "std/os/poll.bv";
+import "std/byte_at.bv";
 import "std/net/evented.bv";
 
 // visit_trace - one pass over the set: which slots fired, in index order.
@@ -71,6 +72,45 @@ node entry [beginprogram][true] {
 
     // evented_close on a dead fd (-1) is the documented no-op (returns 0).
     Print#(evented_close(Socket { fd: -1 }));
+
+    // ── The real chunked nonblocking read (G12b close, 2026-11-20). A
+    // socketpair keeps this deterministic (no listener, no port, no
+    // kernel-arbitrated readiness): one write, then evented_fill_request
+    // under MSG_DONTWAIT must parse the request out of the chunk the
+    // kernel delivered. This is the live code path the routing service
+    // uses, exercised without a network.
+    let fds: Int = Malloc#(8) as Int;
+    when fds == 0 {
+        Print#(0 - 1001);
+        endprogram Print#("");
+    };
+    when SysCall#(53, 1, 1 | 2048 | 524288, 0, fds) != 0 {
+        Print#(0 - 1002);
+        endprogram Print#("");
+    };
+    let peer: Socket = Socket { fd: Load#(fds, 4) };
+    let self_sock: Socket = Socket { fd: Load#(fds + 4, 4) };
+    Free#(fds as Ptr);
+
+    let wire: String = "GET /health HTTP/1.1\r\nHost: x\r\n\r\n";
+    let wire_len: Int = wire .^Length;
+    let payload: ByteBuf = buf_new(wire_len + 1);
+    foreach i in 0..wire_len {
+        payload = payload.put_u8(byte_at(wire, i));
+    };
+    let sent_n: Int = sock_send(peer, payload, payload.len);
+    Print#(sent_n == wire_len);
+
+    let inbox: ByteBuf = buf_new(wire_len + 1);
+    let live: HttpParse = evented_fill_request(self_sock, inbox, inbox.len);
+    Print#((live.status == HTTP_COMPLETE) as Int);
+    Print#((live.request.method == "GET") as Int);
+    Print#((live.request.path == "/health") as Int);
+
+    buf_free(inbox);
+    buf_free(payload);
+    let _cp: Int = sock_close(peer);
+    let _cs: Int = sock_close(self_sock);
 
     poll_free(set);
 

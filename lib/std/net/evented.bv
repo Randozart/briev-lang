@@ -174,49 +174,71 @@ defn evented_close(socket: Socket) -> Int {
 // The nonblocking discipline means every step returns immediately — the
 // loop holds MANY connections, never parking on one.
 
-// recv_into - ONE bounded nonblocking read into buf[offset..offset+room].
-// Returns bytes appended (>= 0; the caller advances its own `fed` by this)
-// or the -errno (EVENTED_EAGAIN means "nothing right now"). The buffer's
-// len advances by exactly the return when positive (the same convention
-// sock_recv_once uses).
-defn recv_into(socket: Socket, buffer: ByteBuf, offset: Int, room: Int)
+// recv_into - ONE bounded read into buffer[offset .. offset+room).
+//
+// The contract that makes chunked reading PROVABLE (Knooppunt G12b): the
+// bounds are ARGUMENTS, so the caller supplies `offset + room <= buffer.cap`
+// from its own local facts — no loop-carried buffer state to reason about,
+// which is exactly what the byte-at-a-time loop could not offer. One call =
+// one syscall.
+//
+// `flags` selects the discipline: MSG_DONTWAIT (the evented lane) or 0 (the
+// sequential lane, where the socket's receive budget bounds the wait).
+// Returns the byte count (>= 1) or the -errno — EVENTED_EAGAIN included:
+// "nothing right now" is a VALUE here, never a stall. A read cannot move
+// more than `room` bytes; the postcondition NAMES that bound so the next
+// chunk's arithmetic closes.
+defn recv_into(socket: Socket, buffer: ByteBuf, offset: Int, room: Int, flags: Int)
     [socket.fd >= -4096 && offset >= 0 && room >= 1 && offset + room <= buffer.cap]
-    [term.len >= 0 && term.len <= term.cap]
+    [term >= -1040 && term <= room]
     -> Int
 {
-    let got: Int = SysCall#(45, socket.fd, buffer.ptr + offset, room, 64);
-    when got > 0 {
-        buffer.len = offset + got;
-    };
-    term got;
+    term SysCall#(45, socket.fd, buffer.ptr + offset, room, flags);
 };
 
-// evented_fill_request - the chunked request reader: ONE recv_into per
-// call, parse attempt after each. Returns the parse; `fed` is the byte
-// count so far (an Int, provable arithmetic — the server_loop lesson).
-// The caller loops: call again on the next POLL_IN edge while the status
-// is HTTP_NEED_MORE and fed < cap.
-defn evented_fill_request(socket: Socket, buffer: ByteBuf, fed: Int)
+// fill_request - read one request through the parser in CHUNKS.
+//
+// The read lands straight in the destination buffer (no staging copy); the
+// landed bytes are made valid by ByteBuf.claim, whose POSTCONDITION is the
+// fact the next iteration needs (`len` advanced by exactly the count). A
+// mid-body `buffer.len = …` write would leave the projection unprovable —
+// obj field facts do not survive a field write — which is why this shape,
+// not the obvious one, verifies under the config/contracts deny gate.
+//
+// Stops on a terminal parse (HTTP_COMPLETE or an error shape), a full
+// window, EOF, or EAGAIN. The last three return HTTP_NEED_MORE: the evented
+// caller waits for the next POLL_IN edge and calls again; the sequential
+// caller's receive budget supplies that edge.
+defn fill_request(socket: Socket, buffer: ByteBuf, fed: Int, flags: Int)
     [socket.fd >= -4096 && fed >= 0 && fed == buffer.len && fed <= buffer.cap]
+    [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
     -> HttpParse
 {
     let parsed: HttpParse = http_parse_request(buffer, fed);
-    when parsed.status != HTTP_NEED_MORE {
-        // NEED_MORE is the keep-reading signal; any other status is
-        // terminal (COMPLETE or an error shape) — the caller stops.
+    when parsed.status == HTTP_COMPLETE {
         term parsed;
     };
     when fed >= buffer.cap {
+        // Window exhausted without a complete request.
         term parsed;
     };
-    let got: Int = recv_into(socket, buffer, fed, buffer.cap - fed);
-    when got < 0 {
-        // EAGAIN: nothing right now — the caller waits for the next edge.
+    let got: Int = recv_into(socket, buffer, fed, buffer.cap - fed, flags);
+    when got <= 0 {
+        // EOF or EAGAIN: nothing more is available right now.
         term parsed;
     };
-    when got == 0 {
-        // peer EOF with a partial request: report what parsed (incomplete).
-        term parsed;
-    };
-    term evented_fill_request(socket, buffer, fed + got);
+    let extended: ByteBuf = buffer.claim(got);
+    term fill_request(socket, extended, fed + got, flags);
+};
+
+// evented_fill_request - the evented lane: fill_request under MSG_DONTWAIT.
+// Returns HTTP_NEED_MORE when the request is not complete yet (EAGAIN on a
+// nonblocking socket is the normal case, not an error) — the caller
+// registers the fd for POLL_IN and comes back on the next edge.
+defn evented_fill_request(socket: Socket, buffer: ByteBuf, fed: Int)
+    [socket.fd >= -4096 && fed >= 0 && fed == buffer.len && fed <= buffer.cap]
+    [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
+    -> HttpParse
+{
+    term fill_request(socket, buffer, fed, MSG_DONTWAIT);
 };

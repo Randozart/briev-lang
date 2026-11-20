@@ -173,6 +173,50 @@ node entry [beginprogram][true] {
     Print#(answered);
     let _closed: Int = sock_close(conn);
 
+    // ── A/B parity (G12b close, 2026-11-20): the SAME wire bytes read by the
+    // old byte-at-a-time reader and by the chunked reader must parse to the
+    // same request. Each reader gets its OWN connection so neither inherits
+    // the other's consumed stream — the comparison is between two live
+    // exchanges, not two reads of one.
+    let client_b: Socket = sock_tcp();
+    let connected_b: Int = sock_connect(client_b, LOOPBACK, TEST_PORT);
+    Print#((connected_b == 0) as Int);
+    let conn_b: Socket = serve_accept(listener);
+    Print#((conn_b.fd >= 0) as Int);
+    let sent_b: Int = send_all(client_b, request_bytes());
+    Print#(sent_b == sent);
+    let buf_slow: ByteBuf = serve_bounded();
+    let slow: HttpParse = serve_next_request_bytewise(conn_b, buf_slow, buf_slow.len);
+    let _cb: Int = sock_close(conn_b);
+    let drained_b: ByteBuf = read_all(client_b);
+    buf_free(drained_b);
+    let _clb: Int = sock_close(client_b);
+
+    let client_c: Socket = sock_tcp();
+    let connected_c: Int = sock_connect(client_c, LOOPBACK, TEST_PORT);
+    Print#((connected_c == 0) as Int);
+    let conn_c: Socket = serve_accept(listener);
+    Print#((conn_c.fd >= 0) as Int);
+    let sent_c: Int = send_all(client_c, request_bytes());
+    Print#(sent_c == sent);
+    let buf_fast: ByteBuf = serve_bounded();
+    let fast: HttpParse = serve_next_request(conn_c, buf_fast, buf_fast.len);
+    let _cc: Int = sock_close(conn_c);
+    let drained_c: ByteBuf = read_all(client_c);
+    buf_free(drained_c);
+    let _clc: Int = sock_close(client_c);
+
+    // Field-for-field agreement, both directions.
+    Print#((slow.status == HTTP_COMPLETE) as Int);
+    Print#((slow.request.method == "POST") as Int);
+    Print#((slow.request.path == "/v1/probe") as Int);
+    Print#((fast.status == slow.status) as Int);
+    Print#((fast.request.method == slow.request.method) as Int);
+    Print#((fast.request.path == slow.request.path) as Int);
+    Print#((fast.request.body .^Length == slow.request.body .^Length) as Int);
+    buf_free(buf_slow);
+    buf_free(buf_fast);
+
     let response: ByteBuf = read_all(client);
     let code: Int = status_code(response);
     Print#((code == 200) as Int);

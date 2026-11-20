@@ -1248,8 +1248,14 @@ fn server_loop_golden_output() {
         return;
     }
     let out = build_link_run("server_loop_smoke", "golden", &[]);
+    // 2026-11-20 (G12b close): the fixture grew an A/B section — the same
+    // wire bytes read by the byte-at-a-time reader and by the chunked reader
+    // over two live connections. The trailing `11true11111111200` is that
+    // block: two connects, two accepts, two sends, then the seven field
+    // comparisons (the last three comparing fast against slow) and the
+    // response status digits.
     assert_eq!(
-        out, "1111111111200",
+        out, "11111111111true11true11111111200",
         "server lifecycle golden drifted: {out:?}"
     );
 }
