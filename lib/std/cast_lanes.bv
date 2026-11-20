@@ -685,7 +685,7 @@ out defn stdout_byte(b: Int) [true][term >= 0] -> Int {
         stdout_buf = Alloc#(STDOUT_CAP) as Int;
     };
     Store#(stdout_buf + stdout_fill, b, 1);
-    stdout_fill = stdout_fill + 1;
+    stdout_fill += 1;
     when stdout_fill == STDOUT_CAP {
         term stdout_flush();
     };

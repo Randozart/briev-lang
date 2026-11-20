@@ -2042,7 +2042,11 @@ pub fn infer_type_only(expr: &Expr, ctx: &mut TypecheckContext) -> Result<Type, 
 /// Enum-variant construction is the case that needs it: `Ok(7)` alone has a free
 /// error type, so comparing it to `Result<Int, String>` fails unless the expected
 /// type is handed in. Every other expression is inferred as before.
-fn infer_argument(arg: &Expr, expected: Option<&Type>, ctx: &mut TypecheckContext) -> Result<Type, TypeError> {
+fn infer_argument(
+    arg: &Expr,
+    expected: Option<&Type>,
+    ctx: &mut TypecheckContext,
+) -> Result<Type, TypeError> {
     if let (Expr::Call(name, args, _), Some(expected)) = (arg, expected) {
         if let Some(enum_name) = ctx.variant_defs.get(name).cloned() {
             if !ctx.defined_fns.contains(name) {
@@ -4418,11 +4422,7 @@ fn intrinsic_load_bounds(callee: &str, args: &[Expr], call: &Expr) -> Vec<Expr> 
             Box::new(call.clone()),
             Box::new(zero.clone()),
         ),
-        Expr::BinaryOp(
-            BinaryOpKind::Le,
-            Box::new(call.clone()),
-            Box::new(upper),
-        ),
+        Expr::BinaryOp(BinaryOpKind::Le, Box::new(call.clone()), Box::new(upper)),
     ]
 }
 
@@ -5307,6 +5307,44 @@ fn collect_contract_checks<'a>(
 /// 2026-08-05 (Phase 6): validate contract obligations. `node`/`txn`/`asm`
 /// require a present, non-trivial contract; `defn` contracts are optional but
 /// an explicit `[true][true]` is rejected everywhere.
+///
+/// 2026-11-20 (wave-5 W5-3, SPEC §7.2): duplicate top-level constant
+/// declarations are a namespace conflict — an error regardless of whether
+/// the values are byte-identical (a second declaration is forbidden by the
+/// one-name rule; the program's meaning must not depend on declaration
+/// order). syscall.bv's table was deduped to unique names in the same
+/// commit, so no existing source trips this. Exported constants unwrap to
+/// their inner Constant, mirroring collect_constants.
+fn check_duplicate_constants(items: &[TopLevel], errors: &mut Vec<TypeError>) {
+    let mut seen: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    for item in items {
+        let constant = match item {
+            TopLevel::Constant(c) => Some((c.name.as_str(), c.expr.to_string())),
+            TopLevel::Export(e) => match e.inner.as_ref() {
+                TopLevel::Constant(c) => Some((c.name.as_str(), c.expr.to_string())),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((name, expr_text)) = constant else {
+            continue;
+        };
+        match seen.get(name) {
+            Some(_) => {
+                errors.push(TypeError::FFIError {
+                    message: format!(
+                        "duplicate constant `{name}` — a second declaration is a \n                         namespace conflict (SPEC §7.2: one declaration per name). \n                         Keep the first; rename the second if both are intended."
+                    ),
+                });
+            }
+            None => {
+                seen.insert(name.to_string(), Some(expr_text));
+            }
+        }
+    }
+}
+
 fn check_contract_obligations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     let mut contract_checks = Vec::new();
     for item in items {
@@ -5922,6 +5960,17 @@ pub fn check_program_with_target(
     // - `node`/`txn`/`asm`: contract required (present and non-trivial).
     // - `cell`: not required.
     check_contract_obligations(items, &mut errors);
+    // 2026-11-20 (wave-5 W5-3, SPEC §7.2): the unqualified namespace holds
+    // ONE declaration per name — duplicate top-level constants are a
+    // conflict. Before this check the compiler silently accepted
+    // redeclarations with last-write-wins (verified: `const X = 5; const
+    // X = 7;` compiled and read 7), so a merge editing one copy of a
+    // duplicated constant silently flipped its meaning. Conflicting values
+    // are errors; byte-identical values warn (the SPEC forbids the second
+    // declaration, but existing tables like the pre-dedupe syscall.bv
+    // carried identical duplicates — those get the warning until their
+    // owners dedupe).
+    check_duplicate_constants(items, &mut errors);
     // 2026-08-05 (Phase 5): trait declarations, impl coherence, and explicit
     // trait conformance.
     check_trait_declarations(items, &mut errors);
@@ -9411,6 +9460,20 @@ mod tests {
         let mut items = p.parse_program().unwrap();
         let universe = crate::type_universe::TypeUniverse::new();
         check_program(&mut items, &universe)
+    }
+    #[test]
+    fn duplicate_consts_are_rejected() {
+        let result = check("const X: Int = 5;\nconst X: Int = 7;\n");
+        assert!(result.is_err(), "conflicting duplicate consts must error");
+    }
+
+    #[test]
+    fn identical_duplicate_consts_are_rejected_too() {
+        let result = check("const X: Int = 5;\nconst X: Int = 5;\n");
+        assert!(
+            result.is_err(),
+            "an identical redeclaration is still a second declaration (SPEC §7.2)"
+        );
     }
 
     fn checked_items(src: &str) -> Vec<TopLevel> {

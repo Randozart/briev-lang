@@ -21,7 +21,8 @@
 import {
     syscall,
     SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN, SYS_ACCEPT,
-    SYS_SEND, SYS_RECV, SYS_SHUTDOWN, SYS_SETSOCKOPT, SYS_FCNTL, SYS_CLOSE
+    SYS_SEND, SYS_RECV, SYS_SHUTDOWN, SYS_SETSOCKOPT, SYS_FCNTL, SYS_CLOSE,
+    SYS_UNLINK
 } from "std/posix/syscall.bv";
 import { U8_MAX, U16_MAX, U32_MAX } from "std/constants.bv";
 
@@ -75,7 +76,7 @@ obj Socket {
 // No precondition (the arguments are compile-time constants); the fd-domain
 // postcondition is the syscall's error domain.
 defn sock_tcp() [true][term.fd >= -4096] -> Socket {
-    let fd: Int = syscall(41, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    let fd: Int = syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, IPPROTO_TCP);
     term Socket { fd: fd };
 };
 
@@ -83,7 +84,7 @@ defn sock_tcp() [true][term.fd >= -4096] -> Socket {
 // 0 on success or -errno. Requires a non-negative fd (closing a negative,
 // never-opened fd is a logic error, not a runtime recovery path).
 defn sock_close(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
-    term syscall(3, s.fd);
+    term syscall(SYS_CLOSE, s.fd);
 };
 
 // sock_shutdown - shutdown(2) BOTH directions (SHUT_RDWR): stop further sends
@@ -91,14 +92,14 @@ defn sock_close(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
 // (close still follows). Returns 0 on success or -errno. Distinguished from
 // close because a graceful teardown half-closes before the fd is reclaimed.
 defn sock_shutdown(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
-    term syscall(48, s.fd, SHUT_RDWR);
+    term syscall(SYS_SHUTDOWN, s.fd, SHUT_RDWR);
 };
 
 // sock_shutdown_write - shutdown(2) only the WRITE side (SHUT_WR): flush our
 // request and signal EOF to the peer while keeping the read side open for the
 // response. Used by the kiosk native daemon's per-request upstream relay.
 defn sock_shutdown_write(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
-    term syscall(48, s.fd, SHUT_WR);
+    term syscall(SYS_SHUTDOWN, s.fd, SHUT_WR);
 };
 
 // ── struct sockaddr_in (16 bytes, Linux) ──────────────────────────────────
@@ -211,7 +212,7 @@ defn sock_connect(s: Socket, addr: Int, port: Int)
     -> Int
 {
     let sa: ByteBuf = make_sockaddr_in(addr, port);
-    let rc: Int = syscall(42, s.fd, sa.ptr, SOCKADDR_IN_LEN);
+    let rc: Int = syscall(SYS_CONNECT, s.fd, sa.ptr, SOCKADDR_IN_LEN);
     sockaddr_free(sa);
     term rc;
 };
@@ -262,7 +263,7 @@ defn send_loop(s: Socket, base: Int, len: Int, done: Int)
         term len;
     };
     // send(fd, buf, len, flags=MSG_NOSIGNAL)
-    let n: Int = syscall(44, s.fd, base + done, len - done, MSG_NOSIGNAL);
+    let n: Int = syscall(SYS_SEND, s.fd, base + done, len - done, MSG_NOSIGNAL);
     when n < 0 {
         term n;
     };
@@ -310,7 +311,7 @@ defn recv_loop(s: Socket, base: Int, cap: Int, got: Int)
         term got;
     };
     // recv(fd, buf, len, flags=0)
-    let n: Int = syscall(45, s.fd, base + got, cap - got, 0);
+    let n: Int = syscall(SYS_RECV, s.fd, base + got, cap - got, 0);
     when n < 0 {
         term n;
     };
@@ -337,11 +338,11 @@ const SO_RCVTIMEO:  Int = 20;
 // GET the current flags, OR in O_NONBLOCK, then SET - never clobbering the
 // other flags. Returns 0 on success or the first -errno.
 defn sock_set_nonblocking(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
-    let flags: Int = syscall(72, s.fd, F_GETFL, 0);
+    let flags: Int = syscall(SYS_FCNTL, s.fd, F_GETFL, 0);
     when flags < 0 {
         term flags;
     };
-    term syscall(72, s.fd, F_SETFL, flags | O_NONBLOCK);
+    term syscall(SYS_FCNTL, s.fd, F_SETFL, flags | O_NONBLOCK);
 };
 
 // sock_set_reuseaddr - set SO_REUSEADDR so a listener can rebind a port still
@@ -351,7 +352,7 @@ defn sock_set_nonblocking(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
 defn sock_set_reuseaddr(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
     // optval = 1 as a 4-byte little-endian int: low byte 1, then three zeros.
     let opt: ByteBuf = buf_new(4).put_u8(1).put_u8(0).put_u8(0).put_u8(0);
-    let rc: Int = syscall(54, s.fd, SOL_SOCKET, SO_REUSEADDR, opt.ptr, 4);
+    let rc: Int = syscall(SYS_SETSOCKOPT, s.fd, SOL_SOCKET, SO_REUSEADDR, opt.ptr, 4);
     Free#(opt.ptr as Ptr);
     term rc;
 };
@@ -370,7 +371,7 @@ defn sock_set_recv_timeout(s: Socket, seconds: Int)
         .put_u8(0).put_u8(0).put_u8(0).put_u8(0)
         .put_u8(0).put_u8(0).put_u8(0).put_u8(0)
         .put_u8(0).put_u8(0).put_u8(0).put_u8(0);
-    let rc: Int = syscall(54, s.fd, SOL_SOCKET, SO_RCVTIMEO, opt.ptr, 16);
+    let rc: Int = syscall(SYS_SETSOCKOPT, s.fd, SOL_SOCKET, SO_RCVTIMEO, opt.ptr, 16);
     Free#(opt.ptr as Ptr);
     term rc;
 };
@@ -380,7 +381,7 @@ defn sock_set_recv_timeout(s: Socket, seconds: Int)
 // path (sun_path is 108 bytes). The kernel receives family + path + NUL.
 
 defn sock_unix() [true][term.fd >= -4096] -> Socket {
-    let fd: Int = syscall(41, AF_UNIX, SOCK_STREAM, 0);
+    let fd: Int = syscall(SYS_SOCKET, AF_UNIX, SOCK_STREAM, 0);
     term Socket { fd: fd };
 };
 
@@ -404,7 +405,7 @@ defn sock_connect_unix(s: Socket, path: String)
     -> Int
 {
     let sa: ByteBuf = make_sockaddr_un(path);
-    let rc: Int = syscall(42, s.fd, sa.ptr, sa.len);
+    let rc: Int = syscall(SYS_CONNECT, s.fd, sa.ptr, sa.len);
     sockaddr_free(sa);
     term rc;
 };
@@ -418,14 +419,14 @@ defn sock_bind_listen_unix(s: Socket, path: String, backlog: Int)
     -> Int
 {
     let path_addr: Int = (path as Data) as Int + 8;
-    let _unlink: Int = syscall(87, path_addr);
+    let _unlink: Int = syscall(SYS_UNLINK, path_addr);
     let sa: ByteBuf = make_sockaddr_un(path);
-    let brc: Int = syscall(49, s.fd, sa.ptr, sa.len);
+    let brc: Int = syscall(SYS_BIND, s.fd, sa.ptr, sa.len);
     sockaddr_free(sa);
     when brc < 0 {
         term brc;
     };
-    term syscall(50, s.fd, backlog);
+    term syscall(SYS_LISTEN, s.fd, backlog);
 };
 
 // ── 1.7  server side: bind + listen + accept ────────────────────────────────
@@ -449,12 +450,12 @@ defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
     };
     // INADDR_ANY
     let sa: ByteBuf = make_sockaddr_in(0, port);
-    let brc: Int = syscall(49, s.fd, sa.ptr, SOCKADDR_IN_LEN);
+    let brc: Int = syscall(SYS_BIND, s.fd, sa.ptr, SOCKADDR_IN_LEN);
     sockaddr_free(sa);
     when brc < 0 {
         term brc;
     };
-    term syscall(50, s.fd, backlog);
+    term syscall(SYS_LISTEN, s.fd, backlog);
 };
 
 // sock_accept - accept(2) one pending connection off the listen queue, giving a
@@ -464,6 +465,6 @@ defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
 // -errno wrapped in the obj (accept returns -EAGAIN on a non-blocking listener
 // with no pending connection - the caller treats that like "nothing ready").
 defn sock_accept(s: Socket) [s.fd >= -4096][term.fd >= -4096] -> Socket {
-    let fd: Int = syscall(43, s.fd, 0, 0);
+    let fd: Int = syscall(SYS_ACCEPT, s.fd, 0, 0);
     term Socket { fd: fd };
 };

@@ -2911,6 +2911,17 @@ foreach item in items {
 };
 ```
 
+> **2026-11-20 (index semantics, wave-5 W5-5).** An indexed read/write
+> `c[i]` outside `foreach` is bounds-UNCHECKED on native targets: the
+> lowering is a `getelementptr inbounds` access (the same contract
+> `PtrAdd#` carries), so an out-of-bounds index is undefined behavior.
+> The reference engine raises a loud index error instead — treat the
+> interpreter as the bounds oracle and prove index bounds with a
+> `when` guard or a contract before a subscript when the bound is not
+> static. `foreach` over a collection is always in-bounds by
+> construction and is the preferred form wherever the index itself is
+> not load-bearing.
+
 There are no `for`, `while`, or `loop` keywords. Counted iteration uses iterable ranges or reactive/transactional structure.
 
 `foreach` is exhaustive by default. A `break;` inside a `foreach` body exits
@@ -3719,6 +3730,20 @@ Custom parse-prefix/suffix bindings are not currently exposed. Unknown prefixes 
 - `#b`: byte literal; byte escapes are interpreted.
 - Formatting/interpolation uses explicit compile-time expansion such as `format!(...)`.
 - Lexer-level interpolated strings and adjacent tagged literals do not exist.
+
+> **2026-11-20 (wave-5 W5-6, String/Data ABI).** A `String` or byte
+> buffer cast through `Data` addresses a **frozen runtime layout**:
+> `[i64 byte-length][bytes][NUL]` — an 8-byte little-endian length word,
+> the payload, and one terminating zero byte. The payload begins at
+> **offset 8** from the `Data` word. This layout is the cross-layer
+> contract the interpreter's `Data` door, the LLVM backend's string
+> construction, and the standard library's byte-level helpers
+> (`fs_write`, `Copy#`-based copies, socket paths) all rely on; the
+> standard library's `(s as Data) as Int + 8` payload addressing is
+> this contract, not an implementation shortcut. Changing the layout
+> requires migrating every consumer named here in the same commit.
+> The terminating NUL is present in the allocation but is not counted
+> by the length word (`.^Length` reads the length word, byte count).
 
 ### 16.3 Ordered and associative literals
 

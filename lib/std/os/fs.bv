@@ -252,6 +252,6 @@ txn split_lines_loop(data: String, acc: List<String>, last: Int, i: Int)
         acc <- data[last:i];
         last = i + 1;
     };
-    i = i + 1;
+    i += 1;
     term split_lines_loop(data, acc, last, i);
 };

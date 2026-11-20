@@ -19,7 +19,7 @@ txn iter_map_loop<T, U>(list: List<T>, f: T -> U, result: List<U>, i: Int)
     [i < list.Count#()][i == list.Count#()] -> List<U>
 {
     result <- f(list[i]);
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -34,7 +34,7 @@ txn iter_filter_loop<T>(list: List<T>, pred: T -> Bool, result: List<T>, i: Int)
     when pred(list[i]) {
         result <- list[i];
     };
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -47,7 +47,7 @@ txn iter_fold_loop<T, U>(list: List<T>, f: (U, T) -> U, acc: U, i: Int)
     [i < list.Count#()][i == list.Count#()] -> U
 {
     acc = f(acc, list[i]);
-    i = i + 1;
+    i += 1;
     term acc;
 };
 
@@ -60,7 +60,7 @@ txn iter_take_loop<T>(list: List<T>, n: Int, result: List<T>, i: Int)
     [i < n && i < list.Count#()][i == n || i == list.Count#()] -> List<T>
 {
     result <- list[i];
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -73,7 +73,7 @@ txn iter_skip_loop<T>(list: List<T>, n: Int, result: List<T>, i: Int)
     [i < list.Count#()][i == list.Count#()] -> List<T>
 {
     result <- list[i];
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -86,7 +86,7 @@ txn iter_enumerate_loop<T>(list: List<T>, result: List<(Int, T)>, i: Int)
     [i < list.Count#()][i == list.Count#()] -> List<(Int, T)>
 {
     result <- (i, list[i]);
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -114,7 +114,7 @@ txn iter_any_loop<T>(list: List<T>, pred: T -> Bool, found: Bool, i: Int)
     when pred(list[i]) {
         found = true;
     };
-    i = i + 1;
+    i += 1;
     term found;
 };
 
@@ -129,7 +129,7 @@ txn iter_all_loop<T>(list: List<T>, pred: T -> Bool, ok: Bool, i: Int)
     when !pred(list[i]) {
         ok = false;
     };
-    i = i + 1;
+    i += 1;
     term ok;
 };
 
@@ -156,7 +156,7 @@ txn iter_chain_loop<T>(a: List<T>, b: List<T>, result: List<T>, i: Int)
     when i >= a.Count#() {
         result <- b[i - a.Count#()];
     };
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -171,9 +171,9 @@ txn iter_flatmap_loop<T, U>(list: List<T>, f: T -> List<U>, result: List<U>, i: 
     let mapped = f(list[i]);
     when j < mapped.Count#() {
         result <- mapped[j];
-        j = j + 1;
+        j += 1;
     };
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -191,7 +191,7 @@ txn iter_partition_loop<T>(list: List<T>, pred: T -> Bool, trues: List<T>, false
     when !pred(list[i]) {
         falses <- list[i];
     };
-    i = i + 1;
+    i += 1;
     term (trues, falses);
 };
 
@@ -204,7 +204,7 @@ txn iter_zip_loop<T, U>(a: List<T>, b: List<U>, result: List<(T, U)>, i: Int)
     [i < a.Count#() && i < b.Count#()][i == a.Count#() || i == b.Count#()] -> List<(T, U)>
 {
     result <- (a[i], b[i]);
-    i = i + 1;
+    i += 1;
     term result;
 };
 

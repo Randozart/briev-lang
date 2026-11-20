@@ -7,7 +7,7 @@ txn array_map<T, U>(arr: Vector<T, N>, f: T -> U, result: Vector<U, N>, i: Int)
     [i < N][i == N] -> Vector<U, N>
 {
     result[i] = f(arr[i]);
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -16,9 +16,9 @@ txn array_filter<T>(arr: Vector<T, N>, pred: T -> Bool, result: Vector<T, N>, i:
 {
     when pred(arr[i]) {
         result[j] = arr[i];
-        j = j + 1;
+        j += 1;
     };
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -26,7 +26,7 @@ txn array_fold<T, U>(arr: Vector<T, N>, f: (U, T) -> U, acc: U, i: Int)
     [i < N][i == N] -> U
 {
     acc = f(acc, arr[i]);
-    i = i + 1;
+    i += 1;
     term acc;
 };
 
@@ -36,7 +36,7 @@ txn array_any<T>(arr: Vector<T, N>, pred: T -> Bool, i: Int)
     when pred(arr[i]) {
         term true;
     };
-    i = i + 1;
+    i += 1;
     term false;
 };
 
@@ -46,7 +46,7 @@ txn array_all<T>(arr: Vector<T, N>, pred: T -> Bool, i: Int)
     when !pred(arr[i]) {
         term false;
     };
-    i = i + 1;
+    i += 1;
     term true;
 };
 
@@ -55,7 +55,7 @@ txn array_sum(arr: Vector<Int, N>, i: Int)
 {
     let result: Int = 0;
     result = result + arr[i];
-    i = i + 1;
+    i += 1;
     term result;
 };
 
@@ -64,6 +64,6 @@ txn array_product(arr: Vector<Int, N>, i: Int)
 {
     let result: Int = 1;
     result = result * arr[i];
-    i = i + 1;
+    i += 1;
     term result;
 };
