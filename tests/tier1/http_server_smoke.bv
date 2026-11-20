@@ -1,0 +1,35 @@
+// http_server smoke — route dispatch decides once over a fixed table.
+//
+// Golden: the dispatch verdicts for (GET /health)=0, (POST /preview)=1,
+// unknown=NOT_MATCHED(-1), plus a 2-route walk and the status spellings.
+// Printed one per line: "0 1 -1 1 -1 1 1 1 1".
+import "std/net/http.bv";
+import "std/net/http_server.bv";
+
+// make_req - an HttpRequest literal for the smoke (parse-independent).
+defn make_req(method: String, path: String) -> HttpRequest {
+    term HttpRequest { method: method, path: path, headers: "", body: "" };
+};
+
+node entry [beginprogram][true] {
+    let health: HttpRequest = make_req("GET", "/health");
+    let preview: HttpRequest = make_req("POST", "/v1/routing-preview");
+    let unknown: HttpRequest = make_req("GET", "/nope");
+
+    // 3-route table: health -> 0, preview -> 1, unknown -> NOT_MATCHED.
+    Print#(route_dispatch3(health, "GET", "/health", "POST", "/v1/routing-preview", "PUT", "/x"));
+    Print#(route_dispatch3(preview, "GET", "/health", "POST", "/v1/routing-preview", "PUT", "/x"));
+    Print#(route_dispatch3(unknown, "GET", "/health", "POST", "/v1/routing-preview", "PUT", "/x"));
+
+    // 2-route walk: preview still matches its slot; health misses both.
+    Print#(route_dispatch2(preview, "POST", "/v1/routing-preview", "PUT", "/x"));
+    Print#(route_dispatch2(health, "POST", "/v1/routing-preview", "PUT", "/x"));
+
+    // A wrong method on a right path must NOT match (method AND path).
+    Print#(route_dispatch3(make_req("DELETE", "/health"), "GET", "/health", "POST", "/v1/routing-preview", "PUT", "/x"));
+
+    // Status spellings and the decide-once predicate.
+    Print#(answer_status(200, STATUS_OK));
+    Print#(answer_status(404, STATUS_NOT_FOUND));
+    Print#(answer_status(400, STATUS_BAD_REQUEST));
+};

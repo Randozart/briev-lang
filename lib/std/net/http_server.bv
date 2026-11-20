@@ -1,0 +1,114 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// http_server - method+path route dispatch over the net stack (L4).
+//
+// 2026-11-19 (stdlib gap, dogfooding Knooppunt): `net/server_loop.bv` owns
+// the connection LIFECYCLE and `net/http.bv` owns PARSING, but every app
+// re-implements the same glue between them - "which route is this?", "answer
+// with this status+body, once" (Knooppunt's `is_health`/`is_preview`/
+// `not_handled` predicates; task_board's copy is the same shape). This module
+// is that glue, exactly once:
+//
+//   * `route_match`  - method+path equality on an HttpRequest -> 0/1 flag.
+//   * `route_dispatch` - walk a fixed route table; return the matched index
+//     or NOT_MATCHED. The TABLE is caller-declared (an Array of Routes is
+//     not yet provable across the checker's foreach contract story), so the
+//     dispatch defn is generated per app: `route_dispatch` here is the
+//     2-route workhorse and `route_dispatch3` the 3-route one; longer tables
+//     compose by chaining (the 3-route falls through to a fallback body).
+//   * `answer_status`/`answer_body` - the standard status-line spellings so
+//     handlers stop hard-coding numeric literals.
+//
+// WHY FLAGS AND INDEXES, NOT CLOSURES. Function values do not exist in the
+// contract checker's world yet (see server_loop.bv's header: "the
+// application owns the accept loop ... no function-value plumbing is
+// needed"). The honest dispatch is therefore table-as-data + caller-owned
+// per-route handlers, decided ONCE per request (`dispatch_*` predicates
+// return the match index; the caller's `when` chain tests it). The
+// not_handled-falls-through bug class (a bare `term;` inside a `when` is a
+// convergence checkpoint, not a return) is exactly what the
+// decide-once predicate shape prevents.
+//
+// Undo: delete this file; Knooppunt and task_board go back to their copies.
+
+import "std/net/http.bv";
+
+// NOT_MATCHED - the dispatch verdict when no route fires (the caller owns
+// the 404; this module never writes to a socket).
+const NOT_MATCHED: Int = 0 - 1;
+
+// ── Standard status bodies ────────────────────────────────────────────────
+
+// STATUS_OK / STATUS_NOT_FOUND / STATUS_BAD_REQUEST - the three statuses
+// every small JSON service answers with, spelled once.
+const STATUS_OK: Int = 200;
+const STATUS_NOT_FOUND: Int = 404;
+const STATUS_BAD_REQUEST: Int = 400;
+
+// BODY_NOT_FOUND_JSON - the machine-readable 404 payload; apps that want a
+// human page write their own and use `answer_status` alone.
+const BODY_NOT_FOUND_JSON: String = "{\"error\":\"not_found\"}";
+
+// ── Route matching ────────────────────────────────────────────────────────
+
+// route_match - method AND path both equal the route: 1, else 0. Exact
+// string equality on both (no patterns, no wildcards - a wildcard layer
+// wants the termination-proof story from the checker first).
+defn route_match(request: HttpRequest, method: String, path: String)
+    [true]
+    [term == 0 || term == 1]
+    -> Int
+{
+    when request.method == method && request.path == path {
+        term 1;
+    };
+    term 0;
+};
+
+// ── Dispatch (decide once; the caller answers) ────────────────────────────
+
+// route_dispatch2 - two-route table walk. Returns the matched index (0 or
+// 1) or NOT_MATCHED. Decide-once by construction: early `term` per arm.
+defn route_dispatch2(request: HttpRequest, method0: String, path0: String, method1: String, path1: String)
+    [true]
+    [term >= NOT_MATCHED && term <= 1]
+    -> Int
+{
+    when route_match(request, method0, path0) == 1 {
+        term 0;
+    };
+    when route_match(request, method1, path1) == 1 {
+        term 1;
+    };
+    term NOT_MATCHED;
+};
+
+// route_dispatch3 - three-route table walk; NOT_MATCHED when nothing fires.
+defn route_dispatch3(request: HttpRequest, method0: String, path0: String, method1: String, path1: String, method2: String, path2: String)
+    [true]
+    [term >= NOT_MATCHED && term <= 2]
+    -> Int
+{
+    when route_match(request, method0, path0) == 1 {
+        term 0;
+    };
+    when route_match(request, method1, path1) == 1 {
+        term 1;
+    };
+    when route_match(request, method2, path2) == 1 {
+        term 2;
+    };
+    term NOT_MATCHED;
+};
+
+// ── Response spelling ─────────────────────────────────────────────────────
+
+// answer_status - is this the status code the caller claims? A tiny helper,
+// but naming the number once per route beats three literals per handler.
+defn answer_status(status: Int, expected: Int) [true][term == 0 || term == 1] -> Int {
+    when status == expected {
+        term 1;
+    };
+    term 0;
+};

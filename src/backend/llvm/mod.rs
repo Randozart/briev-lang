@@ -5376,10 +5376,23 @@ impl LlvmBackend {
             let canonical = alias_map.get(name).cloned().unwrap_or_else(|| name.clone());
             if canonical != *name {
                 let llvm_ty = self.llvm_type(ty);
+                // 2026-11-19 (opaque pointers): the alias target is a POINTER
+                // to the aliasee. Pre-opaque spellings worked because i64's
+                // pointer type is written `i64*` — but an opaque `ptr`
+                // aliasee's pointer type is spelled `ptr`, so the old
+                // `{ty}, {ty}* @` emitted invalid `ptr*` for String constants
+                // (http_server.bv's BODY_NOT_FOUND_JSON) and killed the build.
+                // Rule: the target type is `ptr` when the aliasee is opaque,
+                // `{ty}*` for typed globals.
+                let target_ty = if llvm_ty == "ptr" {
+                    "ptr".to_string()
+                } else {
+                    format!("{}*", llvm_ty)
+                };
                 writeln!(
                     out,
-                    "@{} = alias {}, {}* @{}",
-                    name, llvm_ty, llvm_ty, canonical
+                    "@{} = alias {}, {} @{}",
+                    name, llvm_ty, target_ty, canonical
                 )
                 .ok();
                 continue;
