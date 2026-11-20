@@ -1535,8 +1535,9 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
             // `unbounded` / `unbounded until [C]` open a modifier run: the loop
-            // carries no termination obligation (SPEC 10.9).
-            Some(Token::Identifier(word)) if word == "unbounded" => true,
+            // carries no termination obligation (SPEC 10.9). `checkfree` opens
+            // one too — the defn carries the subscript-bounds obligation.
+            Some(Token::Identifier(word)) if word == "unbounded" || word == "checkfree" => true,
             // 2026-10-17 (plain storage): `state let` / `plain let` — the
             // storage-class assertions open a modifier run.
             Some(Token::Identifier(s))
@@ -1605,6 +1606,7 @@ impl<'a> Parser<'a> {
                 self.reject_memory_pins(&prefix, "a node has no memory pin")?;
                 self.reject_net_names(&prefix, "a node")?;
                 self.reject_storage_assertions(&prefix, "a node")?;
+                self.reject_checkfree(&prefix, "a node")?;
                 let txn = self.parse_node()?;
                 self.finish_reactive(txn, prefix)
             }
@@ -1612,6 +1614,7 @@ impl<'a> Parser<'a> {
                 self.reject_memory_pins(&prefix, "a txn has no memory pin")?;
                 self.reject_net_names(&prefix, "a txn")?;
                 self.reject_storage_assertions(&prefix, "a txn")?;
+                self.reject_checkfree(&prefix, "a txn")?;
                 let txn = self.parse_transaction(false, prefix.is_async)?;
                 self.finish_reactive(txn, prefix)
             }
@@ -1628,6 +1631,7 @@ impl<'a> Parser<'a> {
                 }
                 self.reject_shape_modifiers(&prefix, "a let")?;
                 self.reject_thread_pins(&prefix, "a let")?;
+                self.reject_checkfree(&prefix, "a let")?;
                 let mut stmt = self.parse_let_statement()?;
                 if let Statement::Let { modifiers, .. } = &mut stmt {
                     modifiers.extend(prefix.annotations);
@@ -1658,6 +1662,18 @@ impl<'a> Parser<'a> {
             }
             _ => self.modifier_target_error(&prefix),
         }
+    }
+
+    /// 2026-11-20 (checkfree): the subscript-bounds obligation is a promise a
+    /// `defn` body makes; a node/txn/let has no defn body to prove it over.
+    fn reject_checkfree(&self, prefix: &ModifierPrefix, what: &str) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| a.name == "checkfree") {
+            return self.error_at_current(&format!(
+                "`checkfree` states that every subscript in a defn body is \
+                 provably in-bounds — {what} has no defn body to prove it over"
+            ));
+        }
+        Ok(())
     }
 
     /// 2026-11-15 (thread-assignment plan): `on thread <N>` selects the
