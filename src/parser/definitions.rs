@@ -6066,6 +6066,48 @@ mod tests {
         assert_eq!(f.placements[1].rot, 90.0);
     }
 
+    // ─── checkfree: contextual modifier (SPEC §15.4b) ──────────────────────
+
+    #[test]
+    fn checkfree_rejects_non_defn_target() {
+        // The promise is "every subscript in this DEFN BODY is proven" — a
+        // node/txn/let has no defn body to prove it over, so accepting the
+        // word there would let an author believe a guarantee exists.
+        for src in [
+            "checkfree node n [true][true] { term; };",
+            "checkfree txn t [true][true] { term; };",
+            "checkfree let x: Int = 5;",
+        ] {
+            let err = parse_top(src).expect_err(src);
+            assert!(
+                err.contains("checkfree") && err.contains("defn body"),
+                "the rejection must say what checkfree means: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn checkfree_is_a_contextual_identifier_not_a_keyword() {
+        // `unbounded` precedent: no lexer token, so the word stays usable as
+        // an ordinary identifier. A new reserved word would break every
+        // program that happens to use the name.
+        let tl = parse_top("checkfree defn f(xs: List<Int>) -> Int { term xs[0]; };")
+            .expect("checkfree must parse on a defn");
+        let crate::ast::TopLevel::Definition(d) = tl else {
+            panic!("expected a definition");
+        };
+        assert!(
+            d.modifiers.iter().any(|m| m.name == "checkfree"),
+            "the modifier must reach Definition.modifiers"
+        );
+        let named = parse_top("defn checkfree(x: Int) -> Int { term x; };")
+            .expect("`checkfree` must remain usable as a defn NAME");
+        let crate::ast::TopLevel::Definition(d) = named else {
+            panic!("expected a definition");
+        };
+        assert_eq!(d.name, "checkfree");
+    }
+
     #[test]
     fn test_fab_block_requires_board() {
         let err = parse_top("fab { place u1 @ (1mm, 2mm); }").unwrap_err();
