@@ -2409,9 +2409,15 @@ fn emit_len(
 /// 2026-09-13 (rv64 capability kernel): target-aware — riscv64 numbers
 /// differ from x86_64 for the same abstract op.
 fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
-    if triple.starts_with("riscv64") {
-        // riscv64 Linux syscall numbers (asm-generic /unistd.h)
-        Some(match op {
+    // 2026-11-20 (wave-5 W5-1): aarch64 Linux uses the SAME asm-generic
+    // syscall numbers as riscv64 (both derive from include/uapi/asm-generic/
+    // unistd.h). Before this branch aarch64 fell through to the x86_64
+    // table — every number wrong (Read 63 vs 0, Socket 198 vs 41), and the
+    // svc #0 asm arm had no x8 constraint, so the number never reached the
+    // kernel register file at all. aarch64 syscalls could not work.
+    if triple.starts_with("aarch64") || triple.starts_with("riscv64") {
+        // asm-generic Linux syscall numbers (riscv64 + aarch64)
+        return Some(match op {
             "Read" => 63,
             "Write" => 64,
             "Open" => 56,
@@ -2484,7 +2490,7 @@ fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
             "PWrite" => 68,
             _ => return None,
         })
-    } else {
+    } else if triple.starts_with("x86_64") {
         // x86_64 Linux syscall numbers (asm/unistd_64.h)
         Some(match op {
             "Read" => 0,
@@ -2559,6 +2565,12 @@ fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
             "PWrite" => 18,
             _ => return None,
         })
+    } else {
+        // 2026-11-20 (wave-5 W5-1): non-x86_64/riscv64/aarch64 triples have
+        // no inline-syscall ABI here — the caller (emit_syscall) treats
+        // None as an ordinary runtime-value argument, which pairs with the
+        // @briev_syscall C fallback.
+        None
     }
 }
 
@@ -2771,12 +2783,21 @@ fn emit_syscall(
             indent, v, all_args.join(", ")).ok();
         writeln!(out, "{}  )", indent).ok();
     } else if triple.starts_with("aarch64") && triple.contains("linux") {
-        // aarch64 Linux: inline svc #0
-        // Args in x0-x5, output in x0. 2026-10-20 (BUGS.md concat -O2): the
+        // aarch64 Linux: inline svc #0.
+        // 2026-11-20 (wave-5 W5-1): the syscall number goes in REGISTER x8
+        // (w8 for the 32-bit encoding) — the previous constraint list had
+        // NO x8 at all, so the number stayed in whatever register held it
+        // and svc #0 read garbage from x8: aarch64 syscalls could not work
+        // (paired with the missing aarch64 table in
+        // resolve_syscall_number, now shared asm-generic). Args in x0-x5,
+        // output in x0, number in x8. 2026-10-20 (BUGS.md concat -O2): the
         // kernel reads/writes user memory through the pointer args, so the
         // asm must clobber ~{memory} or LLVM deletes the buffer-filling
-        // stores before a write(2).
-        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x0}},{{x1}},{{x2}},{{x3}},{{x4}},{{x5}},~{{memory}}\" ({}",
+        // stores before a write(2). x8 is ALSO an input the kernel may
+        // clobber (it is not preserved), so it stays a tied input like the
+        // x86_64 number-in-rax shape: {x8} appears once as input, and the
+        // operand list is number-first (all_args[0]).
+        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}},{{x1}},{{x2}},{{x3}},{{x4}},{{x5}},~{{memory}}\" ({}",
             indent, v, all_args.join(", ")).ok();
         writeln!(out, "{}  )", indent).ok();
     } else if triple.starts_with("riscv64") {
@@ -4311,5 +4332,30 @@ fn bridge_symbol(backend: &LlvmBackend, defn: &str, fallback_c: &str) -> String 
         defn.to_string()
     } else {
         fallback_c.to_string()
+    }
+}
+
+#[cfg(test)]
+mod syscall_table_tests {
+    use super::*;
+
+    /// 2026-11-20 (wave-5 W5-1): aarch64 must resolve asm-generic numbers —
+    /// before the shared table, aarch64 fell through to x86_64 (Read 0 vs
+    /// 63, Socket 41 vs 198). x86_64 keeps its own numbers. riscv64 shares
+    /// the asm-generic table with aarch64.
+    #[test]
+    fn aarch64_resolves_asm_generic_numbers() {
+        assert_eq!(resolve_syscall_number("Read", "aarch64-unknown-linux-gnu"), Some(63));
+        assert_eq!(resolve_syscall_number("Write", "aarch64-unknown-linux-gnu"), Some(64));
+        assert_eq!(resolve_syscall_number("Socket", "aarch64-unknown-linux-gnu"), Some(198));
+        assert_eq!(resolve_syscall_number("NanoSleep", "aarch64-unknown-linux-gnu"), Some(101));
+        // riscv64 shares the table.
+        assert_eq!(resolve_syscall_number("Read", "riscv64-unknown-linux-gnu"), Some(63));
+        // x86_64 keeps its own table.
+        assert_eq!(resolve_syscall_number("Read", "x86_64-unknown-linux-gnu"), Some(0));
+        assert_eq!(resolve_syscall_number("Socket", "x86_64-unknown-linux-gnu"), Some(41));
+        // Unknown triple: None (the caller emits an ordinary runtime value
+        // arg, pairing with the @briev_syscall C fallback).
+        assert_eq!(resolve_syscall_number("Read", "wasm32-unknown-wasi"), None);
     }
 }
