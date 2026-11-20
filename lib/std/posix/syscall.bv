@@ -62,15 +62,6 @@ export const SYS_CLONE:         Int = 56;
 export const SYS_EXECVE:        Int = 59;
 export const SYS_WAIT4:         Int = 61;
 export const SYS_MKNOD:         Int = 133;
-export const SYS_MKDIR:         Int = 83;
-export const SYS_RMDIR:         Int = 84;
-export const SYS_UNLINK:        Int = 87;
-export const SYS_RENAME:        Int = 82;
-export const SYS_SYMLINK:       Int = 88;
-export const SYS_READLINK:      Int = 89;
-export const SYS_LINK:          Int = 86;
-export const SYS_GETCWD:        Int = 79;
-export const SYS_CHDIR:         Int = 80;
 export const SYS_SOCKET:        Int = 41;
 export const SYS_BIND:          Int = 49;
 export const SYS_LISTEN:        Int = 50;
@@ -83,18 +74,6 @@ export const SYS_RECVFROM:      Int = 45;
 export const SYS_SHUTDOWN:      Int = 48;
 export const SYS_GETSOCKOPT:    Int = 55;
 export const SYS_SETSOCKOPT:    Int = 54;
-export const SYS_MUNMAP:        Int = 11;
-export const SYS_MPROTECT:      Int = 10;
-export const SYS_MLOCK:         Int = 149;
-export const SYS_GETPID:        Int = 39;
-export const SYS_GETUID:        Int = 102;
-export const SYS_GETEUID:       Int = 107;
-export const SYS_GETGID:        Int = 104;
-export const SYS_GETEGID:       Int = 108;
-export const SYS_FUTEX:         Int = 202;
-export const SYS_SEMOP:         Int = 65;
-export const SYS_RT_SIGACTION:  Int = 13;
-export const SYS_RT_SIGPROCMASK: Int = 14;
 
 // ── Syscall helpers ───────────────────────────────────────────────────────
 
