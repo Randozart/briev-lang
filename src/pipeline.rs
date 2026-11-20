@@ -1606,6 +1606,14 @@ fn parse_and_check(
     if !task_errors.is_empty() {
         return Err(format!("task handle errors:\n{}", task_errors.join("\n")));
     }
+    // 2026-11-20 (evented-net Wave 2): fd/linear-object linearity — the
+    // task_linear discipline applied to objs declared `attr linear: true;`
+    // (Socket first). Acceptance must not diverge between paths, same as
+    // the task gate above.
+    let obj_errors = crate::analysis::obj_linear::analyze(&items);
+    if !obj_errors.is_empty() {
+        return Err(format!("linear object errors:\n{}", obj_errors.join("\n")));
+    }
     // 2026-08-07 (object instance pools): `check` must reject unprovable
     // spawn counts exactly like `build` (Briev has no runtime errors).
     let (_, _, spawn_errors, _) = crate::analysis::spawn_pool::analyze(&items);
