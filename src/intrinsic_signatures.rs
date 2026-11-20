@@ -741,6 +741,15 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
             observable: true,
             variadic: false,
         }),
+        // 2026-11-20 (wave-6 W6-3): CLOCK_MONOTONIC nanoseconds. Domain
+        // spelled [0, i64::MAX] — an honest wrap bound at ~292y uptime.
+        "ClockMonotonicNs#" => Some(Signature {
+            name: "ClockMonotonicNs#",
+            parameters: vec![],
+            return_kind: ReturnKind::Exact(Type::int()),
+            observable: true,
+            variadic: false,
+        }),
         "ChDir#" => Some(Signature {
             name: "ChDir#",
             parameters: vec![("path", Type::string())],
@@ -1196,6 +1205,8 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "Environ#",
     "Argc#",
     "Args#",
+    // 2026-11-20 (wave-6 W6-3): CLOCK_MONOTONIC ns.
+    "ClockMonotonicNs#",
     // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): element-
     // addressed atomics (the kernel family).
     "AtomicAddAt#",

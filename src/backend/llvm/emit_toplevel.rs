@@ -1240,6 +1240,12 @@ impl LlvmBackend {
         if !self.ctx.defn_params.contains_key("rt_getcwd") {
             writeln!(out, "declare ptr @__briev_getcwd()").ok();
         }
+        // 2026-11-20 (wave-6 W6-3): CLOCK_MONOTONIC ns — declare-guarded
+        // like the Family-I helpers (a pure-Briev defn taking the hidden
+        // %state pre-empts the C helper).
+        if !self.ctx.defn_params.contains_key("briev_clock_monotonic_ns") {
+            writeln!(out, "declare i64 @briev_clock_monotonic_ns() nounwind").ok();
+        }
         if !self.ctx.defn_params.contains_key("rt_chdir") {
             writeln!(out, "declare i64 @__briev_chdir(ptr) nounwind").ok();
         }

@@ -1,0 +1,20 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// clock_monotonic_smoke — SPEC §17 (wave-6 W6-3): ClockMonotonicNs# is
+// monotonic — two reads satisfy t2 >= t1 — and the value fits the honest
+// [0, i64::MAX] domain. Backed by briev_clock_monotonic_ns (rt helper);
+// per-triple numbers pinned by the syscall-table unit test.
+// spec: 17
+import "std/io.bv";
+
+node entry [beginprogram][true] {
+    let t1: Int = ClockMonotonicNs#();
+    let t2: Int = ClockMonotonicNs#();
+    when t2 < t1 {
+        Print#("nonmonotonic");
+        endprogram Print#("");
+    };
+    Print#("monotonic");
+    endprogram Print#("");
+};
