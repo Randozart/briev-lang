@@ -2911,6 +2911,17 @@ foreach item in items {
 };
 ```
 
+> **2026-11-20 (index semantics, wave-5 W5-5).** An indexed read/write
+> `c[i]` outside `foreach` is bounds-UNCHECKED on native targets: the
+> lowering is a `getelementptr inbounds` access (the same contract
+> `PtrAdd#` carries), so an out-of-bounds index is undefined behavior.
+> The reference engine raises a loud index error instead — treat the
+> interpreter as the bounds oracle and prove index bounds with a
+> `when` guard or a contract before a subscript when the bound is not
+> static. `foreach` over a collection is always in-bounds by
+> construction and is the preferred form wherever the index itself is
+> not load-bearing.
+
 There are no `for`, `while`, or `loop` keywords. Counted iteration uses iterable ranges or reactive/transactional structure.
 
 `foreach` is exhaustive by default. A `break;` inside a `foreach` body exits
