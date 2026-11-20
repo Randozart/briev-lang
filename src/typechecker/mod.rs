@@ -5372,6 +5372,335 @@ fn collect_contract_checks<'a>(
 /// order). syscall.bv's table was deduped to unique names in the same
 /// commit, so no existing source trips this. Exported constants unwrap to
 /// their inner Constant, mirroring collect_constants.
+/// 2026-11-20 (wave-6 §7.14, guard-based discharge): `checkfree` — every
+/// subscript in a defn body must be statically in-bounds. Opt-in (only defns
+/// carrying the modifier) and intra-procedural (a call is not walked into).
+///
+/// The obligation is discharged from the facts that DOMINATE the subscript,
+/// built with `callgate::facts_of` — the same function the typechecker pushes
+/// into `ctx.known_facts` while checking a guard body (see the `Guarded` arm
+/// of `infer_statement`). Reusing it, rather than re-deriving guard semantics,
+/// is what makes this a consumer of the proof engine instead of a second
+/// opinion about it.
+///
+/// Two halves, both required:
+///
+/// * **F1 — upper bound.** A dominating fact `<idx> < <count(coll)>` (or
+///   `<idx> <= <count(coll)> - 1`, and the mirrored `>`/`>=` spellings),
+///   matched STRUCTURALLY on the index expression as written.
+/// * **F2 — lower bound.** A dominating fact `<idx> >= 0` (or `0 <= <idx>`),
+///   or `<idx>` declaring type `IndexIn(coll)` for the SAME collection — its
+///   §15.4a construction rule gives `0 ..= count`, supplying the lower half
+///   only. That is the correction: a bound is not a subscript licence.
+///
+/// A literal index into a fixed `Vector<_, N>` is the other discharge: the
+/// length is static, so `< N` is a proof and not a guess. A literal into a
+/// DYNAMIC collection is rejected — its length is not statically known, so a
+/// small number proves nothing.
+///
+/// Rejection is the default. Anything the matcher cannot prove is an error
+/// naming the collection, the failing half, and the guard to write.
+fn check_checkfree_defns(items: &[TopLevel], errors: &mut Vec<TypeError>) {
+    for item in items {
+        let defn = match item {
+            TopLevel::Definition(d) => d,
+            TopLevel::Export(e) => match e.inner.as_ref() {
+                TopLevel::Definition(d) => d,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        if !defn.modifiers.iter().any(|m| m.name == "checkfree") {
+            continue;
+        }
+        // Declared types, for the F2-by-index-type half and fixed-Vector
+        // lengths. Best-effort on purpose: a miss makes the check STRICTER,
+        // never unsound, which is the only direction that is safe to be lazy.
+        let mut types: HashMap<String, Type> = HashMap::new();
+        for (pname, pty) in &defn.parameters {
+            types.insert(pname.clone(), pty.clone());
+        }
+        collect_annotated_lets(&defn.body, &mut types);
+        // The defn's own precondition dominates the whole body (it is the
+        // caller's obligation, discharged at every call site).
+        let mut facts = crate::proof_engine::callgate::facts_of(&defn.contract.pre_condition);
+        // Each site is captured WITH the facts that dominated it — the walk's
+        // fact stack is popped as it unwinds, so the diagnostic must be built
+        // from the snapshot, never from the stack's final state.
+        let mut sites: Vec<(Expr, Vec<Expr>)> = Vec::new();
+        {
+            let mut sink = |e: &Expr, facts: &[Expr]| {
+                if subscript_undischarged(e, facts, &types) {
+                    sites.push((e.clone(), facts.to_vec()));
+                }
+            };
+            walk_scoped_stmts(&defn.body, &mut facts, &mut sink);
+        }
+        for (site, at_facts) in sites {
+            errors.push(checkfree_error(&defn.name, &site, &at_facts, &types));
+        }
+    }
+}
+
+/// Walk statements carrying the dominating fact stack. `Guarded` pushes its
+/// condition's facts for the body and pops them on exit (mirroring the
+/// typechecker's scoping), then keeps the fall-through facts when the body
+/// always terminates — so `when bad { term … }; use_…` sees the negation.
+///
+/// The statement match is exhaustive (no `_` arm): a new `Statement` variant
+/// fails to compile here rather than silently escaping the obligation, and
+/// expression positions inside an ordinary statement go through
+/// `ast::visit::walk_stmts` — the one exhaustive expression visitor.
+fn walk_scoped_stmts(
+    stmts: &[Statement],
+    facts: &mut Vec<Expr>,
+    sink: &mut impl FnMut(&Expr, &[Expr]),
+) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Guarded(cond, body) => {
+                let base = facts.len();
+                facts.extend(crate::proof_engine::callgate::facts_of(cond));
+                walk_scoped_stmts(body, facts, sink);
+                facts.truncate(base);
+                if body
+                    .iter()
+                    .any(crate::analysis::termination::statement_always_terminates)
+                {
+                    let negated = crate::proof_engine::callgate::fallthrough_facts(cond);
+                    facts.extend(negated);
+                }
+            }
+            Statement::Block(inner)
+            | Statement::SyncBlock(inner)
+            | Statement::Defer(inner)
+            | Statement::Mutex(inner) => walk_scoped_stmts(inner, facts, sink),
+            Statement::Foreach { body, .. } => walk_scoped_stmts(body, facts, sink),
+            Statement::InlineDefn(inner) => walk_scoped_stmts(&inner.body, facts, sink),
+            // `Match` arms carry their own bindings; their patterns establish
+            // no facts here, so subscripts inside an arm are checked against
+            // the OUTER facts only. Conservative in the safe direction (fewer
+            // facts ⇒ more rejections), and the arm bodies are still visited.
+            Statement::Match { .. }
+            | Statement::Let { .. }
+            | Statement::Assign(..)
+            | Statement::ArrowAssign { .. }
+            | Statement::Term(_)
+            | Statement::Tail(_)
+            | Statement::Break
+            | Statement::Trap
+            | Statement::Halt
+            | Statement::Yield
+            | Statement::Check(_)
+            | Statement::EndProgram(_)
+            | Statement::Gate(_)
+            | Statement::Expression(_)
+            | Statement::Expect(_)
+            | Statement::MetadataAssignment(..)
+            | Statement::Rollback(_)
+            | Statement::FreeHint(_)
+            | Statement::KeepHint(_)
+            | Statement::TrgBinding { .. }
+            | Statement::InlineAsm { .. }
+            | Statement::Open(..) => {
+                let snapshot = facts.clone();
+                crate::ast::visit::walk_stmts(std::slice::from_ref(stmt), &mut |e| {
+                    sink(e, &snapshot)
+                });
+            }
+        }
+    }
+}
+
+/// Record annotated `let` types reachable in the body. Best-effort on
+/// purpose: an unrecorded binding fails F2, which is the safe direction.
+fn collect_annotated_lets(stmts: &[Statement], types: &mut HashMap<String, Type>) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Let {
+                name,
+                ty: Some(t),
+                ..
+            } => {
+                types.insert(name.clone(), t.clone());
+            }
+            Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Defer(body)
+            | Statement::Mutex(body) => collect_annotated_lets(body, types),
+            Statement::Guarded(_, body) => collect_annotated_lets(body, types),
+            Statement::Foreach { body, .. } => collect_annotated_lets(body, types),
+            Statement::InlineDefn(d) => collect_annotated_lets(&d.body, types),
+            _ => {}
+        }
+    }
+}
+
+/// True when this expression is a subscript the facts do not discharge.
+fn subscript_undischarged(expr: &Expr, facts: &[Expr], types: &HashMap<String, Type>) -> bool {
+    let Expr::Index(receiver, index) = expr else {
+        return false;
+    };
+    !subscript_proven(receiver, index, facts, types)
+}
+
+/// The two-half verdict for one subscript.
+fn subscript_proven(
+    receiver: &Expr,
+    index: &Expr,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> bool {
+    if let Some(n) = fixed_vector_len(receiver, types) {
+        if let Expr::Decimal(k) = index {
+            return *k >= 0 && (*k as usize) < n;
+        }
+    }
+    upper_bounded(receiver, index, facts) && lower_bounded(receiver, index, facts, types)
+}
+
+/// F1 — a dominating fact places `index` below the receiver's own count.
+fn upper_bounded(receiver: &Expr, index: &Expr, facts: &[Expr]) -> bool {
+    facts.iter().any(|f| is_upper_bound_fact(f, receiver, index))
+}
+
+/// `idx < count`, `idx <= count - 1`, and the mirrored `count > idx` /
+/// `count - 1 >= idx` spellings. Structural on `idx`: the guard must name the
+/// expression you subscript with.
+fn is_upper_bound_fact(fact: &Expr, receiver: &Expr, index: &Expr) -> bool {
+    match fact {
+        Expr::BinaryOp(kind, l, r) => match kind {
+            BinaryOpKind::Lt => l.as_ref() == index && is_count_of(r, receiver),
+            BinaryOpKind::Gt => r.as_ref() == index && is_count_of(l, receiver),
+            BinaryOpKind::Le => l.as_ref() == index && is_count_minus_one(r, receiver),
+            BinaryOpKind::Ge => r.as_ref() == index && is_count_minus_one(l, receiver),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// F2 — a dominating fact places `index` at or above zero, or the index is a
+/// value of `IndexIn(<same collection>)` (construction gives `0 ..= count`).
+fn lower_bounded(
+    receiver: &Expr,
+    index: &Expr,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> bool {
+    if index_is_non_negative_fact(index, facts) {
+        return true;
+    }
+    matches!(
+        (coll_name(receiver), index_type_of(index, types)),
+        (Some(coll), Some(bound_to)) if coll == bound_to
+    )
+}
+
+/// `idx >= 0`, `0 <= idx`, and the mirrored spellings.
+fn index_is_non_negative_fact(index: &Expr, facts: &[Expr]) -> bool {
+    facts.iter().any(|f| match f {
+        Expr::BinaryOp(kind, l, r) => match kind {
+            BinaryOpKind::Ge => l.as_ref() == index && matches!(r.as_ref(), Expr::Decimal(0)),
+            BinaryOpKind::Le => r.as_ref() == index && matches!(l.as_ref(), Expr::Decimal(0)),
+            BinaryOpKind::Gt => l.as_ref() == index && matches!(r.as_ref(), Expr::Decimal(-1)),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+/// The collection a subscript receiver names, if it is a plain identifier.
+fn coll_name(receiver: &Expr) -> Option<&str> {
+    match receiver {
+        Expr::Identifier(n) => Some(n.as_str()),
+        _ => None,
+    }
+}
+
+/// The collection an index value is bound to, when it is a plain identifier
+/// with an `IndexIn` declared type.
+fn index_type_of<'a>(index: &Expr, types: &'a HashMap<String, Type>) -> Option<&'a str> {
+    let Expr::Identifier(n) = index else {
+        return None;
+    };
+    match types.get(n) {
+        Some(Type::IndexIn(coll, _)) => Some(coll.as_str()),
+        _ => None,
+    }
+}
+
+/// Does `e` read `receiver`'s element count? Covers `xs.Count#()` (the dot
+/// surface) and the `Count#(xs)` call spelling.
+fn is_count_of(e: &Expr, receiver: &Expr) -> bool {
+    match e {
+        Expr::MethodCall(recv, name, args, _) => {
+            name == "Count#" && args.is_empty() && recv.as_ref() == receiver
+        }
+        Expr::Call(callee, args, _) => {
+            callee == "Count#" && matches!(args.as_slice(), [only] if only == receiver)
+        }
+        _ => false,
+    }
+}
+
+/// `<count> - 1`, the inclusive last index.
+fn is_count_minus_one(e: &Expr, receiver: &Expr) -> bool {
+    match e {
+        Expr::BinaryOp(BinaryOpKind::Sub, l, r) => {
+            is_count_of(l, receiver) && matches!(r.as_ref(), Expr::Decimal(1))
+        }
+        _ => false,
+    }
+}
+
+/// The element count of a single-dimension fixed `Vector<_, [N]>`, when the
+/// receiver is a name with that declared type.
+fn fixed_vector_len(receiver: &Expr, types: &HashMap<String, Type>) -> Option<usize> {
+    let name = coll_name(receiver)?;
+    match types.get(name) {
+        Some(Type::Vector(_, dims)) if dims.len() == 1 => match &dims[0] {
+            crate::ast::Dimension::Anonymous(n) | crate::ast::Dimension::Named(_, n) => Some(*n),
+        },
+        _ => None,
+    }
+}
+
+/// The diagnostic: what failed, on which collection, and the guard to write.
+fn checkfree_error(
+    defn: &str,
+    site: &Expr,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> TypeError {
+    let Expr::Index(receiver, index) = site else {
+        return TypeError::FFIError {
+            message: format!("checkfree `{defn}`: malformed subscript"),
+        };
+    };
+    let coll = coll_name(receiver).unwrap_or("<expression>");
+    let detail = if coll_name(receiver).is_none() {
+        "the subscripted value is not a named binding, so no count is known".to_string()
+    } else if fixed_vector_len(receiver, types).is_some() {
+        format!("`{coll}` is a fixed Vector, but the index is not a literal inside it")
+    } else if !lower_bounded(receiver, index, facts, types) {
+        format!(
+            "no dominating guard establishes `0 <= {index}`, and the index is not \
+             declared `u32 in {coll}` — the lower half of the range is unproven"
+        )
+    } else {
+        format!("no dominating guard establishes `{index} < {coll}.Count#()`")
+    };
+    TypeError::FFIError {
+        message: format!(
+            "checkfree `{defn}`: the subscript on `{coll}` is not provably in-bounds — {detail}. \
+             `checkfree` promises every subscript in this body is statically proven. Write the \
+             guard it needs, e.g. `when 0 <= {index} {{ when {index} < {coll}.Count#() {{ … }}; }}`, \
+             or drop the modifier if the bound is a runtime fact."
+        ),
+    }
+}
+
 fn check_duplicate_constants(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     let mut seen: std::collections::HashMap<String, Option<String>> =
         std::collections::HashMap::new();
@@ -6028,6 +6357,10 @@ pub fn check_program_with_target(
     // carried identical duplicates — those get the warning until their
     // owners dedupe).
     check_duplicate_constants(items, &mut errors);
+    // 2026-11-20 (wave-6 §7.14): the `checkfree` subscript-bounds obligation.
+    // Opt-in per defn; consumes the same guard facts the call-site contract
+    // gate trusts (SPEC §15.4a).
+    check_checkfree_defns(items, &mut errors);
     // 2026-08-05 (Phase 5): trait declarations, impl coherence, and explicit
     // trait conformance.
     check_trait_declarations(items, &mut errors);
