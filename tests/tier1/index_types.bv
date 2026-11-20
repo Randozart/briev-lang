@@ -1,0 +1,20 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// index_types — SPEC §15-analog (wave-6 W6-2, Goose-borrowed): `u32 in xs`
+// binds an index VALUE to its collection; construction is only legal from
+// that collection's Count#() or a same-typed value, and a subscript through
+// it is provably in-bounds. Wrong-collection and plain-Int constructions
+// are compile errors (verified: ys.Count#() into `u32 in xs` rejected).
+// spec: 15
+import "std/io.bv";
+
+node entry [beginprogram][true] {
+    let xs: List<Int> = [7, 8, 9];
+    let i: u32 in xs = xs.Count#();
+    let last: Int = xs[i - 1];
+    Print#(i as String);
+    Print#("|");
+    Print#(last as String);
+    endprogram Print#("");
+};

@@ -537,6 +537,17 @@ impl<'a> TypecheckContext<'a> {
         if let Type::Constrained(base, _) = lhs {
             return self.resolve_binary_op_binding(kind, base, rhs);
         }
+        // 2026-11-20 (wave-6 W6-2, index types): an index value acts as its
+        // unsigned carrier in arithmetic (Goose §15: index types are the
+        // bounds proof, arithmetic widens to Int — `xs[i - 1]` is the
+        // canonical last-element read). Result is the plain carrier type:
+        // arithmetic on an index does not produce a new bounded index.
+        if let Type::IndexIn(_, carrier) = lhs {
+            return self.resolve_binary_op_binding(kind, carrier, rhs);
+        }
+        if let Type::IndexIn(_, carrier) = rhs {
+            return self.resolve_binary_op_binding(kind, lhs, carrier);
+        }
         let rune = format!("{}", kind);
         let op_name = crate::type_universe::operators::rune_to_op_name(&rune)?;
         if let Some(fn_name) = self.type_declares_op_binding(lhs, &op_name, rhs) {
@@ -2893,6 +2904,16 @@ pub(crate) fn types_compatible(declared: &Type, value: &Type, ctx: &TypecheckCon
     if let Type::Union(members) = declared {
         return members.iter().any(|m| m == value);
     }
+    // 2026-11-20 (wave-6 W6-2, index types): `u32 in xs` accepts a plain
+    // Int-carrying value ONLY at a construction site — Goose §15's trick:
+    // the bounds fact is the type, so an Int INTO an index type must be
+    // checked by the construction rule (Count# of the SAME collection),
+    // not by a blanket numeric compat. types_compatible is context-free,
+    // so this stays false here; the Let/Assign sites call
+    // index_type_construction_ok for the narrow allowed case.
+    if matches!(declared, Type::IndexIn(_, _)) {
+        return false;
+    }
     // 2026-08-22 (Phase 5, SPEC §8.6): concrete → `dyn Trait` — ONLY into an
     // explicit dyn annotation (this fn is only consulted for annotated
     // positions), and only when the concrete type ASSERTS the trait. The
@@ -3679,7 +3700,15 @@ fn infer_binary_op(
     let literal_admitted = literal_fits_sized(&lhs_ty, rhs, ctx.universe)
         || literal_fits_sized(&rhs_ty, lhs, ctx.universe)
         || numeral_admits_quantity(&lhs_ty, rhs, ctx.universe)
-        || numeral_admits_quantity(&rhs_ty, lhs, ctx.universe);
+        || numeral_admits_quantity(&rhs_ty, lhs, ctx.universe)
+        // 2026-11-20 (wave-6 W6-2, index types): an index-typed operand
+        // admits a plain-Int literal on the other side — the arithmetic
+        // result is the plain carrier type (the index does not stay
+        // bounded through arithmetic), so `xs[i - 1]` is the canonical
+        // last-element read. Without this the UInt-vs-Int spelling check
+        // would reject it.
+        || matches!(lhs_ty, Type::IndexIn(_, _))
+        || matches!(rhs_ty, Type::IndexIn(_, _));
 
     if kind.is_comparison() || kind.is_logical() {
         if lhs_str != rhs_str && !literal_admitted {
@@ -4648,7 +4677,35 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 };
                 // 2026-08-22 (Phase 3): structural sums admit their members
                 // (`let v: Int | String = 5`) via types_compatible.
-                let compatible = if vector_literal || sized_literal || float_literal {
+                // 2026-11-20 (wave-6 W6-2, index types): `let i: u32 in xs =
+                // xs.Count#();` — the construction rule. The annotation binds
+                // the index to a collection; the initializer must be THAT
+                // collection's Count#() (or another value already of the same
+                // index type). This is the proof-bearing construction Goose
+                // §15 uses; a blanket Int compat would defeat it.
+                let index_construction = match (declared, expr.as_ref()) {
+                    (
+                        Type::IndexIn(coll, _),
+                        Some(Expr::MethodCall(recv, op, _, _)),
+                    ) if op == "Count#" => {
+                        matches!(recv.as_ref(), Expr::Identifier(n) if n == coll)
+                    }
+                    (
+                        Type::IndexIn(coll, _),
+                        Some(Expr::Identifier(other)),
+                    ) => {
+                        // 2026-11-20 (wave-6 W6-2): rebinding from another
+                        // value of the same index type — the type carries
+                        // the collection, so the identity check is exact.
+                        ctx.bindings
+                            .get(other.as_str())
+                            .map(|t| matches!(t, Type::IndexIn(c2, _) if c2 == coll))
+                            .unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                let compatible = if vector_literal || sized_literal || float_literal || index_construction
+                {
                     true
                 } else if types_compatible(declared, &inferred, ctx) {
                     true

@@ -272,6 +272,11 @@ impl Annotator {
             Type::Dyn(inner) => format!("dyn {}", inner),
             Type::Task(inner) => format!("Task<{}>", inner),
             Type::Number(n) => n.to_string(),
+            // 2026-11-20 (wave-6 W6-2): an index type presents as its
+            // element annotation plus the bound collection.
+            Type::IndexIn(coll, elem) => {
+                format!("{} in {}", elem, coll)
+            }
             Type::Custom(__t) if __t == "Int" => "Int".to_string(),
             Type::Custom(__t) if __t == "Int8" => "Int8".to_string(),
             Type::Custom(__t) if __t == "Int16" => "Int16".to_string(),

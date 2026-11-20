@@ -1041,6 +1041,14 @@ impl CastingGraph {
             // Compiler constructs (not in universe) — permitted direct handling per Rule 18a.
             Type::Bits(_) => return ("Bit".to_string(), String::new()),
             Type::Void => return ("Bit".to_string(), String::new()),
+            // 2026-11-20 (wave-6 W6-2, index types): an index value IS its
+            // unsigned carrier — protocol/category transparent. Without this
+            // the default lane resolves IndexIn to Data (universe_key None)
+            // and Print#/arith treat a plain integer as a bits pointer
+            // (the segfault class caught by tests/tier1/index_types.bv).
+            Type::IndexIn(_, inner) => {
+                return self.type_to_protocol(universe, inner);
+            }
             // 2026-07-30: Ptr<T> deliberately NOT mapped to "Blob" here.
             // Mapping Ptr→Data would cause is_protocol_member(Ptr, "Blob")
             // to return true, breaking adapt_to_i64 which expects Ptr fields

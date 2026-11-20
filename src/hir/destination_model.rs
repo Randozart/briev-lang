@@ -1408,7 +1408,9 @@ fn shape_for_type(ty: Option<&Type>) -> ValueShape {
         external_abi: false,
     };
     match ty {
-        Type::Bits(_) | Type::Void => shape.kind = ValueShapeKind::Scalar,
+        Type::Bits(_) | Type::Void | Type::IndexIn(_, _) => {
+            shape.kind = ValueShapeKind::Scalar;
+        }
         Type::Tuple(fields) => {
             shape.kind = ValueShapeKind::Tuple;
             shape.payload_words = Some(fields.len() as u64);
