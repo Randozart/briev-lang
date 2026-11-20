@@ -3614,15 +3614,22 @@ let tail: Int = xs[i - 1];          // provably in-bounds subscript
 
 `u32 in xs` binds an index VALUE to its collection, statically.
 
-- **Construction.** The only legal initializers for an index type are that
-  collection's own `Count#()` and another value already of the same index
-  type. `ys.Count#()` into `u32 in xs` is a type error; so is a plain
-  `Int`. There is no conversion from `Int` to an index type.
-- **Subscript.** `xs[i]` where `i` has type `u32 in xs` is provably
-  in-bounds: the type carries the bound. Such a subscript is an unchecked
-  `inbounds` access natively (the §11.4 note's UB contract does not apply
-  to it — the proof is static), and the reference engine's out-of-bounds
-  error is unreachable through it.
+- **Construction.** The only legal initializers are that collection's own
+  `Count#()` and another value already of the same type. `ys.Count#()` into
+  `u32 in xs` is a type error; so is a plain `Int`. There is no conversion
+  from `Int`. What you get back is the collection's COUNT, range
+  `0 ..= count` — see the subscript note below.
+- **Subscript — NOT a licence (2026-11-20 correction).** `Count#()` is the
+  element COUNT; valid indices are `0 .. count-1`. A value constructed from
+  `Count#()` is therefore a **bound** (`0 ..= count`), not an index, and a
+  subscript through it is **not** provably in range — `xs[i]` with
+  `i = xs.Count#()` reads one past the end. An index type is a bound you
+  can reason with (loop limits, `when` guards, arithmetic), not a subscript
+  licence. A `checkfree`-style obligation would need either a true index
+  type with a total construction source, or a dominating guard proving
+  `idx < coll.Count#()`; neither exists yet, so `xs[bound]` keeps the
+  ordinary §11.4 semantics (unchecked `inbounds` natively, loud error in
+  the reference engine).
 - **Arithmetic degrades.** An index acts as its unsigned carrier in
   operators; the RESULT is the plain carrier type, not a new bounded
   index — `i - 1` is an `Int`, and subscripting with it is the ordinary
