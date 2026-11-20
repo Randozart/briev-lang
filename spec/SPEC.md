@@ -3731,6 +3731,20 @@ Custom parse-prefix/suffix bindings are not currently exposed. Unknown prefixes 
 - Formatting/interpolation uses explicit compile-time expansion such as `format!(...)`.
 - Lexer-level interpolated strings and adjacent tagged literals do not exist.
 
+> **2026-11-20 (wave-5 W5-6, String/Data ABI).** A `String` or byte
+> buffer cast through `Data` addresses a **frozen runtime layout**:
+> `[i64 byte-length][bytes][NUL]` — an 8-byte little-endian length word,
+> the payload, and one terminating zero byte. The payload begins at
+> **offset 8** from the `Data` word. This layout is the cross-layer
+> contract the interpreter's `Data` door, the LLVM backend's string
+> construction, and the standard library's byte-level helpers
+> (`fs_write`, `Copy#`-based copies, socket paths) all rely on; the
+> standard library's `(s as Data) as Int + 8` payload addressing is
+> this contract, not an implementation shortcut. Changing the layout
+> requires migrating every consumer named here in the same commit.
+> The terminating NUL is present in the allocation but is not counted
+> by the length word (`.^Length` reads the length word, byte count).
+
 ### 16.3 Ordered and associative literals
 
 ```briev
