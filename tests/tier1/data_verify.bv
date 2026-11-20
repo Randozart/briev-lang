@@ -1,0 +1,38 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// data_verify — SPEC §16.2 verify-on-load (wave-6 W6-4): data_check accepts
+// a well-formed [i64 len][bytes][NUL] Data block and rejects a block whose
+// length word claims more than the caller's bound (the hostile-word class
+// from the Goose from_bytes model: a corrupt length must give 0, never a
+// wild read).
+// spec: 16.2
+import "std/io.bv";
+import { data_check } from "std/data_verify.bv";
+
+// make_block — build a writable [len][bytes][NUL] block (the String/Data
+// ABI, SPEC §16.2) so the fixture owns its storage and can tamper with it.
+defn make_block(len: Int) [len >= 0 && len <= 32] -> Int {
+    let block: Int = Alloc#(64) as Int;
+    Store#(block, len, 8);
+    Store#(block + 8, 104, 1);
+    Store#(block + 8 + len, 0, 1);
+    term block;
+};
+
+node entry [beginprogram][true] {
+    let ok_word: Int = make_block(5);
+    Print#(data_check(ok_word, 64) as String);
+    Print#("|");
+    // Tamper: claim a 1 GiB payload. The caller's bound is 64, so the
+    // check must reject WITHOUT dereferencing the claimed length.
+    let bad_word: Int = make_block(5);
+    Store#(bad_word, 1073741824, 8);
+    Print#(data_check(bad_word, 64) as String);
+    Print#("|");
+    // A block whose NUL terminator is missing is malformed too.
+    let no_nul: Int = make_block(5);
+    Store#(no_nul + 8 + 5, 65, 1);
+    Print#(data_check(no_nul, 64) as String);
+    endprogram Print#("");
+};
