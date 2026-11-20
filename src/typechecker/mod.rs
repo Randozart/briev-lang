@@ -9851,6 +9851,222 @@ mod tests {
         let universe = crate::type_universe::TypeUniverse::new();
         check_program(&mut items, &universe)
     }
+    // ─── checkfree: the subscript-bounds obligation (SPEC §15.4a) ──────────
+    //
+    // Guard-based discharge. Every subscript must be proven from the facts
+    // that dominate it (F1 upper bound + F2 lower bound). Rejection is the
+    // default — a test that ACCEPTS is only meaningful next to one that
+    // REJECTS on the same shape, so the pairs below are deliberate.
+
+    /// checkfree tests go through `library::parse_and_check`, NOT the local
+    /// `check`: a `List<Int>` receiver needs the stdlib universe (`op Count`)
+    /// registered, and a test that could not even name the type would fail for
+    /// a reason unrelated to the obligation. `std/collections.bv` is imported
+    /// explicitly so the test does not depend on ambient stdlib loading.
+    fn checkfree_result(src: &str) -> Result<(), String> {
+        let with_stdlib = format!("import \"std/collections.bv\";\n{src}");
+        crate::library::parse_and_check("checkfree_test.bv", &with_stdlib).map(|_| ())
+    }
+
+    /// Panic with the ACTUAL diagnostics when a program must type-check.
+    fn must_pass(src: &str) {
+        if let Err(why) = checkfree_result(src) {
+            panic!("expected this to type-check, got:\n{why}\n--- source ---\n{src}");
+        }
+    }
+
+    fn checkfree_msg(src: &str) -> String {
+        checkfree_result(src).expect_err("checkfree must reject this program")
+    }
+
+    #[test]
+    fn checkfree_accepts_guarded_subscript() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < xs.Count#() {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
+    fn checkfree_rejects_unbounded_subscript() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    term xs[i];
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "an unguarded subscript carries no proof and must be rejected"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_mismatched_collection_guard() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, ys: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < ys.Count#() {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("xs.Count#()"),
+            "the guard bounds i against ys, so it says nothing about xs: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_missing_lower_bound() {
+        // F2 must do real work: an upper bound ALONE is not a proof, because a
+        // negative index is still possible. Without this test the obligation
+        // would silently degenerate into "check the upper end only".
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when i < xs.Count#() {
+        term xs[i];
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("0 <= i"),
+            "an upper bound alone leaves the negative half unproven: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_lower_bound_only_guard() {
+        let src = r#"
+checkfree defn prev(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        term xs[i - 1];
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("i - 1") || msg.contains("(i - 1)"),
+            "`i > 0` says nothing about the upper end of `i - 1`: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_guard_out_of_scope() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < xs.Count#() {
+            let n: Int = i;
+        };
+    };
+    term xs[i];
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a guard's facts must not leak past its block"
+        );
+    }
+
+    #[test]
+    fn checkfree_index_type_supplies_lower_bound() {
+        // An IndexIn index supplies F2 (0..=count) — but NOT F1, so the upper
+        // guard is still owed. That is the §15.4a correction in one test.
+        let missing_upper = r#"
+checkfree defn take(xs: List<Int>) -> Int {
+    let n: u32 in xs = xs.Count#();
+    term xs[n];
+};
+"#;
+        assert!(
+            checkfree_result(missing_upper).is_err(),
+            "an index type must not license a subscript on its own"
+        );
+        let with_upper = r#"
+checkfree defn take(xs: List<Int>) -> Int {
+    let n: u32 in xs = xs.Count#();
+    when n < xs.Count#() {
+        term xs[n];
+    };
+    term 0;
+};
+"#;
+        must_pass(with_upper);
+    }
+
+    #[test]
+    fn checkfree_rejects_literal_on_dynamic_coll() {
+        let src = r#"
+checkfree defn head(xs: List<Int>) -> Int {
+    term xs[0];
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a literal into a DYNAMIC collection proves nothing — its length \
+             is not statically known"
+        );
+    }
+
+    #[test]
+    fn checkfree_accepts_vector_literal() {
+        let src = r#"
+checkfree defn lane(v: Int[4]) -> Int {
+    term v[3];
+};
+"#;
+        must_pass(src);
+        let out_of_range = r#"
+checkfree defn lane(v: Int[4]) -> Int {
+    term v[4];
+};
+"#;
+        assert!(
+            checkfree_result(out_of_range).is_err(),
+            "a literal at the fixed length is out of bounds"
+        );
+    }
+
+    #[test]
+    fn checkfree_sees_nested_subscripts() {
+        // The subscript sits inside a call argument — a hand-rolled walker
+        // that visited only statement roots would miss it and pass unsoundly.
+        let src = r#"
+defn id(x: Int) -> Int { term x; };
+
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    term id(xs[i]);
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a subscript nested in a call argument must still be proven"
+        );
+    }
+
+    #[test]
+    fn checkfree_is_opt_in() {
+        let src = r#"
+defn peek(xs: List<Int>, i: Int) -> Int {
+    term xs[i];
+};
+"#;
+        must_pass(src);
+    }
+
     #[test]
     fn duplicate_consts_are_rejected() {
         let result = check("const X: Int = 5;\nconst X: Int = 7;\n");
