@@ -8,6 +8,7 @@ use crate::ast::{Expr, Type};
 use crate::backend::llvm::emit_expr::{ArgsView, ExprView};
 use crate::backend::llvm::{AllocStrategy, LlvmBackend, TypedRegister as BTypedRegister};
 use crate::config::AllocConfig;
+use crate::hir::owned_storage::StaticClass;
 use std::fmt::Write;
 use std::sync::LazyLock;
 
@@ -155,7 +156,12 @@ pub fn emit_intrinsic_call(
             if backend.ctx.defn_params.contains_key("rt_getcwd") {
                 let cwd_i = backend.fun.gen_reg();
                 let cwd_state = backend.ctx.state_prefix("rt_getcwd");
-                writeln!(out, "{}{} = call i64 @rt_getcwd({cwd_state})", indent, cwd_i).ok();
+                writeln!(
+                    out,
+                    "{}{} = call i64 @rt_getcwd({cwd_state})",
+                    indent, cwd_i
+                )
+                .ok();
                 writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cstr, cwd_i).ok();
             } else {
                 writeln!(out, "{}{} = call ptr @__briev_getcwd()", indent, cstr).ok();
@@ -1420,10 +1426,24 @@ fn emit_free(
     args: &[Expr],
     indent: &str,
 ) -> BTypedRegister {
+    // 2026-11-20 (K3): when the argument expression is a CALL, its callee's
+    // provenance class (from the frontend's static-return summary) is the
+    // authoritative fact — a strategy lookup for a call result is always
+    // empty (call results are never registered), so the lookup must not
+    // outrank the provenance fact.
+    let callee: Option<String> = match &args[0] {
+        Expr::Call(name, _, _) => Some(name.clone()),
+        _ => None,
+    };
     let ptr_reg = backend.emit_expr(out, &args[0], indent);
     // Look up the allocation strategy for the pointer register.
     // (cloned: the Malloc arm needs `&mut backend` for width adaptation.)
     let strategy = backend.fun.alloc_strategies.get(&ptr_reg.name).cloned();
+    // 2026-11-20 (K3): a call-result argument is decided by its callee's
+    // provenance class, not by the (always-empty) strategy lookup.
+    let call_provenance = callee
+        .as_deref()
+        .and_then(|c| backend.static_returns.get(c).copied());
     match strategy {
         // 2026-07-18: Inline, RingBuffer, Arena, Alloca — no Free# needed.
         Some(AllocStrategy::Arena)
@@ -1450,6 +1470,56 @@ fn emit_free(
             }
         }
         Some(AllocStrategy::Malloc) | Some(AllocStrategy::Custom(_)) | _ => {
+            // 2026-11-20 (K3): the unknown-provenance fallthrough is no longer
+            // "assume malloc". For a call-result argument the frontend's
+            // static-return summary decides:
+            //   Static → compile error (freeing .rodata is UB; the detect_faces
+            //             `free(): invalid pointer` crash). The fix is a heap
+            //             copy (e.g. fresh_string) or a non-owning append.
+            //   Mixed/untracked → conservatively skip the free with a warning,
+            //             symmetric to the owned-storage pass refusing to
+            //             insert unproven releases (a leak beats a crash).
+            // A non-call argument keeps the legacy malloc assumption: a
+            // `Free#` on a bare Ptr/Identifier with no strategy is the
+            // pre-K3 contract (explicit free of host-passed storage).
+            match call_provenance {
+                Some(StaticClass::Static) => {
+                    // 2026-11-20 (K3): hard diagnostic, surfaced on the
+                    // warnings channel (the backend's only diagnostic channel
+                    // threaded through emit_expr — a hard error return type
+                    // would ripple through every emitter). The `error:` prefix
+                    // is the consumer's hard-fail marker.
+                    backend.warnings.push(format!(
+                        "error: Free# on a possibly-static result of `{}`: the \
+                         callee can return a compiler-allocated string (.rodata), \
+                         and freeing it is undefined (crash: free(): invalid \
+                         pointer). Copy it into owned storage first (e.g. \
+                         `let owned: String = fresh_string(<value>);`) or use a \
+                         non-owning append that does not free its inputs.",
+                        callee.as_deref().unwrap_or("?")
+                    ));
+                    return BTypedRegister {
+                        name: v.to_string(),
+                        ty: Type::void(),
+                    };
+                }
+                // 2026-11-20 (K3): Mixed provenance is refused conservatively
+                // (symmetric to the owned-storage pass: a leak beats a crash).
+                // Owned/untracked falls through to the legacy @free emission.
+                Some(StaticClass::Mixed) => {
+                    backend.warnings.push(format!(
+                        "Free# on an untracked-provenance result of `{}` — no free \
+                         emitted (conservative). Prove the value is owned \
+                         (e.g. fresh_string) to licence the release.",
+                        callee.as_deref().unwrap_or("?")
+                    ));
+                    return BTypedRegister {
+                        name: v.to_string(),
+                        ty: Type::void(),
+                    };
+                }
+                Some(StaticClass::Owned) | None => {}
+            }
             // Heap-allocated (Malloc) or unknown → emit @free.
             // 2026-08-01 (D2): a Ptr value is stored as an i64 handle (ptrtoint
             // at store); the handle must be inttoptr'd before the @free call.

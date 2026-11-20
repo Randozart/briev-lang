@@ -163,6 +163,11 @@ pub struct AnalysisResults {
     /// `tail_loop_enabled` and emits the free-before-backedge / exit release.
     /// Empty means no loop-carried owned storage on any lowered defn.
     pub owned_tail_params: crate::hir::owned_storage::OwnedTailLoopPlan,
+    /// 2026-11-20 (K3): per-callable provenance of owned returns (Static /
+    /// Owned / Mixed). Consumed by the LLVM free dispatcher: a Free# on a
+    /// possibly-static call result is a diagnostic, not an unsound @free
+    /// (the detect_faces `free(): invalid pointer`).
+    pub static_returns: crate::hir::owned_storage::StaticReturnSummary,
     /// 2026-09-13 (defn-liveness emission): the call-reachable defn/txn set.
     /// The backend emits ONLY these (plus keep_all when live code uses `.^^`
     /// reflection). Imports grant capability; liveness gates emission cost.
@@ -682,6 +687,7 @@ pub fn analyze_program(
         crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe)
     };
     let mut owned_tail_params = crate::hir::owned_storage::OwnedTailLoopPlan::new();
+    let mut static_returns = crate::hir::owned_storage::StaticReturnSummary::new();
     // 2026-11-14 (A/B byte-identity, recommender): owned-storage releases are
     // statements (`ReleaseOwned`/`TempTransfer`) that the HIR statement walk
     // emits natively in BOTH modes; gating the insertion on HIR mode made the
@@ -690,7 +696,9 @@ pub fn analyze_program(
     // analysis result, not an emission choice: run it unconditionally.
     {
         let escapes = crate::analysis::allocation::summarize_escapes(items);
-        owned_tail_params = crate::hir::owned_storage::insert_releases(&mut hir, &escapes);
+        let plan = crate::hir::owned_storage::insert_releases(&mut hir, &escapes);
+        owned_tail_params = plan.0;
+        static_returns = plan.1;
     }
     let mut destination_ownership = crate::analysis::destination_ownership::analyze(items);
     // D6: LoopShape.local_fields is the canonical Local proof and joins the
@@ -702,6 +710,7 @@ pub fn analyze_program(
     );
     AnalysisResults {
         reclamation,
+        static_returns,
         call_graph: CallGraph::new(),
         param_ranges: ParameterRanges::new(),
         fusable_pairs: Vec::new(),
