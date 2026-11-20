@@ -31,7 +31,7 @@ txn bytes_loop(s: String, result: List<Int>, i: Int)
     [i < s .^Length][i == s .^Length] -> List<Int>
 {
     result <- byte_at(s, i);
-    i = i + 1;
+    i += 1;
     term result;
 };
 // Complex replacement
@@ -93,7 +93,7 @@ txn contains_loop(haystack: String, needle: String, i: Int, lim: Int)
     i = lim;
     term true;
   };
-  i = i + 1;
+  i += 1;
   term false;
 };
 
@@ -129,7 +129,7 @@ txn find_loop(s: String, needle: String, i: Int, lim: Int)
     lim = i;
     term i;
   };
-  i = i + 1;
+  i += 1;
   term -1;
 };
 
@@ -170,7 +170,7 @@ txn split_loop(s: String, delim: String, result: List<String>, last: Int, i: Int
         when i == CharCount#(s) - 1 {
             result <- s[last:CharCount#(s)];
         };
-        i = i + 1;
+        i += 1;
     };
     term result;
 };
@@ -197,7 +197,7 @@ txn join_loop(list: List<String>, n: Int, delim: String, result: String, i: Int)
     [i < n][i == n] -> String
 {
   result = result + delim + list[i];
-  i = i + 1;
+  i += 1;
   term result;
 };
 
@@ -216,7 +216,7 @@ defn pad_left(s: String, width: Int) [width >= CharCount#(s)][CharCount#(term) =
     let i: Int = 0;
     when i < spaces {
       pad = pad + " ";
-      i = i + 1;
+      i += 1;
     };
     term pad + s;
   };
@@ -230,7 +230,7 @@ defn pad_right(s: String, width: Int) [width >= CharCount#(s)][CharCount#(term) 
     let i: Int = 0;
     when i < spaces {
       pad = pad + " ";
-      i = i + 1;
+      i += 1;
     };
     term s + pad;
   };
@@ -247,12 +247,12 @@ defn pad_both(s: String, width: Int) [width >= CharCount#(s)][CharCount#(term) =
     let i: Int = 0;
     when i < left {
       pad_left = pad_left + " ";
-      i = i + 1;
+      i += 1;
     };
     i = 0;
     when i < right {
       pad_right = pad_right + " ";
-      i = i + 1;
+      i += 1;
     };
     term pad_left + s + pad_right;
   };
@@ -264,7 +264,7 @@ txn repeat_loop(s: String, count: Int, result: String, i: Int)
     [i < count][i == count] -> String
 {
   result = result + s;
-  i = i + 1;
+  i += 1;
   term result;
 };
 
@@ -326,7 +326,7 @@ txn is_whitespace_loop(s: String, i: Int)
         i = s .^Length;
         term false;
     };
-    i = i + 1;
+    i += 1;
     term true;
 };
 
@@ -342,7 +342,7 @@ txn is_alpha_loop(s: String, i: Int)
         i = s .^Length;
         term false;
     };
-    i = i + 1;
+    i += 1;
     term true;
 };
 
@@ -361,7 +361,7 @@ txn is_numeric_loop(s: String, i: Int)
         i = s .^Length;
         term false;
     };
-    i = i + 1;
+    i += 1;
     term true;
 };
 
@@ -393,13 +393,13 @@ defn fold_upper_byte(b: Int) [b >= 0][term >= 0] -> Int {
 
 txn fold_lower_copy(src: Int, dst: Int, j: Int, n: Int) [j < n][j == n] -> Void {
     Store#(dst + j, fold_lower_byte(Load#(src + j, 1)), 1);
-    j = j + 1;
+    j += 1;
     term;
 };
 
 txn fold_upper_copy(src: Int, dst: Int, j: Int, n: Int) [j < n][j == n] -> Void {
     Store#(dst + j, fold_upper_byte(Load#(src + j, 1)), 1);
-    j = j + 1;
+    j += 1;
     term;
 };
 
@@ -438,7 +438,7 @@ txn trim_start_loop(s: String, start: Int, lim: Int)
         lim = start;
         term start;
     };
-    start = start + 1;
+    start += 1;
     term start;
 };
 
@@ -479,7 +479,7 @@ txn capitalize_loop(s: String, sb: StringBuilder, i: Int)
     when b < 65 || b > 90 {
         sb = append_char(sb, int_to_char(b));
     };
-    i = i + 1;
+    i += 1;
     term sb.buffer;
 };
 
@@ -503,7 +503,7 @@ txn reverse_loop(s: String, sb: StringBuilder, i: Int)
 {
     let b: Int = byte_at(s, s .^Length - 1 - i);
     sb = append_char(sb, int_to_char(b));
-    i = i + 1;
+    i += 1;
     term sb.buffer;
 };
 
@@ -515,9 +515,9 @@ txn count_char_loop(s: String, c: String, count: Int, i: Int)
     [i < s .^Length][i == s .^Length] -> Int
 {
     when s[i:i+1] == c {
-        count = count + 1;
+        count += 1;
     };
-    i = i + 1;
+    i += 1;
     term count;
 };
 

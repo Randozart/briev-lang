@@ -34,7 +34,7 @@ obj Stack<T, N> {
 
     txn push(val: T) [len < N][len <= N] {
         data[len] = val;
-        len = len + 1;
+        len += 1;
     };
 
     txn pop() -> T [len > 0][len >= 0] {
@@ -66,12 +66,12 @@ obj RingBuffer<T> {
 
     txn push(val: T) [write - read < 256][write - read <= 256] {
         data[write % 256] = val;
-        write = write + 1;
+        write += 1;
     };
 
     txn pop() -> T [write > read][write >= read] {
         let i = read % 256;
-        read = read + 1;
+        read += 1;
         term data[i];
     };
 

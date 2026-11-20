@@ -136,7 +136,7 @@ txn find_pair(pairs: List<(String, JsonValue)>, key: String, i: Int)
         i = pairs.Count#();
         term ok_value(found);
     };
-    i = i + 1;
+    i += 1;
     term err_value(e_utoken());
 };
 
