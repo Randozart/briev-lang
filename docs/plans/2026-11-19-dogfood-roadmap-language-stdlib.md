@@ -30,6 +30,15 @@ carrying into the next primitives:
    `build` never install `config/contracts.dbvl`, so the conformance
    sweep is the first place an unprovable call site appears — one CI
    round-trip per discovery until issue #149 is fixed.
+4. **Obj parameters are references, so a reader can publish progress.**
+   A callee's field write lands in the caller's object (through recursive
+   frames too), which is what makes `buffer.len` a real out-channel: a
+   partial request parks and resumes with
+   `fill_request(sock, buf, buf.len, flags)`. The publish must happen in
+   the frame that still OWNS the caller's binding — `claim` returns a
+   fresh value, so a deeper frame's write lands on that temporary and is
+   lost. Linearness of the publish point decides correctness here, and
+   the resumption test in `evented_smoke` is the thing that caught it.
 
 Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
