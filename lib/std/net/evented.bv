@@ -25,6 +25,14 @@
 // defensively). Wave 2 (fd linearity) turns that discipline into a checker
 // fact; this module documents it and behaves correctly without it.
 //
+// CHUNKED READS (2026-11-20, closes Knooppunt G12b): fill_request reads a
+// request through the parser in CHUNKS rather than a byte at a time. Two
+// facts make it verifiable under config/contracts.dbvl `policy: deny`:
+// recv_into takes the bounds as ARGUMENTS (nothing loop-carried to reason
+// about), and ByteBuf.claim advances the valid length as an obj-method
+// POSTCONDITION (a mid-body `len` write leaves no projection - see issue
+// #150 for the free-defn/obj-method asymmetry behind that choice).
+//
 // RELATIONSHIP TO THE SEGMENT SCHEDULER: independent on purpose. An evented
 // handler MAY be a spawned task advanced by `yield;` - the two compose
 // because poll_wait is just another syscall in a segment - but nothing here
