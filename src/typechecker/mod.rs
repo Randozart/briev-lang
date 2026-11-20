@@ -10013,6 +10013,56 @@ checkfree defn peek(xs: List<Int>, i: Int) -> Int {
     }
 
     #[test]
+    fn checkfree_rejects_fact_from_nonterminating_guard() {
+        // Scoping has a second half that is easy to get wrong in the SAFE
+        // direction: a guard whose body does NOT always terminate establishes
+        // nothing for the statements after it. Only the negation of a
+        // TERMINATING guard survives the block.
+        // The negation must be usable, so the trap is a guard whose NEGATION
+        // would prove the missing half: `when !(0 <= i) { }` followed by a
+        // subscript. Semantically, control reaches the subscript either
+        // because the guard was false (0 <= i — a proof) OR because the guard
+        // was true and the body simply finished (no proof at all). The second
+        // possibility is why the fact must NOT be recorded, and why a plain
+        // "guard does not leak" test cannot see the mistake: leaking it here
+        // would silently satisfy F2.
+        let src = r#"
+checkfree defn pick(xs: List<Int>, i: Int) -> Int {
+    when !(0 <= i) {
+    };
+    when i < xs.Count#() {
+        term xs[i];
+    };
+    term -1;
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a NON-terminating guard establishes no fact for its successor, even \
+             when its negation would prove the missing half"
+        );
+    }
+
+    #[test]
+    fn checkfree_accepts_fallthrough_negation() {
+        // The mirror of the test above: a guard whose body ALWAYS terminates
+        // leaves its negation as a fact for the successor, so
+        // `when !(i < n) { term }` really does establish `i < n`.
+        let src = r#"
+checkfree defn pick(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when !(i < xs.Count#()) {
+            term -1;
+        };
+        term xs[i];
+    };
+    term -2;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
     fn checkfree_index_type_supplies_lower_bound() {
         // An IndexIn index supplies F2 (0..=count) — but NOT F1, so the upper
         // guard is still owed. That is the §15.4a correction in one test.
