@@ -1620,6 +1620,13 @@ fn parse_and_check(
     if !spawn_errors.is_empty() {
         return Err(format!("spawn pool errors:\n{}", spawn_errors.join("\n")));
     }
+    // 2026-11-20 (evented-net Wave 3): the io/pure strand facts — advisory
+    // warnings on spawned segments that block the round-robin between
+    // yields. Warnings, never errors (the G2 discipline: evidence first,
+    // then the promotion flip).
+    for strand_warning in crate::analysis::strand::analyze(&items) {
+        eprintln!("warning: {strand_warning}");
+    }
     Ok((items, universe))
 }
 
