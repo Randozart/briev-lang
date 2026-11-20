@@ -106,8 +106,44 @@ node entry [beginprogram][true] {
     Print#((live.status == HTTP_COMPLETE) as Int);
     Print#((live.request.method == "GET") as Int);
     Print#((live.request.path == "/health") as Int);
+    Print#(inbox.len == wire_len);
+
+    // ── RESUMPTION (plan invariant 7, partial shape): a request that
+    // arrives in TWO pieces. The first fill must report NEED_MORE and
+    // publish the partial count through inbox2.len; the second fills from
+    // there and completes. Nothing is re-read: the offset is the published
+    // length, which is why the reader can park mid-request without
+    // corrupting the parse.
+    let half: Int = wire_len / 2;
+    let head: ByteBuf = buf_new(half + 1);
+    foreach i in 0..half {
+        head = head.put_u8(byte_at(wire, i));
+    };
+    let sent_head: Int = sock_send(peer, head, head.len);
+    Print#(sent_head == half);
+
+    let inbox2: ByteBuf = buf_new(wire_len + 1);
+    let part: HttpParse = evented_fill_request(self_sock, inbox2, inbox2.len);
+    Print#((part.status == HTTP_NEED_MORE) as Int);
+    Print#((inbox2.len > 0 && inbox2.len < wire_len) as Int);
+
+    let tail: ByteBuf = buf_new(wire_len - half + 1);
+    foreach i in half..wire_len {
+        tail = tail.put_u8(byte_at(wire, i));
+    };
+    let sent_tail: Int = sock_send(peer, tail, tail.len);
+    Print#(sent_tail == wire_len - half);
+
+    // Resume exactly where the reader left off: its own published length.
+    let done_parse: HttpParse = evented_fill_request(self_sock, inbox2, inbox2.len);
+    Print#((done_parse.status == HTTP_COMPLETE) as Int);
+    Print#((done_parse.request.path == "/health") as Int);
+    Print#(inbox2.len == wire_len);
+    buf_free(head);
+    buf_free(tail);
 
     buf_free(inbox);
+    buf_free(inbox2);
     buf_free(payload);
     let _cp: Int = sock_close(peer);
     let _cs: Int = sock_close(self_sock);

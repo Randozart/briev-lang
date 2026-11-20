@@ -217,6 +217,14 @@ defn recv_into(socket: Socket, buffer: ByteBuf, offset: Int, room: Int, flags: I
 // window, EOF, or EAGAIN. The last three return HTTP_NEED_MORE: the evented
 // caller waits for the next POLL_IN edge and calls again; the sequential
 // caller's receive budget supplies that edge.
+//
+// RESUMPTION CONTRACT: every exit publishes the running count through
+// `buffer.len = fed`. Obj parameters are REFERENCES (a callee's field write
+// lands in the caller's object, verified through recursive frames too), so
+// after a NEED_MORE the caller's own binding already carries the progress
+// and the next call is simply `fill_request(sock, buf, buf.len, flags)`.
+// Nothing is re-read and nothing is lost, which is the whole point of the
+// chunked shape: a partial request parks, it does not corrupt.
 defn fill_request(socket: Socket, buffer: ByteBuf, fed: Int, flags: Int)
     [socket.fd >= -4096 && fed >= 0 && fed == buffer.len && fed <= buffer.cap]
     [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
@@ -224,25 +232,35 @@ defn fill_request(socket: Socket, buffer: ByteBuf, fed: Int, flags: Int)
 {
     let parsed: HttpParse = http_parse_request(buffer, fed);
     when parsed.status == HTTP_COMPLETE {
+        buffer.len = fed;
         term parsed;
     };
     when fed >= buffer.cap {
         // Window exhausted without a complete request.
+        buffer.len = fed;
         term parsed;
     };
     let got: Int = recv_into(socket, buffer, fed, buffer.cap - fed, flags);
     when got <= 0 {
         // EOF or EAGAIN: nothing more is available right now.
+        buffer.len = fed;
         term parsed;
     };
     let extended: ByteBuf = buffer.claim(got);
+    // Publish BEFORE descending: `extended` is a fresh value, so a write
+    // from the deeper frame would land on that temporary instead of the
+    // caller's object. Writing here, in the frame that still holds the
+    // caller's binding, is what makes the progress visible — the exits
+    // above cover the frames that stop early.
+    buffer.len = fed + got;
     term fill_request(socket, extended, fed + got, flags);
 };
 
 // evented_fill_request - the evented lane: fill_request under MSG_DONTWAIT.
 // Returns HTTP_NEED_MORE when the request is not complete yet (EAGAIN on a
 // nonblocking socket is the normal case, not an error) — the caller
-// registers the fd for POLL_IN and comes back on the next edge.
+// registers the fd for POLL_IN and comes back on the next edge, resuming
+// with `buffer.len` (see fill_request's resumption contract).
 defn evented_fill_request(socket: Socket, buffer: ByteBuf, fed: Int)
     [socket.fd >= -4096 && fed >= 0 && fed == buffer.len && fed <= buffer.cap]
     [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]

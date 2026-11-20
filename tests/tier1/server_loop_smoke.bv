@@ -161,9 +161,10 @@ node entry [beginprogram][true] {
     };
     let parsed: HttpParse = serve_next_request(conn, bounded, bounded.len);
     // The fingerprint carries the parse status, so a partial read and a partial
-    // parse stay distinguishable in the golden. (The caller's `bounded` binding
-    // is a VALUE copy whose length the recursion advanced on its own copy — the
-    // in-place growth is invisible out here by design.)
+    // parse stay distinguishable in the golden. `bounded.len` afterwards is the
+    // byte count actually read: obj parameters are REFERENCES (a callee's field
+    // write lands in the caller's object), which is what lets a chunked reader
+    // publish its progress for a resuming caller.
     Print#(parsed.status);
     Print#((parsed.status == HTTP_COMPLETE) as Int);
     Print#((parsed.request.method == "POST") as Int);
