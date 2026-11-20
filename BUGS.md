@@ -1,3 +1,38 @@
+## 2026-11-20 — Free# on a possibly-static producer result was an unsound @free (FIXED, K3)
+
+The kiosk daemon's `detect_faces` response builder (`append_owned`/
+`append_lit`) unconditionally `Free#`'d its second argument. `float_to_str`
+(via `float_format`'s guard arms for inf/nan/-inf/0-ish) can return a
+compiler-allocated `.rodata` string, and `emit_free` looked up
+`alloc_strategies[register]` — call results are never registered — so
+unknown provenance → unconditional `@free` → `free(): invalid pointer`
+on the first `detect_faces` call with a non-zero frame. Content-dependent
+(the append chain length is proportional to the detection count),
+pre-existing (reproduces at pins `6d0dd214a` AND `0fd74ad49`, byte-identical
+IR).
+
+Design gap: ownership was tracked on local names; pointer provenance
+(malloc/static/arena) was not a first-class fact at the `Free#` site.
+The unknown-provenance default was "assume malloc, free" — unsound. The
+symmetric conservative default (refuse unknown-provenance free, like
+`owned_storage` refuses to insert unproven releases) was missing.
+
+Fix (commit `bd12e5834`, landed `260237cf6`): (A) per-callable
+`StaticReturnSummary` (Static/Owned/Mixed) in `src/hir/owned_storage.rs`,
+derived from the same HIR facts as `fresh_callables` (fresh set + terminal
+walks, no name matching), plumbed via `AnalysisResults.static_returns` →
+`LlvmBackend`. (B) `emit_free` inspects `args[0]` for a call BEFORE the
+strategy fallback: Static → hard diagnostic + no free; Mixed →
+conservative no-free + warning; Owned/None → legacy `@free`. Non-call
+args keep the pre-K3 contract. (C) daemon-side hardening in
+`briev-kiosk-avatar` (commit `6099ac6`): copy the second arg through
+`fresh_string` before `Free#`.
+
+Pinned by `tests/tier1/owned_free_static_producer.bv` (daemon-shape chain
+with a static-guard-arm producer; ASan clean) + two new
+`owned_storage` unit tests (static/fresh classification). `emit_free`'s
+unknown-provenance path is now conservative: a leak beats a crash.
+
 ## 2026-11-19 — a defn on a recursion cycle claimed `willreturn` and LTO deleted the program (FIXED, PR #145)
 
 A `Void` defn that tail-recurses forever (an accept loop) was emitted with

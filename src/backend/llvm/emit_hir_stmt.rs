@@ -1263,7 +1263,10 @@ defn use(s: String) -> Int {
 "#;
         let items = parse(src);
         let mut program = crate::hir::lower_program(&items);
-        crate::hir::owned_storage::insert_releases(&mut program, &std::collections::HashMap::new());
+        let _ = crate::hir::owned_storage::insert_releases(
+            &mut program,
+            &std::collections::HashMap::new(),
+        );
         let use_fn = program
             .callables
             .iter()

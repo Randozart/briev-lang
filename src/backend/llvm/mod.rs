@@ -1851,6 +1851,12 @@ pub struct LlvmBackend {
     // To undo: delete with_analysis + this field, restore the inline
     // analyze_program call at the top of generate().
     precomputed_analysis: Option<crate::backend::AnalysisResults>,
+    /// 2026-11-20 (K3): per-callable provenance of owned returns, copied from
+    /// AnalysisResults so the free dispatcher (emit_free) can refuse a Free#
+    /// on a possibly-static call result. Empty = no static-return fact known
+    /// (direct-construction callers) — the free falls back to the legacy
+    /// malloc assumption.
+    pub(crate) static_returns: crate::hir::owned_storage::StaticReturnSummary,
     /// 2026-09-14 (machine-entry plan): the `bootstrap node`'s name — the
     /// authored program entry. Its body is inlined at main's head (after the
     /// init stores, before the dispatch loop) and it never joins the
@@ -1982,6 +1988,7 @@ impl LlvmBackend {
             analysis_alloc_strategies: None,
             resolved_frgns: None,
             precomputed_analysis: None,
+            static_returns: std::collections::HashMap::new(),
             bootstrap_txn: None,
             bootstrap_bad: None,
             trap_frame_emitted: false,
@@ -1996,6 +2003,18 @@ impl LlvmBackend {
     /// historical path used by direct-construction callers.
     pub fn with_analysis(mut self, analysis: crate::backend::AnalysisResults) -> Self {
         self.precomputed_analysis = Some(analysis);
+        self
+    }
+
+    /// 2026-11-20 (K3): accept the static-return provenance summary directly
+    /// (used by callers that build the backend without a full
+    /// AnalysisResults). When absent, emit_free assumes malloc for unknown
+    /// provenance (the pre-K3 behaviour).
+    pub fn with_static_returns(
+        mut self,
+        static_returns: crate::hir::owned_storage::StaticReturnSummary,
+    ) -> Self {
+        self.static_returns = static_returns;
         self
     }
 
@@ -3318,6 +3337,9 @@ impl LlvmBackend {
                 None,
             ),
         };
+        // 2026-11-20 (K3): the free dispatcher reads the static-return
+        // provenance summary from the (possibly self-computed) analysis.
+        self.static_returns = analysis.static_returns.clone();
         self.generate_with_analysis(items, exit_condition, analysis, entry_warnings)
     }
 

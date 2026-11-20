@@ -2681,9 +2681,19 @@ impl LlvmBackend {
         let converted = self.fun.gen_reg();
         if param_ll == "double" && src_ll == "i32" {
             // sitofp has no i32->double form issue, but keep the order explicit.
-            writeln!(out, "{}{} = sitofp {} {} to double", indent, converted, src_ll, reg.name).ok();
+            writeln!(
+                out,
+                "{}{} = sitofp {} {} to double",
+                indent, converted, src_ll, reg.name
+            )
+            .ok();
         } else {
-            writeln!(out, "{}{} = sitofp {} {} to {}", indent, converted, src_ll, reg.name, param_ll).ok();
+            writeln!(
+                out,
+                "{}{} = sitofp {} {} to {}",
+                indent, converted, src_ll, reg.name, param_ll
+            )
+            .ok();
         }
         Some(TypedRegister {
             name: converted,
