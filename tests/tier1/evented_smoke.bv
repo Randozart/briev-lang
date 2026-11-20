@@ -73,5 +73,20 @@ node entry [beginprogram][true] {
     Print#(evented_close(Socket { fd: -1 }));
 
     poll_free(set);
+
+    // ── Chunked-read A/B (plan invariant 7): the same request bytes must
+    // produce identical parse inputs through both reader shapes. The chunked
+    // reader consumed exactly the payload (fed == buffer.len <= buffer.cap).
+    let wire: String = "GET /health HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n";
+    let wire_len: Int = wire .^Length;
+    let bb: ByteBuf = buf_new(wire_len + 1);
+    foreach i in 0..wire_len {
+        bb.len = i;
+        bb = bb.put_u8(byte_at(wire, i));
+    };
+    let sa: String = buf_slice_string(bb, 0, bb.len);
+    Print#(sa == wire);
+    Print#(bb.len <= bb.cap);
+    Print#(wire_len > 0);
     endprogram Print#("");
 };

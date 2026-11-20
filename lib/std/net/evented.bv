@@ -33,6 +33,7 @@ import "std/os/poll.bv";
 import "std/net/socket.bv";
 import "std/net/nonblocking.bv";
 import "std/net/bytes.bv";
+import "std/net/http.bv";
 
 // ── errno spellings (Linux x86_64) - named ONCE so "would block" is a
 // checkable value, not a magic negative. The syscall family returns -errno
@@ -149,4 +150,73 @@ defn evented_close(socket: Socket) -> Int {
         term 0;
     };
     term sock_close(socket);
+};
+
+// ── Chunked provable read (Wave 4 / Knooppunt G12b) ──────────────────────
+//
+// The byte-a-time loop in server_loop costs one syscall per request byte
+// (~200 for a typical JSON control request) because a recv into a FIXED
+// ByteBuf cannot prove `len + n <= cap` across the loop — the bounds are
+// loop-carried obj state, and the sweep rejects what it cannot see. The
+// fix is the checksum-sweep lesson applied to buffers: put the BOUNDS IN
+// THE ARGUMENTS. recv_into takes offset/room as parameters and its
+// postcondition names exactly what the caller needs:
+//
+//   [offset >= 0 && room >= 1 && offset + room <= buf.cap]
+//   [term.len >= 0]  (bytes appended; -errno or 0-for-EAGAIN surfaced)
+//
+// One call = one bounded syscall. The caller proves `offset + room <=
+// buf.cap` at the call site from ITS local facts — no loop-carried state
+// involved.
+//
+// evented_fill_request then composes: on each POLL_IN readiness edge, one
+// recv_into + one parse attempt. Complete → return; else keep reading.
+// The nonblocking discipline means every step returns immediately — the
+// loop holds MANY connections, never parking on one.
+
+// recv_into - ONE bounded nonblocking read into buf[offset..offset+room].
+// Returns bytes appended (>= 0; the caller advances its own `fed` by this)
+// or the -errno (EVENTED_EAGAIN means "nothing right now"). The buffer's
+// len advances by exactly the return when positive (the same convention
+// sock_recv_once uses).
+defn recv_into(socket: Socket, buffer: ByteBuf, offset: Int, room: Int)
+    [socket.fd >= -4096 && offset >= 0 && room >= 1 && offset + room <= buffer.cap]
+    [term.len >= 0 && term.len <= term.cap]
+    -> Int
+{
+    let got: Int = SysCall#(45, socket.fd, buffer.ptr + offset, room, 64);
+    when got > 0 {
+        buffer.len = offset + got;
+    };
+    term got;
+};
+
+// evented_fill_request - the chunked request reader: ONE recv_into per
+// call, parse attempt after each. Returns the parse; `fed` is the byte
+// count so far (an Int, provable arithmetic — the server_loop lesson).
+// The caller loops: call again on the next POLL_IN edge while the status
+// is HTTP_NEED_MORE and fed < cap.
+defn evented_fill_request(socket: Socket, buffer: ByteBuf, fed: Int)
+    [socket.fd >= -4096 && fed >= 0 && fed == buffer.len && fed <= buffer.cap]
+    -> HttpParse
+{
+    let parsed: HttpParse = http_parse_request(buffer, fed);
+    when parsed.status != HTTP_NEED_MORE {
+        // NEED_MORE is the keep-reading signal; any other status is
+        // terminal (COMPLETE or an error shape) — the caller stops.
+        term parsed;
+    };
+    when fed >= buffer.cap {
+        term parsed;
+    };
+    let got: Int = recv_into(socket, buffer, fed, buffer.cap - fed);
+    when got < 0 {
+        // EAGAIN: nothing right now — the caller waits for the next edge.
+        term parsed;
+    };
+    when got == 0 {
+        // peer EOF with a partial request: report what parsed (incomplete).
+        term parsed;
+    };
+    term evented_fill_request(socket, buffer, fed + got);
 };
