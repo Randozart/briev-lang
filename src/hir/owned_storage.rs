@@ -94,6 +94,30 @@ pub struct OwnedTailParam {
 /// the defn is not owned-carrying tail-recursive (no lowering needed).
 pub type OwnedTailLoopPlan = BTreeMap<String, Vec<OwnedTailParam>>;
 
+/// 2026-11-20 (K3): the provenance class of a callable's OWNED return value.
+/// A `Free#` on a possibly-static result is a free-of-non-heap crash (the
+/// detect_faces `free(): invalid pointer` — float_format's guard arms return
+/// .rodata strings and the consumer's unconditional Free# hit them). The
+/// backend's free dispatcher must see this summary to refuse the free instead
+/// of assuming malloc. Derived from the same HIR facts as `fresh_callables`
+/// — no name matching, no algorithm vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticClass {
+    /// Every terminal path returns a static literal (a .rodata string).
+    Static,
+    /// Proven owned: the callable is in the fresh set (every terminal path
+    /// allocates fresh storage).
+    Owned,
+    /// Mixed: at least one terminal path is neither proven-fresh nor a static
+    /// literal — provenance unknown. A free here must be conservatively
+    /// skipped (warning), never assumed.
+    Mixed,
+}
+
+/// Per-callable static-return summary, keyed by callee name. Only owned
+/// (String/List-returning) callables with at least one terminal are present.
+pub type StaticReturnSummary = HashMap<String, StaticClass>;
+
 /// Report-only view: runs the real pass on a clone and returns its decision
 /// log. The program is unchanged.
 pub fn memcheck_owned(
@@ -105,18 +129,22 @@ pub fn memcheck_owned(
     events
 }
 
+/// The owned-storage plan: inserted releases, the tail-loop plan, and the
+/// static-return provenance summary (K3) consumed by the free dispatcher.
+pub type OwnedPlan = (OwnedTailLoopPlan, StaticReturnSummary);
+
 pub fn insert_releases(
     program: &mut HirProgram,
     escapes: &HashMap<String, Vec<bool>>,
-) -> OwnedTailLoopPlan {
-    let (_, _, owned_tail) = insert_releases_with_report(program, escapes);
-    owned_tail
+) -> OwnedPlan {
+    let (_, _, plan) = insert_releases_with_report(program, escapes);
+    plan
 }
 
 fn insert_releases_with_report(
     program: &mut HirProgram,
     escapes: &HashMap<String, Vec<bool>>,
-) -> (Vec<OwnedEvent>, usize, OwnedTailLoopPlan) {
+) -> (Vec<OwnedEvent>, usize, OwnedPlan) {
     let mut events: Vec<OwnedEvent> = Vec::new();
     let mut releases_inserted: usize = 0;
     let freed = freed_sources(program);
@@ -132,6 +160,11 @@ fn insert_releases_with_report(
     let fresh = fresh_callables(program, escapes, &freed);
     let param_return = param_return_summaries(program);
     let ok_fresh = ok_fresh_callables(program, escapes, &param_return, &fresh, &freed);
+    // 2026-11-20 (K3): provenance of owned returns, derived next to `fresh`
+    // from the same HIR facts (fresh set + terminal walks). Consumed by
+    // emit_free so an explicit Free# on a possibly-static call result is a
+    // diagnostic/no-op, not an unsound @free.
+    let static_returns = static_return_summaries(program, &fresh, &param_return, &ok_fresh, &freed);
     let borrow_returns = borrow_result_summaries(program);
     let mut consumed = consumed_params(program);
     if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
@@ -387,7 +420,64 @@ fn insert_releases_with_report(
         .iter()
         .filter(|e| matches!(e.kind, OwnedEventKind::Release { .. }))
         .count();
-    (events, rel, owned_tail)
+    (events, rel, (owned_tail, static_returns))
+}
+
+/// 2026-11-20 (K3): classify each owned-returning callable's return provenance.
+/// Static when ANY terminal is a Bytes literal or a not-proven-fresh call
+/// result; Owned when the callable itself is in the fresh set; Mixed otherwise.
+fn static_return_summaries(
+    program: &HirProgram,
+    fresh: &HashSet<String>,
+    param_return: &HashMap<String, Vec<usize>>,
+    ok: &HashSet<String>,
+    freed: &HashMap<String, HashSet<String>>,
+) -> StaticReturnSummary {
+    let mut out = StaticReturnSummary::new();
+    for c in &program.callables {
+        if !returns_owned(c) {
+            continue;
+        }
+        if fresh.contains(&c.name) {
+            out.insert(c.name.clone(), StaticClass::Owned);
+            continue;
+        }
+        let mut returns: Vec<HirExpr> = Vec::new();
+        collect_returns(&c.body.statements, &mut returns);
+        if returns.is_empty() {
+            continue;
+        }
+        let fn_freed = freed.get(&c.name).cloned().unwrap_or_default();
+        let empty_vars: HashMap<String, bool> = HashMap::new();
+        let any_static = returns.iter().any(|e| terminal_is_static(e, fresh));
+        if any_static {
+            out.insert(c.name.clone(), StaticClass::Static);
+        } else {
+            // No static terminal, but not proven fresh either: unknown.
+            let all_owned = returns
+                .iter()
+                .all(|e| is_fresh(e, &empty_vars, param_return, fresh, ok, &fn_freed));
+            if all_owned {
+                out.insert(c.name.clone(), StaticClass::Owned);
+            } else {
+                out.insert(c.name.clone(), StaticClass::Mixed);
+            }
+        }
+    }
+    out
+}
+
+/// A terminal expression is static when it is a Bytes literal or a call to a
+/// callee NOT in the fresh set whose own result type is a String (the
+/// static-literal producer shape: float_format's guard arms).
+fn terminal_is_static(e: &HirExpr, fresh: &HashSet<String>) -> bool {
+    match &e.kind {
+        HirExprKind::Literal(HirLiteral::Bytes(_)) => true,
+        HirExprKind::Call { callee, .. } => {
+            !fresh.contains(callee) && e.ty.as_ref().is_some_and(is_string)
+        }
+        _ => false,
+    }
 }
 
 fn returns_owned(c: &HirCallable) -> bool {
@@ -3243,7 +3333,7 @@ defn loop(s: String, n: Int) [true][true] -> String {
             "the loop owns and frees the carried temporary: {hits:?}"
         );
         let plan = insert_releases(&mut program, &HashMap::new());
-        let params = plan.get("loop").expect("loop must be recorded");
+        let params = plan.0.get("loop").expect("loop must be recorded");
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].index, 0);
         assert_eq!(params[0].storage, StorageKind::Str);
@@ -3278,7 +3368,7 @@ defn user(seed: String) [true][true] -> Int {
         );
         let plan = insert_releases(&mut program, &HashMap::new());
         assert!(
-            plan.get("loop").is_none(),
+            plan.0.get("loop").is_none(),
             "a caller that reads `seed` after the call owns it"
         );
         let events = memcheck_owned(&program, &HashMap::new());
@@ -3310,6 +3400,51 @@ defn loop(s: String, n: Int) [true][true] -> String {
                 |e| matches!(&e.kind, OwnedEventKind::UndecidedInit(w) if w.contains("self-tail"))
             ),
             "the carried value is a parameter, not a temporary"
+        );
+    }
+
+    // 2026-11-20 (K3): a guard-armed producer (a Bytes-literal terminal)
+    // classifies as Static so the free dispatcher can refuse the Free#.
+    #[test]
+    fn static_return_summary_classifies_static_guard_arm() {
+        let program = annotated(
+            r#"
+defn sentinel(x: Float) [true][true] -> String {
+    when x > 0.0 {
+        term "inf";
+    };
+    term "neg";
+};
+"#,
+        );
+        let mut program2 = program.clone();
+        let plan = insert_releases(&mut program2, &HashMap::new());
+        let sr = &plan.1;
+        assert_eq!(
+            sr.get("sentinel"),
+            Some(&StaticClass::Static),
+            "a Bytes-literal terminal arm is a static producer"
+        );
+    }
+
+    // 2026-11-20 (K3): a fully-fresh producer classifies as Owned.
+    #[test]
+    fn static_return_summary_classifies_fresh_as_owned() {
+        let program = annotated(
+            r#"
+import "std/alloc.bv";
+defn copy(s: String) [true][true] -> String {
+    term fresh_string(s);
+};
+"#,
+        );
+        let mut program2 = program.clone();
+        let plan = insert_releases(&mut program2, &HashMap::new());
+        let sr = &plan.1;
+        assert_eq!(
+            sr.get("copy"),
+            Some(&StaticClass::Owned),
+            "a proven-fresh producer is Owned"
         );
     }
 }

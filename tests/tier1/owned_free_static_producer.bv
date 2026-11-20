@@ -1,0 +1,58 @@
+// 2026-11-20 (K3 regression fixture): the detect_faces response-builder
+// shape — a producer that can return a compiler-allocated (.rodata) string
+// (guard arms) feeding the response builder. Pre-fix this crashed with
+// `free(): invalid pointer` (free of the .rodata pointer via the unconditional
+// Free# in append_owned/append_lit). Post-fix the consumer copies producer
+// results through fresh_string before freeing, and every value it frees is a
+// provably heap allocation (concat result / fresh_string copy).
+// Runs clean under ASan.
+import "std/cast_lanes.bv";
+import "std/string.bv";
+
+// The daemon's owned response builders (hardened K3 shape): the first arg is
+// always a previously owned (heap) buffer; the second arg may be a static
+// producer result, so it is copied before the free.
+defn owned_literal(text: String) [true][CharCount#(term) >= 0] -> String {
+    term concat("", text);
+};
+
+defn append_lit(a: String, text: String) [true][CharCount#(term) >= 0] -> String {
+    let owned_text: String = fresh_string(text);
+    let next: String = concat(a, owned_text);
+    Free#(a as Ptr<Bit<8>>);
+    Free#(owned_text as Ptr<Bit<8>>);
+    term next;
+};
+
+defn append_owned(a: String, b: String) [true][CharCount#(term) >= 0] -> String {
+    let owned_b: String = fresh_string(b);
+    let next: String = concat(a, owned_b);
+    Free#(a as Ptr<Bit<8>>);
+    Free#(owned_b as Ptr<Bit<8>>);
+    term next;
+};
+
+// A producer with a static guard arm (the float_format sentinel shape).
+defn tag(count: Int) [true][term == "neg" || term == "pos"] -> String {
+    when count < 0 {
+        term "neg";
+    };
+    term "pos";
+};
+
+// Mirrors detect_faces_json: a heap-owned accumulator chain where each append
+// may take a static producer result.
+defn build(count: Int) [true][CharCount#(term) >= 0] -> String {
+    let resp: String = owned_literal(tag(count));
+    let resp2: String = append_lit(resp, tag(count + 1));
+    let resp3: String = append_owned(resp2, tag(count - 1));
+    Free#(resp3 as Ptr<Bit<8>>);
+    term "";
+};
+
+node entry [beginprogram][true] {
+    build(0);
+    build(-1);
+    build(5);
+    endprogram Print#("k3 fixture ok");
+};
