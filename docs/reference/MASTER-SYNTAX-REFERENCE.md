@@ -83,6 +83,7 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | `mem` | Memory-macro array-lowering pin |
 | `out` | Observability / liveness-root modifier |
 | `accel` | GPU-deferral modifier |
+| `checkfree` | Defn-only proof obligation: every subscript in the body must be statically in-bounds, proven from dominating guards (§15.4b) |
 
 ### Import / FFI
 
@@ -415,6 +416,7 @@ All ordinary lowercase keywords (no `#`), prefix-position, intent-bearing.
 
 Supporting markers: `box` `spill` (spawn storage), `mem` `reg` (array-lowering
 pins), `coll` (collection), `out` (liveness root), `accel` (GPU deferral),
+`checkfree` (defn subscript-bounds obligation, §15.4b),
 `section(".name")` (placement), `free` / `keep` (lifetime hints).
 
 ---

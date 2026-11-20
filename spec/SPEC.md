@@ -2918,10 +2918,12 @@ foreach item in items {
 > The reference engine raises a loud index error instead — treat the
 > interpreter as the bounds oracle and prove index bounds with a
 > `when` guard or a contract before a subscript when the bound is not
-> static. Index types (§15.4a) are the static-proof spelling: a subscript
-> through `u32 in xs` carries its bound in the type. `foreach` over a collection is always in-bounds by
-> construction and is the preferred form wherever the index itself is
-> not load-bearing.
+> static. Guard the bound (a `when` naming the index), or declare the defn
+> `checkfree` (§15.4b) to make every subscript in it a proof obligation.
+> Index types (§15.4a) carry a bound through a value — they supply the lower
+> half of a proof, not the whole of one. `foreach` over a collection is always
+> in-bounds by construction and is the preferred form wherever the index
+> itself is not load-bearing.
 
 There are no `for`, `while`, or `loop` keywords. Counted iteration uses iterable ranges or reactive/transactional structure.
 
@@ -3609,7 +3611,11 @@ and these intrinsics are the forced-shape escape hatch.
 ```briev
 let xs: List<Int> = [7, 8, 9];
 let i: u32 in xs = xs.Count#();     // construction: ONLY xs's own Count#
-let tail: Int = xs[i - 1];          // provably in-bounds subscript
+// `i` is the COUNT (0 ..= 3) — a bound, not an index. Reading the last
+// element needs a guard, and that guard is what `checkfree` demands:
+when i - 1 < xs.Count#() {
+    let tail: Int = xs[i - 1];
+};
 ```
 
 `u32 in xs` binds an index VALUE to its collection, statically.
@@ -3639,10 +3645,54 @@ let tail: Int = xs[i - 1];          // provably in-bounds subscript
   `u32` in the spelling names the bound's domain, not the storage width.
 
 This is the static counterpart to `check` (§10.2): `check` proves a
-condition at a point, an index type carries a bound through a value. A
-`checkfree`-style obligation (every subscript in a function is
-index-typed or statically in-range) is a planned follow-up, not part of
-this section.
+condition at a point, an index type carries a bound through a value.
+
+### 15.4b `checkfree` — the subscript-bounds obligation
+
+```briev
+checkfree defn at(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {                       // F2 — the lower half
+        when i < xs.Count#() {          // F1 — the upper half
+            term xs[i];
+        };
+    };
+    term -1;
+};
+```
+
+`checkfree` is a prefix modifier on a `defn` — a **promise that every
+subscript in its body is statically in-bounds**, proven from the facts that
+dominate the subscript. It is opt-in and intra-procedural (a call is not
+walked into: the callee answers for its own subscripts). The barrier is the
+same one the call-site contract gate uses (§10.1), so a guard that satisfies
+a contract also satisfies `checkfree`.
+
+A subscript `coll[idx]` is discharged when **both** halves hold:
+
+- **F1 — upper bound.** A dominating guard establishes `idx < coll.Count#()`
+  (or `idx <= coll.Count#() - 1`, or the mirrored `>`/`>=` spellings). The
+  guard must name the index expression **as written**: `xs[i]` is discharged
+  by `when i < xs.Count#()`, and `xs[i - 1]` by `when i - 1 < xs.Count#()`.
+- **F2 — lower bound.** A dominating guard establishes `0 <= idx`, **or**
+  `idx` is a value of `u32 in coll` for the same collection — its
+  construction rule gives `0 ..= Count#()`, which supplies the lower half
+  and only the lower half.
+
+A literal index into a fixed `Vector<_, N>` is the other discharge: `< N` is
+a static fact. A literal into a **dynamic** collection is rejected — its
+length is not statically known, so a small number proves nothing. That is
+the difference between an obligation and a lint.
+
+An upper bound alone is not a proof (a negative index is still possible),
+and an `IndexIn` value alone is not a proof either (§15.4a). Rejection is the
+default: a subscript the compiler cannot prove is a compile error naming the
+collection, the failing half, and the guard to write. `foreach` needs no
+proof — it never subscripts.
+
+`checkfree` is analysis-only: it changes no emitted code (`--llvm` output is
+byte-identical with and without it), because a proof is not a runtime check.
+Contract pre/post conditions keep their own obligation and fact set; the
+body's guards do not dominate them.
 
 ### 15.5 Precedence
 
