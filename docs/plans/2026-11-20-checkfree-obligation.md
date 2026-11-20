@@ -79,6 +79,8 @@ it generalizes every consumer), and is a recorded follow-up.
 | 5 | An upper bound ALONE is not a proof | `checkfree_rejects_missing_lower_bound` |
 | 6 | `i > 0` alone does not discharge `xs[i - 1]` | `checkfree_rejects_lower_bound_only_guard` |
 | 7 | A guard's fact does not leak past its block | `checkfree_rejects_guard_out_of_scope` |
+| 7a | A NON-terminating guard records no fact for its successor, even when the negation would prove the missing half | `checkfree_rejects_fact_from_nonterminating_guard` |
+| 7b | A terminating guard's negation DOES dominate its successor | `checkfree_accepts_fallthrough_negation` |
 | 8 | `IndexIn` supplies F2 only, never F1 | `checkfree_index_type_supplies_lower_bound` |
 | 9 | A subscript nested in a call argument is still seen | `checkfree_sees_nested_subscripts` |
 | 10 | A literal into a dynamic collection is rejected; into a fixed Vector accepted | `checkfree_rejects_literal_on_dynamic_coll`, `checkfree_accepts_vector_literal` |
@@ -86,11 +88,13 @@ it generalizes every consumer), and is a recorded follow-up.
 | 12 | Emitted IR is byte-identical with and without the annotation | `tests/checkfree_emission.rs` |
 | 13 | The word is documented (vocab gate) | `vocab::tests::master_syntax_reference_covers_every_keyword_and_intrinsic` |
 
-**Mutation evidence (both directions).** Dropping F1 breaks the mismatched-collection
+**Mutation evidence (three axes).** Dropping F1 breaks the mismatched-collection
 and index-type reject tests. Dropping F2 initially broke *nothing* — the suite
 stayed green — which is why `checkfree_rejects_missing_lower_bound` exists; with
-it in place, dropping F2 fails. A test that cannot distinguish a missing half is
-not a test of that half.
+it in place, dropping F2 fails. Making the fallthrough facts unconditional (the
+one-line "simplification" that looks harmless) initially broke nothing either;
+`checkfree_rejects_fact_from_nonterminating_guard` now catches it. A test that
+cannot distinguish a missing rule is not a test of that rule.
 
 **Interpreter parity.** `brievc test tests/tier1/checkfree_ok.bv` pins the same
 golden (`8|-1`) as the native path, and a deliberately wrong golden is caught
