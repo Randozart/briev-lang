@@ -645,6 +645,11 @@ pub fn emit_statement(
             // runtime's `__exit` C fallback (briev_rt.c, runs atexit cleanup) or the
             // value's i64 result as the exit code (adapt_to_i64); the bare
             // form exits 0.
+            // 2026-11-20 (wave-6 W6-1): defers registered in this block run
+            // before the value's side effects — the same rule `term` uses
+            // (flush at :423), so a defer next to an endprogram still runs
+            // (the routing_service class: cleanup next to the exit).
+            backend.flush_defer_cleanup(out, indent);
             if backend.ctx.webstack_enabled {
                 emit_web_flush_batch(backend, out, indent);
             }

@@ -3072,6 +3072,15 @@ which only ends the current transaction, `endprogram` exits the process even
 when a node's precondition remains satisfiable. Abrupt termination is not
 currently a source-language feature.
 
+> **2026-11-20 (wave-6 W6-1, defer at `endprogram`).** Defers registered in
+> a block run LIFO before the process boundary's value side effects and
+> termination — the same flush point `term` uses for the transaction
+> boundary. Pinned by `tests/tier1/defer_lifo.bv` (golden `body|a|b`).
+> This is the cleanup spelling for handles whose last use the auto-free
+> scheduler cannot prove (kernel-owned descriptors, opaque scratch
+> buffers); the scheduler's proven-last-use auto-free (§14.3) covers the
+> rest.
+
 For the shapes of reactive programs that compile — the multi-node phase
 chain, counter-goal convergence, the `async` + distinct-phase classification
 — and the diagnostics each failure mode produces, see
