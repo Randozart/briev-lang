@@ -370,6 +370,28 @@ fn float32_storage_width_interpreter_matches_native() {
     );
 }
 
+/// 2026-11-19 (wave-4 E1): SPEC §12.2 spawn/await — the interpreter's
+/// segment execution (spawn captures, await drives round-robin, parameters
+/// carry) must agree with native on the pinned values. The test-block file
+/// asserts interpreter-side; the corpus fixture pins native-side.
+#[test]
+fn spawn_await_interpreter_matches_native() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let fixture =
+        Path::new(PROJECT_ROOT).join("tests/tier1/spawn_await_segments_tests.bv");
+    let run = Command::new(brievc)
+        .arg("test")
+        .arg(fixture.to_string_lossy().as_ref())
+        .output()
+        .expect("failed to spawn brievc test");
+    assert!(
+        run.status.success(),
+        "spawn/await: interpreter test-blocks failed:\n{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[test]
 fn tier1_corpus_compiles_links_and_runs() {
     if !has("clang") {

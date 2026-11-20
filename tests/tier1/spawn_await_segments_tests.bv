@@ -1,0 +1,39 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// spawn_await_segments_tests — the §12.2 assertions on the interpreter
+// (test blocks); pinned interpreter-side by daily_use_smoke.
+// spec: 12.2
+import "std/io.bv";
+
+defn compute(x: Int) -> Int {
+// spec: 12.2
+    yield;
+    term x * 2 + 1;
+};
+
+defn echo(x: Int) -> Int {
+    term x;
+};
+
+let i: Int = 0;
+
+test segments_spec {
+    let t1 = spawn compute(10);
+    let t2 = spawn echo(7);
+    let r1: Int = await t1;
+    let r2: Int = await t2;
+    expect r1 == 21;
+    expect r2 == 7;
+};
+
+node run [i < 1][i == 1] {
+    let t1 = spawn compute(10);
+    let t2 = spawn echo(7);
+    let r1: Int = await t1;
+    let r2: Int = await t2;
+    Print#(r1 as String);
+    Print#("|");
+    Print#(r2 as String);
+    endprogram Print#("");
+};

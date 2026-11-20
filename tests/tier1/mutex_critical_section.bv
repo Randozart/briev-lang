@@ -1,0 +1,19 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// mutex_critical_section — SPEC §11.6: `mutex { ... }` is a critical
+// section over shared state; the section's writes are visible after it.
+// spec: 11.6
+import "std/io.bv";
+
+let shared: Int = 0;
+// spec: 11.6
+let i: Int = 0;
+
+node run [i < 1][i == 1] {
+    mutex {
+        shared = shared + 5;
+    };
+    Print#(shared as String);
+    endprogram Print#("");
+};
