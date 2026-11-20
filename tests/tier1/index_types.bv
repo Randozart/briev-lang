@@ -3,9 +3,15 @@
 //===----------------------------------------------------------------------===//
 // index_types — SPEC §15-analog (wave-6 W6-2, Goose-borrowed): `u32 in xs`
 // binds an index VALUE to its collection; construction is only legal from
-// that collection's Count#() or a same-typed value, and a subscript through
-// it is provably in-bounds. Wrong-collection and plain-Int constructions
-// are compile errors (verified: ys.Count#() into `u32 in xs` rejected).
+// that collection's Count#() or a same-typed value. Wrong-collection and
+// plain-Int constructions are compile errors (verified: ys.Count#() into
+// `u32 in xs` rejected).
+//
+// 2026-11-20 correction: the value ranges `0 ..= Count#()` — it is a BOUND,
+// not a subscript licence. `xs[i]` with `i = xs.Count#()` reads one past the
+// end, and arithmetic on it degrades to the plain carrier (`i - 1` is Int).
+// `checkfree` therefore proves subscripts from GUARDS (tests/tier1/
+// checkfree_ok.bv), and an index type supplies only the lower half.
 // spec: 15
 import "std/io.bv";
 
