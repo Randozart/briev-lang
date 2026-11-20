@@ -58,6 +58,13 @@ pub enum FnKind {
 pub struct FunctionDef {
     pub name: String,
     pub parameters: Vec<String>,
+    /// 2026-11-19 (issue #137): the declared parameter and return types.
+    /// The interpreter is dynamically typed inside a body, but the WIDTH
+    /// of a float binding is a static fact — a parameter annotated
+    /// `Float32` receives a binary32-stored value, a `Float32` return
+    /// narrows the term value. `None` return = untyped/void.
+    pub param_types: Vec<crate::ast::Type>,
+    pub return_type: Option<crate::ast::Type>,
     /// Bare `term;` sites are ALREADY P-gated here (lowered once at
     /// registration — 2026-10-16 term-semantics plan §1).
     pub body: Vec<Statement>,
@@ -80,6 +87,8 @@ impl FunctionDef {
         FunctionDef {
             name: d.name.clone(),
             parameters: d.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            param_types: d.parameters.iter().map(|(_, t)| t.clone()).collect(),
+            return_type: d.output_type.as_ref().and_then(output_type_single),
             body: eval::lower_bare_terms(&d.body, &d.contract.post_condition),
             contract: Some(d.contract.clone()),
             kind: FnKind::Defn,
@@ -90,10 +99,22 @@ impl FunctionDef {
         FunctionDef {
             name: t.name.clone(),
             parameters: t.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            param_types: t.parameters.iter().map(|(_, t)| t.clone()).collect(),
+            return_type: t.output_type.as_ref().and_then(output_type_single),
             body: eval::lower_bare_terms(&t.body, &t.contract.post_condition),
             contract: Some(t.contract.clone()),
             kind: FnKind::Txn,
         }
+    }
+}
+
+/// 2026-11-19 (issue #137): the single declared return type of an
+/// `OutputType`, when it is `Single` — the shape a defn's `-> T` spells.
+/// Unions/tuples/arrays have no single float width to thread.
+fn output_type_single(o: &crate::ast::OutputType) -> Option<crate::ast::Type> {
+    match o {
+        crate::ast::OutputType::Single(t) => Some(t.clone()),
+        _ => None,
     }
 }
 
@@ -658,6 +679,15 @@ pub type ForeignFn = fn(Vec<Value>) -> Result<Value, RuntimeError>;
 pub enum Atom {
     Int(i64),
     Float(f64),
+    /// 2026-11-19 (issue #137): a value whose DECLARED storage width is
+    /// binary32. The f64 field holds the exactly-narrowed value; the
+    /// variant is what the raw-word door reads to emit the binary32 bit
+    /// pattern instead of the binary64 one. Produced at the static width
+    /// positions (let annotation, parameter binding, cast target, return
+    /// type); arithmetic keeps Float32×Float32 in f32 and promotes to f64
+    /// on any wider operand, mirroring the backend's declared-type
+    /// lowering.
+    Float32(f32),
     Bool(bool),
     Char(char),
 }
@@ -995,6 +1025,11 @@ impl Value {
         Value::Atom(Atom::Float(f))
     }
 
+    /// A binary32-stored float (issue #137).
+    pub fn float32(f: f32) -> Self {
+        Value::Atom(Atom::Float32(f))
+    }
+
     pub fn bool(b: bool) -> Self {
         Value::Atom(Atom::Bool(b))
     }
@@ -1053,6 +1088,7 @@ impl Value {
         match self {
             Value::Data(bits) => Some(f64::from_bits(*bits)),
             Value::Atom(Atom::Float(f)) => Some(*f),
+            Value::Atom(Atom::Float32(f)) => Some(*f as f64),
             Value::Atom(Atom::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
             Value::Atom(Atom::Char(c)) => Some(*c as i64 as f64),
             Value::Bits(bytes) if bytes.len() >= 8 => {
@@ -1064,9 +1100,14 @@ impl Value {
     }
 
     /// True for a Float-typed atom (drives numeric-domain selection: a Float
-    /// operand promotes an integer/comparison to f64).
+    /// operand promotes an integer/comparison to f64). Both storage widths
+    /// count — Float32 is a Float with narrower storage, not a different
+    /// protocol.
     pub fn is_float(&self) -> bool {
-        matches!(self, Value::Atom(Atom::Float(_)))
+        matches!(
+            self,
+            Value::Atom(Atom::Float(_)) | Value::Atom(Atom::Float32(_))
+        )
     }
 
     /// Numeric value in the f64 domain: Floats exactly, integers/bools/chars
@@ -1074,6 +1115,7 @@ impl Value {
     pub fn as_number_f64(&self) -> Option<f64> {
         match self {
             Value::Atom(Atom::Float(f)) => Some(*f),
+            Value::Atom(Atom::Float32(f)) => Some(*f as f64),
             Value::Atom(Atom::Int(n)) => Some(*n as f64),
             Value::Atom(Atom::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
             Value::Atom(Atom::Char(c)) => Some(*c as i64 as f64),

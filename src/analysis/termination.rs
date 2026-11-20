@@ -287,6 +287,52 @@ mod tests {
         assert!(warnings.is_empty(), "trailing checkpoint guard is harmless");
     }
 
+    // 2026-11-19 (wave-4 D): pin the G2 diagnostic's exact condition — it
+    // fires when a guard-final bare `term;` has statements after it in the
+    // SAME body (the author may have meant an exit), and stays silent when
+    // the guard is block-final (a convergence checkpoint, harmless). The
+    // census gate (tests/g2_census_gate.rs) pins the corpus counts; these
+    // two pin the diagnostic semantics the census classifies against.
+    #[test]
+    fn g2_checkpoint_with_following_statement_warns() {
+        let (errors, warnings) = analyze(&[txn(
+            "n",
+            vec![
+                Statement::Guarded(Expr::Bool(true), vec![Statement::Term(None)]),
+                Statement::Assign(
+                    Expr::Identifier("x".into()),
+                    Expr::Decimal(1),
+                ),
+            ],
+        )]);
+        assert!(errors.is_empty());
+        assert_eq!(
+            warnings.len(),
+            1,
+            "a guard-final bare `term;` with a following statement must warn: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("convergence checkpoint"),
+            "the warning should explain the checkpoint semantics: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn g2_block_final_checkpoint_is_silent() {
+        let (errors, warnings) = analyze(&[txn(
+            "n",
+            vec![Statement::Guarded(
+                Expr::Bool(true),
+                vec![Statement::Term(None)],
+            )],
+        )]);
+        assert!(errors.is_empty());
+        assert!(
+            warnings.is_empty(),
+            "a block-final guard checkpoint is harmless and must not warn: {warnings:?}"
+        );
+    }
+
     #[test]
     fn valid_swan_song_passes() {
         let (errors, warnings) = analyze(&[txn(

@@ -261,6 +261,137 @@ fn owned_tail_transfer_frees_at_every_backedge() {
     );
 }
 
+/// 2026-11-19 (PR #145 pin): a defn on a recursion cycle must NOT claim
+/// `willreturn` — an accept loop may legitimately never return, and LLVM
+/// treats a willreturn call that doesn't as UB (at -O3 LTO the whole
+/// callgraph below main was deleted: exit 0, empty output, no listener —
+/// the routing_service failure). The divergent_loop_attrs fixture has the
+/// cycle shape (loop2 tail-calls itself; serve wraps it); this test builds
+/// it and asserts the cycle defns land in a willreturn-free attribute
+/// group (#15) while a plain defn keeps its group.
+#[test]
+fn divergent_cycle_defns_lack_willreturn() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let out_dir = Path::new(PROJECT_ROOT).join("target/briev_daily_use_smoke/divergent_loop_attrs");
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let fixture = Path::new(PROJECT_ROOT).join("tests/tier1/divergent_loop_attrs.bv");
+    let build = Command::new(brievc)
+        .args([
+            "build",
+            &fixture.to_string_lossy(),
+            "--llvm",
+            "--out",
+            &out_dir.to_string_lossy(),
+            "--stdlib-path",
+            &format!("{PROJECT_ROOT}/lib/std"),
+        ])
+        .output()
+        .expect("failed to spawn brievc build");
+    assert!(
+        build.status.success(),
+        "build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let ll = std::fs::read_to_string(out_dir.join("divergent_loop_attrs.ll")).unwrap();
+    // Find the attribute group each cycle defn lands in, then assert that
+    // group carries no willreturn. A plain (non-cyclic) defn must still
+    // carry one — the optimization is narrowed, not removed.
+    let group_of = |defn: &str| -> String {
+        let line = ll
+            .lines()
+            .find(|l| l.starts_with(defn))
+            .unwrap_or_else(|| panic!("{defn} not found in the emitted IR"));
+        let hash = line.rfind('#').expect("attr group marker missing");
+        let tail = &line[hash + 1..];
+        let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+        assert!(!digits.is_empty(), "attr group number missing in: {line}");
+        digits
+    };
+    let loop2_group = group_of("define void @loop2");
+    let serve_group = group_of("define void @serve");
+    // Both cycle defns may share one willreturn-free group (identically
+    // attributed defns group together); the pin is the ABSENCE of
+    // willreturn on each.
+    let plain_group = group_of("define i64 @plain");
+    // Attribute groups are multi-line ({ body }): scan until the closing
+    // brace so the willreturn check sees the whole body.
+    let group_lines = |group: &str| -> String {
+        let start = ll
+            .lines()
+            .position(|l| l.starts_with(&format!("attributes #{group} =")))
+            .unwrap_or_else(|| panic!("attributes #{group} missing"));
+        let mut body = String::new();
+        for line in ll.lines().skip(start) {
+            body.push_str(line);
+            if line.trim_end() == "}" {
+                break;
+            }
+        }
+        body
+    };
+    let plain_attrs = group_lines(&plain_group);
+    for (defn, group) in [("loop2", &loop2_group), ("serve", &serve_group)] {
+        let attrs = group_lines(group);
+        assert!(
+            !attrs.contains("willreturn"),
+            "{defn} is on a recursion cycle and must not claim willreturn \
+             (attrs #{group}: {attrs})"
+        );
+    }
+    assert!(
+        plain_attrs.contains("willreturn"),
+        "a defn with a terminal term must KEEP willreturn (the optimization \
+         is narrowed, not removed): {plain_attrs}"
+    );
+}
+
+/// 2026-11-19 (issue #137): Float32 storage width — the reference engine
+/// must store plain `Float`/`Float32` values as binary32 (the universe's
+/// bits=32 row, the same fact codegen reads), so the raw-word door
+/// reproduces the native binary32 pattern. The test-block file asserts the
+/// round trips on the interpreter; the tier1 fixture
+/// `float32_storage_width.bv` pins the native side against the same oracle
+/// values via its `.golden`.
+#[test]
+fn float32_storage_width_interpreter_matches_native() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let fixture = Path::new(PROJECT_ROOT).join("tests/tier1/float32_storage_width_tests.bv");
+    let run = Command::new(brievc)
+        .arg("test")
+        .arg(fixture.to_string_lossy().as_ref())
+        .output()
+        .expect("failed to spawn brievc test");
+    assert!(
+        run.status.success(),
+        "float32 storage width: interpreter test-blocks failed:\n{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// 2026-11-19 (wave-4 E1): SPEC §12.2 spawn/await — the interpreter's
+/// segment execution (spawn captures, await drives round-robin, parameters
+/// carry) must agree with native on the pinned values. The test-block file
+/// asserts interpreter-side; the corpus fixture pins native-side.
+#[test]
+fn spawn_await_interpreter_matches_native() {
+    let brievc = env!("CARGO_BIN_EXE_brievc");
+    let fixture =
+        Path::new(PROJECT_ROOT).join("tests/tier1/spawn_await_segments_tests.bv");
+    let run = Command::new(brievc)
+        .arg("test")
+        .arg(fixture.to_string_lossy().as_ref())
+        .output()
+        .expect("failed to spawn brievc test");
+    assert!(
+        run.status.success(),
+        "spawn/await: interpreter test-blocks failed:\n{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[test]
 fn tier1_corpus_compiles_links_and_runs() {
     if !has("clang") {

@@ -1052,12 +1052,44 @@ fn exec_binop(
     int_op: fn(i64, i64) -> i64,
     float_op: fn(f64, f64) -> f64,
 ) -> Result<Value, RuntimeError> {
+    // 2026-11-19 (issue #137): a Float32 operand keeps binary32 — the
+    // backend computes f32 locals in f32 with literals adapting to the
+    // context width, so a binary32 operand makes the WHOLE op binary32:
+    // wide float operands narrow in (a literal's width comes from its
+    // context). Two binary64 operands promote to f64 (fpext).
+    let a32 = arg_as_f32(args, 0);
+    let b32 = arg_as_f32(args, 1);
+    if a32.is_some() || b32.is_some() {
+        let fa = a32.or_else(|| {
+            args.get(0)
+                .and_then(|v| v.as_number_f64())
+                .map(|n| n as f32)
+        });
+        let fb = b32.or_else(|| {
+            args.get(1)
+                .and_then(|v| v.as_number_f64())
+                .map(|n| n as f32)
+        });
+        if let (Some(fa), Some(fb)) = (fa, fb) {
+            return Ok(Value::float32(float_op(fa as f64, fb as f64) as f32));
+        }
+    }
     if let (Ok(a), Ok(b)) = (arg_as_f64(args, 0), arg_as_f64(args, 1)) {
         return Ok(f64_to_bits(float_op(a, b)));
     }
     let a = arg_as_i64(args, 0)?;
     let b = arg_as_i64(args, 1)?;
     Ok(i64_to_bits(int_op(a, b)))
+}
+
+/// Extract a binary32-stored operand (issue #137). A binary64 Float is
+/// deliberately NOT accepted here: mixing widths promotes to f64, which the
+/// `arg_as_f64` arm above handles.
+fn arg_as_f32(args: &[Value], index: usize) -> Option<f32> {
+    match args.get(index)? {
+        Value::Atom(Atom::Float32(f)) => Some(*f),
+        _ => None,
+    }
 }
 
 /// Execute a comparison. Tries float first, then int.
@@ -1076,6 +1108,28 @@ fn exec_cmp(
 
 /// Division with zero check. Tries float first, then int.
 fn exec_div(args: &[Value]) -> Result<Value, RuntimeError> {
+    // 2026-11-19 (issue #137): a binary32 operand keeps the whole op binary32
+    // (same rule as exec_binop — see there).
+    let a32 = arg_as_f32(args, 0);
+    let b32 = arg_as_f32(args, 1);
+    if a32.is_some() || b32.is_some() {
+        let fa = a32.or_else(|| {
+            args.get(0)
+                .and_then(|v| v.as_number_f64())
+                .map(|n| n as f32)
+        });
+        let fb = b32.or_else(|| {
+            args.get(1)
+                .and_then(|v| v.as_number_f64())
+                .map(|n| n as f32)
+        });
+        if let (Some(fa), Some(fb)) = (fa, fb) {
+            if fb == 0.0 {
+                return Err(RuntimeError::DivisionByZero);
+            }
+            return Ok(Value::float32(fa / fb));
+        }
+    }
     if let (Ok(a), Ok(b)) = (arg_as_f64(args, 0), arg_as_f64(args, 1)) {
         if b == 0.0 {
             return Err(RuntimeError::DivisionByZero);

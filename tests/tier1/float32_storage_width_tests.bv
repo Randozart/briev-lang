@@ -1,0 +1,28 @@
+import "std/io.bv";
+
+defn narrow(v: Float32) -> Int {
+// spec: 15.6
+    term (v as Data) as Int;
+};
+
+test repro_137 {
+    let a: Float32 = 1.5;
+    expect (a as Data) as Int == 1069547520;
+};
+
+test named_operand_137 {
+    expect narrow(1.5) == 1069547520;
+};
+
+test neg_zero_137 {
+    expect ((-0.0 as Float32) as Data) as Int == 2147483648;
+};
+
+test f64_control_137 {
+    let b: Float64 = 1.5;
+    expect (b as Data) as Int == 4609434218613702656;
+};
+
+node entry [beginprogram][true] {
+    endprogram Print#("");
+};

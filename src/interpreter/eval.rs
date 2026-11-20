@@ -139,7 +139,7 @@ pub fn eval_expr(
             if let Some(bits) = crate::type_universe::bits_width(ty) {
                 return Ok(eval_bits_cast(v, bits));
             }
-            match target_protocol_category(ty).as_str() {
+            let cast_result = match target_protocol_category(ty).as_str() {
                 // 2026-11-14 (#96): the String→Data door exposes a real
                 // [length][bytes][NUL] block. Bits are inline interpreter
                 // strings, not pointer bits; fresh_string copies n+1 bytes.
@@ -169,6 +169,11 @@ pub fn eval_expr(
                         })?;
                         Ok(Value::Data(addr))
                     }
+                    // 2026-11-19 (issue #137): a binary32-stored float's
+                    // raw word IS the binary32 bit pattern, zero-extended to
+                    // the i64 carrier (the native store-f32/load-i64 ABI);
+                    // binary64 keeps its full pattern.
+                    Value::Atom(Atom::Float32(f)) => Ok(Value::Data(f.to_bits() as u64)),
                     Value::Atom(Atom::Float(number)) => Ok(Value::Data(number.to_bits())),
                     Value::Atom(_) => Ok(Value::Data(v.as_i64().unwrap_or(0) as u64)),
                     _ => Ok(v),
@@ -196,15 +201,21 @@ pub fn eval_expr(
                         })?;
                         Ok(Value::Data(addr))
                     }
+                    // 2026-11-19 (issue #137): a binary32-stored float's
+                    // raw word IS the binary32 bit pattern, zero-extended to
+                    // the i64 carrier (the native store-f32/load-i64 ABI);
+                    // binary64 keeps its full pattern.
+                    Value::Atom(Atom::Float32(f)) => Ok(Value::Data(f.to_bits() as u64)),
                     Value::Atom(Atom::Float(number)) => Ok(Value::Data(number.to_bits())),
                     Value::Atom(_) => Ok(Value::Data(v.as_i64().unwrap_or(0) as u64)),
                     _ => Ok(v),
                 },
-                "Data" if matches!(ty, Type::Applied(base, _) if base == "Ptr")
-                    || matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) =>
+                "Data"
+                    if matches!(ty, Type::Applied(base, _) if base == "Ptr")
+                        || matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) =>
                 {
                     Ok(v)
-                },
+                }
                 "Int" | "UInt" => match v {
                     Value::Data(bits) => Ok(Value::int(bits as i64)),
                     Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Int(if b { 1 } else { 0 }))),
@@ -274,7 +285,12 @@ pub fn eval_expr(
                     }
                 }
                 _ => Ok(v),
-            }
+            }?;
+            // 2026-11-19 (issue #137): a Float32 cast target narrows the
+            // produced value to binary32 storage — `(1.5 as Float32) as Data`
+            // must round-trip the binary32 word, and a named binding of that
+            // cast result keeps the width.
+            Ok(coerce_declared_float_width(Some(ty), cast_result))
         }
 
         // ── IsType ───────────────────────────────────────────────
@@ -780,8 +796,17 @@ fn eval_call(
                             });
                         }
                         let mut local: HashMap<String, Value> = bindings.clone();
-                        for (p, v) in fn_def.parameters.iter().zip(evaluated.into_iter()) {
-                            local.insert(p.clone(), v);
+                        // 2026-11-19 (issue #137): a Float32-typed parameter
+                        // receives binary32 storage — the declared width is
+                        // static, so the binding coerces.
+                        for (i, (p, v)) in fn_def
+                            .parameters
+                            .iter()
+                            .zip(evaluated.into_iter())
+                            .enumerate()
+                        {
+                            let declared = fn_def.param_types.get(i);
+                            local.insert(p.clone(), coerce_declared_float_width(declared, v));
                         }
                         // 2026-10-05 (callable-txn convergence): a `txn` loops
                         // until its postcondition holds; the pre gates each entry.
@@ -793,8 +818,15 @@ fn eval_call(
                         if fn_def.kind == crate::interpreter::FnKind::Defn {
                             let block = Expr::Block(fn_def.body.clone());
                             return match eval_expr(&block, heap, &mut local, functions) {
-                                Ok(v) => Ok(v),
-                                Err(RuntimeError::TermReturn(v)) => Ok(v),
+                                // 2026-11-19 (issue #137): a Float32 return
+                                // type narrows the term value at the boundary
+                                // (the backend fpexts/truncs at the call ABI).
+                                Ok(v) => {
+                                    Ok(coerce_declared_float_width(fn_def.return_type.as_ref(), v))
+                                }
+                                Err(RuntimeError::TermReturn(v)) => {
+                                    Ok(coerce_declared_float_width(fn_def.return_type.as_ref(), v))
+                                }
                                 Err(e) => Err(e),
                             };
                         }
@@ -875,12 +907,17 @@ fn call_user_fn(
         return None;
     }
     let mut local: HashMap<String, Value> = bindings.clone();
-    for (p, v) in fn_def.parameters.iter().zip(args.into_iter()) {
-        local.insert(p.clone(), v);
+    // 2026-11-19 (issue #137): declared-width coercion at param binding and
+    // at the returned value (same as the Expr::Call path above).
+    for (i, (p, v)) in fn_def.parameters.iter().zip(args.into_iter()).enumerate() {
+        let declared = fn_def.param_types.get(i);
+        local.insert(p.clone(), coerce_declared_float_width(declared, v));
     }
     let block = Expr::Block(fn_def.body.clone());
     Some(match eval_expr(&block, heap, &mut local, functions) {
-        Err(RuntimeError::TermReturn(v)) => Ok(v),
+        Err(RuntimeError::TermReturn(v)) => {
+            Ok(coerce_declared_float_width(fn_def.return_type.as_ref(), v))
+        }
         other => other,
     })
 }
@@ -1193,6 +1230,7 @@ fn describe_value(v: &Value) -> String {
     match v {
         Value::Atom(Atom::Int(n)) => format!("integer {}", n),
         Value::Atom(Atom::Float(f)) => format!("float {}", f),
+        Value::Atom(Atom::Float32(f)) => format!("float32 {}", f),
         Value::Atom(Atom::Bool(b)) => format!("boolean {}", b),
         Value::Atom(Atom::Char(c)) => format!("character '{}'", c),
         Value::Bits(_) => "raw bits".into(),
@@ -1663,6 +1701,7 @@ fn reflect_type_code(v: &Value) -> i64 {
     match v {
         Value::Atom(Atom::Int(_)) => 0,
         Value::Atom(Atom::Float(_)) => 1,
+        Value::Atom(Atom::Float32(_)) => 1,
         Value::Atom(Atom::Bool(_)) => 2,
         Value::Atom(Atom::Char(_)) => 3,
         Value::Bits(_) => 4,
@@ -2018,6 +2057,11 @@ fn print_value(value: &Value, heap: &mut VirtualHeap) -> Result<(), RuntimeError
         Value::Atom(Atom::Float(f)) => {
             print!("{}", f);
         }
+        // 2026-11-19 (issue #137): a Float32 prints its f32 value (the
+        // backend formats the narrowed storage, not a re-widened f64).
+        Value::Atom(Atom::Float32(f)) => {
+            print!("{}", f);
+        }
         Value::Atom(Atom::Int(n)) => {
             print!("{}", n);
         }
@@ -2042,6 +2086,47 @@ fn print_value(value: &Value, heap: &mut VirtualHeap) -> Result<(), RuntimeError
 /// primitives; custom types resolve to "Bit" (identity reinterpretation).
 fn target_protocol_category(ty: &Type) -> String {
     known_target_protocol_category(ty).unwrap_or_else(|| "Data".into())
+}
+
+/// 2026-11-19 (issue #137): narrow a produced float to its declared storage
+/// width. The width is DERIVED from the type universe — the same rows the
+/// backend reads (`Float`/`Float32` carry bits=32; `Float64` bits=64) — so
+/// the reference stores exactly what codegen stores, and a renamed or
+/// user-declared binary32 type narrows without any name list here. Called
+/// at the static-width positions: `let` bindings, parameter binding, cast
+/// targets, and returns.
+pub(super) fn coerce_declared_float_width(ty: Option<&Type>, val: Value) -> Value {
+    use std::sync::OnceLock;
+    static UNIVERSE: OnceLock<crate::type_universe::TypeUniverse> = OnceLock::new();
+    let Some(ty) = ty else {
+        return val;
+    };
+    // Only a float-protocol value narrows; integers/bools convert through
+    // their own paths.
+    if !matches!(val, Value::Atom(Atom::Float(_))) {
+        return val;
+    }
+    let universe = UNIVERSE.get_or_init(crate::type_universe::TypeUniverse::new);
+    let Some(key) = ty.universe_key() else {
+        return val;
+    };
+    let Some(row) = universe.get(&key) else {
+        return val;
+    };
+    // Is this type a FLOAT protocol member? The Cast.Float property is the
+    // universe's own answer (matches the backend's is_protocol_member).
+    let is_float = row.properties.get("Cast.Float").is_some();
+    if !is_float {
+        return val;
+    }
+    if row.max_bits <= 32 {
+        match val {
+            Value::Atom(Atom::Float(f)) => Value::float32(f as f32),
+            other => other,
+        }
+    } else {
+        val
+    }
 }
 
 /// Preserve the distinction between a registered Data category and an unknown
@@ -2338,6 +2423,12 @@ fn eval_unary_op(
             // silently collapsed `-1.5` to `Int(0)`.
             if let Value::Atom(Atom::Float(f)) = &val {
                 return Ok(Value::float(-f));
+            }
+            // 2026-11-19 (issue #137): binary32 storage negates in binary32
+            // (the backend's fneg f32) — a Float32(-0.0) payload must keep
+            // its sign bit, not fall through to the integer arm.
+            if let Value::Atom(Atom::Float32(f)) = &val {
+                return Ok(Value::float32(-f));
             }
             let n = val.as_i64().unwrap_or(0);
             Ok(i64_to_bits(n.wrapping_neg()))
@@ -2696,6 +2787,11 @@ fn eval_let_binding(
         return Ok(Value::product(elems));
     }
     let val = eval_expr(expr, heap, bindings, functions)?;
+    // 2026-11-19 (issue #137): a declared float width coerces AT THE
+    // BINDING — `let x: Float32 = ...` stores binary32, so every later
+    // read (named operand, the raw-word door) sees the narrow value even
+    // though the body's expressions are dynamically typed.
+    let val = coerce_declared_float_width(ty, val);
     // Scalar `dyn Trait`: the annotation wraps the whole value — the
     // Phase 5b coercion site (concrete name from the expression syntactically).
     let Some(trait_name) = scalar_dyn_trait(ty) else {
@@ -3170,9 +3266,12 @@ mod tests {
     fn test_cast_int_to_float_converts() {
         // 2026-11-10 (fuzz finding): `n as Float` used to fall through to
         // identity, leaving an Int where the backend produces a Float.
+        // 2026-11-19 (issue #137): plain `Float` is binary32 storage (the
+        // universe row bits=32), so the conversion lands in the binary32
+        // atom — the backend emits an f32 for the same cast.
         assert_eq!(
             eval1(&Expr::Cast(Box::new(Expr::Decimal(7)), Type::float())),
-            Value::Atom(Atom::Float(7.0))
+            Value::float32(7.0)
         );
     }
 
@@ -4417,6 +4516,8 @@ defn go() -> Int {
         crate::interpreter::FunctionDef {
             name: name.to_string(),
             parameters: params.into_iter().map(|p| p.to_string()).collect(),
+            param_types: Vec::new(),
+            return_type: None,
             body: vec![Statement::Term(Some(body))],
             contract: None,
             kind: crate::interpreter::FnKind::Defn,

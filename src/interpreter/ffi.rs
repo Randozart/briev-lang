@@ -32,6 +32,7 @@ pub fn marshal_value(v: &Value) -> Marshalled {
         Value::Data(bits) => Marshalled::Int(*bits as i64),
         Value::Atom(Atom::Int(n)) => Marshalled::Int(*n),
         Value::Atom(Atom::Float(f)) => Marshalled::Float(*f),
+        Value::Atom(Atom::Float32(f)) => Marshalled::Float(*f as f64),
         Value::Atom(Atom::Bool(b)) => Marshalled::Bool(*b),
         Value::Atom(Atom::Char(c)) => Marshalled::Int(*c as i64),
         Value::Bits(bytes) => Marshalled::Bytes(bytes.clone()),

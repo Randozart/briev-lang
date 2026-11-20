@@ -1,0 +1,38 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// spec: 9.1
+// divergent_loop_attrs — PR #145 pin: a defn on a recursion cycle must not
+// claim `willreturn`. An accept loop (`serve_forever -> loop2 -> loop2`) may
+// legitimately never return; with `willreturn` on the attrs, LLVM's LTO
+// treats non-return as UB and DELETES the whole callgraph below main (the
+// routing_service failure: exit 0, empty output, no listener).
+//
+// The fixture is checked at the IR level by
+// tests/daily_use_smoke.rs::divergent_cycle_defns_lack_willreturn — it
+// builds this program and asserts the recursive defns' attribute groups do
+// not carry willreturn while a plain recursive-free defn keeps it.
+import "std/io.bv";
+
+// The cycle is STATIC (loop2 -> loop2), deliberately runtime-terminating so
+// the corpus harness can run this program to completion; willreturn removal
+// is decided by the call-graph cycle, not by runtime divergence.
+defn loop2(n: Int) [n >= 0] -> Void {
+    when n < 1 {
+        term;
+    };
+    loop2(n - 1);
+};
+
+defn serve(n: Int) [n >= 0] -> Void {
+    loop2(n);
+};
+
+defn plain(n: Int) [n >= 0][term == 2 * n] -> Int {
+    term n + n;
+};
+
+node entry [beginprogram][true] {
+    serve(3);
+    endprogram Print#(plain(21) as String);
+};

@@ -1,3 +1,27 @@
+## 2026-11-19 — a defn on a recursion cycle claimed `willreturn` and LTO deleted the program (FIXED, PR #145)
+
+A `Void` defn that tail-recurses forever (an accept loop) was emitted with
+`willreturn` on its attribute group: `compute_transitive_may_trap` only seeded
+from `Trap`/`Halt` statements, so a divergent loop carried none. `willreturn`
+promises the call returns; LLVM treats a willreturn call that doesn't as UB —
+at `-O3 -flto` the whole callgraph below `main` was deleted (exit code from
+register garbage, empty output, no listener). This explains the knooppunt
+`routing_service` failure logged in the #144 investigation (exit after startup,
+never listening).
+
+Fix (PR #145, merged): the may-not-return set is seeded with every defn on a
+call-graph recursion cycle (direct self-recursion + per-defn DFS for mutual
+recursion); callers inherit via the existing fixpoint. Conservative: a
+provably-converging cycle also loses `willreturn` — the retirement gate is
+exposing the checker's termination analysis to codegen.
+
+Pinned by `tests/tier1/divergent_loop_attrs.bv` +
+`daily_use_smoke::divergent_cycle_defns_lack_willreturn`: the cycle defns
+land in a willreturn-free group (#15) while a called plain defn keeps its
+willreturn group (#8) — the optimization is narrowed, not removed. The
+fixture's cycle is runtime-terminating so the corpus harness runs it to
+completion; `willreturn` removal is decided by the static call-graph cycle.
+
 ## 2026-11-19 — slicing a heap List returned the WHOLE list (FIXED) and the strided slice helper was inclusive-stop (FIXED)
 
 `list[2:6]` on a heap `List<Int>` local fell through `emit_slice_with_array`
