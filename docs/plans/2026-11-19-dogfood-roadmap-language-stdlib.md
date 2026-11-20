@@ -9,9 +9,29 @@ connections (`std/net/evented.bv`), fd linearity as a checker fact
 (`attr linear` + analysis::obj_linear), the io/pure strand
 classification (analysis::strand — the fact source L1 needs to upgrade
 #15's conservative #15 routing), and the chunked provable read (G12b
-closed at the stdlib layer). L2 (chunked read) is effectively DONE in
-this PR; L1's fact source is landed, convergence pending; S4 (signals)
-and true async-I/O-under-await remain open. Rescued from session-only
+closed at the stdlib layer). L2 (chunked read) is DONE in this PR;
+L1's fact source is landed, convergence pending; S4 (signals) and true
+async-I/O-under-await remain open.
+
+WHAT THE CHUNKED READ TAUGHT the contract discipline — three rules worth
+carrying into the next primitives:
+
+1. **Bounds as arguments, not loop-carried state.** `recv_into(socket,
+   buf, offset, room, flags)` proves at every call site because the
+   caller supplies `offset + room <= buf.cap` from its own locals.
+2. **Advance lengths through a contract, never a field write.** A
+   mid-body `buf.len = fed + got` leaves no projection the checker can
+   carry into the next iteration; `ByteBuf.claim(count)` — an obj method
+   whose postcondition names `term.len == sink.len + count` — does. The
+   same defn as a FREE function does not project (issue #150), and that
+   asymmetry decides whether a primitive can be a function or must hang
+   off an obj.
+3. **The deny gate lives only in the test suite.** `brievc check` and
+   `build` never install `config/contracts.dbvl`, so the conformance
+   sweep is the first place an unprovable call site appears — one CI
+   round-trip per discovery until issue #149 is fixed.
+
+Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
 main via PR #146 `fee5ce003` — checksum ladder kept in the integration
 merge); S5 CANCELLED (argv/env already covered by `cli.bv` + `env.bv`);
