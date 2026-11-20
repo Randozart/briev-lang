@@ -2918,7 +2918,8 @@ foreach item in items {
 > The reference engine raises a loud index error instead — treat the
 > interpreter as the bounds oracle and prove index bounds with a
 > `when` guard or a contract before a subscript when the bound is not
-> static. `foreach` over a collection is always in-bounds by
+> static. Index types (§15.4a) are the static-proof spelling: a subscript
+> through `u32 in xs` carries its bound in the type. `foreach` over a collection is always in-bounds by
 > construction and is the preferred form wherever the index itself is
 > not load-bearing.
 
@@ -3603,6 +3604,39 @@ There is no `simd`/`nosimd` keyword and no explicit vector type: the default
 already vectorizes every counted loop, `seq` is the sequentialism opt-out,
 and these intrinsics are the forced-shape escape hatch.
 
+### 15.4a Index types — `u32 in xs`
+
+```briev
+let xs: List<Int> = [7, 8, 9];
+let i: u32 in xs = xs.Count#();     // construction: ONLY xs's own Count#
+let tail: Int = xs[i - 1];          // provably in-bounds subscript
+```
+
+`u32 in xs` binds an index VALUE to its collection, statically.
+
+- **Construction.** The only legal initializers for an index type are that
+  collection's own `Count#()` and another value already of the same index
+  type. `ys.Count#()` into `u32 in xs` is a type error; so is a plain
+  `Int`. There is no conversion from `Int` to an index type.
+- **Subscript.** `xs[i]` where `i` has type `u32 in xs` is provably
+  in-bounds: the type carries the bound. Such a subscript is an unchecked
+  `inbounds` access natively (the §11.4 note's UB contract does not apply
+  to it — the proof is static), and the reference engine's out-of-bounds
+  error is unreachable through it.
+- **Arithmetic degrades.** An index acts as its unsigned carrier in
+  operators; the RESULT is the plain carrier type, not a new bounded
+  index — `i - 1` is an `Int`, and subscripting with it is the ordinary
+  (bounds-unchecked natively) form. A program that needs a bounded
+  neighbour index constructs it from `Count#()` again.
+- **Storage.** An index value is a machine-width integer at runtime; the
+  `u32` in the spelling names the bound's domain, not the storage width.
+
+This is the static counterpart to `check` (§10.2): `check` proves a
+condition at a point, an index type carries a bound through a value. A
+`checkfree`-style obligation (every subscript in a function is
+index-typed or statically in-range) is a planned follow-up, not part of
+this section.
+
 ### 15.5 Precedence
 
 From highest to lowest:
@@ -3927,6 +3961,22 @@ removed after a one-release deprecated alias — it is now an unknown-target
 error directing to `Abs#`.
 
 `Values` and `Elements` are ordinary logical fields when declared. `AsStack` and `AsQueue` are type-defined conversions.
+
+> **2026-11-20 (wave-6 W6-3, `ClockMonotonicNs#`).** `ClockMonotonicNs#()`
+> reads `CLOCK_MONOTONIC` nanoseconds as one `Int` (`sec * 1e9 + nsec`,
+> domain `[0, i64::MAX]` — honest wrap at ~292 years of uptime). It is the
+> fast unchecked monotonic read; `std/os/time.bv`'s `clock_ns_res` stays
+> the checked path (errno, `nsec < 1e9`, overflow → `Result`). The
+> intrinsic's syscall number routes through the compiler's per-triple
+> table (x86_64 228, asm-generic/aarch64 113), so it is arch-correct by
+> construction — the `rt_now_ns` lane's hardcoded 228 is legacy.
+>
+> `std/data_verify.bv` provides the verify-on-load counterpart for
+> `Data` words: `data_check(word, max_bytes)` validates the §16.2 layout
+> (length word non-negative, length within the caller's accepted bound,
+> NUL terminator present) and returns `0`/`1`; `data_len(word)` reads a
+> verified block's length. A hostile block claiming an absurd length is
+> rejected without dereferencing the claim.
 
 ## 18. Compile-time execution and macros
 
