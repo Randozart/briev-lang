@@ -22,7 +22,7 @@ import {
     syscall,
     SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN, SYS_ACCEPT,
     SYS_SEND, SYS_RECV, SYS_SHUTDOWN, SYS_SETSOCKOPT, SYS_FCNTL, SYS_CLOSE,
-    SYS_UNLINK
+    SYS_UNLINK, SYS_GETSOCKNAME
 } from "std/posix/syscall.bv";
 import { U8_MAX, U16_MAX, U32_MAX } from "std/constants.bv";
 
@@ -464,6 +464,54 @@ defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
         term brc;
     };
     term syscall(SYS_LISTEN, s.fd, backlog);
+};
+
+// sock_local_addr - the address `s` is actually bound to, in host order (the
+// same integer ip_v4 / make_sockaddr_in take: LOOPBACK = 2130706433,
+// INADDR_ANY = 0).
+//
+// WHY THIS EXISTS (2026-11-21, knooppunt G22). `sock_bind_listen` binds the
+// ANY address, and every fixture that "tested loopback" only proved that a
+// loopback CONNECT works -- the bind was never readable, so a service could
+// claim "loopback by construction" while listening on 0.0.0.0 and no test
+// could disagree. getsockname(2) makes the bind an observable fact.
+//
+// It also makes the answer checkable for the ANY case: a listener bound at 0
+// READS BACK 0 on Linux (the wildcard is not resolved to a concrete address),
+// so a fixture can assert both halves instead of just the one it wants.
+//
+// The socklen_t is a real in/out pointer (Malloc# + Store# of 16), and the
+// kernel may write a shorter length back; that write-back is ignored on
+// purpose -- sin_addr is always at offset 4 of a sockaddr_in, and this reads a
+// FIXED sockaddr_in (SOCKADDR_IN_LEN). A sockaddr that is not AF_INET would
+// report whatever sits at offset 4, so callers pass an AF_INET socket.
+//
+// sin_addr is assembled from four single-byte Load# reads rather than one
+// word load: the bytes are network order (127 0 0 1 at offset 4), and reading
+// them individually is byte-order independent -- the same reason
+// bytes.get_u32_be reads bytes.
+defn sock_local_addr(s: Socket) [s.fd >= -4096] -> Result<Int,Int> {
+    let sa: Int = Malloc#(SOCKADDR_IN_LEN) as Int;
+    when sa == 0 { term Err(0 - 12); };
+    let len: Int = Malloc#(4) as Int;
+    when len == 0 {
+        Free#(sa as Ptr);
+        term Err(0 - 12);
+    };
+    Store#(len, SOCKADDR_IN_LEN, 4);
+    let rc: Int = syscall(SYS_GETSOCKNAME, s.fd, sa, len);
+    when rc < 0 {
+        Free#(sa as Ptr);
+        Free#(len as Ptr);
+        term Err(rc);
+    };
+    let byte0: Int = Load#(sa + 4, 1) & U8_MAX;
+    let byte1: Int = Load#(sa + 5, 1) & U8_MAX;
+    let byte2: Int = Load#(sa + 6, 1) & U8_MAX;
+    let byte3: Int = Load#(sa + 7, 1) & U8_MAX;
+    Free#(sa as Ptr);
+    Free#(len as Ptr);
+    term Ok((byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3);
 };
 
 // sock_accept - accept(2) one pending connection off the listen queue, giving a

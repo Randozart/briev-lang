@@ -73,6 +73,7 @@ export const SYS_SENDTO:        Int = 44;
 export const SYS_RECVFROM:      Int = 45;
 export const SYS_SHUTDOWN:      Int = 48;
 export const SYS_GETSOCKOPT:    Int = 55;
+export const SYS_GETSOCKNAME:   Int = 51;
 export const SYS_SETSOCKOPT:    Int = 54;
 
 // ── Syscall helpers ───────────────────────────────────────────────────────
