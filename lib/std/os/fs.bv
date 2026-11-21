@@ -165,7 +165,7 @@ export defn write_file(path: String, data: String)
     when fd < 0 {
         term Err(fd);
     };
-    let len: Int = data .^Length;
+    let len: Int = data ^^Length;
     let written: Int = write_loop(fd, data, len, 0);
     fs_close(fd);
     when written < 0 {
@@ -220,11 +220,11 @@ export defn read_line_count(path: String) [true][is_ok(term) || is_err(term)] ->
 // counts 0 (read_lines of "" yields an empty List).
 defn count_lines(data: String, i: Int, lines: Int)
     [i >= 0 && lines >= 0][lines >= 0] -> Int {
-    when i >= data .^Length {
-        when data .^Length == 0 {
+    when i >= data ^^Length {
+        when data ^^Length == 0 {
             term 0;
         };
-        when byte_at(data, data .^Length - 1) == 10 {
+        when byte_at(data, data ^^Length - 1) == 10 {
             term lines;
         };
         term lines + 1;
@@ -242,7 +242,7 @@ defn split_lines(data: String) [true] -> List<String> {
 
 txn split_lines_loop(data: String, acc: List<String>, last: Int, i: Int)
     [i >= 0 && last >= 0][i >= last] -> List<String> {
-    when i >= data .^Length {
+    when i >= data ^^Length {
         when last < i {
             acc <- data[last:i];
         };

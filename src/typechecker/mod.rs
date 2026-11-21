@@ -118,7 +118,7 @@ pub struct TypecheckContext<'a> {
     /// from the annotation. Transient — set by the Let binding, cleared after.
     expected_call_type: Option<Type>,
     /// 2026-08-09 (Phase 12, SPEC §19.3): names of `optional frgn` bindings.
-    /// `feature.^^Available` (a compile-time descriptor reflect) is a Bool
+    /// `feature^^Available` (a compile-time descriptor reflect) is a Bool
     /// only for these — non-optional frgns are always available.
     optional_frgns: std::collections::HashSet<String>,
     /// 2026-07-31: Regular operator declarations from TypeDef bodies
@@ -1584,13 +1584,13 @@ pub fn infer_expression(
                 }),
             }
         }
-        // 2026-07-31: Reflection: x.^Length / x.^^Size (see resolve_reflect).
+        // 2026-07-31: Reflection: x^^Length / x^^Size (see resolve_reflect).
         Expr::Reflect(recv, target, kind) => {
-            // 2026-08-09 (Phase 12, SPEC §19.3): `feature.^^Available` — a
+            // 2026-08-09 (Phase 12, SPEC §19.3): `feature^^Available` — a
             // compile-time descriptor Bool for an `optional frgn`. Only an
             // optional frgn name admits it (non-optional frgns are always
             // available; the reflect on a non-frgn value is an error).
-            if target == "Available" && matches!(kind, ReflectKind::CompileTime) {
+            if target == "Available" {
                 let is_optional_frgn = match recv.as_ref() {
                     Expr::Identifier(n) => ctx.optional_frgns.contains(n),
                     _ => false,
@@ -1605,14 +1605,14 @@ pub fn infer_expression(
                 }
                 return Ok((Type::bool_(), Provenance::Unknown));
             }
-            // 2026-08-14 (boundary plan): `value.^^Element` — the ELEMENT type
+            // 2026-08-14 (boundary plan): `value^^Element` — the ELEMENT type
             // of an iterable receiver as a frozen descriptor (SPEC §17.2:1430-1433).
             // Compile-time only, single-source proof form: the element type IS
             // the read op's return (`op At` Tier 2 / `op Current` Tier 1) or the
             // frozen `String` → `Char` protocol fact — never a second derivation
             // that could drift. The expression type is Int (the folded category
-            // code, exactly like `.^^Type`); the VALUE is folded at codegen.
-            if target == "Element" && matches!(kind, ReflectKind::CompileTime) {
+            // code, exactly like `^^Type`); the VALUE is folded at codegen.
+            if target == "Element" {
                 let (recv_ty, recv_prov) = infer_expression(recv, ctx)?;
                 if resolve_element_type(ctx, &recv_ty).is_none() {
                     return Err(TypeError::InvalidOperation {
@@ -8736,7 +8736,7 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
             .and_then(|i| elems.get(i).cloned());
     }
     // 2026-08-23 (SPEC sync): EVENT PORT payload projection — `damage.amount`
-    // falls through to the payload type's fields. Readiness uses .^Ready
+    // falls through to the payload type's fields. Readiness uses ^^Ready
     // (reflection), not .Ready (field) — delimiter semantic consistency.
     if let Type::Applied(base, args) = receiver {
         if base == "Event" {
@@ -8775,133 +8775,85 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
 /// A target used with the wrong kind is an error; an unknown target is an
 /// error. `Len`/`Ptr` are runtime reads; `Size`/`Bytes`/`Alignment`/`Type`/
 /// `Element` are compile-time foldable descriptors. 2026-08-14 (Boxed Cat,
-/// tri-partite rule): runtime `.^Size` is DELETED — the element count of a
+/// tri-partite rule): runtime `^^Size` is DELETED — the element count of a
 /// collection is an operation, so its home is the `Count#` intrinsic, not a
-/// reflection target (§6a/§6b of the 2026-08-14 plan). `.^^Size` (compile
+/// reflection target (§6a/§6b of the 2026-08-14 plan). `^^Size` (compile
 /// time) keeps the vector shape.
+/// Resolve `x^^Prop` — the unified reflection surface (2026-11-21, wave-9).
+///
+/// The dividing line (owner, 2026-11-21): `#` is an OPERATION — owner-written
+/// code, parameters, computed value. `^^` is a REPRESENTATION PROPERTY — a
+/// stored header slot or a type-derivable fact the compiler already knows.
+/// Never a computation.
+///
+/// The old `^^` / `^^` runtime/compile-time split is retired. It had already
+/// stopped carrying weight: runtime `Size` was deleted (2026-08-14 §6a) because
+/// the property was compile-time-shaped, and runtime `Length` on a Vector emits
+/// the same type fold compile-time `Size` does. The `CompileTime` tag every
+/// `^^` site now carries is the unified path; the emitter's per-property table
+/// keeps its folding behavior, keyed by the property row rather than the tag.
+/// The tag survives in the AST for the interpreter and any pass that asks.
 fn resolve_reflect(
     receiver: &Type,
     target: &str,
-    kind: ReflectKind,
+    _kind: ReflectKind,
     ctx: &TypecheckContext,
 ) -> Result<Type, TypeError> {
-    let is_compile_time = matches!(kind, ReflectKind::CompileTime);
-    let wrong_kind = |expected: &str| TypeError::InvalidOperation {
-        operation: format!("reflection target '{}'", target),
-        type_name: format!(
-            "{} is {expected}; use '.{}'",
-            target,
-            if expected == "runtime" { "^" } else { "^^" }
-        ),
-    };
+    // Every property is admitted through the single `^^` spelling now. The
+    // stored-vs-computed line is enforced by WHICH properties exist, exactly as
+    // before: computed counts (op Count, CharCount#) and computed truths (Abs#)
+    // were never reflection targets and still are not.
     match target {
-        // 2026-08-23 (SPEC sync): Event port readiness — runtime reflection.
-        "Ready" => {
-            if is_compile_time {
-                return Err(wrong_kind("runtime"));
-            }
-            match receiver {
-                Type::Applied(base, _) if base == "Event" => Ok(Type::bool_()),
-                _ => Err(TypeError::InvalidOperation {
-                    operation: format!("reflection target '.^{}'", target),
-                    type_name: format!("{} does not support .^Ready", receiver),
-                }),
-            }
-        }
-        "Length" => {
-            if is_compile_time {
-                return Err(wrong_kind("runtime"));
-            }
-            // 2026-08-12 (Iterable protocol): `.^Length` is STORED-length
-            // reflection (SPEC §17.1) — the String byte header, the Data byte
-            // header, the Vector element count. A COLLECTION's count is
-            // member-managed (`op Count`), and a computed count (a String's
-            // UTF8 chars) is an intrinsic (`CharCount#`) — neither is
-            // `.^Length`, so both are compile errors, never silent.
-            match receiver {
-                Type::Custom(n) if n == "String" || n == "Blob" => Ok(Type::int()),
-                Type::Vector(..) => Ok(Type::int()),
-                // 2026-08-15 (coll plan §3.4.6): a `coll` type's `.^Length` is
-                // the hidden `len` slot (compiler-owned stored length) — O(1),
-                // distinct from the member-managed `op Count` of a hand-written
-                // collection.
-                Type::Custom(n) if ctx.coll_types.contains(n) => Ok(Type::int()),
-                Type::Applied(n, _) if ctx.coll_types.contains(n) => Ok(Type::int()),
-                Type::Applied(..) => Err(TypeError::InvalidOperation {
-                    operation: "reflection target 'Length'".into(),
-                    type_name: format!(
-                        "{} has no INTRINSIC length — its count is member-managed; use `op Count`",
-                        receiver
-                    ),
-                }),
-                Type::Custom(_) => Err(TypeError::InvalidOperation {
-                    operation: "reflection target 'Length'".into(),
-                    type_name: format!(
-                        "type {} has no intrinsic (stored) length; a computed count is an intrinsic (`CharCount#`)",
-                        receiver
-                    ),
-                }),
-                _ => Err(TypeError::InvalidOperation {
-                    operation: format!("reflection target 'Length'"),
-                    type_name: format!("type {} has no runtime length", receiver),
-                }),
-            }
-        }
-        "Ptr" => {
-            if is_compile_time {
-                return Err(wrong_kind("runtime"));
-            }
-            Ok(Type::ptr(receiver.clone()))
-        }
-        // 2026-08-14 (boundary plan, SPEC §17.3): `.^Absolute` is REMOVED —
-        // abs is a computed truth, so its home is the `Abs#` intrinsic, not a
-        // reflection target. The deprecated alias release has passed; it is
-        // now an unknown-target error (the catch-all below), directing to
-        // `Abs#`. (Was: `x.^Absolute` → the receiver's type, 2026-08-04.)
-        // 2026-08-14 (Boxed Cat, iterable-protocol §10.4, tri-partite rule):
-        // `.^Size` (runtime) is DELETED — the element count of a collection is
-        // an OPERATION, so its home is the `Count#` intrinsic, not a reflection
-        // target. `.^^Size` (compile-time) keeps the vector shape and stays
-        // Int. Runtime `.^Size` is a kind error, exactly like `Bytes`.
-        "Size" => {
-            if !is_compile_time {
-                return Err(wrong_kind("compile-time"));
-            }
-            Ok(Type::int())
-        }
-        "Bytes" => {
-            if !is_compile_time {
-                return Err(wrong_kind("compile-time"));
-            }
-            Ok(Type::int())
-        }
-        "Alignment" => {
-            if !is_compile_time {
-                return Err(wrong_kind("compile-time"));
-            }
-            Ok(Type::int())
-        }
-        "Type" => {
-            if !is_compile_time {
-                return Err(wrong_kind("compile-time"));
-            }
-            // 2026-08-06 (Phase 8): `x.^^Type` is a frozen descriptor — the
-            // protocol category code, an i64 (matching interpreter + codegen).
-            Ok(Type::int())
-        }
+        // Event port readiness — per-instance stored state (SPEC §9.5).
+        "Ready" => match receiver {
+            Type::Applied(base, _) if base == "Event" => Ok(Type::bool_()),
+            _ => Err(TypeError::InvalidOperation {
+                operation: format!("reflection target '^^{target}'"),
+                type_name: format!("{receiver} does not support ^^Ready"),
+            }),
+        },
+        // STORED length — the String/Blob byte header, the Vector element
+        // count, a `coll` type's hidden `len` slot. O(1) reads, never scans.
+        "Length" => match receiver {
+            Type::Custom(n) if n == "String" || n == "Blob" => Ok(Type::int()),
+            Type::Vector(..) => Ok(Type::int()),
+            Type::Custom(n) if ctx.coll_types.contains(n) => Ok(Type::int()),
+            Type::Applied(n, _) if ctx.coll_types.contains(n) => Ok(Type::int()),
+            Type::Applied(..) => Err(TypeError::InvalidOperation {
+                operation: "reflection target 'Length'".into(),
+                type_name: format!(
+                    "{receiver} has no INTRINSIC length — its count is member-managed; use `op Count`"
+                ),
+            }),
+            Type::Custom(_) => Err(TypeError::InvalidOperation {
+                operation: "reflection target 'Length'".into(),
+                type_name: format!(
+                    "type {receiver} has no intrinsic (stored) length; a computed count is an intrinsic (`CharCount#`)"
+                ),
+            }),
+            _ => Err(TypeError::InvalidOperation {
+                operation: "reflection target 'Length'".into(),
+                type_name: format!("type {receiver} has no runtime length",),
+            }),
+        },
+        "Ptr" => Ok(Type::ptr(receiver.clone())),
+        // Type-derived facts — folded from the receiver's shape.
+        "Size" => Ok(Type::int()),
+        "Bytes" => Ok(Type::int()),
+        "Alignment" => Ok(Type::int()),
+        // Frozen descriptor — the protocol category code.
+        "Type" => Ok(Type::int()),
         _ => {
-            // 2026-08-14 (boundary plan, SPEC §17.3): the removed `.^Absolute`
-            // gets a targeted hint directing to `Abs#`.
+            // The removed `^^Absolute` gets a targeted hint directing to `Abs#`.
             let hint = if target == "Absolute" {
-                " — `.^Absolute` was removed; abs is a computed truth, use the `Abs#` intrinsic"
+                " — `Absolute` was removed; abs is a computed truth, use the `Abs#` intrinsic"
             } else {
                 ""
             };
             Err(TypeError::InvalidOperation {
-                operation: format!("reflection target '{}'", target),
+                operation: format!("reflection target '{target}'"),
                 type_name: format!(
-                    "unknown reflection target — expected Length, Ptr, Size, Bytes, Alignment, or Type{}",
-                    hint
+                    "unknown reflection target — expected Length, Ptr, Size, Bytes, Alignment, or Type{hint}"
                 ),
             })
         }
@@ -9261,9 +9213,9 @@ fn extract_op_order(consume: bool) -> (&'static str, &'static str) {
 /// receiver, single-source proof form. `Some(ty)` only for genuine iterables:
 /// a `String` operand → `Char` (frozen protocol fact), a Tier-2/1 type → the
 /// read op's return substituted with the concrete generic args, a vector → the
-/// inner type. `None` for everything else — a non-iterable `.^^Element` is a
+/// inner type. `None` for everything else — a non-iterable `^^Element` is a
 /// compile error, never a silent Int. This is the SAME evidence `foreach_item_type`
-/// reads for the foreach binding, so `.^^Element` and `foreach` cannot drift.
+/// reads for the foreach binding, so `^^Element` and `foreach` cannot drift.
 fn resolve_element_type(ctx: &TypecheckContext, ty: &Type) -> Option<Type> {
     if ctx.operand_implements_protocol(ty, "String") {
         return Some(Type::Custom("Char".to_string()));
@@ -10476,8 +10428,8 @@ defn peek(xs: List<Int>, i: Int) -> Int {
         let _deny = DenyGate::install();
         check(
             "defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
-             defn f(s: String, len: Int) [s .^Length <= len][term >= 0] -> Int { \
-                 let missing: Int = len - s .^Length; \
+             defn f(s: String, len: Int) [s ^^Length <= len][term >= 0] -> Int { \
+                 let missing: Int = len - s ^^Length; \
                  term nonneg(missing); \
              };",
         )
@@ -11329,7 +11281,7 @@ node t [count < 5][count == 5] {
     fn empty_list_assignment_coerces_to_target_element_type() {
         let src = r#"
 let items: List<String> = ["A"];
-txn t [items.^Size > 0][items.^Size == 0] {
+txn t [items^^Size > 0][items^^Size == 0] {
     items = [];
     term;
 };
@@ -12068,14 +12020,14 @@ node probe [done == false][done == true] { done = true; term; };
 
     #[test]
     fn reflect_kind_mismatch_errors() {
-        // `Bytes` and `Size` are compile-time-only — runtime `.^Bytes`/`.^Size`
-        // are kind errors (2026-08-14 §6a: `.^Size` runtime deleted — element
+        // `Bytes` and `Size` are compile-time-only — runtime `^^Bytes`/`^^Size`
+        // are kind errors (2026-08-14 §6a: `^^Size` runtime deleted — element
         // count is the `Count#` intrinsic).
         let src = r#"
 let x: Int = 5;
 node probe [true][true] {
-    let s: Int = x.^Bytes;
-    let n: Int = x.^Size;
+    let s: Int = x^^Bytes;
+    let n: Int = x^^Size;
     term;
 };
 "#;
@@ -12091,8 +12043,8 @@ node probe [true][true] {
     fn reflect_compile_time_resolves() {
         let src = r#"
 let items: Int[8];
-node probe [items.^^Size > 0][true] {
-    let sz: Int = items.^^Size;
+node probe [items^^Size > 0][true] {
+    let sz: Int = items^^Size;
     term;
 };
 "#;
@@ -12102,7 +12054,7 @@ node probe [items.^^Size > 0][true] {
 
     #[test]
     fn reflect_element_on_iterable_resolves() {
-        // 2026-08-14 (boundary plan): `.^^Element` is a compile-time frozen
+        // 2026-08-14 (boundary plan): `^^Element` is a compile-time frozen
         // descriptor on an iterable receiver — resolves to Int (the folded
         // category code), never an error. The iterable is declared inline
         // (stdlib `List` isn't in the test universe).
@@ -12114,9 +12066,9 @@ obj Items {
 };
 let xs: Items;
 let s: String = "hi";
-node probe [xs.^^Element == 0][true] {
-    let a: Int = xs.^^Element;
-    let b: Int = s.^^Element;
+node probe [xs^^Element == 0][true] {
+    let a: Int = xs^^Element;
+    let b: Int = s^^Element;
     term;
 };
 "#;
@@ -12126,32 +12078,32 @@ node probe [xs.^^Element == 0][true] {
 
     #[test]
     fn reflect_element_on_non_iterable_errors() {
-        // A scalar has no element type — `.^^Element` is a compile error,
+        // A scalar has no element type — `^^Element` is a compile error,
         // never a silent Int.
         let src = r#"
 let x: Int = 5;
 node probe [true][true] {
-    let e: Int = x.^^Element;
+    let e: Int = x^^Element;
     term;
 };
 "#;
         let e = check(src);
         assert!(
             e.is_err(),
-            "expected non-iterable `.^^Element` to error, got: {:?}",
+            "expected non-iterable `^^Element` to error, got: {:?}",
             e
         );
     }
 
     #[test]
     fn absolute_reflection_removed_directs_to_abs_intrinsic() {
-        // 2026-08-14 (boundary plan, SPEC §17.3): `.^Absolute` was removed —
+        // 2026-08-14 (boundary plan, SPEC §17.3): `^^Absolute` was removed —
         // abs is a computed truth, so the `Abs#` intrinsic is its home. The
         // error must direct the user to `Abs#`.
         let src = r#"
 let a: Int = -7;
 node probe [a < 0][true] {
-    let b: Int = a.^Absolute;
+    let b: Int = a^^Absolute;
     term;
 };
 "#;
@@ -12161,11 +12113,11 @@ node probe [a < 0][true] {
                 let msg = format!("{:?}", errs);
                 assert!(
                     msg.contains("Abs#"),
-                    "the removed `.^Absolute` must direct to Abs#; got: {}",
+                    "the removed `^^Absolute` must direct to Abs#; got: {}",
                     msg
                 );
             }
-            Ok(()) => panic!("expected `.^Absolute` to be rejected"),
+            Ok(()) => panic!("expected `^^Absolute` to be rejected"),
         }
     }
 
@@ -12194,7 +12146,7 @@ node probe [true][true] {
         // The type-directed literal form stays valid.
         let src = r#"
 let xs: List<Int> = [1, 2, 3];
-node probe [xs.^^Element == 0][true] {
+node probe [xs^^Element == 0][true] {
     let ys: List<Int> = [4, 5];
     term;
 };
@@ -12249,7 +12201,7 @@ node probe [small < 100][true] {
         // construct through the surface they declare with.
         let src = r#"
 let buf: Int[4] = [1, 2, 3, 4];
-node probe [buf.^^Element == 4][true] {
+node probe [buf^^Element == 4][true] {
     term;
 };
 "#
@@ -12727,16 +12679,16 @@ node go [fired == 0][fired == 1] {
         );
     }
 
-    // ── 2026-08-09 (Phase 12, SPEC §19.3): optional-frgn .^^Available ──
+    // ── 2026-08-09 (Phase 12, SPEC §19.3): optional-frgn ^^Available ──
 
     #[test]
     fn optional_frgn_available_is_bool() {
-        // `feature.^^Available` on an `optional frgn` is a Bool descriptor.
+        // `feature^^Available` on an `optional frgn` is a Bool descriptor.
         let src = r#"
 optional frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature.^^Available;
+    let avail: Bool = feature^^Available;
     fired = fired + 1;
     term;
 };
@@ -12755,7 +12707,7 @@ node go [fired == 0][fired == 1] {
 frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature.^^Available;
+    let avail: Bool = feature^^Available;
     fired = fired + 1;
     term;
 };
@@ -13253,7 +13205,7 @@ node go [done == 0][done == 1] {
     }
 
     /// 2026-08-16 (Phase 3a): a fixed `coll struct` literal construction typechecks
-    /// when the element count fits `T[N]`, iterates, and `.^Length`/`Count#`/
+    /// when the element count fits `T[N]`, iterates, and `^^Length`/`Count#`/
     /// `Capacity#` all report N. An OVER-length literal is rejected (the fixed
     /// array cannot hold it — the heap-seq fallback must never fire for a coll
     /// struct).
@@ -13265,7 +13217,7 @@ let done: Int = 0;
 let total: Int = 0;
 node go [done == 0][done == 1] {
     let f: Fixed = [1, 2, 3, 4];
-    let len: Int = f.^Length;
+    let len: Int = f^^Length;
     let n: Int = f.Count#();
     let cap: Int = Capacity#(f);
     let one: Int = f.data[1];
@@ -13349,7 +13301,7 @@ node go [done == 0][done == 1] {
         );
     }
 
-    /// 2026-08-15 (coll plan §3.4.6): `.^Length` on a `coll` type is stored-length
+    /// 2026-08-15 (coll plan §3.4.6): `^^Length` on a `coll` type is stored-length
     /// reflection (the hidden `len` slot) — it types as Int, like `Count#`.
     #[test]
     fn coll_length_reflection_typechecks() {
@@ -13359,27 +13311,27 @@ coll obj MyList<T> { inner: Buf<T>; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let xs: MyList<Int> = [5, 6, 7];
-    let len: Int = xs.^Length;
+    let len: Int = xs^^Length;
     let n: Int = xs.Count#();
     term;
 };
 "#;
         assert!(
             check(ok).is_ok(),
-            "coll .^Length must type as Int (stored hidden len slot)"
+            "coll ^^Length must type as Int (stored hidden len slot)"
         );
         let non_coll = r#"
 obj Plain { data: Ptr<Int>; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let p: Plain = Plain { data: Malloc#(64) as Ptr<Int> };
-    let len: Int = p.^Length;
+    let len: Int = p^^Length;
     term;
 };
 "#;
         assert!(
             check(non_coll).is_err(),
-            "non-coll obj .^Length must error (no compiler-owned length)"
+            "non-coll obj ^^Length must error (no compiler-owned length)"
         );
     }
 
@@ -13422,8 +13374,8 @@ node go [done == 0][done == 1] {
 
     /// 2026-08-16 (Phase 3e, SPEC §17.1): the Data reflective floor — a value
     /// observes as raw storage via compile-time descriptor reflection
-    /// (`.^^Type`/`.^^Bytes`/`.^^Alignment`). A `coll struct` value and a Blob
-    /// both reflect; `Blob.^Length` is the byte header.
+    /// (`^^Type`/`^^Bytes`/`^^Alignment`). A `coll struct` value and a Blob
+    /// both reflect; `Blob^^Length` is the byte header.
     #[test]
     fn data_reflective_floor_typechecks() {
         let ok = r#"
@@ -13431,11 +13383,11 @@ coll struct Fixed { data: Int[4]; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let f: Fixed = [1, 2, 3, 4];
-    let t: Int = f.^^Type;
-    let sz: Int = f.^^Bytes;
-    let al: Int = f.^^Alignment;
+    let t: Int = f^^Type;
+    let sz: Int = f^^Bytes;
+    let al: Int = f^^Alignment;
     let blob: Blob = "abc" as Blob;
-    let len: Int = blob.^Length;
+    let len: Int = blob^^Length;
     done = t + sz + al + len;
     term;
 };

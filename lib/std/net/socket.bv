@@ -388,7 +388,7 @@ defn sock_unix() [true][term.fd >= -4096] -> Socket {
 // make_sockaddr_un - build family + NUL-terminated path in one buffer.
 // The logical length (`len`) is the address length passed to bind/connect.
 defn make_sockaddr_un(path: String)
-    [path.^Length > 0 && path.^Length < 108]
+    [path^^Length > 0 && path^^Length < 108]
     [term.len >= 3 && term.len <= 110]
     -> ByteBuf
 {
@@ -400,7 +400,7 @@ defn make_sockaddr_un(path: String)
 
 // sock_connect_unix - connect(2) to a Unix-domain path.
 defn sock_connect_unix(s: Socket, path: String)
-    [s.fd >= -4096 && path.^Length > 0 && path.^Length < 108]
+    [s.fd >= -4096 && path^^Length > 0 && path^^Length < 108]
     [term >= -4096]
     -> Int
 {
@@ -414,7 +414,7 @@ defn sock_connect_unix(s: Socket, path: String)
 // file from a previous process is unlinked first (unlink(2), path data at
 // String+8); bind then creates the node. Returns 0 or -errno.
 defn sock_bind_listen_unix(s: Socket, path: String, backlog: Int)
-    [s.fd >= -4096 && path.^Length > 0 && path.^Length < 108 && backlog >= 0]
+    [s.fd >= -4096 && path^^Length > 0 && path^^Length < 108 && backlog >= 0]
     [term >= -4096]
     -> Int
 {

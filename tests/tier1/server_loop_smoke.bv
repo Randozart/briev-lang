@@ -34,12 +34,12 @@ defn request_bytes() -> String {
 // loop (sock_send loops internally).
 defn send_all(s: Socket, text: String) [s.fd >= -4096] -> Int {
     let cap: Int = 512;
-    when text .^Length >= cap {
+    when text ^^Length >= cap {
         term 0;
     };
     let wire: ByteBuf = buf_new(cap);
     let filled: ByteBuf = wire;
-    foreach i in 0..(text .^Length) {
+    foreach i in 0..(text ^^Length) {
         filled = filled.put_u8(byte_at(text, i));
     };
     when filled.len > filled.cap {
@@ -115,14 +115,14 @@ defn status_code(response: ByteBuf)
 // `starts_with` work on Strings).
 //
 // 2026-11-18: two fixes while landing this fixture. (1) The post said
-// `term .^Length == 0 || term .^Length > 0` — that is "non-negative", which a
+// `term ^^Length == 0 || term ^^Length > 0` — that is "non-negative", which a
 // stored length always is, so it asserted nothing; the real relation is that the
 // copy has the source's length. (2) It `Free#`d the buffer and then returned a
 // String that still points into it: `(addr as Data) as String` is zero-copy, so
 // the free left the caller holding freed memory. The span is intentionally not
 // freed — it backs the returned String (a test fixture, so the leak is scoped).
 defn buf_as_string(buffer: ByteBuf) [buffer.len >= 0 && buffer.len <= buffer.cap]
-    [term .^Length == buffer.len]
+    [term ^^Length == buffer.len]
     -> String
 {
     let addr: Int = Malloc#(buffer.len + 9) as Int;

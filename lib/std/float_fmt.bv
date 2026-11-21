@@ -27,7 +27,7 @@ defn float_bits(f: Float) [true][term >= 0] -> Int {
 };
 
 // digit_char - a single decimal digit 0-9 to its character string.
-defn digit_char(d: Int) [d >= 0 && d <= 9][term .^Length == 1] -> String {
+defn digit_char(d: Int) [d >= 0 && d <= 9][term ^^Length == 1] -> String {
     // 2026-11-13 (owners census): literal ladder — every path is static
     // storage, so return OWNED copies (§13 copy discipline) and keep
     // digits_of_int/pad_digits fresh for the derivation.
@@ -237,7 +237,7 @@ defn int_digit_count(acc: Int) [acc >= 0][term >= 1 && term <= 19] -> Int {
 };
 
 // digits_of_int - the full decimal digits of acc (acc >= 0, < 1000000000000000000).
-defn digits_of_int(acc: Int) [acc >= 0][term .^Length >= 1] -> String {
+defn digits_of_int(acc: Int) [acc >= 0][term ^^Length >= 1] -> String {
     when acc < 10 {
         term digit_char(acc);
     };
@@ -245,7 +245,7 @@ defn digits_of_int(acc: Int) [acc >= 0][term .^Length >= 1] -> String {
 };
 
 // zeros - a string of n zeros (n in [0, 20]).
-defn zeros(n: Int) [n >= 0][term .^Length == n] -> String {
+defn zeros(n: Int) [n >= 0][term ^^Length == n] -> String {
     when n == 0 { term ""; };
     term "0" + zeros(n - 1);
 };
@@ -261,7 +261,7 @@ defn pow10(n: Int) [n >= 0 && n <= 18][term >= 1] -> Int {
 // digit string (length `want`), padded with trailing zeros if shorter.
 defn int_leading(acc: Int, nd: Int, k: Int, want: Int)
     [acc >= 1 && nd >= 1 && nd <= 19 && k >= -30 && k <= 40 && want >= 1 && want <= 19]
-    [term .^Length == want]
+    [term ^^Length == want]
     -> String
 {
     let total: Int = nd + k;
@@ -321,10 +321,10 @@ defn round_all(all: Int, precision: Int, k: Int)
 };
 
 // pad_digits - pad a digit string with leading zeros to length `len`.
-defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len]
-    [term .^Length == len && term .^Length >= 1]
+defn pad_digits(s: String, len: Int) [s ^^Length >= 1 && s ^^Length <= len]
+    [term ^^Length == len && term ^^Length >= 1]
     -> String {
-    let missing: Int = len - s .^Length;
+    let missing: Int = len - s ^^Length;
     when missing == 0 {
         term fresh_string(s);
     };
@@ -333,34 +333,34 @@ defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len]
 
 // strip_frac_zeros - strip trailing zeros from a fraction digit string
 // (returns "" when all zeros). The integer part is untouched by %g.
-defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
+defn strip_frac_zeros(frac: String) [true][term ^^Length >= 0] -> String {
     // 2026-11-13 (owners census + tail-class drift): base cases FIRST, the
     // recursive call LAST in true tail position — the previous shape
     // (recursion inside a guard followed by a trailing statement) classified
     // differently on the AST and HIR sides. All paths return OWNED copies:
     // every call site hands this helper a disposable slice, and the copies
     // keep the helper fresh for the owners census (formatting is cold).
-    when frac .^Length == 0 {
+    when frac ^^Length == 0 {
         term fresh_string(frac);
     };
-    let last: Int = frac[frac .^Length - 1:frac .^Length] as Int;
+    let last: Int = frac[frac ^^Length - 1:frac ^^Length] as Int;
     when last != 0 {
         term fresh_string(frac);
     };
-    let trimmed: String = frac[0:frac .^Length - 1];
+    let trimmed: String = frac[0:frac ^^Length - 1];
     term strip_frac_zeros(trimmed);
 };
 
 // exp_style - exponential %g form: d[.ddd]e±XX from the digit string + k.
 defn exp_style(ds: String, k: Int, sign: Int)
-    [ds .^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
-    [term .^Length >= 2]
+    [ds ^^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
+    [term ^^Length >= 2]
     -> String
 {
     let first: String = ds[0:1];
-    let rest: String = strip_frac_zeros(ds[1:ds .^Length]);
+    let rest: String = strip_frac_zeros(ds[1:ds ^^Length]);
     let ed: String = exp_digits(k);
-    when rest .^Length == 0 {
+    when rest ^^Length == 0 {
         term exp_style_mant(first, ed, sign);
     };
     let mant: String = first + "." + rest;
@@ -369,7 +369,7 @@ defn exp_style(ds: String, k: Int, sign: Int)
 
 // exp_style_mant - prefix "-" when sign, then mant + "e" + exp.
 defn exp_style_mant(mant: String, exp: String, sign: Int)
-    [exp .^Length >= 2 && sign >= 0 && sign <= 1][term .^Length >= 2]
+    [exp ^^Length >= 2 && sign >= 0 && sign <= 1][term ^^Length >= 2]
     -> String
 {
     when sign == 1 {
@@ -379,7 +379,7 @@ defn exp_style_mant(mant: String, exp: String, sign: Int)
 };
 
 // exp_digits - "e±XX": the exponent field with sign and >= 2 digits.
-defn exp_digits(k: Int) [k >= -45 && k <= 40][term .^Length >= 2 && term .^Length <= 3] -> String {
+defn exp_digits(k: Int) [k >= -45 && k <= 40][term ^^Length >= 2 && term ^^Length <= 3] -> String {
     when k < 0 {
         let a: Int = 0 - k;
         when a < 10 {
@@ -395,8 +395,8 @@ defn exp_digits(k: Int) [k >= -45 && k <= 40][term .^Length >= 2 && term .^Lengt
 
 // fixed_style - fixed %g form: place the decimal point at position k+1.
 defn fixed_style(ds: String, k: Int, sign: Int)
-    [ds .^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
-    [term .^Length >= 1]
+    [ds ^^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
+    [term ^^Length >= 1]
     -> String
 {
     let body: String = fixed_body(ds, k);
@@ -407,8 +407,8 @@ defn fixed_style(ds: String, k: Int, sign: Int)
 };
 
 // fixed_body - the unsigned fixed-form body.
-defn fixed_body(ds: String, k: Int) [ds .^Length >= 1 && k >= -45 && k <= 40][term .^Length >= 1] -> String {
-    let n: Int = ds .^Length;
+defn fixed_body(ds: String, k: Int) [ds ^^Length >= 1 && k >= -45 && k <= 40][term ^^Length >= 1] -> String {
+    let n: Int = ds ^^Length;
     when k < 0 {
         let z: Int = 0 - k - 1;
         let fp: String = strip_frac_zeros(ds);
@@ -419,7 +419,7 @@ defn fixed_body(ds: String, k: Int) [ds .^Length >= 1 && k >= -45 && k <= 40][te
     };
     let ip: String = ds[0:k + 1];
     let fp: String = strip_frac_zeros(ds[k + 1:n]);
-    when fp .^Length == 0 {
+    when fp ^^Length == 0 {
         term ip;
     };
     term ip + "." + fp;
@@ -428,7 +428,7 @@ defn fixed_body(ds: String, k: Int) [ds .^Length >= 1 && k >= -45 && k <= 40][te
 // float_format - the full %g formatter (C printf semantics, precision sig
 // digits). Sign preserved for zero ("-0"); nan/inf handled here.
 defn float_format(f: Float, precision: Int)
-    [precision >= 1 && precision <= 9][term .^Length >= 1]
+    [precision >= 1 && precision <= 9][term ^^Length >= 1]
     -> String
 {
     let bits: Int = float_bits(f);
@@ -457,7 +457,7 @@ defn float_format(f: Float, precision: Int)
     let e: Int = exponent_val(exp8);
     let (r, k): (Int, Int) = float_rounded(m, e, precision);
     let ds0: String = digits_of_int(r);
-    let d: Int = ds0 .^Length;
+    let d: Int = ds0 ^^Length;
     let ds: String = pad_digits(ds0, d);
     // k >= precision (P sig digits: exponent form) or k < -4 → exponential.
     when k >= precision || k < -4 {

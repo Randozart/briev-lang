@@ -47,7 +47,7 @@ import { I64_MAX, I64_MIN, PAGE_SIZE } from "std/constants.bv";
 // concat epilogue free()s operands tagged heap — an arena pointer handed to
 // libc free. The C int_to_str used malloc consistently; the buffer form is
 // the equivalent Briev shape (arena memory is never freed).
-out defn int_to_str(n: Int) [true][term .^Length >= 0] -> String {
+out defn int_to_str(n: Int) [true][term ^^Length >= 0] -> String {
     when n < 0 {
         let cnt: Int = 1 + neg_digit_count(n, 0);
         let buf: Int = Alloc#(8 + cnt + 1) as Int;
@@ -106,12 +106,12 @@ defn fill_neg(n: Int, buf: Int, stop: Int, buf_ret: Int)
 };
 
 // uint_to_str — same representation (the C lane aliased int_to_str).
-out defn uint_to_str(n: Int) [true][term .^Length >= 0] -> String {
+out defn uint_to_str(n: Int) [true][term ^^Length >= 0] -> String {
     term int_to_str(n);
 };
 
 // bool_to_str — C: briev_cstr_to_briev(b ? "true" : "false").
-out defn bool_to_str(b: Int) [true][term .^Length >= 0] -> String {
+out defn bool_to_str(b: Int) [true][term ^^Length >= 0] -> String {
     when b != 0 {
         term "true";
     };
@@ -120,7 +120,7 @@ out defn bool_to_str(b: Int) [true][term .^Length >= 0] -> String {
 
 // float_to_str — the CAST lane uses C `%g` (6 significant digits), unlike
 // the print family's `%.9g`. float_format is parametric — same engine.
-out defn float_to_str(f: Float) [true][term .^Length >= 0] -> String {
+out defn float_to_str(f: Float) [true][term ^^Length >= 0] -> String {
     term float_format(f, 6);
 };
 
@@ -128,7 +128,7 @@ out defn float_to_str(f: Float) [true][term .^Length >= 0] -> String {
 // the Data→String encoding door (briev_bits_to_str copies it into a fresh
 // heap String — the copy is replaced by pure-Briev Alloc#+Copy# in Family C;
 // the UTF8 encoding here matches C char_to_str: 1-4 bytes by codepoint).
-out defn char_to_str(c: Int) [c >= 0][term .^Length >= 1] -> String {
+out defn char_to_str(c: Int) [c >= 0][term ^^Length >= 1] -> String {
     // 2026-10-21: reserve the header and all four UTF-8 bytes plus NUL;
     // the former ten-byte allocation overflowed for three/four-byte scalars.
     let addr: Int = Alloc#(13) as Int;
@@ -222,7 +222,7 @@ defn parse_int_digits(s: String, i: Int, acc: Int, sign: Int)
 
 // str_to_bool — C: non-empty payload that is not exactly "false" → 1.
 out defn str_to_bool(s: String) [true][term == true || term == false] -> Bool {
-    let len: Int = s .^Length;
+    let len: Int = s ^^Length;
     when len <= 0 {
         term false;
     };
@@ -447,9 +447,9 @@ defn pow10f_small(k: Int, acc: Float) [k >= 0 && k <= 10][term >= 0.0 || term < 
 };
 
 // ── String ops (Family C) ────────────────────────────────────────────────
-// The backend emits these for String ==, s[a:b], foreach-char, .^Length and
+// The backend emits these for String ==, s[a:b], foreach-char, ^^Length and
 // the Data->String door. Byte-level primitives: the header is the BYTE
-// length (Load#(addr, 8)); .^Length is the CODEPOINT count and must not
+// length (Load#(addr, 8)); ^^Length is the CODEPOINT count and must not
 // bound byte indexing.
 
 // str_len_bytes — the O(1) header read (Bytes prop, not CharCount#).
@@ -487,7 +487,7 @@ out defn briev_str_eq(a: String, b: String) [true][term == 0 || term != 0] -> In
 
 // briev_str_substr — s[a:b] with C clamping: lo=max(a,0), hi=min(b,len),
 // hi=max(hi,lo). Builds [len][bytes][NUL] via Copy# (memcpy, O(1) stack).
-out defn briev_str_substr(s: String, a: Int, b: Int) [true][term .^Length >= 0] -> String {
+out defn briev_str_substr(s: String, a: Int, b: Int) [true][term ^^Length >= 0] -> String {
     let addr: Int = (s as Data) as Int;
     let len: Int = Load#(addr, 8);
     let lo: Int = when_raw(a, len);
@@ -653,7 +653,7 @@ defn count_lead(s: String, i: Int, len: Int) [true][term >= 0] -> Int {
 // str_first_char — the first UTF8 codepoint (0 when empty). Mirror of C
 // str_first_char: 1-4 byte decode, malformed lead byte falls back to raw.
 out defn str_first_char(s: String) [true][term >= 0] -> Int {
-    let len: Int = s .^Length;
+    let len: Int = s ^^Length;
     when len <= 0 {
         term 0;
     };

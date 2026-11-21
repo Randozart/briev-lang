@@ -1296,7 +1296,7 @@ fn eval_field(
             })
         }
         // An EVENT PORT: any name projects the current payload's members.
-        // Readiness uses .^Ready (reflection), not .Ready (field).
+        // Readiness uses ^^Ready (reflection), not .Ready (field).
         Value::EventQ(q) => {
             // 2026-08-26 (async Phase B): decide suspension BEFORE taking the
             // match borrow — block_current_task_on_slot mutates the waiters
@@ -1331,7 +1331,7 @@ fn eval_field(
                 }),
                 None => {
                     // Unready OUTSIDE a task: strict error stands — top-level
-                    // reads gate on .^Ready (SPEC §9.5). TEMP undo: collapse
+                    // reads gate on ^^Ready (SPEC §9.5). TEMP undo: collapse
                     // this whole pre-check + arm to revert Phase B blocking.
                     Err(RuntimeError::TypeError {
                         expected: format!("'{}' on an event port", name),
@@ -1624,23 +1624,28 @@ fn eval_reflect(
     scope: &mut EvalScope,
 ) -> Result<Value, RuntimeError> {
     let val = eval_expr(recv, heap, scope.bindings, scope.functions)?;
-    let ct = matches!(kind, ReflectKind::CompileTime);
-    match (name, ct) {
-        // 2026-08-23 (SPEC sync): Event port readiness — runtime reflection.
-        ("Ready", false) => match &val {
+    // 2026-11-21 (wave-9, one caret): `^^` is the only surface spelling, so
+    // every property dispatches by NAME here, not by tag. The old tag-matched
+    // arms (Length/Ptr/Ready were "runtime"; Size/Bytes/Type/Element were
+    // "compile-time") carried no semantic: runtime `Size` was deleted
+    // (2026-08-14 §6a) and `Length` on a Vector is the same type fold
+    // compile-time `Size` is. The property row decides.
+    let _ = kind;
+    match name {
+        // Event port readiness — per-instance stored state.
+        "Ready" => match &val {
             Value::EventQ(q) => {
                 let slot = q.borrow();
                 Ok(Value::Atom(Atom::Bool(slot.ready)))
             }
             other => Err(RuntimeError::TypeError {
-                expected: "an Event port for .^Ready".into(),
+                expected: "an Event port for ^^Ready".into(),
                 found: describe_value(other),
             }),
         },
-        // 2026-08-12 (Iterable protocol): String `Length` = the STORED BYTE
-        // count (the [len] header). The UTF8 CHARACTER count is the
-        // `CharCount#` intrinsic (a computed scan; SPEC §17.1/§17.3).
-        ("Length", false) => match val {
+        // Stored byte length (the [len] header). The UTF8 CHARACTER count is
+        // the `CharCount#` intrinsic (a computed scan; SPEC §17.1/§17.3).
+        "Length" => match val {
             Value::Bits(_) => {
                 let bytes = val.string_bytes(heap).unwrap_or_default();
                 Ok(Value::int(bytes.len() as i64))
@@ -1651,20 +1656,20 @@ fn eval_reflect(
             }) => Ok(Value::int(fields.len() as i64)),
             _ => Ok(Value::Void),
         },
-        // 2026-08-14 (§6a.1 item 8): `.^^Size` and `.^^Bytes` are SPLIT —
-        // `.^^Size` is the compile-time shape (a vector's element count; a
+        // 2026-08-14 (§6a.1 item 8): `^^Size` and `^^Bytes` are SPLIT —
+        // `^^Size` is the compile-time shape (a vector's element count; a
         // Product/Sum's field count; 1 for a scalar), matching the codegen's
-        // vector_element_count; `.^^Bytes` is the stored BYTE length of a
+        // vector_element_count; `^^Bytes` is the stored BYTE length of a
         // Bits value. They were wrongly grouped before (Size returned byte
         // length).
-        ("Size", true) => match val {
+        "Size" => match val {
             (Value::Product { fields, .. }
             | Value::Sum {
                 payload: fields, ..
             }) => Ok(Value::int(fields.len() as i64)),
             _ => Ok(Value::int(1)),
         },
-        ("Bytes", true) => match val {
+        "Bytes" => match val {
             Value::Bits(bytes) => Ok(Value::int(bytes.len() as i64)),
             (Value::Product { fields, .. }
             | Value::Sum {
@@ -1672,7 +1677,7 @@ fn eval_reflect(
             }) => Ok(Value::int(fields.len() as i64)),
             // 2026-10-25: scalar `Bytes` is the value width, matching codegen's
             // non-string type_size path. The strict JSON integer accumulator
-            // derives its minimum from `0 .^^Bytes`; returning Void made the
+            // derives its minimum from `0 ^^Bytes`; returning Void made the
             // reference reject every integer parse.
             Value::Data(_) | Value::Atom(Atom::Int(_)) | Value::Atom(Atom::Float(_)) => {
                 Ok(Value::int(8))
@@ -1683,12 +1688,12 @@ fn eval_reflect(
         },
         // `Type` (compile-time) is a frozen descriptor: the protocol category
         // code (must match the codegen's type_category_code, rule #4).
-        ("Type", true) => Ok(Value::int(reflect_type_code(&val))),
+        "Type" => Ok(Value::int(reflect_type_code(&val))),
         // 2026-08-14 (boundary plan): `Element` (compile-time) = the ELEMENT
         // type's category code of an iterable value — a `String` operand's
         // chars (`Char`), a Product's field sequence, a Range's counter
-        // (`Int`). Matches the codegen's `.^^Element` fold (rule #4 parity).
-        ("Element", true) => Ok(Value::int(reflect_element_code(&val))),
+        // (`Int`). Matches the codegen's `^^Element` fold (rule #4 parity).
+        "Element" => Ok(Value::int(reflect_element_code(&val))),
         _ => Ok(Value::Void),
     }
 }
@@ -1735,7 +1740,7 @@ fn reflect_type_code(v: &Value) -> i64 {
 }
 
 /// 2026-08-14 (boundary plan): the ELEMENT type's category code of an iterable
-/// value, for `x.^^Element`. A `String` operand iterates `Char` (SPEC §17.2);
+/// value, for `x^^Element`. A `String` operand iterates `Char` (SPEC §17.2);
 /// a Product's element is the category of its first field (the field sequence
 /// is the element sequence); a Range iterates `Int` counters. Must agree with
 /// the codegen's fold of the receiver's static element type (rule #4 parity) —
@@ -4716,8 +4721,8 @@ defn go() -> Int {
 
     #[test]
     fn test_reflect_size_vs_bytes_split() {
-        // 2026-08-14 (§6a.1 item 8): `.^^Size` on a scalar is the shape (1),
-        // `.^^Bytes` on a Bits value is the byte length — they were wrongly
+        // 2026-08-14 (§6a.1 item 8): `^^Size` on a scalar is the shape (1),
+        // `^^Bytes` on a Bits value is the byte length — they were wrongly
         // grouped before.
         let size_r = Expr::Reflect(
             Box::new(Expr::Quoted(b"abc".to_vec())),
@@ -4727,7 +4732,7 @@ defn go() -> Int {
         assert_eq!(
             eval1(&size_r).as_i64(),
             Some(1),
-            ".^^Size on a scalar is its shape (1)"
+            "^^Size on a scalar is its shape (1)"
         );
         let bytes_r = Expr::Reflect(
             Box::new(Expr::Quoted(b"abc".to_vec())),
@@ -4737,7 +4742,7 @@ defn go() -> Int {
         assert_eq!(
             eval1(&bytes_r).as_i64(),
             Some(3),
-            ".^^Bytes on a Bits value is its byte length"
+            "^^Bytes on a Bits value is its byte length"
         );
     }
 
@@ -4753,7 +4758,7 @@ defn go() -> Int {
 
     #[test]
     fn test_reflect_element_on_string_is_char_category() {
-        // 2026-08-14 (String unification): `s.^^Element` on a String value is
+        // 2026-08-14 (String unification): `s^^Element` on a String value is
         // the Char category code (3) — a `String` operand iterates chars.
         let r = Expr::Reflect(
             Box::new(Expr::Quoted("hi".as_bytes().to_vec())),
@@ -4780,7 +4785,7 @@ defn go() -> Int {
 
     #[test]
     fn test_reflect_absolute_is_removed() {
-        // 2026-08-14 (boundary plan, SPEC §17.3): `.^Absolute` was removed —
+        // 2026-08-14 (boundary plan, SPEC §17.3): `^^Absolute` was removed —
         // abs is the `Abs#` intrinsic, not a reflection target. At the eval
         // level (no typechecker), the unhandled target returns Void.
         let r = Expr::Reflect(

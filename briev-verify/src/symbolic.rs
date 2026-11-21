@@ -327,11 +327,14 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
             SymbolicValue::Binary("++".to_string(), Box::new(left_sym), Box::new(right_sym))
         }
 
-        // A handle's stored length (`s.^Length`, `CharCount#(s)`) is an integer
+        // A handle's stored length (`s^^Length`, `CharCount#(s)`) is an integer
         // atom, distinct per handle and always non-negative. Modelled as
         // `atom & i64::MAX` so the existing mask range supplies `>= 0` — the same
         // machinery that bounds `x & MASK`, reused rather than duplicated.
-        Expr::Reflect(base, target, ReflectKind::Runtime) if target == "Length" => {
+        // 2026-11-21 (wave-9, one caret): every reflection site carries the
+        // CompileTime tag now (the unified `^^` spelling), so the guard is by
+        // property NAME, not by tag.
+        Expr::Reflect(base, target, _) if target == "Length" => {
             length_atom(base, state)
         }
         Expr::Call(name, args, _) if name == "CharCount#" && args.len() == 1 => {
@@ -496,8 +499,8 @@ fn relational_atom(
 
 /// The stored-length atom of a handle, as a non-negative integer.
 ///
-/// Keyed on the base's **symbolic value**, not its text: `s.^Length` in two
-/// places denotes one quantity, while `a.^Length` and `b.^Length` stay distinct —
+/// Keyed on the base's **symbolic value**, not its text: `s^^Length` in two
+/// places denotes one quantity, while `a^^Length` and `b^^Length` stay distinct —
 /// and after a rebinding the value differs, so the old length does not carry
 /// over. Keying on the identifier name alone would make those two mistakes
 /// possible, and a length claim is exactly where such a mistake becomes a false

@@ -73,7 +73,7 @@ defn load_frame_file(path: String) -> Result<Tensor, String> {
     let f: Result<String, Int> = read_file(path);
     when is_err(f) { term Err("cannot read frame"); };
     let text: String = unwrap(f);
-    let n: Int = (text .^Length) / 4;
+    let n: Int = (text ^^Length) / 4;
     let tensor: Tensor = tensor_new(n);
     foreach i in 0..n {
         tensor_set(tensor, i, f32_from_bytes(text, 4 * i));

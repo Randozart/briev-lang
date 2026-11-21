@@ -1,11 +1,11 @@
 // SPEC §17 + §18 — compile-time reflection in composite conditions.
-// `.^^Size` folds to the declared element count of a state array; `.^^Element`
+// `^^Size` folds to the declared element count of a state array; `^^Element`
 // folds to the element category code. A `$defn` composite may gate a `match`
 // on a receiver's SHAPE, and expansion splices only the taken arm — the
 // composite specializes per-shape at compile time, not at runtime.
 
 $defn classify(buf: Expr, target: Expr) {
-    match buf.^^Size {
+    match buf^^Size {
         4 => target = 4;
         8 => target = 8;
         _ => target = 0;

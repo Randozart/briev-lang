@@ -434,6 +434,16 @@ impl<'a> Parser<'a> {
                     }
                 }
             } else if self.eat(&Token::Dot) {
+                // 2026-11-21 (wave-9, one caret): the old `^^` / `^^`
+                // reflection spellings are retired. A dot followed by a caret
+                // is exactly that leftover, so name the current spelling
+                // instead of the generic member-parse error.
+                if self.check(&Token::BitXor) || self.check(&Token::CaretCaret) {
+                    return self.error_at_current(
+                        "reflection is spelled with two carets and no dot: `x^^Length`, \
+                         `x^^Bytes`. The dotted forms (`^^`, `^^`) were retired in wave-9.",
+                    );
+                }
                 // 2026-11-08 (chaining plan): cast step in a chain — `.(Type)`.
                 if self.check(&Token::LParen) {
                     if let Some(cast_expr) = self.try_parse_cast_step(&expr)? {
@@ -581,14 +591,33 @@ impl<'a> Parser<'a> {
                 } else {
                     expr = Expr::Field(Box::new(expr), name);
                 }
-            } else if self.eat(&Token::DotCaretCaret) {
-                // 2026-07-31: Compile-time reflection: a.^^Size → foldable constant.
+            } else if self.eat(&Token::CaretCaret) {
+                // 2026-11-21 (wave-9, one caret): reflection has ONE spelling.
+                // `^^` reads a representation property — a stored header slot or
+                // a type-derivable fact (`x^^Length`, `x^^Bytes`); operations
+                // stay in the `#` family. The old `^^` / `^^` runtime and
+                // compile-time split is retired: runtime `Size` was already
+                // deleted (2026-08-14 §6a), and `^^Length` on a Vector emits the
+                // same fold compile-time `^^Size` does, so the tag carried no
+                // semantic. The CompileTime tag here is the unified path; the
+                // emitter's per-property table decides folding, exactly as
+                // before.
                 let name = self.expect_identifier()?;
                 expr = Expr::Reflect(Box::new(expr), name, ReflectKind::CompileTime);
-            } else if self.eat(&Token::DotCaret) {
-                // 2026-07-31: Runtime reflection: a.^Length, a.^Ptr.
-                let name = self.expect_identifier()?;
-                expr = Expr::Reflect(Box::new(expr), name, ReflectKind::Runtime);
+            } else if self.check(&Token::BitXor)
+                && matches!(self.peek(), Some(Token::Identifier(_)))
+            {
+                // 2026-11-21 (wave-9, one caret): the old `^^` / `^^` spellings
+                // are retired. A single caret after a value is bitwise XOR in
+                // `a ^ b`; `x ^Ident` here is a dotted-reflection leftover, so
+                // reject it with the current spelling.
+                return Err(SyntaxError::InvalidStatement {
+                    reason: "reflection is spelled with two carets: `x^^Length`, \
+                             `x^^Bytes`. The dotted forms (`^^`, `^^`) were retired \
+                             in wave-9."
+                        .to_string(),
+                    span: crate::errors::Span::dummy(),
+                });
             } else if self.eat(&Token::LBracket) {
                 // 2026-09-28 (E3): `arr[*]` — the wildcard selector, every
                 // element of the array. `*` here is the wildcard INSIDE the

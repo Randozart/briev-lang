@@ -33,10 +33,10 @@ pub fn emit_intrinsic_call(
     match name {
         "Malloc#" => return emit_malloc(backend, out, v, args, indent),
         // 2026-08-12 (Iterable protocol): the UTF8 CHAR count of a String —
-        // the scan (a computed property, so an intrinsic; `.^Length` is the
+        // the scan (a computed property, so an intrinsic; `^^Length` is the
         // stored byte count).
         // 2026-08-12 (Iterable protocol): the UTF8 CHAR count of a String — the
-        // scan (a computed property, so an intrinsic; `.^Length` is the stored
+        // scan (a computed property, so an intrinsic; `^^Length` is the stored
         // byte count).
         "CharCount#" => return emit_char_count(backend, out, v, args, indent),
         "Alloc#" => return emit_alloc(backend, out, v, args, indent, analysis_id),

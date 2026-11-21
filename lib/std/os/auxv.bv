@@ -14,11 +14,11 @@ obj ProcessUnits { page_bytes: Int; ticks_per_second: Int; };
 // Return a nonnegative signed-Int value. Unknown tags are skipped, missing
 // tags return -2, malformed vectors -22, values beyond Int range -34.
 defn auxv_value(bytes: String, wanted: Int) -> Result<Int,Int> {
-    when wanted <= 0 || bytes .^Length % 16 != 0 { term Err(-22); };
+    when wanted <= 0 || bytes ^^Length % 16 != 0 { term Err(-22); };
     let base: Int = ((bytes as Data) as Int) + 8;
     let found: Bool = false;
     let value: Int = 0;
-    foreach index in 0..(bytes .^Length / 16) {
+    foreach index in 0..(bytes ^^Length / 16) {
         let tag: Int = Load#(base + index * 16,8);
         when tag == 0 {
             when !found { term Err(-2); };

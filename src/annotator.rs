@@ -768,10 +768,11 @@ impl Annotator {
             Expr::Deref(inner) => format!("*{}", self.format_expr(inner)),
             Expr::AddrOf(inner) => format!("&{}", self.format_expr(inner)),
             Expr::Field(recv, name) => format!("{}.{}", self.format_expr(recv), name),
-            Expr::Reflect(recv, name, kind) => match kind {
-                ReflectKind::Runtime => format!("{}.^{}", self.format_expr(recv), name),
-                ReflectKind::CompileTime => format!("{}.^^{}", self.format_expr(recv), name),
-            },
+            // 2026-11-21 (wave-9, one caret): a single spelling for every
+            // representation property, whatever tag the AST carries.
+            Expr::Reflect(recv, name, _kind) => {
+                format!("{}^^{}", self.format_expr(recv), name)
+            }
             Expr::MethodCall(recv, name, args, _) => {
                 let args_str: Vec<String> = args.iter().map(|a| self.format_expr(a)).collect();
                 format!(

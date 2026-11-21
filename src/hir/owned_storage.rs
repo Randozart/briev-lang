@@ -3522,7 +3522,7 @@ defn loop(s: String, n: Int) [true][true] -> String {
 };
 defn user(seed: String) [true][true] -> Int {
     let r: String = loop(seed, 3);
-    term r .^Length + seed .^Length;
+    term r ^^Length + seed ^^Length;
 };
 "#,
         );

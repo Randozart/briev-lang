@@ -509,16 +509,23 @@ pub enum Token {
     #[token(";")]
     Semicolon,
 
-    /// `.^^` — compile-time reflection access (`x.^^Size`). Must lex before
-    /// `.^` so logos longest-match handles the triple-char form; order is
-    /// otherwise irrelevant (logos picks the longest match).
-    #[token(".^^")]
-    DotCaretCaret,
-
-    /// `.^` — runtime reflection access (`x.^Length`, `x.^Ptr`).
-    /// The caret alone remains bitwise XOR (`a ^ b`); the dot disambiguates.
-    #[token(".^")]
-    DotCaret,
+    /// `^^` — reflection access (`x^^Length`, `x^^Bytes`). One spelling for
+    /// every representation property: a stored header slot or a type-derivable
+    /// fact, never a computation (that is the `#` family's job).
+    ///
+    /// 2026-11-21 (wave-9, one caret): `^^` and `^^` are retired. The dot was
+    /// supposed to make reflection look like a dotted accessor, but the corpus
+    /// writes `value ^^Length` with a space BEFORE the dot in 230 of 237 lib
+    /// sites — decoration floating between operands, not an accessor. Runtime
+    /// `^^Size` was already deleted (2026-08-14 §6a), so the runtime/compile-time
+    /// split had no surviving semantic; the tag was surface-only.
+    ///
+    /// The caret alone remains bitwise XOR (`a ^ b`); `^^` is a distinct
+    /// two-char token, so the two never collide: `a ^ b` lexes XOR, `x^^Length`
+    /// lexes reflection, and `a ^^ b` (spaced) is two reflection tokens — a
+    /// syntax error, as it always was.
+    #[token("^^")]
+    CaretCaret,
 
     /// := — derivation / compile-time assertion block
     #[token(":=")]
@@ -771,8 +778,7 @@ impl std::fmt::Display for Token {
             Token::ExclaimArrow => write!(f, "!>"),
             Token::Underscore => write!(f, "_"),
             Token::Semicolon => write!(f, ";"),
-            Token::DotCaretCaret => write!(f, ".^^"),
-            Token::DotCaret => write!(f, ".^"),
+            Token::CaretCaret => write!(f, "^^"),
             Token::ColonEq => write!(f, ":="),
             Token::Colon => write!(f, ":"),
             Token::LBrace => write!(f, "{{"),

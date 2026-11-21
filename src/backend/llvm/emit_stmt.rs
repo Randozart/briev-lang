@@ -237,7 +237,7 @@ enum IterKind {
     /// 2026-08-14 (String unification): a `String` operand iterates CHARs —
     /// a protocol-keyed char decode lane (`briev_str_next_char`), never a
     /// hardcoded byte walk. `ptr` is the [len][bytes] handle; `len` is the
-    /// stored byte length (`.^Length` header) that bounds the loop; the loop
+    /// stored byte length (`^^Length` header) that bounds the loop; the loop
     /// counter is the BYTE offset, advanced in-place by the lane. The item is
     /// the decoded codepoint as Char (SPEC §17.2 `String` → `Char`).
     String { ptr: String, len: String },

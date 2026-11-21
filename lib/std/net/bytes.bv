@@ -78,12 +78,12 @@ trait ByteSink {
 
     // put_cstr - write a String as a NUL-terminated C string: the raw UTF-8
     // bytes followed by a single 0x00. This is how Postgres frames user/database/
-    // query strings. A Briev String is a [len][bytes][NUL] value; .^Length is its
+    // query strings. A Briev String is a [len][bytes][NUL] value; ^^Length is its
     // byte count and (text as Data) as Int is the address of its [len] header -
     // the BYTES start 8 after that header, so the copy source is that addr + 8.
     // Built on put_bytes then put_u8, inheriting their room contracts.
     defn put_cstr(sink: Self, text: String) -> Self {
-        let count: Int = text .^Length;
+        let count: Int = text ^^Length;
         let data_addr: Int = ((text as Data) as Int) + 8;
         let copied: Self = put_bytes(sink, data_addr, count);
         term put_u8(copied, 0);

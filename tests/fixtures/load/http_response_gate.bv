@@ -4,13 +4,13 @@
 import "std/net/http_response.bv";
 
 defn framing_case(text: String, expected: Int) -> Bool {
-    let bytes: ByteBuf = buf_new(text .^Length+1);
+    let bytes: ByteBuf = buf_new(text ^^Length+1);
     let frame: HttpResponseFrame = http_response_frame(256,32);
     let verdict: Int = 0;
-    foreach index in 0..text .^Length {
+    foreach index in 0..text ^^Length {
         Store#(bytes.ptr+index,text[index],1); bytes.len += 1;
         verdict = http_response_progress(frame,bytes,false);
-        when expected == 1 && verdict != 0 && index+1 != text .^Length { buf_free(bytes); term false; };
+        when expected == 1 && verdict != 0 && index+1 != text ^^Length { buf_free(bytes); term false; };
     };
     verdict = http_response_progress(frame,bytes,true);
     buf_free(bytes);
@@ -46,9 +46,9 @@ node main [!done][done] {
 defn framing_reuse() -> Void {
     let text: String = "HTTP/1.1 204 Empty\r\n\r\n";
     let bytes: ByteBuf = buf_new(64);
-    foreach index in 0..text .^Length { Store#(bytes.ptr+index,text[index],1); };
-    bytes.len = text .^Length;
-    let frame: HttpResponseFrame = http_response_frame(text .^Length,0);
+    foreach index in 0..text ^^Length { Store#(bytes.ptr+index,text[index],1); };
+    bytes.len = text ^^Length;
+    let frame: HttpResponseFrame = http_response_frame(text ^^Length,0);
     when http_response_progress(frame,bytes,false) != 1 { trap; };
     bytes.len -= 1;
     when http_response_progress(frame,bytes,false) != -1 { trap; };

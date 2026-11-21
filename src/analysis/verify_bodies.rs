@@ -1125,7 +1125,7 @@ mod length_fact_tests {
         let defn = parse_one(
             "defn at(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {\n\
                  let addr: Int = (s as Data) as Int;\n\
-                 when i < 0 || i >= s.^Length { term 0; };\n\
+                 when i < 0 || i >= s^^Length { term 0; };\n\
                  term Load#(addr + 8 + i, 1);\n\
              };",
         );
@@ -1150,7 +1150,7 @@ mod length_fact_tests {
     fn distinct_handles_have_distinct_lengths() {
         let defn = parse_one(
             "defn same(a: String, b: String) [true][term >= 0] -> Int {\n\
-                 when a.^Length == b.^Length { term 0; };\n\
+                 when a^^Length == b^^Length { term 0; };\n\
                  term 1;\n\
              };",
         );
@@ -1169,9 +1169,9 @@ mod length_fact_tests {
     fn length_on_a_non_handle_is_a_frontend_error() {
         let err = crate::library::parse_and_check(
             "<test>",
-            "defn f(n: Int) [n >= 0][term >= 0] -> Int { term n.^Length; };",
+            "defn f(n: Int) [n >= 0][term >= 0] -> Int { term n^^Length; };",
         )
-        .expect_err("`.^Length` on an Int must be rejected by the type checker");
+        .expect_err("`n^^Length` on an Int must be rejected by the type checker");
         let text = format!("{err}");
         assert!(
             text.contains("no intrinsic (stored) length"),
@@ -1196,7 +1196,7 @@ mod handle_contract_tests {
     #[test]
     fn length_only_handle_contract_proves() {
         let defn = parse_one(
-            "out defn ident(s: String) [true][term.^Length >= 0] -> String {\n\
+            "out defn ident(s: String) [true][term^^Length >= 0] -> String {\n\
                  term s;\n\
              };",
         );

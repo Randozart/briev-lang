@@ -28,7 +28,7 @@ let tick: Int = 0;
 node run [tick < 1][tick == 1] {
     let values: List<Result<Int,String> > = build_results();
     let later: Result<Int,String> = make_result(-9);
-    let passed: Bool = values .^Length == 4 &&
+    let passed: Bool = values ^^Length == 4 &&
         is_ok(values[0]) && unwrap(values[0]) == 0 &&
         is_err(values[1]) && unwrap_err(values[1]) == "negative" &&
         is_ok(values[2]) && unwrap(values[2]) == 2 &&

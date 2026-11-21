@@ -122,7 +122,7 @@ defn tensor_named4(name: String, dims: List<Int>, n: Int) [true][term.n == n] ->
 };
 
 defn string_free(s: String) -> Void {
-    when (s .^Length) > 0 {
+    when (s ^^Length) > 0 {
         Free#(((s as Data) as Int) as Ptr<Bit<8>>);
     };
     term;

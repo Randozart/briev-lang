@@ -2,9 +2,9 @@
 // gating observes the wake transition.
 //
 // Reflection reads are legal anywhere (unlike payload projections, which
-// require an active task or a .^Ready gate). Deterministic ordering makes the
+// require an active task or a ^^Ready gate). Deterministic ordering makes the
 // transition observable:
-//   - `wire.^Ready` directly after spawn, BEFORE the first await schedules
+//   - `wire^^Ready` directly after spawn, BEFORE the first await schedules
 //     any segment → false (nothing has fired yet).
 //   - the same reflection after `await cc` completes → true (the producer's
 //     fire flipped the shared slot).
@@ -37,14 +37,14 @@ node run [i < 1][i == 1] {
     let cc = spawn consume(wire);
 
     // No segment has run yet — the shared slot is still cold.
-    when wire.^Ready == false {
+    when wire^^Ready == false {
         acc = acc + 1;
     };
 
     let v: Int = await cc;
 
     // Post-wake: the fire set the slot's Ready flag.
-    when wire.^Ready {
+    when wire^^Ready {
         acc = acc + 10;
     };
 

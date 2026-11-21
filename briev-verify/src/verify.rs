@@ -1031,7 +1031,7 @@ fn protocol_name(ty: &Type) -> Option<&str> {
 
 /// Reject length reflection whose base is not a handle.
 ///
-/// `.^Length` is modelled only for `String`/`Data` (phase 2b): on those it is the
+/// `^^Length` is modelled only for `String`/`Data` (phase 2b): on those it is the
 /// stored byte count. On anything else the expression stays out of the model, so
 /// the body is skipped with a reason instead of gaining a length fact it has no
 /// right to.
@@ -1096,7 +1096,7 @@ fn unsupported_length_reflection(
 
 /// The distinct handle bases whose length a postcondition mentions.
 ///
-/// `term.^Length >= 0` names one; `CharCount#(term) == CharCount#(a) +
+/// `term^^Length >= 0` names one; `CharCount#(term) == CharCount#(a) +
 /// CharCount#(b)` names three. The prover models a length atom and its
 /// non-negativity, but not the algebra *between* lengths (`op Concat`), so a post
 /// that relates two of them is still a claim outside the model.
@@ -1145,7 +1145,7 @@ fn length_bases(post: &Expr) -> std::collections::BTreeSet<String> {
 ///
 /// The model knows one fact about a handle's length: `len >= 0`. So the only
 /// length claims it can settle are **lower bounds at or below zero** —
-/// `term.^Length >= 0`, `0 <= term.^Length`. An equality (`== 1`), an upper bound,
+/// `term^^Length >= 0`, `0 <= term^^Length`. An equality (`== 1`), an upper bound,
 /// or a comparison against another length is a real claim about what the body
 /// built, which is content reasoning and stays out of the model.
 fn length_claim_decidable(post: &Expr) -> bool {
@@ -1222,7 +1222,7 @@ fn collect_length_bases(
 
 /// Whether a postcondition mentions `term` as a *value*.
 ///
-/// `term.^Length` / `CharCount#(term)` are length claims, and phase 2b models a
+/// `term^^Length` / `CharCount#(term)` are length claims, and phase 2b models a
 /// handle's length as a non-negative atom — those posts are answerable. Anything
 /// else that mentions `term` is a claim about the text itself, which the word
 /// model cannot decide. Distinguishing the two is what keeps the handle skip from
@@ -1237,7 +1237,7 @@ fn mentions_term_as_value(post: &Expr) -> bool {
         match expr {
             // A length context: `term` there is asked about its length, not its
             // value, so it is NOT a value mention. A *deeper* base (`f(term)
-            // .^Length`) still is.
+            // ^^Length`) still is.
             Expr::Reflect(base, target, _) if target == "Length" => length_base(base),
             Expr::Call(name, args, _) if name == "CharCount#" => {
                 args.iter().any(|a| length_base(a))
@@ -1252,7 +1252,7 @@ fn mentions_term_as_value(post: &Expr) -> bool {
             _ => false,
         }
     }
-    // `term.^Length` reaches us as `Reflect(term, "Length")`. Inside that node we
+    // `term^^Length` reaches us as `Reflect(term, "Length")`. Inside that node we
     // must not treat `term` as a value mention, so the walk starts at the node
     // itself rather than at its base.
     go(post)

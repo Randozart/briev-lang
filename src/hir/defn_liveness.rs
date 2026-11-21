@@ -485,8 +485,8 @@ impl<'a> Builder<'a> {
     ) {
         match kind {
             // 2026-11-04 (PR #62 parity): runtime metadata still evaluates
-            // its receiver — calls under `value.^Length` must be live.
-            crate::ast::ReflectKind::Runtime => self.walk_expr(receiver, queue),
+            // its receiver — calls under `value^^Length` must be live.
+            _ => self.walk_expr(receiver, queue),
             crate::ast::ReflectKind::CompileTime
                 if matches!(name, "Size" | "Bytes" | "Alignment" | "Type") =>
             {

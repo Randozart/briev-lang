@@ -1214,7 +1214,7 @@ impl LlvmBackend {
         writeln!(out, "declare ptr @getenv(ptr) nounwind").ok();
         writeln!(out, "declare noalias ptr @malloc(i64) nounwind").ok();
         writeln!(out, "declare void @free(ptr) nounwind").ok();
-        // 2026-08-09 (Phase 12, SPEC §19.3): `feature.^^Available` — the
+        // 2026-08-09 (Phase 12, SPEC §19.3): `feature^^Available` — the
         // optional-frgn runtime availability check (briev_rt.c).
         writeln!(out, "declare i64 @briev_symbol_available(ptr)").ok();
         // 2026-08-01 (D2): garbage scheduling — scheduled frees route through
@@ -2760,7 +2760,7 @@ impl LlvmBackend {
         // 2026-08-16 (Phase 3a): an INLINE-FIXED coll struct (`coll struct
         // Fixed { data: Int[4] }`) constructs the LITERAL DIRECTLY into its
         // inline `T[N]` array — no malloc-based op members, no [len] header.
-        // This is the correct storage for a fixed coll: `.^Length` == N, the
+        // This is the correct storage for a fixed coll: `^^Length` == N, the
         // data field IS the array, and reads (`f.data[i]`, foreach via At)
         // GEP the same layout. The old path fell to the heap-seq literal
         // (emitted a [len][elems] buffer), misaligning every read by the

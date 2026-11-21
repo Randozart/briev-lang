@@ -169,7 +169,7 @@ pub struct AnalysisResults {
     /// (the detect_faces `free(): invalid pointer`).
     pub static_returns: crate::hir::owned_storage::StaticReturnSummary,
     /// 2026-09-13 (defn-liveness emission): the call-reachable defn/txn set.
-    /// The backend emits ONLY these (plus keep_all when live code uses `.^^`
+    /// The backend emits ONLY these (plus keep_all when live code uses `^^`
     /// reflection). Imports grant capability; liveness gates emission cost.
     /// See docs/architecture/defn-liveness.md.
     pub defn_liveness: crate::analysis::defn_liveness::DefnLiveness,
