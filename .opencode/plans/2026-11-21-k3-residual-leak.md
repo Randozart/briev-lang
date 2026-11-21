@@ -236,3 +236,12 @@ is **~20 MB lower at every sample** (call 50: 151,200 vs 173,696; call 400:
 So: the per-call verdict rests on the ASan slope (two points, same builder,
 reproducible to 0.05%), with RSS corroborating the lower absolute footprint and
 refusing to resolve an 18 KB/call difference — never as the primary instrument.
+
+## Geometry note
+
+Every number above is the `frame_path` ingress (raw f32 CHW). `image_path`
+(JPEG through the stb decode) was not measured: this checkout has no JPEG with
+a face in it, and decoding a face-free image would exercise a different work
+path than the one the leak class lives in. The mechanism is
+ingress-independent — it fires on any owned temporary in a borrowed argument
+position — so the slope is reported once, on the ingress with a real subject.
