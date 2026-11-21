@@ -1052,6 +1052,24 @@ pub fn install_contract_gate_from_config() {
     install_contract_gate_policy(policy);
 }
 
+/// Install the gate for an INSPECTION run (`--verify-report`,
+/// `--verify-bodies`).
+///
+/// These invocations were asked for a report, not for an artifact, so the
+/// stage is capped at `Warn`: a `deny` refusal here suppresses the very
+/// document the user asked for (`tests/verify_report.rs` catches exactly
+/// that — the report file was never written). The denial is still announced,
+/// so the information is not lost, only the refusal.
+pub fn install_contract_gate_for_inspection() {
+    use crate::config_tuning::{
+        contract_gate_policy, install_contract_gate_policy, ContractGatePolicy,
+    };
+    install_contract_gate_from_config();
+    if contract_gate_policy() == ContractGatePolicy::Deny {
+        install_contract_gate_policy(ContractGatePolicy::Warn);
+    }
+}
+
 /// 2026-09-14 (machine-entry plan): check with an explicit target triple —
 /// mechanism-less `node @ vector` declarations are target-relative (the
 /// active profile names the mechanism), so target-gated sources need the

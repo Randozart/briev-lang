@@ -1383,7 +1383,18 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
 fn run_build(args: &[String]) -> Result<(), String> {
     // 2026-11-20 (issue #149): the contract policy is part of acceptance, not
     // a test-suite detail. `build` and `run` both land here.
-    briev_compiler::pipeline::install_contract_gate_from_config();
+    //
+    // Inspection runs are the exception: `--verify-report` / `--verify-bodies`
+    // were asked for a report, and a `deny` refusal would suppress it (the
+    // report file is written after typechecking). They announce at `warn`.
+    if args
+        .iter()
+        .any(|a| a == "--verify-report" || a == "--verify-bodies")
+    {
+        briev_compiler::pipeline::install_contract_gate_for_inspection();
+    } else {
+        briev_compiler::pipeline::install_contract_gate_from_config();
+    }
     let opts = parse_build_args(args)?;
 
     // --config-dir must reach the IR-lowering tuning too (baked config is the
