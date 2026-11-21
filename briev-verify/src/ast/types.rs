@@ -39,6 +39,14 @@ pub enum Type {
     /// construct (Ptr precedent): consumed exactly once by await/free/keep;
     /// dropping a live handle is an error.
     Task(Box<Type>),
+    /// 2026-11-20 (wave-6 W6-2, Goose-borrowed index types): `u32 in xs` —
+    /// an index VALUE statically bound to collection `xs`. Construction is
+    /// only legal from `xs.Count#()` or another value of the same index
+    /// type; a subscript `xs[i]` through a matching IndexIn is provably
+    /// in-bounds (no runtime check emitted natively; the interpreter
+    /// suppresses its OOB error). The carried Type names the element type
+    /// the index addresses.
+    IndexIn(String, Box<Type>),
     /// Pointer type: Ptr(T)
     Ptr(Box<Type>),
     /// Read-only pointer type: Ptr<const T>. Same size as Ptr(T), but the

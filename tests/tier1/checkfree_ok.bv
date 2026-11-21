@@ -1,0 +1,35 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// checkfree_ok — SPEC §15.4a (wave-6 §7.14, guard-based discharge): a
+// `checkfree` defn promises every subscript in its body is statically
+// in-bounds, and PROVES it from the facts that dominate the subscript.
+//
+//   F1 upper bound — `when i < xs.Count#()`
+//   F2 lower bound — `when 0 <= i`
+//
+// Both are required. An upper bound alone is not a proof (a negative index is
+// still possible), and an `IndexIn` value alone is not a proof either — the
+// type carries `0 ..= Count#()`, which is a BOUND, not a licence. This fixture
+// exercises the accept path (the guarded read compiles) and the runtime
+// fallback through `term -1` for an index the guard rejects.
+//
+// spec: 15
+import "std/io.bv";
+
+checkfree defn at(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < xs.Count#() {
+            term xs[i];
+        };
+    };
+    term -1;
+};
+
+node entry [beginprogram][true] {
+    let xs: List<Int> = [7, 8, 9];
+    Print#(at(xs, 1) as String);
+    Print#("|");
+    Print#(at(xs, 5) as String);
+    endprogram Print#("");
+};

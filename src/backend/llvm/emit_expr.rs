@@ -10500,6 +10500,14 @@ impl LlvmBackend {
         let counter = self.fun.txn_counter;
         self.fun.txn_counter += 1;
         let end_label = format!(".match_end_{}", counter);
+        // 2026-11-20 (issue #148): the per-arm reset below clears
+        // `terminated`, but the value it had on ENTRY was never restored — a
+        // match whose LAST arm diverges therefore returned with a stale
+        // `true`, and the enclosing body loop (`emit_toplevel`) broke out
+        // before emitting the continuation. The merge block was left holding a
+        // phi with no terminator. Save it here and restore it on the merge
+        // path; the all-diverging path below legitimately reports `true`.
+        let saved_terminated = self.fun.terminated;
         let n = arms.len();
         let mut arm_labels: Vec<String> = Vec::with_capacity(n);
         let mut next_labels: Vec<String> = Vec::with_capacity(n);
@@ -10762,6 +10770,9 @@ impl LlvmBackend {
         // (async-events-compiled: %guard.end106 cited as a loop predecessor
         // when the match's br to it was never written). The `phi` string
         // already carries its own `  {v} = phi ...` prefix, so write it bare.
+        // The merge block is a live continuation: some arm fell through to it,
+        // so the function is exactly as terminated here as it was on entry.
+        self.fun.terminated = saved_terminated;
         writeln!(out, "{}:", end_label).ok();
         writeln!(out, "{}", phi).ok();
         // The merge block is now the insertion point — a nested caller must

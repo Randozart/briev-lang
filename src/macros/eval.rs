@@ -2454,6 +2454,7 @@ fn resolve_dollar_refs_in_type(ty: &mut Type, scope: &Scope) -> Result<(), Strin
     match ty {
         Type::Dyn(inner) => resolve_dollar_refs_in_type(inner, scope),
         Type::Task(inner) => resolve_dollar_refs_in_type(inner, scope),
+        Type::IndexIn(_, inner) => resolve_dollar_refs_in_type(inner, scope),
         Type::Number(_) => Ok(()),
         Type::Custom(name) => {
             if let Some(var_name) = name.strip_prefix('$') {

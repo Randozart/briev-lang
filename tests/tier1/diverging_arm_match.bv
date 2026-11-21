@@ -1,0 +1,39 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// diverging_arm_match — a value `match` whose LAST arm diverges must still
+// terminate its merge block, and the code after the match must survive.
+//
+// 2026-11-20 (issue #148): the arm loop reset `terminated` per arm but never
+// restored it, so a diverging last arm left a stale `true` behind. The
+// enclosing body loop read it as "stop emitting" and broke out: the merge
+// block kept a phi with no terminator (LLVM rejected the module) and every
+// statement after the match vanished.
+//
+// The live path prints 8; the diverging path is reachable only when the
+// runtime pick is not 1, so the golden pins the surviving continuation.
+//
+// spec: 9
+import "std/result.bv";
+import "std/io.bv";
+
+defn make(seed: Int) -> Result<Int, Int> {
+    when seed > 0 {
+        term Ok(seed);
+    };
+    term Err(0 - seed);
+};
+
+node entry [beginprogram][true] {
+    let r: Result<Int, Int> = make(1);
+    let value: Int = match r {
+        Ok(n) => n,
+        Err(e) => {
+            Print#("err");
+            endprogram Print#("");
+        },
+    };
+    Print#(value + 7);
+    Print#("|after");
+    endprogram Print#("");
+};

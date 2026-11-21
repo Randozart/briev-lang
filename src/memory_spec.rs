@@ -154,6 +154,7 @@ fn format_type(ty: &Type) -> String {
         Type::Dyn(inner) => format!("dyn {}", inner),
         Type::Task(inner) => format!("Task<{}>", inner),
         Type::Number(n) => n.to_string(),
+        Type::IndexIn(coll, elem) => format!("{} in {}", elem, coll),
         Type::Custom(__t) if __t == "Int" => "Int".to_string(),
         Type::Custom(__t) if __t == "Int8" => "Int8".to_string(),
         Type::Custom(__t) if __t == "Int16" => "Int16".to_string(),
@@ -229,6 +230,11 @@ fn estimate_type_size(ty: &Type) -> usize {
         // A task handle is one i64 slot (the eager result-handle model).
         Type::Task(_) => 8,
         Type::Number(n) => (*n).max(0) as usize,
+        // 2026-11-20 (wave-6 W6-2): an index value is a FULL WORD (the
+        // boxed-handle ABI stores Int-carried values at machine width; a
+        // narrower u32 carrier would desync loads/stores). The `u32` in the
+        // SPELLING is the Goose-style bound name, not the storage width.
+        Type::IndexIn(_, _) => 8,
         Type::Custom(__t) if __t == "Int" || __t == "UInt" => 8,
         Type::Custom(__t) if __t == "Int8" || __t == "UInt8" => 1,
         Type::Custom(__t) if __t == "Int16" || __t == "UInt16" => 2,

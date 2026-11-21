@@ -17,6 +17,10 @@ import "std/io.bv";
 // The cycle is STATIC (loop2 -> loop2), deliberately runtime-terminating so
 // the corpus harness can run this program to completion; willreturn removal
 // is decided by the call-graph cycle, not by runtime divergence.
+// 2026-11-21 (wave-8): written the natural way. The guard's bare `term;` exits
+// unconditionally because this defn's postcondition is vacuous, so the call
+// after it sees `n >= 1` and proves `n - 1 >= 0`. (Wave-7 had to restructure
+// the recursion onto the true side of the guard; that workaround is retired.)
 defn loop2(n: Int) [n >= 0] -> Void {
     when n < 1 {
         term;

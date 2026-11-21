@@ -406,6 +406,11 @@ fn collect_test_files(target: &Path) -> Result<Vec<PathBuf>, String> {
 /// `brievc test <file.bv | dir> [--out <dir>]`. Returns the process exit
 /// code (0 = all passed).
 pub fn run_test_mode(args: &[String]) -> Result<(), String> {
+    // 2026-11-20 (issue #149): `brievc test` compiles each fixture, so it is
+    // an acceptance entry too — it must see the same contract policy as
+    // `check` and the conformance sweep, or a handful of fixtures become a
+    // deny-free oasis that hides a real failure until CI.
+    briev_compiler::pipeline::install_contract_gate_from_config();
     let parsed = parse_test_args(args)?;
     let target = parsed.target.clone();
     let out_dir = parsed.out_dir.clone();

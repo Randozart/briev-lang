@@ -413,9 +413,10 @@ impl<'a> Parser<'a> {
                 if self.check_identifier("return") {
                     self.pos += 1; // consume `return`
                     return Err(SyntaxError::InvalidStatement {
-                        reason: "Briev has no `return` statement. To return a value \
-                                 from a defn use `term <value>`; to mark a convergence \
-                                 checkpoint use bare `term;`; `term!` closes the program."
+                        reason: "Briev has no `return` statement. A defn's value is its trailing \
+                                 expression, or `term <value>` for an early exit; a bare \
+                                 `term;` is the completeness check at that point. \
+                                 `endprogram` closes the program."
                             .to_string(),
                         span: crate::errors::Span::dummy(),
                     });
@@ -1535,8 +1536,9 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
             // `unbounded` / `unbounded until [C]` open a modifier run: the loop
-            // carries no termination obligation (SPEC 10.9).
-            Some(Token::Identifier(word)) if word == "unbounded" => true,
+            // carries no termination obligation (SPEC 10.9). `checkfree` opens
+            // one too — the defn carries the subscript-bounds obligation.
+            Some(Token::Identifier(word)) if word == "unbounded" || word == "checkfree" => true,
             // 2026-10-17 (plain storage): `state let` / `plain let` — the
             // storage-class assertions open a modifier run.
             Some(Token::Identifier(s))
@@ -1605,6 +1607,7 @@ impl<'a> Parser<'a> {
                 self.reject_memory_pins(&prefix, "a node has no memory pin")?;
                 self.reject_net_names(&prefix, "a node")?;
                 self.reject_storage_assertions(&prefix, "a node")?;
+                self.reject_checkfree(&prefix, "a node")?;
                 let txn = self.parse_node()?;
                 self.finish_reactive(txn, prefix)
             }
@@ -1612,6 +1615,7 @@ impl<'a> Parser<'a> {
                 self.reject_memory_pins(&prefix, "a txn has no memory pin")?;
                 self.reject_net_names(&prefix, "a txn")?;
                 self.reject_storage_assertions(&prefix, "a txn")?;
+                self.reject_checkfree(&prefix, "a txn")?;
                 let txn = self.parse_transaction(false, prefix.is_async)?;
                 self.finish_reactive(txn, prefix)
             }
@@ -1628,6 +1632,7 @@ impl<'a> Parser<'a> {
                 }
                 self.reject_shape_modifiers(&prefix, "a let")?;
                 self.reject_thread_pins(&prefix, "a let")?;
+                self.reject_checkfree(&prefix, "a let")?;
                 let mut stmt = self.parse_let_statement()?;
                 if let Statement::Let { modifiers, .. } = &mut stmt {
                     modifiers.extend(prefix.annotations);
@@ -1658,6 +1663,18 @@ impl<'a> Parser<'a> {
             }
             _ => self.modifier_target_error(&prefix),
         }
+    }
+
+    /// 2026-11-20 (checkfree): the subscript-bounds obligation is a promise a
+    /// `defn` body makes; a node/txn/let has no defn body to prove it over.
+    fn reject_checkfree(&self, prefix: &ModifierPrefix, what: &str) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| a.name == "checkfree") {
+            return self.error_at_current(&format!(
+                "`checkfree` states that every subscript in a defn body is \
+                 provably in-bounds — {what} has no defn body to prove it over"
+            ));
+        }
+        Ok(())
     }
 
     /// 2026-11-15 (thread-assignment plan): `on thread <N>` selects the
@@ -6048,6 +6065,48 @@ mod tests {
         assert_eq!(f.placements[0].rot, 0.0);
         assert_eq!(f.placements[1].inst, "j1");
         assert_eq!(f.placements[1].rot, 90.0);
+    }
+
+    // ─── checkfree: contextual modifier (SPEC §15.4b) ──────────────────────
+
+    #[test]
+    fn checkfree_rejects_non_defn_target() {
+        // The promise is "every subscript in this DEFN BODY is proven" — a
+        // node/txn/let has no defn body to prove it over, so accepting the
+        // word there would let an author believe a guarantee exists.
+        for src in [
+            "checkfree node n [true][true] { term; };",
+            "checkfree txn t [true][true] { term; };",
+            "checkfree let x: Int = 5;",
+        ] {
+            let err = parse_top(src).expect_err(src);
+            assert!(
+                err.contains("checkfree") && err.contains("defn body"),
+                "the rejection must say what checkfree means: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn checkfree_is_a_contextual_identifier_not_a_keyword() {
+        // `unbounded` precedent: no lexer token, so the word stays usable as
+        // an ordinary identifier. A new reserved word would break every
+        // program that happens to use the name.
+        let tl = parse_top("checkfree defn f(xs: List<Int>) -> Int { term xs[0]; };")
+            .expect("checkfree must parse on a defn");
+        let crate::ast::TopLevel::Definition(d) = tl else {
+            panic!("expected a definition");
+        };
+        assert!(
+            d.modifiers.iter().any(|m| m.name == "checkfree"),
+            "the modifier must reach Definition.modifiers"
+        );
+        let named = parse_top("defn checkfree(x: Int) -> Int { term x; };")
+            .expect("`checkfree` must remain usable as a defn NAME");
+        let crate::ast::TopLevel::Definition(d) = named else {
+            panic!("expected a definition");
+        };
+        assert_eq!(d.name, "checkfree");
     }
 
     #[test]

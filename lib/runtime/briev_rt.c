@@ -404,3 +404,13 @@ void briev_workers_stop(void) {
   }
   briev_worker_count = 0;
 }
+
+/* 2026-11-20 (wave-6 W6-3, ClockMonotonicNs#): CLOCK_MONOTONIC nanoseconds
+ * as one i64 (sec*1e9 + nsec, i64-safe for ~292 years of uptime). vDSO
+ * fast path lands behind the same symbol when a hot-path consumer needs
+ * it; the syscall is correct everywhere today. */
+int64_t briev_clock_monotonic_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}

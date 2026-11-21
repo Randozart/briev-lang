@@ -38,6 +38,10 @@ defn check_pair() -> Void {
     };
     when !blocked || sent < 1 || sent >= output.len { trap; };
     when poll_wait(polls,1000) < 1 || (poll_events(polls,1) & POLL_IN) == 0 { trap; };
+    // 2026-11-20 (issue #149 fallout): the fd came from a raw Load#, so no
+    // contract supplies its sign. Trap on the impossible case rather than
+    // assume it — the guard is stronger than the assumption it replaces.
+    when sender.fd < -4096 { trap; };
     when sock_shutdown(sender) != 0 { trap; };
     let received: Int = 0;
     let eof: Bool = false;

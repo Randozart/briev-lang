@@ -12,7 +12,7 @@ impl<'a> Parser<'a> {
     /// 2026-07-16: Bits-thesis — all type names are Token::Identifier.
     /// Dispatch on identifier string, not token variant.
     pub fn parse_type(&mut self) -> Result<Type, SyntaxError> {
-        // 2026-08-22 (Phase 5, SPEC §8.6): `dyn TraitName` — a trait object.
+                // 2026-08-22 (Phase 5, SPEC §8.6): `dyn TraitName` — a trait object.
         // `dyn` is contextual (no Token); recognized only in type-prefix
         // position, so identifiers named dyn elsewhere are untouched.
         if self.check_identifier("dyn") {
@@ -31,7 +31,7 @@ impl<'a> Parser<'a> {
                 match name.as_str() {
                     // Type::int() etc. are frontend conveniences for Bits(N) + metadata.
                     "Int" => ("Int", Type::int()),
-                    "UInt" => ("UInt", Type::Custom("UInt".into())),
+                    "UInt" | "u32" | "U32" => ("UInt", Type::Custom("UInt".into())),
                     "Float" | "Float32" | "F32" => ("Float", Type::float()),
                     "Float64" | "F64" | "Double" => ("Float64", Type::float64()),
                     "String" => ("String", Type::string()),
@@ -133,6 +133,25 @@ impl<'a> Parser<'a> {
         // integer literal (`Int[8]`) or an identifier directly followed by
         // `]` (`T[N]` generic array). A contract bracket (`-> Int [b != 0]`)
         // is left for parse_contract.
+        // 2026-11-20 (wave-6 W6-2, index types): `u32 in xs` — an index
+        // VALUE statically bound to collection `xs` (Goose-borrowed; SPEC
+        // §15-analog). Only unsigned scalar spellings form index types; the
+        // element type rides in the IndexIn for diagnostics. Parsed here —
+        // before the array suffix loop — so `u32 in xs` never misparses as
+        // an array of u32.
+        if matches!(&prim_name[..], "UInt" | "u32" | "U32")
+            && self
+                .peek()
+                .map(|t| matches!(t, Token::Identifier(n) if n == "in"))
+                .unwrap_or(false)
+        {
+            self.pos += 1; // consume the identifier `in`
+            let Some(Token::Identifier(coll)) = self.peek().map(|t| t.clone()) else {
+                return self.error_at_current("expected the collection name after `in`");
+            };
+            self.pos += 1;
+            return Ok(Type::IndexIn(coll, Box::new(Type::Custom("UInt".into()))));
+        }
         let mut dims: Vec<Dimension> = Vec::new();
         while self.check(&Token::LBracket) {
             if matches!(self.peek_next(), Some(Token::Integer(_))) {
@@ -456,6 +475,25 @@ mod tests {
         let t = parse_type_str("fn(Int, Float) -> Bool");
         assert!(
             matches!(t, Type::Function(params, ret) if params.len() == 2 && matches!(*ret, Type::Custom(ref n) if n == "Bool"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod index_type_parse_tests {
+    use super::*;
+
+    /// 2026-11-20 (wave-6 W6-2): `u32 in xs` parses as IndexIn(xs, UInt).
+    #[test]
+    fn index_in_type_parses() {
+        let src = "u32 in xs";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let ty = p.parse_type().unwrap();
+        assert!(
+            matches!(ty, crate::ast::Type::IndexIn(_, _)),
+            "expected IndexIn, got {:?}",
+            ty
         );
     }
 }

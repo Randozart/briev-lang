@@ -240,7 +240,10 @@ impl EnumLayoutPlanner {
     fn field_words(&self, ty: &Type, _depth: usize) -> Option<usize> {
         match ty {
             Type::Void => Some(0),
+            // 2026-11-20 (wave-6 W6-2): an index value is a u32 carrier —
+            // one word (same rounding as the Bits path).
             Type::Bits(bits) => Some(((*bits as usize).saturating_add(63) / 64).max(1)),
+            Type::IndexIn(_, _) => Some(1),
             Type::Width(bits) => Some(((*bits as usize).saturating_add(63) / 64).max(1)),
             Type::Custom(_)
             | Type::Applied(_, _)

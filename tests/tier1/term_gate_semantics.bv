@@ -1,0 +1,61 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// term_gate_semantics — the reference interpreter's reading of `term` as ONE
+// conditional exit (SPEC §11.3, wave-8).
+//
+// The rule: `term` evaluates the enclosing item's postcondition at that point.
+// Holds ⇒ control leaves; does not hold ⇒ execution continues to the next
+// statement. What differs between body kinds is only how many times you can
+// arrive there — a defn is linear, a node/txn is cyclic.
+//
+// These blocks pin the linear half. The bare `term;` below is lowered to
+// `when P { term <void>; }` at registration (`interpreter/eval.rs:2485`), so
+// with a vacuous post it is an unconditional exit and the statement after it
+// never runs.
+//
+// spec: 11.3
+import "std/io.bv";
+
+let after_guard: Int = 0;
+
+defn early_exit(x: Int) -> Void {
+    when x > 0 {
+        term;
+    };
+    after_guard = after_guard + 1;
+};
+
+defn returns_through_the_tail(x: Int) -> Int {
+    x + 1
+};
+
+test bare_term_exits_a_linear_body {
+    after_guard = 0;
+    early_exit(1);
+    // The guard fired, the term exited, and the assignment after it never ran.
+    // (The other direction — a guard that does NOT fire falling through — is not
+    // observable from a test block: a defn's write to a top-level binding does
+    // not reach the caller's scope in the interpreter. The native side covers it:
+    // tests/tier1/divergent_loop_attrs.bv recurses past exactly that guard.)
+    expect after_guard == 0;
+};
+
+test tail_expression_is_the_value {
+    expect returns_through_the_tail(41) == 42;
+};
+
+test value_term_is_an_early_return {
+    expect pick(2) == 20;
+};
+
+defn pick(which: Int) -> Int {
+    when which == 1 {
+        term 10;
+    };
+    term 20;
+};
+
+node entry [beginprogram][true] {
+    endprogram Print#("");
+};

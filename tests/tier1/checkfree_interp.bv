@@ -1,0 +1,61 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// checkfree_interp — the reference interpreter's reading of a proven
+// subscript (SPEC §15.4b), the runtime side of `checkfree`.
+//
+// Worth stating plainly, because it was assumed wrongly at first: a `.golden`
+// fixture is executed NATIVELY. Only files carrying SPEC §8.11 `test { }`
+// blocks reach the reference interpreter, so a golden pin and an interpreter
+// pin are different verifications and neither substitutes for the other.
+//
+// These blocks pin the MEANING of the guarded and offset forms: the guard
+// decides, a rejected index takes the fallthrough path, and the offset form
+// reads the neighbour.
+//
+// spec: 15
+import "std/io.bv";
+
+checkfree defn at(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < xs.Count#() {
+            term xs[i];
+        };
+    };
+    term 0 - 1;
+};
+
+checkfree defn previous(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        when i <= xs.Count#() {
+            term xs[i - 1];
+        };
+    };
+    term 0 - 1;
+};
+
+test guarded_subscript_reads_the_element {
+    let xs: List<Int> = [7, 8, 9];
+    expect at(xs, 0) == 7;
+    expect at(xs, 2) == 9;
+};
+
+test guard_rejects_an_index_past_the_end {
+    let xs: List<Int> = [7, 8, 9];
+    expect at(xs, 3) == 0 - 1;
+};
+
+test offset_subscript_reads_the_neighbour {
+    let xs: List<Int> = [7, 8, 9];
+    expect previous(xs, 1) == 7;
+    expect previous(xs, 3) == 9;
+};
+
+test offset_guard_rejects_the_first_element {
+    let xs: List<Int> = [7, 8, 9];
+    expect previous(xs, 0) == 0 - 1;
+};
+
+node entry [beginprogram][true] {
+    endprogram Print#("");
+};

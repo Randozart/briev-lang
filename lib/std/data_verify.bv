@@ -1,0 +1,44 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// data_verify — verify-on-load for Data words over the frozen String/Data
+// ABI (SPEC §16.2, wave-5 W5-6): [i64 len][bytes][NUL], payload at +8.
+// 2026-11-20 (wave-6 W6-4, Goose-borrowed from_bytes verify-before-value):
+// bytes arriving from outside the program are the one place a reference
+// could enter without the compiler proving it valid, so the check runs
+// BEFORE the bytes are treated as a value. A hostile word gives 0 and
+// nothing else happens — never a wild pointer read.
+//
+// max_bytes is the caller's allocation bound for the word's region (the
+// proof the caller owns: where the bytes came from and how big the buffer
+// is). The layout checks are: the length word is non-negative and the NUL
+// terminator sits at word + 8 + len within the bound.
+//
+// Undo: delete this file; nothing imports it yet.
+
+// data_check — 1 when the Data word is a well-formed [len][bytes][NUL]
+// block within max_bytes; 0 otherwise.
+export defn data_check(word: Int, max_bytes: Int)
+    [word >= 0 && max_bytes >= 1]
+    [term == 0 || term == 1]
+    -> Int
+{
+    // SPEC §16.2: the length word is at offset 0 (payload begins at +8;
+    // the NUL terminator trails the payload, uncounted by the length).
+    // max_bytes bounds the ACCEPTED payload size — a hostile word claiming
+    // a gigabyte length is rejected by this bound, not by dereferencing
+    // it. The NUL load happens only after len passes the bound, so the
+    // single in-bounds read this fn performs is the NUL at word+8+len
+    // (word's own region is the caller's provenance).
+    let len: Int = Load#(word, 8);
+    when len < 0 { term 0; };
+    when len > max_bytes { term 0; };
+    let nul: Int = Load#(word + 8 + len, 1);
+    when nul != 0 { term 0; };
+    term 1;
+};
+
+// data_len — the length word of a verified block (call after data_check).
+export defn data_len(word: Int) [word >= 0][term >= 0] -> Int {
+    term Load#(word, 8);
+};

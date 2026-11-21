@@ -145,6 +145,8 @@ fn build_supported_ops() -> HashSet<String> {
     for name in &[
         "GetEnv#",
         "GetEnvInt#",
+        // 2026-11-20 (wave-6 W6-3): CLOCK_MONOTONIC ns via the rt helper.
+        "ClockMonotonicNs#",
         // 2026-11-19: admitted with executable interpreter/native regressions;
         // both process arms now use the current String boundary ABI.
         "Spawn#",

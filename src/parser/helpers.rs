@@ -237,6 +237,18 @@ impl<'a> Parser<'a> {
                         });
                     }
                 }
+                // `checkfree` — promise that EVERY subscript in this defn's body
+                // is statically in-bounds (SPEC §15.4a). An OBLIGATION, not a
+                // hint: the typechecker rejects any subscript it cannot prove
+                // from the facts that dominate it. Contextual identifier, like
+                // `unbounded`, so no lexer token is added.
+                Some(Token::Identifier(word)) if word == "checkfree" => {
+                    self.pos += 1;
+                    prefix.annotations.push(Annotation {
+                        name: "checkfree".to_string(),
+                        value: None,
+                    });
+                }
                 Some(Token::Out) => self.record_annotation(&mut prefix, "out")?,
                 Some(Token::Mem) => self.record_annotation(&mut prefix, "mem")?,
                 Some(Token::Reg) => self.record_annotation(&mut prefix, "reg")?,

@@ -2877,19 +2877,39 @@ A trailing expression without `;` is the block's implicit value.
 Zero-payload variant patterns use `Variant()` (with parens) to distinguish
 from variable binding patterns.
 
-In `node` and `txn` bodies, `term expr;` (or bare `term;`) means **"check
-if this loop is complete."** It is a convergence checkpoint: the reactor
-evaluates the goal (postcondition) at this point. If satisfied, the node
-stops firing; otherwise it fires again on the next reactor cycle. Without
-`term`, the reactor has no point at which to evaluate the goal and decide
-whether to continue or converge — which is why it is mandatory in looping
-bodies.
+#### `term` is one conditional exit, not two keywords
 
-In `defn` bodies and match-arm blocks, a trailing expression WITHOUT `;`
-is the implicit return value. No convergence check occurs because defns
-and match arms are not loops. The two forms are semantically distinct:
-`term` invokes a completeness evaluation; a bare tail expression produces
-a value.
+`term` evaluates the enclosing item's **postcondition** at that point. If it
+holds, control leaves the body with the `term` value (or with nothing, for a
+bare `term;`). If it does not hold, execution **continues** to the next
+statement. That is the whole rule; what differs between body kinds is only how
+many times you can arrive at it.
+
+- **`node` / `txn` (cyclic).** The same `term` is reached on every pass. The
+  reactor evaluates the goal there; unmet means the node fires again on the next
+  cycle. Without a `term` the reactor has no point at which to evaluate the goal
+  and decide whether to continue or converge — which is why it is mandatory in
+  looping bodies.
+- **`defn` (linear).** The body runs once, so a `term` is reached once. The
+  postcondition at that point is a *static* obligation: if any valid input could
+  arrive at a `term` whose postcondition does not hold, the program does not
+  compile. A defn whose postcondition is vacuous (`[true]`, or no contract at
+  all) therefore has an **unconditional** exit at every `term`, and the code
+  after a `when … { term; }` guard can rely on the guard being false.
+
+Two obligations follow, and both are compile-time:
+
+1. **Every path produces a value.** A defn with a return type must reach an exit
+   that produces it — a trailing expression, `term <value>`, `endprogram`, or
+   `trap`. Falling off the end of a value-returning body is an error. A
+   `-> Void` body may fall off its end: that is the only value the type has.
+2. **The value has the declared type.** A tail whose type is not the return type
+   is an error.
+
+A trailing expression is the body's value; writing it without `;` is the
+idiomatic form. `term` invokes the completeness evaluation, a tail expression
+does not — but in a `defn` with a vacuous postcondition both simply produce the
+value.
 
 ### 11.4 Iteration
 
@@ -2918,9 +2938,12 @@ foreach item in items {
 > The reference engine raises a loud index error instead — treat the
 > interpreter as the bounds oracle and prove index bounds with a
 > `when` guard or a contract before a subscript when the bound is not
-> static. `foreach` over a collection is always in-bounds by
-> construction and is the preferred form wherever the index itself is
-> not load-bearing.
+> static. Guard the bound (a `when` naming the index), or declare the defn
+> `checkfree` (§15.4b) to make every subscript in it a proof obligation.
+> Index types (§15.4a) carry a bound through a value — they supply the lower
+> half of a proof, not the whole of one. `foreach` over a collection is always
+> in-bounds by construction and is the preferred form wherever the index
+> itself is not load-bearing.
 
 There are no `for`, `while`, or `loop` keywords. Counted iteration uses iterable ranges or reactive/transactional structure.
 
@@ -3071,6 +3094,15 @@ runs applicable `defer` cleanup and terminates the process. Unlike `term`,
 which only ends the current transaction, `endprogram` exits the process even
 when a node's precondition remains satisfiable. Abrupt termination is not
 currently a source-language feature.
+
+> **2026-11-20 (wave-6 W6-1, defer at `endprogram`).** Defers registered in
+> a block run LIFO before the process boundary's value side effects and
+> termination — the same flush point `term` uses for the transaction
+> boundary. Pinned by `tests/tier1/defer_lifo.bv` (golden `body|a|b`).
+> This is the cleanup spelling for handles whose last use the auto-free
+> scheduler cannot prove (kernel-owned descriptors, opaque scratch
+> buffers); the scheduler's proven-last-use auto-free (§14.3) covers the
+> rest.
 
 For the shapes of reactive programs that compile — the multi-node phase
 chain, counter-goal convergence, the `async` + distinct-phase classification
@@ -3594,6 +3626,111 @@ There is no `simd`/`nosimd` keyword and no explicit vector type: the default
 already vectorizes every counted loop, `seq` is the sequentialism opt-out,
 and these intrinsics are the forced-shape escape hatch.
 
+### 15.4a Index types — `u32 in xs`
+
+```briev
+let xs: List<Int> = [7, 8, 9];
+let i: u32 in xs = xs.Count#();     // construction: ONLY xs's own Count#
+// `i` is the COUNT (0 ..= 3) — a bound, not an index. Reading the last
+// element needs a guard, and that guard is what `checkfree` demands:
+when i - 1 < xs.Count#() {
+    let tail: Int = xs[i - 1];
+};
+```
+
+`u32 in xs` binds an index VALUE to its collection, statically.
+
+- **Construction.** The only legal initializers are that collection's own
+  `Count#()` and another value already of the same type. `ys.Count#()` into
+  `u32 in xs` is a type error; so is a plain `Int`. There is no conversion
+  from `Int`. What you get back is the collection's COUNT, range
+  `0 ..= count` — see the subscript note below.
+- **Subscript — NOT a licence (2026-11-20 correction).** `Count#()` is the
+  element COUNT; valid indices are `0 .. count-1`. A value constructed from
+  `Count#()` is therefore a **bound** (`0 ..= count`), not an index, and a
+  subscript through it is **not** provably in range — `xs[i]` with
+  `i = xs.Count#()` reads one past the end. An index type is a bound you
+  can reason with (loop limits, `when` guards, arithmetic), not a subscript
+  licence. A `checkfree`-style obligation would need either a true index
+  type with a total construction source, or a dominating guard proving
+  `idx < coll.Count#()`; neither exists yet, so `xs[bound]` keeps the
+  ordinary §11.4 semantics (unchecked `inbounds` natively, loud error in
+  the reference engine).
+- **Arithmetic degrades.** An index acts as its unsigned carrier in
+  operators; the RESULT is the plain carrier type, not a new bounded
+  index — `i - 1` is an `Int`, and subscripting with it is the ordinary
+  (bounds-unchecked natively) form. A program that needs a bounded
+  neighbour index constructs it from `Count#()` again.
+- **Storage.** An index value is a machine-width integer at runtime; the
+  `u32` in the spelling names the bound's domain, not the storage width.
+
+This is the static counterpart to `check` (§10.2): `check` proves a
+condition at a point, an index type carries a bound through a value.
+
+### 15.4b `checkfree` — the subscript-bounds obligation
+
+```briev
+checkfree defn at(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {                       // F2 — the lower half
+        when i < xs.Count#() {          // F1 — the upper half
+            term xs[i];
+        };
+    };
+    term -1;
+};
+```
+
+`checkfree` is a prefix modifier on a `defn` — a **promise that every
+subscript in its body is statically in-bounds**, proven from the facts that
+dominate the subscript. It is opt-in and intra-procedural (a call is not
+walked into: the callee answers for its own subscripts). The barrier is the
+same one the call-site contract gate uses (§10.1), so a guard that satisfies
+a contract also satisfies `checkfree`.
+
+A subscript `coll[idx]` is discharged when **both** halves hold:
+
+- **F1 — upper bound.** The facts that dominate the subscript prove
+  `idx < coll.Count#()`.
+- **F2 — lower bound.** They prove `0 <= idx`, **or** `idx` is a value of
+  `u32 in coll` for the same collection — its construction rule gives
+  `0 ..= Count#()`, which supplies the lower half and only the lower half.
+
+Both goals are posed to the same fact engine the call-site contract gate uses
+(§10.1), so the obligation inherits every reasoning rule that engine has, and
+a guard that satisfies a contract also satisfies `checkfree`. In particular
+the engine reasons over **linear combinations**, not over spellings:
+
+```briev
+checkfree defn previous(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {                        // F2 — 0 <= i - 1 follows from i > 0
+        when i <= xs.Count#() {         // F1 — i - 1 < Count#() follows
+            term xs[i - 1];             // the neighbour read proves
+        };
+    };
+    term 0 - 1;
+};
+```
+
+Neither guard names `i - 1`; the bounds on `i` imply them. A guard that names
+the index expression directly is the degenerate case of the same reasoning.
+
+What the engine will **not** do is invent a bound it has not been given:
+
+- An **inclusive** upper bound is not an exclusive one: `when i <= xs.Count#()`
+  does not license `xs[i]`, because `i == Count#()` is one past the last
+  element. `when i <= xs.Count#() - 1`, or `when i < xs.Count#()`, does.
+- A guard on one collection says nothing about another: a fact about
+  `ys.Count#()` cannot discharge `xs[i]`. Collection identity is part of the
+  goal, not a detail of the spelling.
+- `Count#(xs)` and `xs.Count#()` are distinct terms to the engine, so both
+  spellings are tried for F1 — a guard written one way discharges a subscript
+  written the other way.
+
+`checkfree` is analysis-only: it changes no emitted code (`--llvm` output is
+byte-identical with and without it), because a proof is not a runtime check.
+Contract pre/post conditions keep their own obligation and fact set; the
+body's guards do not dominate them.
+
 ### 15.5 Precedence
 
 From highest to lowest:
@@ -3918,6 +4055,22 @@ removed after a one-release deprecated alias — it is now an unknown-target
 error directing to `Abs#`.
 
 `Values` and `Elements` are ordinary logical fields when declared. `AsStack` and `AsQueue` are type-defined conversions.
+
+> **2026-11-20 (wave-6 W6-3, `ClockMonotonicNs#`).** `ClockMonotonicNs#()`
+> reads `CLOCK_MONOTONIC` nanoseconds as one `Int` (`sec * 1e9 + nsec`,
+> domain `[0, i64::MAX]` — honest wrap at ~292 years of uptime). It is the
+> fast unchecked monotonic read; `std/os/time.bv`'s `clock_ns_res` stays
+> the checked path (errno, `nsec < 1e9`, overflow → `Result`). The
+> intrinsic's syscall number routes through the compiler's per-triple
+> table (x86_64 228, asm-generic/aarch64 113), so it is arch-correct by
+> construction — the `rt_now_ns` lane's hardcoded 228 is legacy.
+>
+> `std/data_verify.bv` provides the verify-on-load counterpart for
+> `Data` words: `data_check(word, max_bytes)` validates the §16.2 layout
+> (length word non-negative, length within the caller's accepted bound,
+> NUL terminator present) and returns `0`/`1`; `data_len(word)` reads a
+> verified block's length. A hostile block claiming an absurd length is
+> rejected without dereferencing the claim.
 
 ## 18. Compile-time execution and macros
 

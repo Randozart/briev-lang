@@ -1,0 +1,35 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// diverging_arm_interp — the interpreter's reading of a value `match` with a
+// diverging arm (issue #148, reference side).
+//
+// The native fixture `diverging_arm_match.bv` pins the LOWERING (a diverging
+// last arm must not leave a dangling phi). This file pins the MEANING, through
+// SPEC §8.11 test blocks, which the reference interpreter executes: a `term`
+// in an arm leaves the function with that value, and a falling-through arm
+// continues into the statement after the match.
+//
+// spec: 9
+import "std/io.bv";
+import "std/result.bv";
+
+defn pick(r: Result<Int, Int>) -> Int {
+    let value: Int = match r {
+        Ok(n) => n,
+        Err(e) => { term 0 - 1; },
+    };
+    term value + 100;
+};
+
+test diverging_last_arm_continues_on_the_live_path {
+    expect pick(Ok(7)) == 107;
+};
+
+test diverging_arm_returns_its_own_value {
+    expect pick(Err(3)) == 0 - 1;
+};
+
+node entry [beginprogram][true] {
+    endprogram Print#("");
+};

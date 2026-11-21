@@ -112,7 +112,7 @@ fn tier2_list_payload_result_through_let() {
 import { List } from "std/collections.bv";
 import { Result, Ok, is_ok, unwrap } from "std/result.bv";
 
-defn make() -> Result<List<Int>, Int> [xs.Count#() == 2][term.Count#() == 2] {
+defn make() -> Result<List<Int>, Int> [true][term.Count#() == 2] {
     let xs: List<Int>;
     xs <- 1;
     xs <- 2;
@@ -205,8 +205,12 @@ node main [done == false][done == true] {
     let hs: List<dyn Greeter>;
     hs <- Dog { base: 7 };
     hs <- Cat { lives: 9 };
-    let a: Int = first_greet(hs, 3);
-    println!(a);
+    // The list grew by two `<-` appends, but that is a fact about the
+    // statements, not about the handle: state it where the callee demands it.
+    when hs.Count#() > 0 {
+        let a: Int = first_greet(hs, 3);
+        println!(a);
+    };
     done = true;
     term;
 };

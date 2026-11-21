@@ -63,7 +63,8 @@ defn send_all(s: Socket, text: String) [s.fd >= -4096] -> Int {
 
 // read_all - read the whole response (the server closes after writing it, so
 // EOF terminates the read).
-defn read_all(s: Socket) [s.fd >= -4096] -> ByteBuf {
+defn read_all(s: Socket) [s.fd >= -4096]
+    [term.len >= 0 && term.len <= term.cap] -> ByteBuf {
     let buffer: ByteBuf = buf_new(2048);
     term read_more(s, buffer);
 };
@@ -91,7 +92,14 @@ defn read_more(s: Socket, buffer: ByteBuf)
 
 // status_code - the 3-digit status of a response, or -1 when the buffer does
 // not start with a status line (a framing regression).
-defn status_code(response: ByteBuf) [true][term >= -1] -> Int {
+// 2026-11-20 (issue #149 fallout): a ByteBuf's invariant (`0 <= len <= cap`)
+// is what `buf_as_string` requires, so the function states it instead of
+// asserting `true` and leaving the callee's precondition unprovable. The
+// invariant is real: every ByteBuf operation maintains it, and `read_all`
+// returns it.
+defn status_code(response: ByteBuf)
+    [response.len >= 0 && response.len <= response.cap]
+    [term >= -1] -> Int {
     when response.len < 12 {
         term -1;
     };

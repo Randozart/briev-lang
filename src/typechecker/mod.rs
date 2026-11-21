@@ -537,6 +537,17 @@ impl<'a> TypecheckContext<'a> {
         if let Type::Constrained(base, _) = lhs {
             return self.resolve_binary_op_binding(kind, base, rhs);
         }
+        // 2026-11-20 (wave-6 W6-2, index types): an index value acts as its
+        // unsigned carrier in arithmetic (Goose §15: index types are the
+        // bounds proof, arithmetic widens to Int — `xs[i - 1]` is the
+        // canonical last-element read). Result is the plain carrier type:
+        // arithmetic on an index does not produce a new bounded index.
+        if let Type::IndexIn(_, carrier) = lhs {
+            return self.resolve_binary_op_binding(kind, carrier, rhs);
+        }
+        if let Type::IndexIn(_, carrier) = rhs {
+            return self.resolve_binary_op_binding(kind, lhs, carrier);
+        }
         let rune = format!("{}", kind);
         let op_name = crate::type_universe::operators::rune_to_op_name(&rune)?;
         if let Some(fn_name) = self.type_declares_op_binding(lhs, &op_name, rhs) {
@@ -2893,6 +2904,16 @@ pub(crate) fn types_compatible(declared: &Type, value: &Type, ctx: &TypecheckCon
     if let Type::Union(members) = declared {
         return members.iter().any(|m| m == value);
     }
+    // 2026-11-20 (wave-6 W6-2, index types): `u32 in xs` accepts a plain
+    // Int-carrying value ONLY at a construction site — Goose §15's trick:
+    // the bounds fact is the type, so an Int INTO an index type must be
+    // checked by the construction rule (Count# of the SAME collection),
+    // not by a blanket numeric compat. types_compatible is context-free,
+    // so this stays false here; the Let/Assign sites call
+    // index_type_construction_ok for the narrow allowed case.
+    if matches!(declared, Type::IndexIn(_, _)) {
+        return false;
+    }
     // 2026-08-22 (Phase 5, SPEC §8.6): concrete → `dyn Trait` — ONLY into an
     // explicit dyn annotation (this fn is only consulted for annotated
     // positions), and only when the concrete type ASSERTS the trait. The
@@ -3251,9 +3272,10 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
             elaborate_stmts(body, ctx, errors);
             ctx.known_facts.truncate(base);
             if ctx.in_defn
-                && body
-                    .iter()
-                    .any(crate::analysis::termination::statement_always_terminates)
+                && crate::analysis::termination::stmts_end_defn(
+                    body,
+                    current_defn_post_is_vacuous(ctx),
+                )
             {
                 ctx.known_facts
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
@@ -3679,7 +3701,15 @@ fn infer_binary_op(
     let literal_admitted = literal_fits_sized(&lhs_ty, rhs, ctx.universe)
         || literal_fits_sized(&rhs_ty, lhs, ctx.universe)
         || numeral_admits_quantity(&lhs_ty, rhs, ctx.universe)
-        || numeral_admits_quantity(&rhs_ty, lhs, ctx.universe);
+        || numeral_admits_quantity(&rhs_ty, lhs, ctx.universe)
+        // 2026-11-20 (wave-6 W6-2, index types): an index-typed operand
+        // admits a plain-Int literal on the other side — the arithmetic
+        // result is the plain carrier type (the index does not stay
+        // bounded through arithmetic), so `xs[i - 1]` is the canonical
+        // last-element read. Without this the UInt-vs-Int spelling check
+        // would reject it.
+        || matches!(lhs_ty, Type::IndexIn(_, _))
+        || matches!(rhs_ty, Type::IndexIn(_, _));
 
     if kind.is_comparison() || kind.is_logical() {
         if lhs_str != rhs_str && !literal_admitted {
@@ -4648,34 +4678,58 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 };
                 // 2026-08-22 (Phase 3): structural sums admit their members
                 // (`let v: Int | String = 5`) via types_compatible.
-                let compatible = if vector_literal || sized_literal || float_literal {
-                    true
-                } else if types_compatible(declared, &inferred, ctx) {
-                    true
-                } else {
-                    // 2026-07-31: `let lb: ListBuffer<Int> = ListBuffer {...}`
-                    // — a generic-struct constructor infers the bare type; the
-                    // declared type application pins the type params.
-                    match (declared, &inferred) {
-                        (Type::Applied(dn, _), Type::Custom(inm)) => dn == inm,
-                        // 2026-08-01 (D3): a generic struct literal now infers
-                        // as the Applied form with type-param placeholders
-                        // (`HashMapEntry<K, V>`, `ListBuffer<T>`) — same base
-                        // accepts; the declared type's concrete args are pinned
-                        // by the mono instantiation.
-                        (Type::Applied(dn, _), Type::Applied(inm, _)) => dn == inm,
-                        // 2026-08-16 (Phase 3e, SPEC §17.1): `Bit<N>` ↔ `Bits`
-                        // unification — `Bits` (bare, no width) is the FLEXIBLE
-                        // bit type (Type::Bits(0)), and it accepts a value of
-                        // any `Bit<N>`. A declared `Bit<N>` accepts an inferred
-                        // `Bits(0)` (the flexible value's width is pinned by the
-                        // declaration). Equal widths stay compatible. This is
-                        // the "Bit<N>↔Bits unified" hierarchy fact: there is no
-                        // separate `Bits` type, only the width-0 flexible form.
-                        (Type::Bits(a), Type::Bits(b)) => *a == 0 || *b == 0 || a == b,
-                        _ => false,
+                // 2026-11-20 (wave-6 W6-2, index types): `let i: u32 in xs =
+                // xs.Count#();` — the construction rule. The annotation binds
+                // the index to a collection; the initializer must be THAT
+                // collection's Count#() (or another value already of the same
+                // index type). This is the proof-bearing construction Goose
+                // §15 uses; a blanket Int compat would defeat it.
+                let index_construction = match (declared, expr.as_ref()) {
+                    (Type::IndexIn(coll, _), Some(Expr::MethodCall(recv, op, _, _)))
+                        if op == "Count#" =>
+                    {
+                        matches!(recv.as_ref(), Expr::Identifier(n) if n == coll)
                     }
+                    (Type::IndexIn(coll, _), Some(Expr::Identifier(other))) => {
+                        // 2026-11-20 (wave-6 W6-2): rebinding from another
+                        // value of the same index type — the type carries
+                        // the collection, so the identity check is exact.
+                        ctx.bindings
+                            .get(other.as_str())
+                            .map(|t| matches!(t, Type::IndexIn(c2, _) if c2 == coll))
+                            .unwrap_or(false)
+                    }
+                    _ => false,
                 };
+                let compatible =
+                    if vector_literal || sized_literal || float_literal || index_construction {
+                        true
+                    } else if types_compatible(declared, &inferred, ctx) {
+                        true
+                    } else {
+                        // 2026-07-31: `let lb: ListBuffer<Int> = ListBuffer {...}`
+                        // — a generic-struct constructor infers the bare type; the
+                        // declared type application pins the type params.
+                        match (declared, &inferred) {
+                            (Type::Applied(dn, _), Type::Custom(inm)) => dn == inm,
+                            // 2026-08-01 (D3): a generic struct literal now infers
+                            // as the Applied form with type-param placeholders
+                            // (`HashMapEntry<K, V>`, `ListBuffer<T>`) — same base
+                            // accepts; the declared type's concrete args are pinned
+                            // by the mono instantiation.
+                            (Type::Applied(dn, _), Type::Applied(inm, _)) => dn == inm,
+                            // 2026-08-16 (Phase 3e, SPEC §17.1): `Bit<N>` ↔ `Bits`
+                            // unification — `Bits` (bare, no width) is the FLEXIBLE
+                            // bit type (Type::Bits(0)), and it accepts a value of
+                            // any `Bit<N>`. A declared `Bit<N>` accepts an inferred
+                            // `Bits(0)` (the flexible value's width is pinned by the
+                            // declaration). Equal widths stay compatible. This is
+                            // the "Bit<N>↔Bits unified" hierarchy fact: there is no
+                            // separate `Bits` type, only the width-0 flexible form.
+                            (Type::Bits(a), Type::Bits(b)) => *a == 0 || *b == 0 || a == b,
+                            _ => false,
+                        }
+                    };
                 if !compatible {
                     let coercible = expr
                         .as_ref()
@@ -5097,9 +5151,10 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // (`when n == 0 { term 1; }; term pow2(n-1)*2;`). Defn context
             // only: a txn `term` is P-gated, not an unconditional return.
             if ctx.in_defn
-                && body
-                    .iter()
-                    .any(crate::analysis::termination::statement_always_terminates)
+                && crate::analysis::termination::stmts_end_defn(
+                    body,
+                    current_defn_post_is_vacuous(ctx),
+                )
             {
                 ctx.known_facts
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
@@ -5315,6 +5370,410 @@ fn collect_contract_checks<'a>(
 /// order). syscall.bv's table was deduped to unique names in the same
 /// commit, so no existing source trips this. Exported constants unwrap to
 /// their inner Constant, mirroring collect_constants.
+/// 2026-11-20 (wave-6 §7.14, guard-based discharge): `checkfree` — every
+/// subscript in a defn body must be statically in-bounds. Opt-in (only defns
+/// carrying the modifier) and intra-procedural (a call is not walked into).
+///
+/// The obligation is discharged from the facts that DOMINATE the subscript,
+/// built with `callgate::facts_of` — the same function the typechecker pushes
+/// into `ctx.known_facts` while checking a guard body (see the `Guarded` arm
+/// of `infer_statement`). Reusing it, rather than re-deriving guard semantics,
+/// is what makes this a consumer of the proof engine instead of a second
+/// opinion about it.
+///
+/// Two halves, both required:
+///
+/// * **F1 — upper bound.** A dominating fact `<idx> < <count(coll)>` (or
+///   `<idx> <= <count(coll)> - 1`, and the mirrored `>`/`>=` spellings),
+///   matched STRUCTURALLY on the index expression as written.
+/// * **F2 — lower bound.** A dominating fact `<idx> >= 0` (or `0 <= <idx>`),
+///   or `<idx>` declaring type `IndexIn(coll)` for the SAME collection — its
+///   §15.4a construction rule gives `0 ..= count`, supplying the lower half
+///   only. That is the correction: a bound is not a subscript licence.
+///
+/// A literal index into a fixed `Vector<_, N>` is the other discharge: the
+/// length is static, so `< N` is a proof and not a guess. A literal into a
+/// DYNAMIC collection is rejected — its length is not statically known, so a
+/// small number proves nothing.
+///
+/// Rejection is the default. Anything the matcher cannot prove is an error
+/// naming the collection, the failing half, and the guard to write.
+fn check_checkfree_defns(items: &[TopLevel], errors: &mut Vec<TypeError>) {
+    for defn in checkfree_defns(items) {
+        errors.extend(checkfree_defn_obligation(defn));
+    }
+}
+
+/// The definitions carrying the modifier — top-level or re-exported. The
+/// export wrapper is unwrapped because `export defn` is the same promise.
+fn checkfree_defns(items: &[TopLevel]) -> Vec<&Definition> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevel::Definition(d) => Some(d),
+            TopLevel::Export(e) => match e.inner.as_ref() {
+                TopLevel::Definition(d) => Some(d),
+                _ => None,
+            },
+            _ => None,
+        })
+        .filter(|d| d.modifiers.iter().any(|m| m.name == "checkfree"))
+        .collect()
+}
+
+/// One defn's obligation: collect the subscripts no fact discharges, each
+/// WITH the facts that dominated it. The walk's fact stack is popped as it
+/// unwinds, so a diagnostic built after the walk would describe the wrong
+/// program point — the snapshot is the only correct input.
+fn checkfree_defn_obligation(defn: &Definition) -> Vec<TypeError> {
+    let types = declared_types_of(defn);
+    // The defn's own precondition dominates the whole body: it is the
+    // caller's obligation, discharged at every call site.
+    let mut facts = crate::proof_engine::callgate::facts_of(&defn.contract.pre_condition);
+    let mut sites: Vec<(Expr, Vec<Expr>)> = Vec::new();
+    {
+        let mut sink = |e: &Expr, facts: &[Expr]| {
+            if subscript_undischarged(e, facts, &types) {
+                sites.push((e.clone(), facts.to_vec()));
+            }
+        };
+        walk_scoped_stmts(&defn.body, &mut facts, post_is_vacuous(defn), &mut sink);
+    }
+    sites
+        .into_iter()
+        .map(|(site, at_facts)| checkfree_error(&defn.name, &site, &at_facts, &types))
+        .collect()
+}
+
+/// The declared type of every name in scope: parameters plus annotated
+/// `let`s. Best-effort on purpose — a miss makes the check STRICTER, never
+/// unsound, which is the only direction that is safe to be lazy.
+fn declared_types_of(defn: &Definition) -> HashMap<String, Type> {
+    let mut types: HashMap<String, Type> = defn
+        .parameters
+        .iter()
+        .map(|(name, ty)| (name.clone(), ty.clone()))
+        .collect();
+    collect_annotated_lets(&defn.body, &mut types);
+    types
+}
+
+/// Walk statements carrying the dominating fact stack. `Guarded` pushes its
+/// condition's facts for the body and pops them on exit (mirroring the
+/// typechecker's scoping), then keeps the fall-through facts when the body
+/// always terminates — so `when bad { term … }; use_…` sees the negation.
+///
+/// The statement match is exhaustive (no `_` arm): a new `Statement` variant
+/// fails to compile here rather than silently escaping the obligation, and
+/// expression positions inside an ordinary statement go through
+/// `ast::visit::walk_stmts` — the one exhaustive expression visitor.
+fn walk_scoped_stmts(
+    stmts: &[Statement],
+    facts: &mut Vec<Expr>,
+    post_vacuous: bool,
+    sink: &mut impl FnMut(&Expr, &[Expr]),
+) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Guarded(cond, body) => {
+                let base = facts.len();
+                facts.extend(crate::proof_engine::callgate::facts_of(cond));
+                walk_scoped_stmts(body, facts, post_vacuous, sink);
+                facts.truncate(base);
+                if crate::analysis::termination::stmts_end_defn(body, post_vacuous) {
+                    let negated = crate::proof_engine::callgate::fallthrough_facts(cond);
+                    facts.extend(negated);
+                }
+            }
+            Statement::Block(inner)
+            | Statement::SyncBlock(inner)
+            | Statement::Defer(inner)
+            | Statement::Mutex(inner) => walk_scoped_stmts(inner, facts, post_vacuous, sink),
+            Statement::Foreach { body, .. } => {
+                walk_scoped_stmts(body, facts, post_vacuous, sink)
+            }
+            Statement::InlineDefn(inner) => {
+                walk_scoped_stmts(&inner.body, facts, post_vacuous, sink)
+            }
+            // `Match` arms carry their own bindings; their patterns establish
+            // no facts here, so subscripts inside an arm are checked against
+            // the OUTER facts only. Conservative in the safe direction (fewer
+            // facts ⇒ more rejections), and the arm bodies are still visited.
+            Statement::Match { .. }
+            | Statement::Let { .. }
+            | Statement::Assign(..)
+            | Statement::ArrowAssign { .. }
+            | Statement::Term(_)
+            | Statement::Tail(_)
+            | Statement::Break
+            | Statement::Trap
+            | Statement::Halt
+            | Statement::Yield
+            | Statement::Check(_)
+            | Statement::EndProgram(_)
+            | Statement::Gate(_)
+            | Statement::Expression(_)
+            | Statement::Expect(_)
+            | Statement::MetadataAssignment(..)
+            | Statement::Rollback(_)
+            | Statement::FreeHint(_)
+            | Statement::KeepHint(_)
+            | Statement::TrgBinding { .. }
+            | Statement::InlineAsm { .. }
+            | Statement::Open(..) => {
+                let snapshot = facts.clone();
+                crate::ast::visit::walk_stmts(std::slice::from_ref(stmt), &mut |e| {
+                    sink(e, &snapshot)
+                });
+            }
+        }
+    }
+}
+
+/// Record annotated `let` types reachable in the body. Best-effort on
+/// purpose: an unrecorded binding fails F2, which is the safe direction.
+fn collect_annotated_lets(stmts: &[Statement], types: &mut HashMap<String, Type>) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Let {
+                name, ty: Some(t), ..
+            } => {
+                types.insert(name.clone(), t.clone());
+            }
+            Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Defer(body)
+            | Statement::Mutex(body) => collect_annotated_lets(body, types),
+            Statement::Guarded(_, body) => collect_annotated_lets(body, types),
+            Statement::Foreach { body, .. } => collect_annotated_lets(body, types),
+            Statement::InlineDefn(d) => collect_annotated_lets(&d.body, types),
+            _ => {}
+        }
+    }
+}
+
+/// True when this expression is a subscript the facts do not discharge.
+fn subscript_undischarged(expr: &Expr, facts: &[Expr], types: &HashMap<String, Type>) -> bool {
+    let Expr::Index(receiver, index) = expr else {
+        return false;
+    };
+    !subscript_proven(receiver, index, facts, types)
+}
+
+/// The two-half verdict for one subscript.
+fn subscript_proven(
+    receiver: &Expr,
+    index: &Expr,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> bool {
+    if let Some(n) = fixed_vector_len(receiver, types) {
+        if let Expr::Decimal(k) = index {
+            return *k >= 0 && (*k as usize) < n;
+        }
+    }
+    upper_bounded(receiver, index, facts) && lower_bounded(receiver, index, facts, types)
+}
+
+/// Is this defn's postcondition vacuous, in the sense `stmts_end_defn` means?
+///
+/// Shared by the two call sites that have a `Definition` in hand and by the
+/// context-based one that has only `ctx`; the rule must not drift between them.
+fn post_is_vacuous(defn: &Definition) -> bool {
+    !defn.contract.explicit
+        || defn.contract.post_authority
+        || matches!(defn.contract.post_condition, Expr::Bool(true))
+}
+
+/// Is the postcondition of the defn currently being checked vacuous?
+///
+/// 2026-11-21 (wave-8): a defn's bare `term;` exits only when the gate is met.
+/// `lower_bare_terms` folds a `true` post into an unconditional return
+/// (`interpreter/eval.rs:2485`), so a vacuous post is exactly the case where the
+/// term always exits — and therefore the only case where a guard body ending in
+/// `term;` licenses its negation for the code after it. A non-vacuous post is
+/// gated: whether it holds at that point is the verifier's business, not the
+/// fact engine's.
+fn current_defn_post_is_vacuous(ctx: &TypecheckContext) -> bool {
+    let Some(name) = ctx.current_fn_name.as_deref() else {
+        return true;
+    };
+    match ctx.fn_contracts.get(name) {
+        Some(contract) => matches!(contract.post, Expr::Bool(true)),
+        // No registered contract: the defn declared none, which is `[true][true]`.
+        None => true,
+    }
+}
+
+/// The same answer, from the item the obligation owns.
+
+/// F1 — a dominating fact places `index` below the receiver's own count.
+///
+/// The goal goes to the SAME prover the contract gate trusts
+/// (`callgate::prove_precondition`) instead of being matched structurally.
+/// 2026-11-20 (wave-7 W7-2): the structural matcher only saw guards that
+/// named the index expression verbatim, so `when i > 0 { when i <=
+/// xs.Count#() { xs[i - 1] } }` was rejected even though the prover combines
+/// those two facts into `i - 1 < n` without help. Delegating also means every
+/// future improvement to the fact engine reaches `checkfree` for free — the
+/// promise this obligation was supposed to make when it landed.
+///
+/// Structural equality still proves: the prover's first step is equality on
+/// the conjunct, so an exactly-spelled guard is answered as before.
+fn upper_bounded(receiver: &Expr, index: &Expr, facts: &[Expr]) -> bool {
+    count_spellings(receiver)
+        .iter()
+        .map(|count| binary(BinaryOpKind::Lt, index.clone(), count.clone()))
+        .any(|goal| subscript_proves(&goal, facts))
+}
+
+/// Every spelling of "the receiver's element count" the frontend produces.
+///
+/// `xs.Count#()` (dot surface) and `Count#(xs)` (call surface) are DISTINCT
+/// symbols to the prover, so both must be offered as goals — a guard written
+/// in one spelling has to discharge a subscript written in the other.
+fn count_spellings(receiver: &Expr) -> [Expr; 2] {
+    [
+        Expr::MethodCall(
+            Box::new(receiver.clone()),
+            "Count#".to_string(),
+            Vec::new(),
+            None,
+        ),
+        Expr::Call("Count#".to_string(), vec![receiver.clone()], None),
+    ]
+}
+
+/// Build `<lhs> <kind> <rhs>` as a goal expression.
+fn binary(kind: BinaryOpKind, lhs: Expr, rhs: Expr) -> Expr {
+    Expr::BinaryOp(kind, Box::new(lhs), Box::new(rhs))
+}
+
+/// Does the dominating fact set prove `goal`?
+///
+/// Only `Proven` counts: `Refuted` and `Unproven` both mean the obligation is
+/// undischarged, and an obligation that accepts a refuted goal would certify
+/// an out-of-bounds read.
+fn subscript_proves(goal: &Expr, facts: &[Expr]) -> bool {
+    matches!(
+        crate::proof_engine::callgate::prove_precondition(goal, facts),
+        crate::proof_engine::callgate::Verdict::Proven
+    )
+}
+
+/// F2 — a dominating fact places `index` at or above zero, or the index is a
+/// value of `IndexIn(<same collection>)` (construction gives `0 ..= count`).
+fn lower_bounded(
+    receiver: &Expr,
+    index: &Expr,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> bool {
+    if lower_bound_proven(index, facts) {
+        return true;
+    }
+    matches!(
+        (coll_name(receiver), index_type_of(index, types)),
+        (Some(coll), Some(bound_to)) if coll == bound_to
+    )
+}
+
+/// F2's fact half — `index` is at or above zero.
+///
+/// As with F1, the goals go to the prover: `when i > 0` establishes
+/// `i - 1 >= 0` for an offset subscript, which a structural `i >= 0` scan
+/// cannot see.
+fn lower_bound_proven(index: &Expr, facts: &[Expr]) -> bool {
+    let zero = Expr::Decimal(0);
+    [
+        binary(BinaryOpKind::Ge, index.clone(), zero.clone()),
+        binary(BinaryOpKind::Le, zero, index.clone()),
+        binary(BinaryOpKind::Gt, index.clone(), Expr::Decimal(-1)),
+    ]
+    .iter()
+    .any(|goal| subscript_proves(goal, facts))
+}
+
+/// The collection a subscript receiver names, if it is a plain identifier.
+fn coll_name(receiver: &Expr) -> Option<&str> {
+    match receiver {
+        Expr::Identifier(n) => Some(n.as_str()),
+        _ => None,
+    }
+}
+
+/// The collection an index value is bound to, when it is a plain identifier
+/// with an `IndexIn` declared type.
+fn index_type_of<'a>(index: &Expr, types: &'a HashMap<String, Type>) -> Option<&'a str> {
+    let Expr::Identifier(n) = index else {
+        return None;
+    };
+    match types.get(n) {
+        Some(Type::IndexIn(coll, _)) => Some(coll.as_str()),
+        _ => None,
+    }
+}
+
+/// The element count of a single-dimension fixed `Vector<_, [N]>`, when the
+/// receiver is a name with that declared type.
+fn fixed_vector_len(receiver: &Expr, types: &HashMap<String, Type>) -> Option<usize> {
+    let name = coll_name(receiver)?;
+    match types.get(name) {
+        Some(Type::Vector(_, dims)) if dims.len() == 1 => match &dims[0] {
+            crate::ast::Dimension::Anonymous(n) | crate::ast::Dimension::Named(_, n) => Some(*n),
+        },
+        _ => None,
+    }
+}
+
+/// Which half of the proof is missing, in the author's terms. Guard clauses,
+/// not a chain: each condition owns exactly one explanation.
+fn failing_half(
+    receiver: &Expr,
+    index: &Expr,
+    coll: &str,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> String {
+    if coll_name(receiver).is_none() {
+        return "the subscripted value is not a named binding, so no count is known".to_string();
+    }
+    if fixed_vector_len(receiver, types).is_some() {
+        return format!("`{coll}` is a fixed Vector, but the index is not a literal inside it");
+    }
+    if !lower_bounded(receiver, index, facts, types) {
+        return format!(
+            "no dominating guard establishes `0 <= {index}`, and the index is not \
+             declared `u32 in {coll}` — the lower half of the range is unproven"
+        );
+    }
+    format!("no dominating guard establishes `{index} < {coll}.Count#()`")
+}
+
+/// The diagnostic: what failed, on which collection, and the guard to write.
+fn checkfree_error(
+    defn: &str,
+    site: &Expr,
+    facts: &[Expr],
+    types: &HashMap<String, Type>,
+) -> TypeError {
+    let Expr::Index(receiver, index) = site else {
+        return TypeError::FFIError {
+            message: format!("checkfree `{defn}`: malformed subscript"),
+        };
+    };
+    let coll = coll_name(receiver).unwrap_or("<expression>");
+    let detail = failing_half(receiver, index, coll, facts, types);
+    TypeError::FFIError {
+        message: format!(
+            "checkfree `{defn}`: the subscript on `{coll}` is not provably in-bounds — {detail}. \
+             `checkfree` promises every subscript in this body is statically proven. Write the \
+             guard it needs, e.g. `when 0 <= {index} {{ when {index} < {coll}.Count#() {{ … }}; }}`, \
+             or drop the modifier if the bound is a runtime fact."
+        ),
+    }
+}
+
 fn check_duplicate_constants(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     let mut seen: std::collections::HashMap<String, Option<String>> =
         std::collections::HashMap::new();
@@ -5971,6 +6430,10 @@ pub fn check_program_with_target(
     // carried identical duplicates — those get the warning until their
     // owners dedupe).
     check_duplicate_constants(items, &mut errors);
+    // 2026-11-20 (wave-6 §7.14): the `checkfree` subscript-bounds obligation.
+    // Opt-in per defn; consumes the same guard facts the call-site contract
+    // gate trusts (SPEC §15.4a).
+    check_checkfree_defns(items, &mut errors);
     // 2026-08-05 (Phase 5): trait declarations, impl coherence, and explicit
     // trait conformance.
     check_trait_declarations(items, &mut errors);
@@ -9461,6 +9924,384 @@ mod tests {
         let universe = crate::type_universe::TypeUniverse::new();
         check_program(&mut items, &universe)
     }
+    // ─── checkfree: the subscript-bounds obligation (SPEC §15.4a) ──────────
+    //
+    // Guard-based discharge. Every subscript must be proven from the facts
+    // that dominate it (F1 upper bound + F2 lower bound). Rejection is the
+    // default — a test that ACCEPTS is only meaningful next to one that
+    // REJECTS on the same shape, so the pairs below are deliberate.
+
+    /// checkfree tests go through `library::parse_and_check`, NOT the local
+    /// `check`: a `List<Int>` receiver needs the stdlib universe (`op Count`)
+    /// registered, and a test that could not even name the type would fail for
+    /// a reason unrelated to the obligation. `std/collections.bv` is imported
+    /// explicitly so the test does not depend on ambient stdlib loading.
+    fn checkfree_result(src: &str) -> Result<(), String> {
+        let with_stdlib = format!("import \"std/collections.bv\";\n{src}");
+        crate::library::parse_and_check("checkfree_test.bv", &with_stdlib).map(|_| ())
+    }
+
+    /// Panic with the ACTUAL diagnostics when a program must type-check.
+    fn must_pass(src: &str) {
+        if let Err(why) = checkfree_result(src) {
+            panic!("expected this to type-check, got:\n{why}\n--- source ---\n{src}");
+        }
+    }
+
+    fn checkfree_msg(src: &str) -> String {
+        checkfree_result(src).expect_err("checkfree must reject this program")
+    }
+
+    #[test]
+    fn checkfree_accepts_guarded_subscript() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < xs.Count#() {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
+    fn checkfree_accepts_offset_index_guard() {
+        // The reason the obligation delegates to the prover: `i > 0` plus
+        // `i <= xs.Count#()` proves BOTH halves of `xs[i - 1]` (the prover
+        // combines them into `i - 1 < n` and `i - 1 >= 0`). A structural
+        // matcher on the index expression can never see this, because no fact
+        // names `i - 1`.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        when i <= xs.Count#() {
+            term xs[i - 1];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
+    fn checkfree_rejects_offset_mismatched_collection() {
+        // The offset must not smuggle a collection mismatch past the prover:
+        // the guard bounds `i` against ys, the subscript reads xs.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, ys: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        when i <= ys.Count#() {
+            term xs[i - 1];
+        };
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("xs.Count#()"),
+            "a guard on ys says nothing about xs, offset or not: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_inclusive_upper_guard() {
+        // THE off-by-one guard: `i <= xs.Count#()` permits `i == Count#()`,
+        // which is one past the last element. The prover must NOT turn an
+        // inclusive upper bound into an exclusive one — if it did, `checkfree`
+        // would certify an out-of-bounds read, which is worse than no
+        // obligation at all.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i <= xs.Count#() {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("xs.Count#()"),
+            "an inclusive upper bound is not an exclusive one: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_accepts_count_minus_one_spelling() {
+        // `i <= Count#() - 1` and `Count#() > i` are the other two ways to say
+        // the same upper bound. They used to be enumerated by hand; now the
+        // prover derives them from the same goals.
+        let last_index = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i <= xs.Count#() - 1 {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(last_index);
+        let mirrored = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when xs.Count#() > i {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(mirrored);
+    }
+
+    #[test]
+    fn checkfree_accepts_call_spelling_of_count() {
+        // `Count#(xs)` and `xs.Count#()` are DISTINCT symbols to the prover,
+        // so a guard in one spelling must still discharge a subscript whose
+        // count goal is built in the other.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < Count#(xs) {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
+    fn checkfree_rejects_unbounded_subscript() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    term xs[i];
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "an unguarded subscript carries no proof and must be rejected"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_mismatched_collection_guard() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, ys: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < ys.Count#() {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("xs.Count#()"),
+            "the guard bounds i against ys, so it says nothing about xs: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_missing_lower_bound() {
+        // F2 must do real work: an upper bound ALONE is not a proof, because a
+        // negative index is still possible. Without this test the obligation
+        // would silently degenerate into "check the upper end only".
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when i < xs.Count#() {
+        term xs[i];
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("0 <= i"),
+            "an upper bound alone leaves the negative half unproven: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_lower_bound_only_guard() {
+        let src = r#"
+checkfree defn prev(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        term xs[i - 1];
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("i - 1") || msg.contains("(i - 1)"),
+            "`i > 0` says nothing about the upper end of `i - 1`: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_guard_out_of_scope() {
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < xs.Count#() {
+            let n: Int = i;
+        };
+    };
+    term xs[i];
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a guard's facts must not leak past its block"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_fact_from_nonterminating_guard() {
+        // Scoping has a second half that is easy to get wrong in the SAFE
+        // direction: a guard whose body does NOT always terminate establishes
+        // nothing for the statements after it. Only the negation of a
+        // TERMINATING guard survives the block.
+        // The negation must be usable, so the trap is a guard whose NEGATION
+        // would prove the missing half: `when !(0 <= i) { }` followed by a
+        // subscript. Semantically, control reaches the subscript either
+        // because the guard was false (0 <= i — a proof) OR because the guard
+        // was true and the body simply finished (no proof at all). The second
+        // possibility is why the fact must NOT be recorded, and why a plain
+        // "guard does not leak" test cannot see the mistake: leaking it here
+        // would silently satisfy F2.
+        let src = r#"
+checkfree defn pick(xs: List<Int>, i: Int) -> Int {
+    when !(0 <= i) {
+    };
+    when i < xs.Count#() {
+        term xs[i];
+    };
+    term -1;
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a NON-terminating guard establishes no fact for its successor, even \
+             when its negation would prove the missing half"
+        );
+    }
+
+    #[test]
+    fn checkfree_accepts_fallthrough_negation() {
+        // The mirror of the test above: a guard whose body ALWAYS terminates
+        // leaves its negation as a fact for the successor, so
+        // `when !(i < n) { term }` really does establish `i < n`.
+        let src = r#"
+checkfree defn pick(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when !(i < xs.Count#()) {
+            term -1;
+        };
+        term xs[i];
+    };
+    term -2;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
+    fn checkfree_index_type_supplies_lower_bound() {
+        // An IndexIn index supplies F2 (0..=count) — but NOT F1, so the upper
+        // guard is still owed. That is the §15.4a correction in one test.
+        let missing_upper = r#"
+checkfree defn take(xs: List<Int>) -> Int {
+    let n: u32 in xs = xs.Count#();
+    term xs[n];
+};
+"#;
+        assert!(
+            checkfree_result(missing_upper).is_err(),
+            "an index type must not license a subscript on its own"
+        );
+        let with_upper = r#"
+checkfree defn take(xs: List<Int>) -> Int {
+    let n: u32 in xs = xs.Count#();
+    when n < xs.Count#() {
+        term xs[n];
+    };
+    term 0;
+};
+"#;
+        must_pass(with_upper);
+    }
+
+    #[test]
+    fn checkfree_rejects_literal_on_dynamic_coll() {
+        let src = r#"
+checkfree defn head(xs: List<Int>) -> Int {
+    term xs[0];
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a literal into a DYNAMIC collection proves nothing — its length \
+             is not statically known"
+        );
+    }
+
+    #[test]
+    fn checkfree_accepts_vector_literal() {
+        let src = r#"
+checkfree defn lane(v: Int[4]) -> Int {
+    term v[3];
+};
+"#;
+        must_pass(src);
+        let out_of_range = r#"
+checkfree defn lane(v: Int[4]) -> Int {
+    term v[4];
+};
+"#;
+        assert!(
+            checkfree_result(out_of_range).is_err(),
+            "a literal at the fixed length is out of bounds"
+        );
+    }
+
+    #[test]
+    fn checkfree_sees_nested_subscripts() {
+        // The subscript sits inside a call argument — a hand-rolled walker
+        // that visited only statement roots would miss it and pass unsoundly.
+        let src = r#"
+defn id(x: Int) -> Int { term x; };
+
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    term id(xs[i]);
+};
+"#;
+        assert!(
+            checkfree_result(src).is_err(),
+            "a subscript nested in a call argument must still be proven"
+        );
+    }
+
+    #[test]
+    fn checkfree_is_opt_in() {
+        let src = r#"
+defn peek(xs: List<Int>, i: Int) -> Int {
+    term xs[i];
+};
+"#;
+        must_pass(src);
+    }
+
     #[test]
     fn duplicate_consts_are_rejected() {
         let result = check("const X: Int = 5;\nconst X: Int = 7;\n");
@@ -9570,6 +10411,50 @@ mod tests {
                 .any(|e| format!("{e:?}").contains("cannot be proven")),
             "names the fix: {errs:#?}"
         );
+    }
+
+    /// A guard body ending in a bare `term;` licenses its negation when the
+    /// defn's postcondition is vacuous: `lower_bare_terms` folds a `true` post
+    /// into an unconditional return, so the term really does exit and the code
+    /// after the guard sees `!cond`.
+    ///
+    /// This is the natural recursive base case written the way an author writes
+    /// it — no restructuring, no duplicate guard.
+    #[test]
+    fn guard_negation_licensed_by_unconditional_term() {
+        let _deny = DenyGate::install();
+        check(
+            "defn loop2(n: Int) [n >= 0] -> Void { \
+                 when n < 1 { term; }; \
+                 loop2(n - 1); \
+             };",
+        )
+        .expect("the bare term exits, so n >= 1 after the guard proves n - 1 >= 0");
+    }
+
+    /// Issue #150 claimed a free defn's postcondition does not project onto
+    /// its call result while the identical obj-method postcondition does.
+    ///
+    /// It does project. This test is the counterexample, kept as a regression:
+    /// a free defn returning an `obj` by value binds its field facts on the
+    /// caller's `let`, exactly like the method spelling. The five shapes tried
+    /// while closing the issue (isolated, cross-module, member-called-as-free,
+    /// method, and the branch's own form) all prove.
+    #[test]
+    fn free_defn_post_projects_fields() {
+        let _deny = DenyGate::install();
+        check(
+            "obj Buf { len: Int; cap: Int; }; \
+             defn claim(sink: Buf, count: Int) \
+                 [count >= 0 && sink.len + count <= sink.cap] \
+                 [term.len == sink.len + count && term.cap == sink.cap] -> Buf \
+             { term Buf { len: sink.len + count, cap: sink.cap }; }; \
+             defn serve(buf: Buf, got: Int) [got >= 0 && buf.len + got <= buf.cap] -> Int { \
+                 let ext: Buf = claim(buf, got); \
+                 check ext.len == buf.len + got; \
+                 term ext.len; };",
+        )
+        .expect("a free defn's postcondition must project onto its call result");
     }
 
     /// A callee postcondition becomes a fact about the `let` binding: the

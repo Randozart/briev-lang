@@ -1,0 +1,21 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// spec: 11.6
+// defer_lifo — SPEC §11.x defer: defers run LIFO at block exit, including
+// before an `endprogram` in the same block (wave-6 W6-1 native flush).
+// spec: 11.x
+import "std/io.bv";
+
+node entry [beginprogram][true] {
+    defer {
+        Print#("|");
+        Print#("b");
+    };
+    defer {
+        Print#("|");
+        Print#("a");
+    };
+    Print#("body");
+    endprogram Print#("");
+};

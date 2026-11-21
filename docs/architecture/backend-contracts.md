@@ -73,6 +73,18 @@ Hard-won in this effort; each one corresponds to a real defect class.
 | LLVM IR float literals always carry a decimal point (`{:?}`, never `{:e}`) | `1e-4` parses as an integer token — clang/opt reject the module |
 | `%briev.field` constant order = C `BrievField` order (name, kind, host, elem, count, is_write, proj) | proj_offset at the wrong index misaligns runtime reads; opt type error |
 
+> **2026-11-20 (`fun.terminated` ownership).** `FunctionContext.terminated`
+> is a *statement-level* flag: it says whether the buffer currently open has
+> already been given a terminator. Any construct that emits a JOIN block after
+> divergent branches must treat it as a value it borrowed, not one it owns —
+> save it on entry, restore it before emitting the join. `emit_match` did not,
+> so a value `match` whose LAST arm diverged left `true` behind; the enclosing
+> body loop read that as "the block is finished" and broke, emitting the merge
+> block with a `phi`, no terminator, and no continuation (issue #148,
+> BUGS.md 2026-11-20). The all-diverging case is the exception that proves the
+> rule: there IS no live continuation, so it sets `true` deliberately.
+> Regression: `tests/diverging_arm_match.rs` (arm-position matrix).
+>
 > **2026-09-24 (stateless-defn × arena).** Stateless-body emission laws
 > (stateless-defn ABI, plan 2026-09-23-frgn-elimination-round-2.md):
 >

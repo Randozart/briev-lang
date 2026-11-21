@@ -151,6 +151,23 @@ pub fn emit_intrinsic_call(
                 ty: Type::int(),
             };
         }
+        "ClockMonotonicNs#" => {
+            // 2026-11-20 (wave-6 W6-3): CLOCK_MONOTONIC ns via the runtime
+            // helper — one symbol, correct on every triple with a libc
+            // time source; the syscall-table route stays in the stdlib's
+            // os/time lane. Declare-guarded in emit_toplevel (a pure-Briev
+            // defn taking the hidden %state pre-empts the C helper).
+            writeln!(
+                out,
+                "{}{} = call i64 @briev_clock_monotonic_ns()",
+                indent, v
+            )
+            .ok();
+            return BTypedRegister {
+                name: v.to_string(),
+                ty: Type::int(),
+            };
+        }
         "GetCwd#" => {
             let cstr = backend.fun.gen_reg();
             if backend.ctx.defn_params.contains_key("rt_getcwd") {
@@ -2492,6 +2509,7 @@ fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
             "Write" => 64,
             "Open" => 56,
             "Close" => 57,
+            "ClockMonotonic" => 113,
             "Stat" => 179,
             "FStat" => 80,
             "LSeek" => 62,
@@ -2559,7 +2577,7 @@ fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
             "PRead" => 67,
             "PWrite" => 68,
             _ => return None,
-        })
+        });
     } else if triple.starts_with("x86_64") {
         // x86_64 Linux syscall numbers (asm/unistd_64.h)
         Some(match op {
@@ -2567,6 +2585,7 @@ fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
             "Write" => 1,
             "Open" => 2,
             "Close" => 3,
+            "ClockMonotonic" => 228,
             "Stat" => 4,
             "FStat" => 5,
             "LSeek" => 8,
@@ -4415,15 +4434,36 @@ mod syscall_table_tests {
     /// the asm-generic table with aarch64.
     #[test]
     fn aarch64_resolves_asm_generic_numbers() {
-        assert_eq!(resolve_syscall_number("Read", "aarch64-unknown-linux-gnu"), Some(63));
-        assert_eq!(resolve_syscall_number("Write", "aarch64-unknown-linux-gnu"), Some(64));
-        assert_eq!(resolve_syscall_number("Socket", "aarch64-unknown-linux-gnu"), Some(198));
-        assert_eq!(resolve_syscall_number("NanoSleep", "aarch64-unknown-linux-gnu"), Some(101));
+        assert_eq!(
+            resolve_syscall_number("Read", "aarch64-unknown-linux-gnu"),
+            Some(63)
+        );
+        assert_eq!(
+            resolve_syscall_number("Write", "aarch64-unknown-linux-gnu"),
+            Some(64)
+        );
+        assert_eq!(
+            resolve_syscall_number("Socket", "aarch64-unknown-linux-gnu"),
+            Some(198)
+        );
+        assert_eq!(
+            resolve_syscall_number("NanoSleep", "aarch64-unknown-linux-gnu"),
+            Some(101)
+        );
         // riscv64 shares the table.
-        assert_eq!(resolve_syscall_number("Read", "riscv64-unknown-linux-gnu"), Some(63));
+        assert_eq!(
+            resolve_syscall_number("Read", "riscv64-unknown-linux-gnu"),
+            Some(63)
+        );
         // x86_64 keeps its own table.
-        assert_eq!(resolve_syscall_number("Read", "x86_64-unknown-linux-gnu"), Some(0));
-        assert_eq!(resolve_syscall_number("Socket", "x86_64-unknown-linux-gnu"), Some(41));
+        assert_eq!(
+            resolve_syscall_number("Read", "x86_64-unknown-linux-gnu"),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_syscall_number("Socket", "x86_64-unknown-linux-gnu"),
+            Some(41)
+        );
         // Unknown triple: None (the caller emits an ordinary runtime value
         // arg, pairing with the @briev_syscall C fallback).
         assert_eq!(resolve_syscall_number("Read", "wasm32-unknown-wasi"), None);

@@ -1218,9 +1218,11 @@ out defn coll_resize(handle: Int, new_cap: Int)
 // ── Watchdog clock + fail (Family I misc) ───────────────────────────────
 // rt_now_ns — CLOCK_MONOTONIC ns via SYS_clock_gettime. The `within N ms`
 // deadline compare calls this PER ITERATION in watchdogged loops.
-// TODO(arch): 228 is the x86_64 SYS_clock_gettime (aarch64 uses 113); the
-// language has no arch reflection yet — same documented gap as the print
-// family's syscall numbers.
+// 2026-11-20 (wave-6 W6-3): for NEW code prefer ClockMonotonicNs# — the
+// intrinsic routes the syscall number through the per-triple tables
+// (x86_64=228, aarch64=113) and calls the rt helper, fixing the arch
+// gap this lane's hardcoded 228 carried. rt_now_ns stays for the
+// existing within-N-ms consumers.
 out defn rt_now_ns() [true][term >= 0] -> Int {
     let ts: Int = Alloc#(16) as Int;
     Store#(ts, 0, 8);

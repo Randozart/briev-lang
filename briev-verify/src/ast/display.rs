@@ -329,6 +329,7 @@ impl fmt::Display for Type {
             Type::Void => write!(f, "void"),
             Type::Number(n) => write!(f, "{}", n),
             Type::Custom(name) => write!(f, "{}", name),
+            Type::IndexIn(coll, elem) => write!(f, "{} in {}", elem, coll),
             Type::Generic(name, args) => {
                 write!(f, "{}<", name)?;
                 for (i, arg) in args.iter().enumerate() {

@@ -1,3 +1,65 @@
+## 2026-11-20 — A diverging match arm killed the whole continuation (FIXED, wave-7 W7-1)
+
+`emit_match` reset `fun.terminated` at the top of every arm and never restored
+the value it had on entry. A value `match` whose **last** arm diverges
+(`endprogram`, `term`) therefore returned `terminated = true`, and the
+enclosing body loop (`emit_toplevel.rs:5563`) read that as "stop emitting" —
+so the merge block was written with a `phi`, no terminator, and no
+continuation, and the epilogue `ret` was skipped. LLVM rejected the module
+("expected instruction opcode") and the program failed to build (issue #148).
+
+The issue's own diagnosis blamed the phi's predecessor list. That part is
+correct behaviour: a diverging arm ends `unreachable` and contributes no edge.
+The defect was purely the stale flag. Fix: save it at `emit_match` entry,
+restore it before the merge block; the all-diverging path still reports
+`true`. Scope: only the last-arm-diverges shape; first/middle positions reset
+the flag again on the next arm. Regression: `tests/diverging_arm_match.rs`
+(6 shapes, 3 of which fail without the restore) plus the native and
+interpreter tier1 fixtures.
+
+## 2026-11-21 — RETRACTED: "bare `term;` in a defn diverges between engines"
+
+An entry here claimed the reference interpreter continues past a bare `term;`
+in a defn while the backend returns. **That is wrong, and the entry is
+withdrawn rather than left to be "fixed".**
+
+The 2026-10-16 *term-semantics plan §1* already implemented the owner's rule:
+`lower_bare_terms` (`src/interpreter/eval.rs:2485`) rewrites every bare `term;`
+into `when P { term <void>; }` at `FunctionDef` construction, and a vacuous
+post (`Bool(true)`) lowers to an unconditional return. Measured through the
+reference interpreter — a defn whose guard exits with `term;` does not run the
+statement after the guard:
+
+```briev
+let hits: Int = 0;
+defn f(x: Int) -> Void { when x > 0 { term; }; hits = hits + 1; };
+test ... { f(1); expect hits == 0; };      // PASS
+```
+
+The mistake was reading the raw `Term(None)` arm (`eval.rs:2980`) — which only
+sees terms that were *not* lowered — and concluding the engines disagreed. The
+header of `src/analysis/termination.rs` repeated the same reading and is
+corrected in the same commit.
+
+What is genuinely missing is not the gate but the **obligations around it**:
+totality ("any valid input reaches a valid term/output") is not checked at all
+today — `defn f(x: Int) -> Int { let y: Int = x + 1; };` compiles — and a
+defn's postcondition is discharged only under `--verify-bodies` or the strict
+profile. Both are wave-8 work; see
+`.opencode/plans/2026-11-21-wave8-linear-exit.md`.
+
+## 2026-11-20 — `brievc test` cannot link an export-surface fixture (OPEN, pre-existing)
+
+`brievc test tests/tier1/strexp.bv` fails at link time with `multiple
+definition of _start` (the fixture's `#export` surface emits its own startup,
+and the test runner links a normal program). Identical before and after the
+wave-7 changes (verified with binaries from both trees), so it is not a
+regression — but it means the tier1 corpus is 86/87, not 87/87, and a
+`brievc test tests/tier1` run always reports one failure. `tests/daily_use_smoke.rs`
+already documents that `strexp`/`strexp2` belong to the `brievc lib` surface,
+so the likely fix is a runner-side classification (link as a library, or skip
+with a stated reason) rather than a source change.
+
 ## 2026-11-20 — Free# on a possibly-static producer result was an unsound @free (FIXED, K3)
 
 The kiosk daemon's `detect_faces` response builder (`append_owned`/
