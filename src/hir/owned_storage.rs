@@ -4272,7 +4272,7 @@ defn use() -> Int { let ys: List<Int> = relay(mk()); term 1; };
         let mut program = annotated(
             r#"
 import "std/alloc.bv";
-defn door(n: Int) [true][term .^Length >= 0] -> String {
+defn door(n: Int) [true][term^^Length >= 0] -> String {
     let buf: Int = Alloc#(n + 9) as Int;
     Store#(buf, n, 8);
     let owned: String = (buf as Data) as String;
