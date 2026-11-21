@@ -118,12 +118,18 @@ fn emit_let_insert_statement(
         HirExprKind::List(items) => (true, items.first().and_then(|i| i.ty.clone())),
         _ => (false, None),
     };
-    let declared = if let Some(t) = ty.cloned() {
-        Some(t)
-    } else if is_list_literal {
-        elem_ty.map(|e| crate::ast::Type::Applied("List".to_string(), vec![e]))
+    // A list literal's collection type is derived from its ELEMENTS and the
+    // derivation always wins over the carried type. The HIR stamp on a list
+    // literal argument is not the collection type — it can be the element type
+    // or the declared parameter type — and trusting it drops the construction
+    // onto the bare operand path, which cannot build a literal at all (that
+    // path panics: a bare list literal has no codegen shape).
+    let declared = if is_list_literal {
+        elem_ty
+            .map(|e| crate::ast::Type::Applied("List".to_string(), vec![e]))
+            .or_else(|| ty.cloned())
     } else {
-        None
+        ty.cloned()
     };
     let is_coll = declared
         .as_ref()
@@ -144,6 +150,17 @@ fn emit_let_insert_statement(
     // A list-literal constructed through the collection ops binds by name at
     // the construction site; re-bind the register to the pass-allocated name
     // so the paired ReleaseOwned can reference it.
+    //
+    // 2026-11-21 (K3 R2): the binding must also carry the type the REGISTER
+    // actually has, not the value's Briev type. Identifier reads fall back to
+    // `Type::int()` when the name is unknown (a pure insert has no source
+    // `let`, so nothing else ever records it), and a wrong width makes the
+    // argument adapter convert a value the callee already takes directly —
+    // `inttoptr ptr` is invalid IR.
+    backend
+        .fun
+        .let_binding_types
+        .insert(name.to_string(), reg.ty.clone());
     backend
         .fun
         .let_bindings
