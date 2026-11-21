@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.4.0 — evented net + fd linearity (2026-11-21)
+
+Poll-multiplexed connection handling, a checked fd-discipline, and a provable
+chunked read/write — landed through PR #147. All of it is additive to the
+stdlib surface; the one breaking change is that `Socket` is now checked for
+linearity, which turns two classes of silent bug into compile errors.
+
+### Breaking
+
+- **`Socket` is `attr linear: true`.** Every `Socket` binding is now an owned
+  kernel handle: assignment moves it, a closing call (`sock_close`,
+  `evented_close`, or the `*_close` / `*_free` house shape) consumes it, and
+  **use-after-close and a live socket at scope end are now hard compile
+  errors** (`analysis::obj_linear`, wired into `check`). The in-tree corpus
+  (9 files reference `Socket`) is clean. External code that double-closes a
+  descriptor, or lets a socket escape a scope unclosed, will fail to compile
+  going forward — that is the intent, but it can break an existing build.
+  The motivation is the kernel reusing fds: a use-after-close is not merely a
+  leak, it can read or write a *stranger's* connection.
+
+- **`serve_next_request` is now chunked.** Same signature, same postcondition,
+  but it now delegates to `fill_request` (a few `recv_into`+`claim` steps) instead
+  of one `recv` per byte (~200 syscalls per request). Behaviour is pinned
+  equivalent by the A/B in `tests/tier1/server_loop_smoke.bv`; the old
+  byte-at-a-time body survives as `serve_next_request_bytewise`.
+
+### Added
+
+- **`std/net/evented.bv`** — poll-multiplexed composition of the existing net
+  stack: `evented_listener` / `evented_accept` / `evented_register` /
+  `evented_wait` / `evented_ready`, bounded `evented_recv_once` /
+  `evented_send_once`, `evented_close`, plus errno/mask spellings named once.
+- **Chunked provable read** — `recv_into` (bounds as arguments),
+  `ByteBuf.claim` (advances the length as a projected postcondition),
+  `fill_request` / `evented_fill_request`. A partial request *parks* and
+  resumes from `buffer.len`; it does not restart or corrupt.
+- **Outbound completion (write-side mirror)** — `send_into`,
+  `drain_response` / `evented_drain_response` (advance until the kernel stops,
+  report the running count: total = DONE, `0 ≤ k < total` = PARKED, negative =
+  `-errno`), and `evented_arm` / `evented_write_ready` (per-connection IN/OUT
+  phase switch). A full send queue means "not writable", so a parked writer is
+  *skipped* by the loop, not stalled by it.
+- **`analysis::obj_linear`** — fd/linear-object linearity as a checker fact
+  (the `task_linear` discipline applied to objs declaring `attr linear`), with
+  a 7-test matrix and the `linear_socket_ok` fixture.
+- **`analysis::strand`** — Pure/Io classification of every callable by a
+  call-graph fixpoint over a named blocking-lane registry; shipped as an
+  *advisory* warning only (the fact source the `willreturn` routing will
+  later consume). No enforcement teeth yet.
+- **`tests/tier1/evented_smoke.bv`** — a live socketpair pins the
+  read-side park, the write-side DONE/park/OUT-edge/resume lifecycle, and a
+  256 KiB content check against the kernel's unread-queue cap (a documented,
+  machine-dependent pin: it fails *visibly* on a runner with `rmem_max`
+  sysctled above ~256 KiB, not silently).
+
+### Notes
+
+Three upstream checker findings shipped with the fixtures that work around
+them: #148 (match-on-`Result<Obj,…>` with a diverging arm lowers a dangling
+phi), #150 (obj-method postconditions project onto the result; free-defn
+ones do not), and #151 (only `term <value>` refines a fall-through — a
+node-body `endprogram`/`trap` does not, and a call in a guard branch clears the
+field facts earlier guards set, so guard order matters). #149 (the CLI gate
+parity) was fixed separately on main (`f819a43b5`).
+
+Backwards compatible apart from the two `Breaking` items above: no existing
+public API is removed, and the net stack's call shapes are unchanged.
+
 ## 0.3.0 — skip-origin reporting (2026-11-17)
 
 `--verify-report` now says **whose declaration** each entry is. No verdict moves:
