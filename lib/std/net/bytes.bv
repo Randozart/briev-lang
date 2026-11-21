@@ -109,6 +109,20 @@ obj ByteBuf {
         term ByteBuf { ptr: sink.ptr, len: sink.len + 1, cap: sink.cap };
     };
 
+    // claim - declare `count` bytes at the current end VALID without moving
+    // them. This is the read-side counterpart to put_bytes: a chunked recv
+    // writes straight into ptr+len (one syscall, no copy), and the reader then
+    // claims what landed. Contract-first and free of copies, which is why the
+    // proven readers use it instead of a mid-body `len` write (a field write
+    // leaves no projection the checker can carry into the next iteration).
+    defn claim(sink: ByteBuf, count: Int)
+        [count >= 0 && sink.len + count <= sink.cap]
+        [term.len == sink.len + count && term.cap == sink.cap && term.ptr == sink.ptr]
+        -> ByteBuf
+    {
+        term ByteBuf { ptr: sink.ptr, len: sink.len + count, cap: sink.cap };
+    };
+
     // put_bytes - copy count bytes from a source address into the buffer at the
     // current end (Copy# lowers to llvm.memcpy). Requires room: len + count <=
     // cap. count == 0 is allowed (a no-op copy). This is ByteBuf's ByteSink

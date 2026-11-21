@@ -1,0 +1,30 @@
+// linear_socket_ok — the happy path of the Socket linearity discipline.
+//
+// Golden: "7 5" — the moved handle serves the second owner, the consumed
+// handle's closer returns its verdict, and the program proves the discipline
+// is EXPRESSIBLE (the negative fixtures pin the error side).
+import "std/net/socket.bv";
+
+obj Thing {
+    fd: Int;
+    attr linear: true;
+};
+
+defn thing_close(t: Thing) -> Int {
+    term t.fd;
+};
+
+node entry [beginprogram][true] {
+    // Construct → handover (value-copy ownership transfer).
+    let s: Socket = sock_tcp();
+    when s.fd >= 0 {
+        let closed: Int = sock_close(s);
+        Print#(closed >= 0);
+    };
+    // Move + consume on a user [[linear]] obj.
+    let t1: Thing = Thing { fd: 7 };
+    let t2: Thing = t1;
+    let verdict: Int = thing_close(t2);
+    Print#(verdict);
+    endprogram Print#("");
+};

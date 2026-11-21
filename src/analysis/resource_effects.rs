@@ -84,7 +84,6 @@ impl ResourceEffects {
     pub fn both_observe(&self, other: &ResourceEffects) -> bool {
         self.observable && other.observable
     }
-
 }
 
 /// How two summaries collide on one global.

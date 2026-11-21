@@ -68,6 +68,14 @@ const SHUT_RDWR: Int = 2;
 // `s.fd < 0` without a separate error channel).
 obj Socket {
     fd: Int;
+
+    // 2026-11-20 (evented-net Wave 2): Socket is LINEAR — every binding is
+    // an owned kernel handle. The discipline: assignment moves, a closing
+    // call (sock_close / evented_close / the *_close house shape) consumes,
+    // use-after-consume and live-at-scope-end are COMPILE errors
+    // (analysis::obj_linear). The kernel reuses fds, so a use-after-close is
+    // not just a leak — it can talk to a stranger's connection.
+    attr linear: true;
 };
 
 // sock_tcp - create an IPv4 TCP socket: socket(AF_INET, SOCK_STREAM, 0).

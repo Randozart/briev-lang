@@ -1450,7 +1450,9 @@ node entry [beginprogram][true] { Print#(make(16)); endprogram; };
 
 #[cfg(test)]
 mod arena_reachability_probe {
-    use crate::analysis::allocation::{analyze_alloc_strategies, analyze_arena_need, AllocStrategy};
+    use crate::analysis::allocation::{
+        AllocStrategy, analyze_alloc_strategies, analyze_arena_need,
+    };
     use crate::ast::TopLevel;
 
     /// Parse a source string into top-level items.
