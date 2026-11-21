@@ -336,14 +336,25 @@ defn send_into(socket: Socket, buffer: ByteBuf, offset: Int, room: Int, flags: I
 // The tail recursion climbs `sent` (an Int the caller owns; strictly
 // increasing at every step), so the count is the termination measure, not
 // the stack. Every step is bounded: one send_into is one syscall.
+//
+// The precondition is `sent >= 0` and NOTHING else, deliberately. This is
+// the caller-facing drain (the same style as evented_recv_once /
+// evented_send_once): a dead fd reports -EBADF as a VALUE, and an
+// over-large `sent` is clamped by the first guard (nothing left to write),
+// so neither has to be proven by a caller holding a raw-loaded descriptor
+// or a buffer whose invariant it cannot name.
 defn drain_response(socket: Socket, buffer: ByteBuf, sent: Int, flags: Int)
-    [socket.fd >= -4096 && sent >= 0 && sent <= buffer.len]
+    [sent >= 0]
     [term >= -1040 && term <= buffer.len]
     -> Int
 {
     when sent >= buffer.len {
         // Terminal: nothing left to write; the count itself is the DONE report.
         term buffer.len;
+    };
+    when socket.fd < 0 {
+        // Dead handle: -EBADF, named rather than crashed into.
+        term -9;
     };
     let n: Int = send_into(socket, buffer, sent, buffer.len - sent, flags);
     when n == EVENTED_EAGAIN {
@@ -366,7 +377,7 @@ defn drain_response(socket: Socket, buffer: ByteBuf, sent: Int, flags: Int)
 // MSG_NOSIGNAL. A parked report (0 <= k < buffer.len) means: arm the slot
 // for EVENTED_OUT (evented_arm) and call again at k on the next edge.
 defn evented_drain_response(socket: Socket, buffer: ByteBuf, sent: Int)
-    [socket.fd >= -4096 && sent >= 0 && sent <= buffer.len]
+    [sent >= 0]
     [term >= -1040 && term <= buffer.len]
     -> Int
 {

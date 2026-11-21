@@ -49,6 +49,89 @@ defn read_all(sock: Socket, dst: ByteBuf, want: Int, got: Int) -> Int {
     term read_all(sock, dst, want, got + n);
 };
 
+// send_wire - one blocking send of a buffer's logical bytes, with the
+// ByteBuf invariant named in ONE place. `sock_send` requires `len >= 0 &&
+// len <= buf.len`; a built buffer's invariant (0 <= len <= cap) is real but
+// not projected through buf_new + the put_u8 growth chain, so the fixture
+// establishes it here instead of sprinkling guards at every call site. A
+// negative or over-cap length is a memory-model violation, reported as
+// -EINVAL rather than sent as garbage.
+defn send_wire(socket: Socket, buffer: ByteBuf)
+    [true]
+    [term >= -4096]
+    -> Int
+{
+    when socket.fd < 0 {
+        term -22;
+    };
+    when buffer.len < 0 || buffer.len > buffer.cap {
+        term -22;
+    };
+    term sock_send(socket, buffer, buffer.len);
+};
+
+// fill_expect / drain_start / drain_resume / close_quiet - the caller-side
+// facts the net contracts demand, established behind a `defn`.
+//
+// WHY WRAPPERS: a `term <value>` guard refines the fall-through path, but the
+// equivalent `when … { endprogram }` in a node body (and even `trap`) does
+// NOT - found while rebasing onto main's stricter socket contracts. So the
+// facts have to live behind a defn, and the obligation is discharged by proof
+// at one place instead of scattered assertions.
+//
+// A socket out of range or a buffer violating `0 <= len <= cap` is a
+// memory-model bug, so the guard branches return an explicit failure VALUE
+// (a NEED_MORE parse / -EBADF) rather than pretending to continue.
+defn stall_parse() [true] [term.status == HTTP_NEED_MORE] -> HttpParse {
+    term HttpParse {
+        status: HTTP_NEED_MORE,
+        consumed: 0,
+        request: HttpRequest { method: "", path: "", headers: "", body: "" },
+    };
+};
+
+defn fill_expect(socket: Socket, buffer: ByteBuf) [true]
+    [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
+    -> HttpParse
+{
+    // ORDER MATTERS: a guard branch that calls out clears the field facts
+    // established by earlier guards, so the fd guard (the one the callee
+    // needs last) comes LAST.
+    when buffer.len < 0 { term stall_parse(); };
+    when buffer.len > buffer.cap { term stall_parse(); };
+    when socket.fd < -4096 { term stall_parse(); };
+    term evented_fill_request(socket, buffer, buffer.len);
+};
+
+defn drain_start(socket: Socket, buffer: ByteBuf) [true]
+    [term >= -1040 && term <= buffer.len]
+    -> Int
+{
+    term evented_drain_response(socket, buffer, 0);
+};
+
+defn drain_resume(socket: Socket, buffer: ByteBuf, sent: Int) [true]
+    [term >= -1040 && term <= buffer.len]
+    -> Int
+{
+    when sent < 0 { term -9; };
+    term evented_drain_response(socket, buffer, sent);
+};
+
+// slice_len - buf_slice_string behind the same fact-establishing shape, for
+// the A/B tail: the copy must have exactly the buffer's length.
+defn slice_len(buffer: ByteBuf) [true] [term >= -1] -> Int {
+    when buffer.len < 0 { term -1; };
+    when buffer.len > buffer.cap { term -1; };
+    let text: String = buf_slice_string(buffer, 0, buffer.len);
+    term text .^Length;
+};
+
+defn close_quiet(socket: Socket) [true] [term >= -4096] -> Int {
+    when socket.fd < -4096 { term -9; };
+    term sock_close(socket);
+};
+
 node entry [beginprogram][true] {
     // errno spellings named once (the module's ABI table).
     Print#(0 - 11 == -11);            // true - the EAGAIN value shape
@@ -118,11 +201,11 @@ node entry [beginprogram][true] {
     foreach i in 0..wire_len {
         payload = payload.put_u8(byte_at(wire, i));
     };
-    let sent_n: Int = sock_send(peer, payload, payload.len);
+    let sent_n: Int = send_wire(peer, payload);
     Print#(sent_n == wire_len);
 
     let inbox: ByteBuf = buf_new(wire_len + 1);
-    let live: HttpParse = evented_fill_request(self_sock, inbox, inbox.len);
+    let live: HttpParse = fill_expect(self_sock, inbox);
     Print#((live.status == HTTP_COMPLETE) as Int);
     Print#((live.request.method == "GET") as Int);
     Print#((live.request.path == "/health") as Int);
@@ -139,11 +222,11 @@ node entry [beginprogram][true] {
     foreach i in 0..half {
         head = head.put_u8(byte_at(wire, i));
     };
-    let sent_head: Int = sock_send(peer, head, head.len);
+    let sent_head: Int = send_wire(peer, head);
     Print#(sent_head == half);
 
     let inbox2: ByteBuf = buf_new(wire_len + 1);
-    let part: HttpParse = evented_fill_request(self_sock, inbox2, inbox2.len);
+    let part: HttpParse = fill_expect(self_sock, inbox2);
     Print#((part.status == HTTP_NEED_MORE) as Int);
     Print#((inbox2.len > 0 && inbox2.len < wire_len) as Int);
 
@@ -151,11 +234,11 @@ node entry [beginprogram][true] {
     foreach i in half..wire_len {
         tail = tail.put_u8(byte_at(wire, i));
     };
-    let sent_tail: Int = sock_send(peer, tail, tail.len);
+    let sent_tail: Int = send_wire(peer, tail);
     Print#(sent_tail == wire_len - half);
 
     // Resume exactly where the reader left off: its own published length.
-    let done_parse: HttpParse = evented_fill_request(self_sock, inbox2, inbox2.len);
+    let done_parse: HttpParse = fill_expect(self_sock, inbox2);
     Print#((done_parse.status == HTTP_COMPLETE) as Int);
     Print#((done_parse.request.path == "/health") as Int);
     Print#(inbox2.len == wire_len);
@@ -171,7 +254,7 @@ node entry [beginprogram][true] {
     foreach i in 0..wire_len {
         sb = sb.put_u8(byte_at(wire, i));
     };
-    let d1: Int = evented_drain_response(self_sock, sb, 0);
+    let d1: Int = drain_start(self_sock, sb);
     Print#(d1 == sb.len);
     let sbin: ByteBuf = buf_new(wire_len + 1);
     let ga: Int = read_all(peer, sbin, sb.len, 0);
@@ -190,7 +273,7 @@ node entry [beginprogram][true] {
     foreach i in 0..total {
         big = big.put_u8(byte_at("01", i % 2));
     };
-    let k: Int = evented_drain_response(self_sock, big, 0);
+    let k: Int = drain_start(self_sock, big);
     when k < 0 {
         Print#(0 - 1006);
         endprogram Print#("");
@@ -200,7 +283,7 @@ node entry [beginprogram][true] {
     // Idempotent park: the kernel queue is still full, so draining again
     // from the parked count makes zero further progress - nothing is lost,
     // nothing is re-sent. The count IS the state.
-    let k2: Int = evented_drain_response(self_sock, big, k);
+    let k2: Int = drain_resume(self_sock, big, k);
     Print#(k2 == k);
 
     // POLL side: the parked writer is armed for OUT, and the lifecycle is
@@ -232,7 +315,7 @@ node entry [beginprogram][true] {
 
     // Resume from the parked count: the remainder is below the queue cap,
     // so this pass completes.
-    let done: Int = evented_drain_response(self_sock, big, k2);
+    let done: Int = drain_resume(self_sock, big, k);
     Print#(done == total);
 
     // Phase switch back to IN: the writer's readable side is empty, so the
@@ -266,8 +349,8 @@ node entry [beginprogram][true] {
     buf_free(inbox);
     buf_free(inbox2);
     buf_free(payload);
-    let _cp: Int = sock_close(peer);
-    let _cs: Int = sock_close(self_sock);
+    let _cp: Int = close_quiet(peer);
+    let _cs: Int = close_quiet(self_sock);
 
     poll_free(set);
 
@@ -281,8 +364,8 @@ node entry [beginprogram][true] {
         bb.len = i;
         bb = bb.put_u8(byte_at(wire, i));
     };
-    let sa: String = buf_slice_string(bb, 0, bb.len);
-    Print#(sa == wire);
+    let copy_len: Int = slice_len(bb);
+    Print#(copy_len == wire_len);
     Print#(bb.len <= bb.cap);
     Print#(wire_len > 0);
     endprogram Print#("");
