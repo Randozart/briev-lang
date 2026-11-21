@@ -4684,16 +4684,12 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 // index type). This is the proof-bearing construction Goose
                 // §15 uses; a blanket Int compat would defeat it.
                 let index_construction = match (declared, expr.as_ref()) {
-                    (
-                        Type::IndexIn(coll, _),
-                        Some(Expr::MethodCall(recv, op, _, _)),
-                    ) if op == "Count#" => {
+                    (Type::IndexIn(coll, _), Some(Expr::MethodCall(recv, op, _, _)))
+                        if op == "Count#" =>
+                    {
                         matches!(recv.as_ref(), Expr::Identifier(n) if n == coll)
                     }
-                    (
-                        Type::IndexIn(coll, _),
-                        Some(Expr::Identifier(other)),
-                    ) => {
+                    (Type::IndexIn(coll, _), Some(Expr::Identifier(other))) => {
                         // 2026-11-20 (wave-6 W6-2): rebinding from another
                         // value of the same index type — the type carries
                         // the collection, so the identity check is exact.
@@ -4704,35 +4700,35 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                     }
                     _ => false,
                 };
-                let compatible = if vector_literal || sized_literal || float_literal || index_construction
-                {
-                    true
-                } else if types_compatible(declared, &inferred, ctx) {
-                    true
-                } else {
-                    // 2026-07-31: `let lb: ListBuffer<Int> = ListBuffer {...}`
-                    // — a generic-struct constructor infers the bare type; the
-                    // declared type application pins the type params.
-                    match (declared, &inferred) {
-                        (Type::Applied(dn, _), Type::Custom(inm)) => dn == inm,
-                        // 2026-08-01 (D3): a generic struct literal now infers
-                        // as the Applied form with type-param placeholders
-                        // (`HashMapEntry<K, V>`, `ListBuffer<T>`) — same base
-                        // accepts; the declared type's concrete args are pinned
-                        // by the mono instantiation.
-                        (Type::Applied(dn, _), Type::Applied(inm, _)) => dn == inm,
-                        // 2026-08-16 (Phase 3e, SPEC §17.1): `Bit<N>` ↔ `Bits`
-                        // unification — `Bits` (bare, no width) is the FLEXIBLE
-                        // bit type (Type::Bits(0)), and it accepts a value of
-                        // any `Bit<N>`. A declared `Bit<N>` accepts an inferred
-                        // `Bits(0)` (the flexible value's width is pinned by the
-                        // declaration). Equal widths stay compatible. This is
-                        // the "Bit<N>↔Bits unified" hierarchy fact: there is no
-                        // separate `Bits` type, only the width-0 flexible form.
-                        (Type::Bits(a), Type::Bits(b)) => *a == 0 || *b == 0 || a == b,
-                        _ => false,
-                    }
-                };
+                let compatible =
+                    if vector_literal || sized_literal || float_literal || index_construction {
+                        true
+                    } else if types_compatible(declared, &inferred, ctx) {
+                        true
+                    } else {
+                        // 2026-07-31: `let lb: ListBuffer<Int> = ListBuffer {...}`
+                        // — a generic-struct constructor infers the bare type; the
+                        // declared type application pins the type params.
+                        match (declared, &inferred) {
+                            (Type::Applied(dn, _), Type::Custom(inm)) => dn == inm,
+                            // 2026-08-01 (D3): a generic struct literal now infers
+                            // as the Applied form with type-param placeholders
+                            // (`HashMapEntry<K, V>`, `ListBuffer<T>`) — same base
+                            // accepts; the declared type's concrete args are pinned
+                            // by the mono instantiation.
+                            (Type::Applied(dn, _), Type::Applied(inm, _)) => dn == inm,
+                            // 2026-08-16 (Phase 3e, SPEC §17.1): `Bit<N>` ↔ `Bits`
+                            // unification — `Bits` (bare, no width) is the FLEXIBLE
+                            // bit type (Type::Bits(0)), and it accepts a value of
+                            // any `Bit<N>`. A declared `Bit<N>` accepts an inferred
+                            // `Bits(0)` (the flexible value's width is pinned by the
+                            // declaration). Equal widths stay compatible. This is
+                            // the "Bit<N>↔Bits unified" hierarchy fact: there is no
+                            // separate `Bits` type, only the width-0 flexible form.
+                            (Type::Bits(a), Type::Bits(b)) => *a == 0 || *b == 0 || a == b,
+                            _ => false,
+                        }
+                    };
                 if !compatible {
                     let coercible = expr
                         .as_ref()
@@ -5536,9 +5532,7 @@ fn collect_annotated_lets(stmts: &[Statement], types: &mut HashMap<String, Type>
     for stmt in stmts {
         match stmt {
             Statement::Let {
-                name,
-                ty: Some(t),
-                ..
+                name, ty: Some(t), ..
             } => {
                 types.insert(name.clone(), t.clone());
             }
@@ -5578,24 +5572,57 @@ fn subscript_proven(
 }
 
 /// F1 — a dominating fact places `index` below the receiver's own count.
+///
+/// The goal goes to the SAME prover the contract gate trusts
+/// (`callgate::prove_precondition`) instead of being matched structurally.
+/// 2026-11-20 (wave-7 W7-2): the structural matcher only saw guards that
+/// named the index expression verbatim, so `when i > 0 { when i <=
+/// xs.Count#() { xs[i - 1] } }` was rejected even though the prover combines
+/// those two facts into `i - 1 < n` without help. Delegating also means every
+/// future improvement to the fact engine reaches `checkfree` for free — the
+/// promise this obligation was supposed to make when it landed.
+///
+/// Structural equality still proves: the prover's first step is equality on
+/// the conjunct, so an exactly-spelled guard is answered as before.
 fn upper_bounded(receiver: &Expr, index: &Expr, facts: &[Expr]) -> bool {
-    facts.iter().any(|f| is_upper_bound_fact(f, receiver, index))
+    count_spellings(receiver)
+        .iter()
+        .map(|count| binary(BinaryOpKind::Lt, index.clone(), count.clone()))
+        .any(|goal| subscript_proves(&goal, facts))
 }
 
-/// `idx < count`, `idx <= count - 1`, and the mirrored `count > idx` /
-/// `count - 1 >= idx` spellings. Structural on `idx`: the guard must name the
-/// expression you subscript with.
-fn is_upper_bound_fact(fact: &Expr, receiver: &Expr, index: &Expr) -> bool {
-    match fact {
-        Expr::BinaryOp(kind, l, r) => match kind {
-            BinaryOpKind::Lt => l.as_ref() == index && is_count_of(r, receiver),
-            BinaryOpKind::Gt => r.as_ref() == index && is_count_of(l, receiver),
-            BinaryOpKind::Le => l.as_ref() == index && is_count_minus_one(r, receiver),
-            BinaryOpKind::Ge => r.as_ref() == index && is_count_minus_one(l, receiver),
-            _ => false,
-        },
-        _ => false,
-    }
+/// Every spelling of "the receiver's element count" the frontend produces.
+///
+/// `xs.Count#()` (dot surface) and `Count#(xs)` (call surface) are DISTINCT
+/// symbols to the prover, so both must be offered as goals — a guard written
+/// in one spelling has to discharge a subscript written in the other.
+fn count_spellings(receiver: &Expr) -> [Expr; 2] {
+    [
+        Expr::MethodCall(
+            Box::new(receiver.clone()),
+            "Count#".to_string(),
+            Vec::new(),
+            None,
+        ),
+        Expr::Call("Count#".to_string(), vec![receiver.clone()], None),
+    ]
+}
+
+/// Build `<lhs> <kind> <rhs>` as a goal expression.
+fn binary(kind: BinaryOpKind, lhs: Expr, rhs: Expr) -> Expr {
+    Expr::BinaryOp(kind, Box::new(lhs), Box::new(rhs))
+}
+
+/// Does the dominating fact set prove `goal`?
+///
+/// Only `Proven` counts: `Refuted` and `Unproven` both mean the obligation is
+/// undischarged, and an obligation that accepts a refuted goal would certify
+/// an out-of-bounds read.
+fn subscript_proves(goal: &Expr, facts: &[Expr]) -> bool {
+    matches!(
+        crate::proof_engine::callgate::prove_precondition(goal, facts),
+        crate::proof_engine::callgate::Verdict::Proven
+    )
 }
 
 /// F2 — a dominating fact places `index` at or above zero, or the index is a
@@ -5606,7 +5633,7 @@ fn lower_bounded(
     facts: &[Expr],
     types: &HashMap<String, Type>,
 ) -> bool {
-    if index_is_non_negative_fact(index, facts) {
+    if lower_bound_proven(index, facts) {
         return true;
     }
     matches!(
@@ -5615,17 +5642,20 @@ fn lower_bounded(
     )
 }
 
-/// `idx >= 0`, `0 <= idx`, and the mirrored spellings.
-fn index_is_non_negative_fact(index: &Expr, facts: &[Expr]) -> bool {
-    facts.iter().any(|f| match f {
-        Expr::BinaryOp(kind, l, r) => match kind {
-            BinaryOpKind::Ge => l.as_ref() == index && matches!(r.as_ref(), Expr::Decimal(0)),
-            BinaryOpKind::Le => r.as_ref() == index && matches!(l.as_ref(), Expr::Decimal(0)),
-            BinaryOpKind::Gt => l.as_ref() == index && matches!(r.as_ref(), Expr::Decimal(-1)),
-            _ => false,
-        },
-        _ => false,
-    })
+/// F2's fact half — `index` is at or above zero.
+///
+/// As with F1, the goals go to the prover: `when i > 0` establishes
+/// `i - 1 >= 0` for an offset subscript, which a structural `i >= 0` scan
+/// cannot see.
+fn lower_bound_proven(index: &Expr, facts: &[Expr]) -> bool {
+    let zero = Expr::Decimal(0);
+    [
+        binary(BinaryOpKind::Ge, index.clone(), zero.clone()),
+        binary(BinaryOpKind::Le, zero, index.clone()),
+        binary(BinaryOpKind::Gt, index.clone(), Expr::Decimal(-1)),
+    ]
+    .iter()
+    .any(|goal| subscript_proves(goal, facts))
 }
 
 /// The collection a subscript receiver names, if it is a plain identifier.
@@ -5645,30 +5675,6 @@ fn index_type_of<'a>(index: &Expr, types: &'a HashMap<String, Type>) -> Option<&
     match types.get(n) {
         Some(Type::IndexIn(coll, _)) => Some(coll.as_str()),
         _ => None,
-    }
-}
-
-/// Does `e` read `receiver`'s element count? Covers `xs.Count#()` (the dot
-/// surface) and the `Count#(xs)` call spelling.
-fn is_count_of(e: &Expr, receiver: &Expr) -> bool {
-    match e {
-        Expr::MethodCall(recv, name, args, _) => {
-            name == "Count#" && args.is_empty() && recv.as_ref() == receiver
-        }
-        Expr::Call(callee, args, _) => {
-            callee == "Count#" && matches!(args.as_slice(), [only] if only == receiver)
-        }
-        _ => false,
-    }
-}
-
-/// `<count> - 1`, the inclusive last index.
-fn is_count_minus_one(e: &Expr, receiver: &Expr) -> bool {
-    match e {
-        Expr::BinaryOp(BinaryOpKind::Sub, l, r) => {
-            is_count_of(l, receiver) && matches!(r.as_ref(), Expr::Decimal(1))
-        }
-        _ => false,
     }
 }
 
@@ -9916,6 +9922,118 @@ mod tests {
 checkfree defn peek(xs: List<Int>, i: Int) -> Int {
     when 0 <= i {
         when i < xs.Count#() {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
+    fn checkfree_accepts_offset_index_guard() {
+        // The reason the obligation delegates to the prover: `i > 0` plus
+        // `i <= xs.Count#()` proves BOTH halves of `xs[i - 1]` (the prover
+        // combines them into `i - 1 < n` and `i - 1 >= 0`). A structural
+        // matcher on the index expression can never see this, because no fact
+        // names `i - 1`.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        when i <= xs.Count#() {
+            term xs[i - 1];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(src);
+    }
+
+    #[test]
+    fn checkfree_rejects_offset_mismatched_collection() {
+        // The offset must not smuggle a collection mismatch past the prover:
+        // the guard bounds `i` against ys, the subscript reads xs.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, ys: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        when i <= ys.Count#() {
+            term xs[i - 1];
+        };
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("xs.Count#()"),
+            "a guard on ys says nothing about xs, offset or not: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_rejects_inclusive_upper_guard() {
+        // THE off-by-one guard: `i <= xs.Count#()` permits `i == Count#()`,
+        // which is one past the last element. The prover must NOT turn an
+        // inclusive upper bound into an exclusive one — if it did, `checkfree`
+        // would certify an out-of-bounds read, which is worse than no
+        // obligation at all.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i <= xs.Count#() {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        let msg = checkfree_msg(src);
+        assert!(
+            msg.contains("xs.Count#()"),
+            "an inclusive upper bound is not an exclusive one: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkfree_accepts_count_minus_one_spelling() {
+        // `i <= Count#() - 1` and `Count#() > i` are the other two ways to say
+        // the same upper bound. They used to be enumerated by hand; now the
+        // prover derives them from the same goals.
+        let last_index = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i <= xs.Count#() - 1 {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(last_index);
+        let mirrored = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when xs.Count#() > i {
+            term xs[i];
+        };
+    };
+    term 0;
+};
+"#;
+        must_pass(mirrored);
+    }
+
+    #[test]
+    fn checkfree_accepts_call_spelling_of_count() {
+        // `Count#(xs)` and `xs.Count#()` are DISTINCT symbols to the prover,
+        // so a guard in one spelling must still discharge a subscript whose
+        // count goal is built in the other.
+        let src = r#"
+checkfree defn peek(xs: List<Int>, i: Int) -> Int {
+    when 0 <= i {
+        when i < Count#(xs) {
             term xs[i];
         };
     };

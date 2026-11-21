@@ -1,0 +1,40 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// checkfree_offset — SPEC §15.4b, the offset discharge (wave-7 W7-2).
+//
+// The obligation began as a structural matcher: the guard had to name the
+// index expression verbatim, so a neighbour read written the natural way —
+//
+//     when i > 0 { when i <= xs.Count#() { xs[i - 1] } }
+//
+// — was rejected, because no fact names `i - 1`. The discharge now asks the
+// same prover the contract gate trusts, which combines `i > 0` and
+// `i <= Count#()` into `i - 1 < Count#()` and `0 <= i - 1`.
+//
+// What is still NOT discharged is stated plainly by the reject cases in the
+// unit tests: an inclusive upper bound (`i <= Count#()`) does not license
+// `xs[i]`, and a guard on one collection does not license a subscript on
+// another.
+//
+// spec: 15
+import "std/io.bv";
+
+checkfree defn previous(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {
+        when i <= xs.Count#() {
+            term xs[i - 1];
+        };
+    };
+    term -1;
+};
+
+node entry [beginprogram][true] {
+    let xs: List<Int> = [7, 8, 9];
+    Print#(previous(xs, 1) as String);
+    Print#("|");
+    Print#(previous(xs, 3) as String);
+    Print#("|");
+    Print#(previous(xs, 0) as String);
+    endprogram Print#("");
+};
