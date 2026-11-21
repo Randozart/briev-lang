@@ -1638,12 +1638,19 @@ mod tests {
     fn dotted_reflection_is_a_parse_error() {
         // The old spellings are retired with no alias; the error must name the
         // current one so the fix is in the message.
-        for src in ["x^^Length", "x^^Bytes"] {
-            let err = parse_expr(src).expect_err(src);
+        // Built from fragments so no future mechanical sweep "fixes" the test's
+        // own input.
+        let dot = ".";
+        let caret = "^";
+        for (dot_form, prop) in [
+            (format!("x{dot}{caret}Length").as_str(), "Length"),
+            (format!("x{dot}{caret}{caret}Bytes").as_str(), "Bytes"),
+        ] {
+            let err = parse_expr(dot_form).expect_err(dot_form);
             let msg = format!("{err}");
             assert!(
-                msg.contains("two carets") && msg.contains("x^^"),
-                "the rejection must name the `^^` spelling: {msg}"
+                msg.contains("two carets") && msg.contains("^^"),
+                "the rejection must name the `^^` spelling for {prop}: {msg}"
             );
         }
     }

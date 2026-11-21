@@ -483,16 +483,18 @@ impl<'a> Builder<'a> {
         kind: crate::ast::ReflectKind,
         queue: &mut Vec<String>,
     ) {
-        match kind {
-            // 2026-11-04 (PR #62 parity): runtime metadata still evaluates
-            // its receiver — calls under `value^^Length` must be live.
-            _ => self.walk_expr(receiver, queue),
-            crate::ast::ReflectKind::CompileTime
-                if matches!(name, "Size" | "Bytes" | "Alignment" | "Type") =>
-            {
+        // 2026-11-21 (wave-9, one caret): the AST twin dispatches by property
+        // NAME — the runtime/compile-time tags no longer track the spelling.
+        // Mirror it exactly; the debug parity assert at backend/mod.rs:647
+        // fails on drift.
+        match name {
+            // Closed value inspections (cannot resolve a callable by name):
+            // walk the receiver only — same closed set as the AST twin.
+            // Anything else keep-all.
+            "Size" | "Bytes" | "Alignment" | "Type" | "Length" | "Ptr" | "Ready" => {
                 self.walk_expr(receiver, queue)
             }
-            crate::ast::ReflectKind::CompileTime => self.keep_all = true,
+            _ => self.keep_all = true,
         }
     }
 
