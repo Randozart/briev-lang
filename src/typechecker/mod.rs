@@ -10377,6 +10377,31 @@ defn peek(xs: List<Int>, i: Int) -> Int {
         );
     }
 
+    /// Issue #150 claimed a free defn's postcondition does not project onto
+    /// its call result while the identical obj-method postcondition does.
+    ///
+    /// It does project. This test is the counterexample, kept as a regression:
+    /// a free defn returning an `obj` by value binds its field facts on the
+    /// caller's `let`, exactly like the method spelling. The five shapes tried
+    /// while closing the issue (isolated, cross-module, member-called-as-free,
+    /// method, and the branch's own form) all prove.
+    #[test]
+    fn free_defn_post_projects_fields() {
+        let _deny = DenyGate::install();
+        check(
+            "obj Buf { len: Int; cap: Int; }; \
+             defn claim(sink: Buf, count: Int) \
+                 [count >= 0 && sink.len + count <= sink.cap] \
+                 [term.len == sink.len + count && term.cap == sink.cap] -> Buf \
+             { term Buf { len: sink.len + count, cap: sink.cap }; }; \
+             defn serve(buf: Buf, got: Int) [got >= 0 && buf.len + got <= buf.cap] -> Int { \
+                 let ext: Buf = claim(buf, got); \
+                 check ext.len == buf.len + got; \
+                 term ext.len; };",
+        )
+        .expect("a free defn's postcondition must project onto its call result");
+    }
+
     /// A callee postcondition becomes a fact about the `let` binding: the
     /// second call re-establishes `y >= 1` without a guard.
     #[test]
