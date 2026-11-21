@@ -76,28 +76,25 @@ carries the workaround in five small wrappers (fill_expect, drain_start,
 drain_resume, slice_len, close_quiet), which is exactly the kind of
 "shape the checker needs" cost worth tracking while the gate matures.
 
-RECONCILIATION (2026-11-21): `feat/evented-net` was already based exactly on
-`origin/main` (`3db43e4c2`) when this was checked - 0 behind, so there was
-nothing to pull. Two gate commits had landed in that base without touching
-this branch's assumptions, and both were verified against it:
+RECONCILIATION (2026-11-21): the branch was re-synced to `origin/main` before
+merge; by that point main had advanced past `3db43e4c2` with a "wave 8" that is
+itself about the checker rules this branch's fixtures were working around:
 
-- `f819a43b5` closed #149 (the CLI now installs the gate for inspection runs
-  and announces at `warn` rather than suppressing the report). Rule 3 above
-  is updated to match; the warning list on this branch contains only
-  pre-existing stdlib limits, never an evented defn.
-- `3db43e4c2` fixed two "the source already decided this, the prover did not
-  read it" gaps - `derived_length_facts` (so `x.^Length` composes
-  arithmetically) and tensor `term.n == n` - and declared a LOUD, config-checked
-  exemption for `tests/saltpetre, tests/fixtures/load`.
+- `227ac8e08` a guard's bare `term;` licenses its negation, gated by the post
+- `0a4f1cf2f` the totality rule follows what the emitter returns
+- `81f1de8a5` spec: `term` is one conditional exit + the two obligations
+- plus the earlier `f819a43b5` (closes #149: inspection installs the gate,
+  announces at warn) and `3db43e4c2` (derived_length_facts + tensor
+  term.n==n, and the loud `tests/saltpetre, tests/fixtures/load` exemption)
 
-Neither fix reaches the fifth finding, and the probe says so concretely:
-removing `slice_len` and calling `buf_slice_string(bb, 0, bb.len)` directly
-still fails the gate with `bb.len >= 0` unprovable. `derived_length_facts`
-is about `.^Length` (a String derived fact); this is a ByteBuf OBJ-FIELD
-invariant, which #150 says does not project across a free-defn boundary. So
-#151 survives as filed, and the five wrappers stay. The tier1 corpus is also
-*not* in the exempted roots, so the evented fixture is still checked under
-`deny` - the exemption did not quietly absorb the work.
+Re-verified the whole branch against that base: lib 3997 green (sweep
+included), daily_use_smoke 53, nonblocking_transport green, gate.sh quick
+pass, `evented_smoke` golden byte-identical. Re-ran the T5 probe (drop
+`slice_len` → `buf_slice_string(bb,0,bb.len)`): still fails with
+`bb.len >= 0` unprovable, so #150/#151 survive wave 8 — the fix reached
+`.^Length` (a derived String fact) and the `term;` negation, not ByteBuf
+obj-field invariants. The five wrappers stay; `tests/tier1` is not in the
+exempted roots, so this work is still checked under `deny`.
 
 Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
