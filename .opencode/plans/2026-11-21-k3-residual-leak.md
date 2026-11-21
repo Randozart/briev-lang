@@ -1,6 +1,10 @@
 # K3 residual leak — owned argument temporaries (2026-11-21)
 
-Status: ACTIVE. Follows K3 Phase C (`4caace291`, leak 101.4 → 56.6 KB/call).
+Status: **DONE** (compiler `1f9f3c823`, in `main` `b39c151a0`; kiosk `88233f5`).
+Follows K3 Phase C (`4caace291`, leak 101.4 → 56.6 KB/call).
+Result: 56.6 → 42.0 KB/call and 1,148 → 904 allocs/call on the same geometry
+(−58.6% cumulative from 101.4). The remaining 42 KB/call is tensor/enum
+payload lifetime, a different mechanism — own plan (see “Out of scope”).
 
 ## Why this plan exists
 
