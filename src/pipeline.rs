@@ -1582,7 +1582,7 @@ fn parse_and_check(
     // 2026-08-04: term termination diagnostics — `check` must catch
     // unreachable code after a terminating `term <value>`/`term! <value>`
     // exactly like `build` does, or the two paths silently diverge.
-    let (term_errors, term_warnings) = crate::analysis::termination::analyze_dual(&items);
+    let (term_errors, term_warnings) = crate::analysis::termination::analyze_all(&items);
     for w in &term_warnings {
         eprintln!("warning: {w}");
     }

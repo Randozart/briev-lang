@@ -535,7 +535,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // a body whose semantics the interpreter would unwind early.
     {
         let (term_errors, term_warnings) =
-            briev_compiler::analysis::termination::analyze_dual(&items);
+            briev_compiler::analysis::termination::analyze_all(&items);
         for w in &term_warnings {
             eprintln!("warning: {w}");
         }

@@ -20,7 +20,7 @@ import "std/bad/arch.bad";
 // The contract-checked handoff target: a real .bv defn the loader calls.
 defn kernel_bv() -> Int [result == 1] {
     let printed: Int = 0;
-    printed + 1;
+    printed + 1
 }
 
 bootstrap bad Reset_Handler() [true] {

@@ -4,10 +4,14 @@
 // spec: 11.3
 // the kiosk native RPC dispatcher (BUGS.md). Golden: both arm strings.
 defn pick(x: Int) -> String {
+    // 2026-11-21 (wave-8 totality): the trailing expression IS the return, and
+    // SPEC §11.3 spells it without a semicolon. With the `;` the statement is an
+    // expression statement, the defn falls off its end, and the emitter's old
+    // leniency (it returned the last expression statement anyway) hid that.
     match x {
         1 => "{\"a\":1}",
         _ => "{\"b\":1}",
-    };
+    }
 };
 
 node entry [beginprogram][true] {

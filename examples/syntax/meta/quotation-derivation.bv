@@ -9,7 +9,7 @@
 // here because this file must pass; see lib/std/collections.bv for its
 // usage in unreachable guards.
 
-defn add(a: Int, b: Int) -> Int { a + b; } := {
+defn add(a: Int, b: Int) -> Int { a + b } := {
     2, 3 -> 5;
     0, 0 -> 0;
     -1, 1 -> 0;
