@@ -157,9 +157,10 @@ fn collect_stmt(facts: &mut HirSinkFacts, callable: &HirCallable, stmt: &HirStmt
         // callable, not through the enclosing body scan.
         | HirStmtKind::InlineDefn(_)
         | HirStmtKind::Other(_) => {}
-        // Inserted release: nothing to sink. Temp-transfer: the wrapped expr
-        // still occupies the return sink it was carved out of.
+        // Inserted release/binding: nothing to sink. Temp-transfer: the
+        // wrapped expr still occupies the return sink it was carved out of.
         HirStmtKind::ReleaseOwned { .. } => {}
+        HirStmtKind::LetInsert { .. } => {}
         HirStmtKind::TempTransfer { expr, .. } => {
             insert(
                 facts,

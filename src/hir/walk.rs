@@ -116,6 +116,7 @@ pub fn walk_stmt_mut<F: FnMut(&mut HirExpr)>(stmt: &mut HirStmt, f: &mut F) {
         HirStmtKind::Term(expr) => walk_opt_mut(expr.as_mut(), f),
         HirStmtKind::TempTransfer { expr, .. } => walk_expr_mut(expr, f),
         HirStmtKind::ReleaseOwned { .. } => {}
+        HirStmtKind::LetInsert { expr, .. } => walk_expr_mut(expr, f),
         HirStmtKind::Tail(expr)
         | HirStmtKind::Check(expr)
         | HirStmtKind::Expression(expr)
@@ -315,6 +316,7 @@ pub fn walk_stmt<F: FnMut(&HirExpr)>(stmt: &HirStmt, f: &mut F) {
         HirStmtKind::Term(expr) => walk_opt(expr.as_ref(), f),
         HirStmtKind::TempTransfer { expr, .. } => walk_expr(expr, f),
         HirStmtKind::ReleaseOwned { .. } => {}
+        HirStmtKind::LetInsert { expr, .. } => walk_expr(expr, f),
         HirStmtKind::Tail(expr)
         | HirStmtKind::Check(expr)
         | HirStmtKind::Expression(expr)

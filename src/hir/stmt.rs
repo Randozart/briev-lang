@@ -72,6 +72,16 @@ pub enum HirStmtKind {
         storage: StorageKind,
         name: String,
     },
+    /// 2026-11-21 (K3 Phase C): compiler-inserted binding for an inline owned
+    /// selector candidate. Expands to `name = expr` — no AST slot (pure
+    /// insert, like ReleaseOwned) — so the pair walk stays aligned. The owned
+    /// storage of `expr` (a fresh-set call result or a list literal) is then
+    /// released by a paired ReleaseOwned at scope end.
+    LetInsert {
+        name: String,
+        ty: Option<Type>,
+        expr: Box<HirExpr>,
+    },
     /// 2026-11-12 (owned-storage pass): temp-transfer for a fresh return
     /// expression that borrows owned locals. Expands to
     /// `let name = expr; <releases>; term name;` so the operands free after

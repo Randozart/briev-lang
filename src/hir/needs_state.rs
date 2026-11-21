@@ -243,9 +243,9 @@ fn stmt_needs_state(stmt: &HirStmt, ctx: &Ctx<'_>) -> bool {
         // not through the enclosing state walk — treat as stateless here
         // (matches the AST walker, which indexes defs separately).
         | HirStmtKind::InlineDefn(_) => false,
-        // Compiler-inserted storage release: no state. Temp-transfer behaves
-        // like the expression it wraps plus its (stateless) release list.
-        HirStmtKind::ReleaseOwned { .. } => false,
+        // Compiler-inserted storage release/binding: no state. Temp-transfer
+        // behaves like the expression it wraps plus its (stateless) release list.
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::LetInsert { .. } => false,
         HirStmtKind::TempTransfer { expr, releases, .. } => {
             rec(expr) || releases.iter().any(|(_, _)| false)
         }

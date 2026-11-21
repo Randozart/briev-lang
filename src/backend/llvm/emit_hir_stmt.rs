@@ -27,7 +27,10 @@ use std::fmt::Write;
 /// consumes no AST slot in a pair walk. (`TempTransfer` is NOT one — it
 /// replaced a source return statement, so it consumes that slot.)
 pub(crate) fn is_pure_insert(kind: &HirStmtKind) -> bool {
-    matches!(kind, HirStmtKind::ReleaseOwned { .. })
+    matches!(
+        kind,
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::LetInsert { .. }
+    )
 }
 
 /// Pair alignment: HIR statements that consume an AST slot (every kind
@@ -91,6 +94,61 @@ pub(crate) fn emit_release_owned_statement(
             })
         }
     }
+}
+
+/// 2026-11-21 (K3 Phase C): native emission for a compiler-inserted owned
+/// selector-candidate binding. Pure insert — no AST slot — so the body pair
+/// walk stays aligned. Emits the candidate expression to a fresh register and
+/// binds it to the pass-allocated name so the paired ReleaseOwned can
+/// reference it by name. No source statement is reconstructed.
+fn emit_let_insert_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    name: &str,
+    ty: Option<&crate::ast::Type>,
+    expr: &HirExpr,
+    indent: &str,
+) -> Option<TypedRegister> {
+    // A list literal's declared type is usually absent in the HIR (the
+    // typechecker infers it at the source let site). Derive `List<elem>`
+    // from the first element when needed so the contextual emitter can
+    // construct through the collection's ops — the bare HIR operand path
+    // panics on an untyped list literal.
+    let (is_list_literal, elem_ty) = match &expr.kind {
+        HirExprKind::List(items) => (true, items.first().and_then(|i| i.ty.clone())),
+        _ => (false, None),
+    };
+    let declared = if let Some(t) = ty.cloned() {
+        Some(t)
+    } else if is_list_literal {
+        elem_ty.map(|e| crate::ast::Type::Applied("List".to_string(), vec![e]))
+    } else {
+        None
+    };
+    let is_coll = declared
+        .as_ref()
+        .map(|t| match t {
+            crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
+                backend.is_coll_type(t) || backend.is_op_surface_coll(n)
+            }
+            _ => false,
+        })
+        .unwrap_or(false);
+    let reg = if is_list_literal && is_coll {
+        let ast = crate::hir::to_ast::expr(expr)?;
+        let declared = declared.unwrap_or(crate::ast::Type::int());
+        backend.emit_contextual_operand(out, &ast, Some(&declared), indent)
+    } else {
+        backend.emit_hir_operand(out, expr, indent)?
+    };
+    // A list-literal constructed through the collection ops binds by name at
+    // the construction site; re-bind the register to the pass-allocated name
+    // so the paired ReleaseOwned can reference it.
+    backend
+        .fun
+        .let_bindings
+        .insert(name.to_string(), reg.name.clone());
+    Some(reg)
 }
 
 /// String lane of ReleaseOwned. String bindings materialize as ACTUAL
@@ -213,18 +271,33 @@ pub(crate) fn emit_pending_inserts(
 ) -> Option<TypedRegister> {
     let mut emitted = None;
     while let Some(hir_stmt) = hir_body.get(*hi) {
-        let HirStmtKind::ReleaseOwned { storage, .. } = &hir_stmt.kind else {
-            break;
-        };
-        backend.hir_stmts_seen += 1;
-        if *storage == crate::hir::stmt::StorageKind::List && !coll_destroy_available(backend) {
-            *hi += 1;
-            continue;
+        match &hir_stmt.kind {
+            HirStmtKind::ReleaseOwned { storage, .. } => {
+                backend.hir_stmts_seen += 1;
+                if *storage == crate::hir::stmt::StorageKind::List
+                    && !coll_destroy_available(backend)
+                {
+                    *hi += 1;
+                    continue;
+                }
+                if let Some(reg) = emit_hir_statement(backend, out, hir_stmt, None, indent) {
+                    emitted = Some(reg);
+                }
+                *hi += 1;
+            }
+            // 2026-11-21 (K3 Phase C): a LetInsert binds an owned selector
+            // candidate so its paired ReleaseOwned can name it. The binding
+            // must land BEFORE the selector call that consumes the candidate
+            // evaluates — the pass emits it as the next statement of the run.
+            HirStmtKind::LetInsert { .. } => {
+                backend.hir_stmts_seen += 1;
+                if let Some(reg) = emit_hir_statement(backend, out, hir_stmt, None, indent) {
+                    emitted = Some(reg);
+                }
+                *hi += 1;
+            }
+            _ => break,
         }
-        if let Some(reg) = emit_hir_statement(backend, out, hir_stmt, None, indent) {
-            emitted = Some(reg);
-        }
-        *hi += 1;
     }
     emitted
 }
@@ -1185,6 +1258,9 @@ pub(crate) fn emit_hir_statement(
     match &stmt.kind {
         HirStmtKind::ReleaseOwned { storage, name } => {
             emit_release_owned_statement(backend, out, *storage, name, indent)
+        }
+        HirStmtKind::LetInsert { name, ty, expr } => {
+            emit_let_insert_statement(backend, out, name, ty.as_ref(), expr, indent)
         }
         HirStmtKind::TempTransfer { .. } => {
             emit_temp_transfer_statement(backend, out, stmt, ast, indent)

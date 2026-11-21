@@ -13847,6 +13847,7 @@ fn hir_stmt_lossless(stmt: &crate::hir::stmt::HirStmt) -> bool {
         | K::FreeHint(_)
         | K::KeepHint(_)
         | K::ReleaseOwned { .. }
+        | K::LetInsert { .. }
         | K::MetadataAssignment(..)
         | K::InlineAsm { .. } => true,
         // 2026-11-15: the HIR carries only the inline-defn name, but `to_ast`

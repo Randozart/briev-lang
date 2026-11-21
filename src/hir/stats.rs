@@ -133,6 +133,7 @@ fn count_stmt(stmt: &HirStmt, counts: &mut UnsupportedCounts) {
         // the defn name); not an unsupported gap, so it is not counted.
         | HirStmtKind::InlineDefn(_) => {}
         HirStmtKind::ReleaseOwned { .. } => {}
+        HirStmtKind::LetInsert { expr, .. } => count_expr(expr, counts),
         HirStmtKind::TempTransfer { expr, .. } => count_expr(expr, counts),
         HirStmtKind::Other(tag) => {
             counts.statements += 1;

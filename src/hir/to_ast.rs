@@ -238,12 +238,16 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
     // source; hir_sourced_body consumes them on its own cursor.
     if matches!(
         &s.kind,
-        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. }
+        HirStmtKind::ReleaseOwned { .. }
+            | HirStmtKind::TempTransfer { .. }
+            | HirStmtKind::LetInsert { .. }
     ) {
         return None;
     }
     Some(match &s.kind {
-        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. } => {
+        HirStmtKind::ReleaseOwned { .. }
+        | HirStmtKind::TempTransfer { .. }
+        | HirStmtKind::LetInsert { .. } => {
             unreachable!("filtered above")
         }
         HirStmtKind::Let {

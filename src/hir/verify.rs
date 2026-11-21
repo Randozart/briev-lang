@@ -85,11 +85,16 @@ fn verify_stmt(stmt: &HirStmt, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
     verify_node(nodes, stmt.id, "statement")?;
     // 2026-11-12: compiler-inserted storage releases carry no source spans
     // and their names are pass-allocated locals; identity is all we verify.
-    if let HirStmtKind::ReleaseOwned { .. } = &stmt.kind {
+    if matches!(
+        &stmt.kind,
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::LetInsert { .. }
+    ) {
         return Ok(());
     }
     match &stmt.kind {
-        HirStmtKind::ReleaseOwned { .. } => unreachable!("filtered above"),
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::LetInsert { .. } => {
+            unreachable!("filtered above")
+        }
         HirStmtKind::Let { expr, .. } => verify_opt_expr(expr.as_ref(), nodes),
         HirStmtKind::Assign(left, right) => verify_exprs([left, right], nodes),
         HirStmtKind::ArrowAssign { target, value, .. } => {

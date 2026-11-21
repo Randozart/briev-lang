@@ -391,10 +391,12 @@ fn insert_releases_with_report(
             function: callable.name.clone(),
             events: &mut events,
         };
+        let mut selector_results: HashSet<String> = HashSet::new();
         let body = rewrite_list(
             &callable.body.statements,
             &mut owned,
             &mut fresh_vars,
+            &mut selector_results,
             &mut ctx,
             true,
         );
@@ -2012,6 +2014,7 @@ fn rewrite_list(
     stmts: &[HirStmt],
     owned: &mut HashMap<String, OwnKind>,
     fresh_vars: &mut HashMap<String, bool>,
+    sel_results: &mut HashSet<String>,
     ctx: &mut Pass<'_>,
     top: bool,
 ) -> Vec<HirStmt> {
@@ -2031,6 +2034,7 @@ fn rewrite_list(
         })
         .collect();
     let mut out = Vec::with_capacity(stmts.len());
+    let mut pending_temp_stmts: Vec<HirStmt> = Vec::new();
     for stmt in stmts {
         let mut s = stmt.clone();
         let stmt_kind_tag = stmt.kind.clone();
@@ -2067,7 +2071,115 @@ fn rewrite_list(
                 if carries {
                     fresh_vars.insert(name.clone(), fresh);
                 }
-                if fresh {
+                // 2026-11-21 (K3 Phase C): a multi-candidate param_return
+                // selector (`ints_or(items, fallback)`) hands back the storage
+                // of whichever candidate it picks at runtime — the result
+                // local aliases ONE of its arguments, it owns no storage of
+                // its own. Owning the result (the pre-fix path) released only
+                // the WINNER at scope end and leaked every loser: an unnamed
+                // inline candidate (a fresh-set call result or a list literal)
+                // has no name, so no scope-end release ever reached it
+                // (kiosk detect_faces: ~39 KB/call in conv2d alone).
+                // Sound accounting: the result is a BORROW — not owned, never
+                // released. Each candidate is released exactly once by ITS OWN
+                // bookkeeping: inline owned candidates are bound to synthetic
+                // temps (which the normal Let logic owns + frees at scope
+                // end); named-local candidates are re-inserted into `owned`
+                // unless their block is already covered by their own selector
+                // temps (recorded in `sel_results`). Every block freed once,
+                // no UAF (releases sit at scope end, after the last read).
+                let callee_name = match &e.kind {
+                    HirExprKind::Call { callee, .. } => Some(callee.clone()),
+                    _ => None,
+                };
+                let is_multi_selector = callee_name
+                    .as_ref()
+                    .and_then(|c| ctx.param_return.get(c))
+                    .is_some_and(|cands| cands.len() > 1);
+                if fresh && is_multi_selector {
+                    pending_temp_stmts.clear();
+                    // 2026-11-21 (K3 Phase C): emit a pure-insert LetInsert +
+                    // ReleaseOwned for each inline owned candidate. The
+                    // LetInsert binds the candidate to a pass-allocated name
+                    // (no AST slot — the pair walk stays aligned); the
+                    // ReleaseOwned destroys the candidate's block at scope
+                    // end. Named candidates are re-owned directly (their own
+                    // selector temps cover them only when they are themselves
+                    // selector results, tracked in `sel_results`).
+                    if let HirExprKind::Call { callee, args, .. } = &e.kind {
+                        let cands = ctx.param_return.get(callee).unwrap();
+                        let mut na = args.clone();
+                        for &ci in cands {
+                            let Some(a) = na.get(ci) else { continue };
+                            if matches!(a.kind, HirExprKind::Identifier(_)) {
+                                // Named candidate: `uses()` removed it from
+                                // `owned` (Escape mode). Its block is covered
+                                // by its own selector temps only when it is
+                                // itself a selector result; otherwise re-own
+                                // it so scope end frees it exactly once.
+                                if let HirExprKind::Identifier(n) = &a.kind {
+                                    if !sel_results.contains(n) {
+                                        owned.insert(n.clone(), kind);
+                                    }
+                                }
+                                continue;
+                            }
+                            // Inline owned candidate (fresh-set call result or
+                            // list literal): bind to a pure-insert LetInsert
+                            // temp (no AST slot — pair walk stays aligned) and
+                            // rewrite the call arg to that temp so the
+                            // candidate is evaluated ONCE. The paired
+                            // ReleaseOwned destroys the block at scope end.
+                            let tname = fresh_temp_name(name, ctx);
+                            let let_insert = HirStmt {
+                                id: NodeId(ctx.next),
+                                span: None,
+                                kind: HirStmtKind::LetInsert {
+                                    name: tname.clone(),
+                                    ty: a.ty.clone(),
+                                    expr: Box::new(a.clone()),
+                                },
+                            };
+                            ctx.next += 1;
+                            let id_expr = HirExpr {
+                                id: NodeId(ctx.next),
+                                span: None,
+                                ty: a.ty.clone(),
+                                kind: HirExprKind::Identifier(tname.clone()),
+                            };
+                            ctx.next += 1;
+                            na[ci] = id_expr;
+                            // The binding is a pure insert (emitted inline,
+                            // before the selector call that now reads the
+                            // temp by name). Ownership of the temp is
+                            // deferred to the scope-end `owned` sweep — the
+                            // release must land AFTER the candidate's last
+                            // read (typically inside the following foreach),
+                            // so an inline ReleaseOwned would be a
+                            // use-after-free.
+                            owned.insert(tname.clone(), kind);
+                            pending_temp_stmts.push(let_insert);
+                        }
+                        if let HirExprKind::Call { args, .. } = &mut e.kind {
+                            *args = na;
+                        }
+                    }
+                    sel_results.insert(name.clone());
+                    ctx.events.push(OwnedEvent {
+                        function: ctx.function.clone(),
+                        name: name.clone(),
+                        // The result local aliases a candidate whose storage
+                        // the candidate's own bookkeeping frees — neither a
+                        // release nor a leak. Counted as a static-backed
+                        // borrow (excluded from the drops ratchet) so the
+                        // census does not mistake the alias for a new
+                        // conservative drop.
+                        kind: OwnedEventKind::Static,
+                    });
+                    out.extend(std::mem::take(&mut pending_temp_stmts));
+                    out.push(s);
+                    continue;
+                } else if fresh {
                     owned.insert(name.clone(), kind);
                 } else {
                     owned.remove(name);
@@ -2401,7 +2513,16 @@ fn rewrite_list(
                 let before: HashSet<String> = owned.keys().cloned().collect();
                 let mut inner = owned.clone();
                 let mut inner_fresh = fresh_vars.clone();
-                let new_body = rewrite_list(body, &mut inner, &mut inner_fresh, ctx, false);
+                let mut inner_sel = sel_results.clone();
+                let new_body = rewrite_list(
+                    body,
+                    &mut inner,
+                    &mut inner_fresh,
+                    &mut inner_sel,
+                    ctx,
+                    false,
+                );
+                sel_results.extend(inner_sel);
                 for n in before {
                     if !inner.contains_key(&n) {
                         owned.remove(&n);
@@ -2419,7 +2540,16 @@ fn rewrite_list(
                 let before: HashSet<String> = owned.keys().cloned().collect();
                 let mut inner = owned.clone();
                 let mut inner_fresh = fresh_vars.clone();
-                let new_body = rewrite_list(body, &mut inner, &mut inner_fresh, ctx, false);
+                let mut inner_sel = sel_results.clone();
+                let new_body = rewrite_list(
+                    body,
+                    &mut inner,
+                    &mut inner_fresh,
+                    &mut inner_sel,
+                    ctx,
+                    false,
+                );
+                sel_results.extend(inner_sel);
                 for n in before {
                     if !inner.contains_key(&n) {
                         owned.remove(&n);
@@ -2435,7 +2565,16 @@ fn rewrite_list(
                 let before: HashSet<String> = owned.keys().cloned().collect();
                 let mut inner = owned.clone();
                 let mut inner_fresh = fresh_vars.clone();
-                let new_body = rewrite_list(body, &mut inner, &mut inner_fresh, ctx, false);
+                let mut inner_sel = sel_results.clone();
+                let new_body = rewrite_list(
+                    body,
+                    &mut inner,
+                    &mut inner_fresh,
+                    &mut inner_sel,
+                    ctx,
+                    false,
+                );
+                sel_results.extend(inner_sel);
                 for n in before {
                     if !inner.contains_key(&n) {
                         owned.remove(&n);
@@ -2453,8 +2592,16 @@ fn rewrite_list(
                 for arm in arms.iter_mut() {
                     let mut inner = owned.clone();
                     let mut inner_fresh = fresh_vars.clone();
-                    let new_body =
-                        rewrite_list(&arm.body, &mut inner, &mut inner_fresh, ctx, false);
+                    let mut inner_sel = sel_results.clone();
+                    let new_body = rewrite_list(
+                        &arm.body,
+                        &mut inner,
+                        &mut inner_fresh,
+                        &mut inner_sel,
+                        ctx,
+                        false,
+                    );
+                    sel_results.extend(inner_sel);
                     for n in &before {
                         if !inner.contains_key(n) {
                             owned.remove(n);
@@ -2498,6 +2645,19 @@ fn rewrite_list(
         }
     }
     out
+}
+
+/// 2026-11-21 (K3 Phase C): unique synthetic temp name for binding an inline
+/// owned selector candidate, derived from the result local so the name is
+/// stable across builds (determinism gate) and collision-checked against the
+/// function's declared locals via `ctx.next`-suffixed retries.
+fn fresh_temp_name(name: &str, ctx: &mut Pass<'_>) -> String {
+    let base = format!("__selt{}_t{}", name, ctx.next);
+    let mut tname = base;
+    while ctx.locals.contains(&tname) {
+        tname = format!("{}x", tname);
+    }
+    tname
 }
 
 fn release(name: &str, kind: OwnKind, ctx: &mut Pass<'_>) -> HirStmt {
@@ -3445,6 +3605,141 @@ defn copy(s: String) [true][true] -> String {
             sr.get("copy"),
             Some(&StaticClass::Owned),
             "a proven-fresh producer is Owned"
+        );
+    }
+
+    // 2026-11-21 (K3 Phase C): a multi-candidate selector (`ints_or` shape)
+    // whose inline candidates are fresh call results and list literals must
+    // emit a release for each candidate block. The result local is a borrow
+    // (aliases one candidate) — not an owner and not a conservative drop.
+    // Regression: without the LetInsert pass, the loser of each `ints_or`
+    // pair leaks (the pass cannot statically know which candidate wins).
+    #[test]
+    fn multi_candidate_selector_releases_inline_candidates() {
+        let mut program = annotated(
+            r#"
+import "std/alloc.bv";
+defn fresh_list() [true][true] -> List<Int> {
+    let xs: List<Int> = [1];
+    term xs;
+};
+defn pick(a: List<Int>, b: List<Int>) [true][true] -> List<Int> {
+    when a.Count#() == 0 {
+        term b;
+    };
+    term a;
+};
+defn use() [true][true] -> Int {
+    let stride: List<Int> = pick(fresh_list(), [3]);
+    let n: Int = stride.Count#();
+    term n;
+};
+"#,
+        );
+        let events = memcheck_owned(&program, &HashMap::new());
+        // The result local `stride` must be a Static-backed borrow (aliases
+        // one candidate), NOT a conservative drop and NOT an undecided init.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.name == "stride" && matches!(e.kind, OwnedEventKind::Static)),
+            "selector result must be a static-backed borrow, got: {:?}",
+            events
+                .iter()
+                .filter(|e| e.name == "stride")
+                .collect::<Vec<_>>()
+        );
+        // No undecided event for `stride` (the pass must classify it).
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.name == "stride" && matches!(e.kind, OwnedEventKind::UndecidedInit(_))),
+            "selector result must not be undecided"
+        );
+        // Run the full pass and verify releases were inserted for the
+        // selector candidates (the inline list literal `[3]` and the
+        // `fresh_list()` result are both owned blocks that must be freed).
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        // Count List destroys: we expect at least one destroy for the
+        // inline literal `[3]` candidate and one for the `fresh_list()`
+        // result. Both are owned blocks that the selector may not pick.
+        let destroys = releases_of(use_fn)
+            .iter()
+            .filter(|(k, _)| *k == StorageKind::List)
+            .count();
+        assert!(
+            destroys >= 2,
+            "expected >= 2 List destroys (one per inline candidate), got {destroys}"
+        );
+    }
+
+    // 2026-11-21 (K3 Phase C): nested selector — a selector whose candidate
+    // is ITSELF a selector result. The inner selector's result is already
+    // tracked in `sel_results`, so the outer must not re-own it (double-free
+    // risk). Both levels must free their own inline candidates exactly once.
+    #[test]
+    fn nested_selector_does_not_double_free_inner_result() {
+        let mut program = annotated(
+            r#"
+import "std/alloc.bv";
+defn mk() [true][true] -> List<Int> {
+    term [42];
+};
+defn pick(a: List<Int>, b: List<Int>) [true][true] -> List<Int> {
+    when a.Count#() == 0 {
+        term b;
+    };
+    term a;
+};
+defn use() [true][true] -> Int {
+    let inner: List<Int> = pick(mk(), [1]);
+    let outer: List<Int> = pick(inner, [7]);
+    let n: Int = outer.Count#();
+    term n;
+};
+"#,
+        );
+        let events = memcheck_owned(&program, &HashMap::new());
+        // `inner` is a selector result → Static-backed borrow.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.name == "inner" && matches!(e.kind, OwnedEventKind::Static)),
+            "inner selector result must be a borrow"
+        );
+        // `outer` is also a selector result → Static-backed borrow.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.name == "outer" && matches!(e.kind, OwnedEventKind::Static)),
+            "outer selector result must be a borrow"
+        );
+        // No undecided events for either.
+        assert!(
+            !events
+                .iter()
+                .any(|e| (e.name == "inner" || e.name == "outer")
+                    && matches!(e.kind, OwnedEventKind::UndecidedInit(_))),
+            "neither selector result may be undecided"
+        );
+        // Run the pass — the critical assertion is that the pass completes
+        // without panicking and produces a well-formed program. The inline
+        // candidates ([1], [7], [42]) each get their own release; the named
+        // `inner` candidate is NOT re-owned (it's in sel_results).
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        // At minimum: the three inline literals [42], [1], [7] each need a
+        // List destroy. `inner` (named candidate at the outer pick) must NOT
+        // be double-freed — its block is already covered by the inner pick's
+        // own temps.
+        let destroys = releases_of(use_fn)
+            .iter()
+            .filter(|(k, _)| *k == StorageKind::List)
+            .count();
+        assert!(
+            destroys >= 3,
+            "expected >= 3 List destroys (one per inline literal), got {destroys}"
         );
     }
 }

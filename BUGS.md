@@ -33,6 +33,63 @@ with a static-guard-arm producer; ASan clean) + two new
 `owned_storage` unit tests (static/fresh classification). `emit_free`'s
 unknown-provenance path is now conservative: a leak beats a crash.
 
+## 2026-11-21 — detect_faces frame path leaked ~97 KB/call: selector-candidate loser blocks (FIXED, K3 Phase C)
+
+The K3 crash fix (above) eliminated the `free(): invalid pointer` crash
+but the `detect_faces` frame-path soak (Phase A, 2026-11-20) measured a
+steady-state leak of ~97 KB/call (arena-invariant, linear in call count).
+ASan 30-call profiling (Phase B) named the per-call buckets: `conv2d`
+39.3 KB, `briev_bits_to_str` 23 KB, `conv_attr4` 8.5 KB, … — dominated by
+small `malloc(24)` list headers + `malloc(128)` backings, i.e. `Int` list
+allocations inside the ONNX kernel attribute path.
+
+Root cause (Phase B3): the attribute parser builds lists through a
+runtime multi-candidate selector — `ints_or(items, fallback)`:
+`when items.Count#() == 0 { term fallback; }; term items;`. The
+owned-storage pass (`src/hir/owned_storage.rs`) tracks ownership on local
+names; a `Let` whose RHS is a fresh call binds the result local as owner
+of exactly one block. But `ints_or` hands back ONE of TWO owned blocks
+chosen at runtime, and the loser block was never released: the pass
+cannot statically know which candidate wins, and the result local's
+single release frees only the winner. The loser leaks every call. Conv2d
+alone: 6 list allocs / 3 destroys (2 `ints_or` losers + the `od` tensor
+dims literal, by-design tensor lifetime, per call).
+
+Fix (compiler, branch `intel-xpu-harvest`, 2026-11-21): the pass now
+recognizes multi-candidate param-return selectors (`is_multi_selector`
+over `param_return_summaries`). For a `Let` whose RHS is such a selector
+and is fresh: (1) the result local is NOT made owner — it is a borrow
+that aliases one candidate (census event: `Static`-backed, excluded from
+the drops ratchet); (2) each inline owned candidate (fresh call result or
+list literal) is bound to a pass-allocated temp via a new pure-insert HIR
+statement kind `HirStmtKind::LetInsert { name, ty, expr }` (no AST slot —
+the backend's HIR/AST pair walk stays aligned, unlike a synthetic `Let`
+which broke `pair_counts_ok` and forced whole-body AST fallback that
+silently dropped every inserted release); the call arg is rewritten to the
+temp so the candidate is evaluated exactly once; (3) the temp is inserted
+into the `owned` map and released by the scope-end sweep — after the
+candidate's last read (a UAF when released inline, proven by ASan SEGV in
+conv2d); (4) named candidates are re-owned unless already a tracked
+selector result (`sel_results`) — no double-free. Two earlier attempts at
+the stdlib layer (`ints_or` copy-on-select: 101.4→118.8 KB/call regression;
+consume-both + copy: SEGV double-free against the pass's own releases) are
+retired — the fix belongs in the pass, which owns the release
+bookkeeping.
+
+Effect: IR destroy count 32 → 39 (conv2d 6/6, maxpool 3/3, conv1d 8/6,
+…); ASan 30-call leak 3,115,505 B → 2,626,752 B = 101.4 → 56.6 KB/call
+(−44.2%), zero UAF/double-free. Census A/B: the patch adds 0 conservative
+drops (baseline trunk `e1c016c97` already at 2221 after the K3 provenance
+guard landing; the 2202 baseline file was stale trunk drift), +7 releases
+(73 → 80), +7 static-backed borrow reclassifications. The residual ~56 KB
+call is the one-time-per-call tensor-lifetime + `briev_bits_to_str`
+class, tracked in the follow-up plan.
+
+Pinned by two new `owned_storage` unit tests (`multi_candidate_selector_releases_inline_candidates`,
+`nested_selector_does_not_double_free_inner_result`) + the daemon soak
+re-measure + `harness/memcheck_ratchet.sh` (baseline 2202 → 2221,
+reconciled in `harness/memcheck-baseline.txt`).
+
 ## 2026-11-19 — a defn on a recursion cycle claimed `willreturn` and LTO deleted the program (FIXED, PR #145)
 
 A `Void` defn that tail-recurses forever (an accept loop) was emitted with
