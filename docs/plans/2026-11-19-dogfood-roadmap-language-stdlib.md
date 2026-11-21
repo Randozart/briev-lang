@@ -56,6 +56,15 @@ proves from `send_into`'s range), refining the #150 note: the asymmetry
 is about posts naming OBJ-FIELD facts on a returned obj, not about Int
 ranges.
 
+FIFTH FINDING, from the same rebase (issue #151): establishing a caller-side
+fact is only possible behind a `defn`. `when cond { endprogram … }` in a
+node body does not refine the fall-through, `trap;` does not either, and a
+call inside a guard branch CLEARS the obj-field facts that earlier guards
+set - so the ORDER of guards changes what proves. The evented fixture
+carries the workaround in five small wrappers (fill_expect, drain_start,
+drain_resume, slice_len, close_quiet), which is exactly the kind of
+"shape the checker needs" cost worth tracking while the gate matures.
+
 Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
 main via PR #146 `fee5ce003` — checksum ladder kept in the integration
