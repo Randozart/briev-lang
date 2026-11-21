@@ -44,10 +44,14 @@ defn connection_gate(listening: Bool) -> Void {
         poll_set(polls,0,server.fd,POLL_IN);
         when poll_wait(polls,1000) != 1 { trap; };
         let accepted: Socket = sock_accept(server);
-        when accepted.fd < 0 || sock_close(accepted) != 0 { trap; };
+        when accepted.fd < 0 { trap; };
+        let accepted_closed: Int = sock_close(accepted);
+        when accepted_closed != 0 { trap; };
     };
     when !listening && result != -111 && error != -111 { trap; };
-    when sock_close(client) != 0 || sock_close(server) != 0 { trap; };
+    let client_closed: Int = sock_close(client);
+    let server_closed: Int = sock_close(server);
+    when client_closed != 0 || server_closed != 0 { trap; };
     poll_free(polls);
 };
 

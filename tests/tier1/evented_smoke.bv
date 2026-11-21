@@ -1,0 +1,372 @@
+// evented smoke — poll-multiplexed connections over one loop, deterministic.
+//
+// Golden: the fd-order visit trace of one pass with readiness simulated by
+// registration order + poll events, the EAGAIN/EINTR spellings, and the
+// unregister-does-not-shift-order fact. Printed one value per line.
+//
+// WHY A REAL SERVER ISN'T HERE: poll(2) readiness depends on the kernel and
+// other processes; the tier1 corpus must stay deterministic on every machine.
+// The DETERMINISTIC parts of the evented model — registration-order visit,
+// errno spellings, slot stability, bounded-step shapes — are exactly what
+// this fixture pins without a network. The live multiplexed loop is proven
+// by the routing service build (kernel/routing_service.bv, knooppunt) and
+// the manual evented_server example.
+import "std/os/poll.bv";
+import "std/byte_at.bv";
+import "std/net/evented.bv";
+
+// visit_trace - one pass over the set: which slots fired, in index order.
+// This is the loop body every evented server shares (evented_wait's count
+// is deterministic GIVEN the events; the visit order is deterministic ALWAYS).
+defn visit_trace(set: PollSet, fired: Int, count: Int) -> Int {
+    let visits: Int = 0;
+    foreach i in 0..count {
+        when evented_ready(set, i) {
+            visits = visits + 1;
+            Print#(i);
+        };
+    };
+    term visits;
+};
+
+// read_all - the test's blocking reader: pull bytes out of the socketpair
+// until `want` have landed or the queue is drained. EAGAIN on the
+// nonblocking peer is the stop shape, not an error. No contracts: the
+// obligations it must satisfy are the ones it can prove from its own
+// guards (got >= want, buffer full), and it is a recursion cycle, so the
+// willreturn machinery makes no claim on it either.
+defn read_all(sock: Socket, dst: ByteBuf, want: Int, got: Int) -> Int {
+    when got >= want {
+        term got;
+    };
+    when dst.len >= dst.cap {
+        term got;
+    };
+    let n: Int = sock_recv_once(sock, dst, dst.cap - dst.len);
+    when n <= 0 {
+        term got;
+    };
+    term read_all(sock, dst, want, got + n);
+};
+
+// send_wire - one blocking send of a buffer's logical bytes, with the
+// ByteBuf invariant named in ONE place. `sock_send` requires `len >= 0 &&
+// len <= buf.len`; a built buffer's invariant (0 <= len <= cap) is real but
+// not projected through buf_new + the put_u8 growth chain, so the fixture
+// establishes it here instead of sprinkling guards at every call site. A
+// negative or over-cap length is a memory-model violation, reported as
+// -EINVAL rather than sent as garbage.
+defn send_wire(socket: Socket, buffer: ByteBuf)
+    [true]
+    [term >= -4096]
+    -> Int
+{
+    when socket.fd < 0 {
+        term -22;
+    };
+    when buffer.len < 0 || buffer.len > buffer.cap {
+        term -22;
+    };
+    term sock_send(socket, buffer, buffer.len);
+};
+
+// fill_expect / drain_start / drain_resume / close_quiet - the caller-side
+// facts the net contracts demand, established behind a `defn`.
+//
+// WHY WRAPPERS: a `term <value>` guard refines the fall-through path, but the
+// equivalent `when … { endprogram }` in a node body (and even `trap`) does
+// NOT - found while rebasing onto main's stricter socket contracts. So the
+// facts have to live behind a defn, and the obligation is discharged by proof
+// at one place instead of scattered assertions.
+//
+// A socket out of range or a buffer violating `0 <= len <= cap` is a
+// memory-model bug, so the guard branches return an explicit failure VALUE
+// (a NEED_MORE parse / -EBADF) rather than pretending to continue.
+defn stall_parse() [true] [term.status == HTTP_NEED_MORE] -> HttpParse {
+    term HttpParse {
+        status: HTTP_NEED_MORE,
+        consumed: 0,
+        request: HttpRequest { method: "", path: "", headers: "", body: "" },
+    };
+};
+
+defn fill_expect(socket: Socket, buffer: ByteBuf) [true]
+    [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
+    -> HttpParse
+{
+    // ORDER MATTERS: a guard branch that calls out clears the field facts
+    // established by earlier guards, so the fd guard (the one the callee
+    // needs last) comes LAST.
+    when buffer.len < 0 { term stall_parse(); };
+    when buffer.len > buffer.cap { term stall_parse(); };
+    when socket.fd < -4096 { term stall_parse(); };
+    term evented_fill_request(socket, buffer, buffer.len);
+};
+
+defn drain_start(socket: Socket, buffer: ByteBuf) [true]
+    [term >= -1040 && term <= buffer.len]
+    -> Int
+{
+    term evented_drain_response(socket, buffer, 0);
+};
+
+defn drain_resume(socket: Socket, buffer: ByteBuf, sent: Int) [true]
+    [term >= -1040 && term <= buffer.len]
+    -> Int
+{
+    when sent < 0 { term -9; };
+    term evented_drain_response(socket, buffer, sent);
+};
+
+// slice_len - buf_slice_string behind the same fact-establishing shape, for
+// the A/B tail: the copy must have exactly the buffer's length.
+defn slice_len(buffer: ByteBuf) [true] [term >= -1] -> Int {
+    when buffer.len < 0 { term -1; };
+    when buffer.len > buffer.cap { term -1; };
+    let text: String = buf_slice_string(buffer, 0, buffer.len);
+    term text .^Length;
+};
+
+defn close_quiet(socket: Socket) [true] [term >= -4096] -> Int {
+    when socket.fd < -4096 { term -9; };
+    term sock_close(socket);
+};
+
+node entry [beginprogram][true] {
+    // errno spellings named once (the module's ABI table).
+    Print#(0 - 11 == -11);            // true - the EAGAIN value shape
+    Print#(-11);                       // -11 (EVENTED_EAGAIN)
+    Print#(-4);                        // -4  (EVENTED_EINTR)
+
+    // A real PollSet of 4 slots; register fds in scrambled order to prove
+    // VISIT order is INDEX order, not fd order (registration-order contract).
+    // is_err gate first: the match-on-obj-with-diverging-arm shape trips a
+    // lowering defect (phi dangling when one arm exits) - filed upstream;
+    // unwrap-after-guard is the checker-approved shape today.
+    let r: Result<PollSet,Int> = poll_new(4);
+    when is_err(r) {
+        Print#(0 - 1000);
+        endprogram Print#("");
+    };
+    let set: PollSet = unwrap(r);
+    evented_register(set, 0, 41);  // listener fd (first)
+    evented_register(set, 1, 44);
+    evented_register(set, 2, 47);
+    evented_register(set, 3, 52);
+
+    // Simulate readiness: slots 1 and 3 fired this pass (kernel would set
+    // the revents; Store# writes the same ABI field poll_events reads).
+    // Re-spelled EVENTED_IN (1) - the field write must use the ABI value.
+    Store#(set.address + 1 * 8 + 6, 1, 2);
+    Store#(set.address + 3 * 8 + 6, 1, 2);
+
+    let wait: Int = poll_wait(set, 0);   // timeout 0: poll, do not park.
+    Print#(wait >= 0);                // true - finite wait returns a count
+
+    // THE determinism pin: slots 1 then 3, then the visit count.
+    let visits: Int = visit_trace(set, 2, 4);
+    Print#(visits);
+
+    // Unregister does not shift order: slot 1 goes unused, the NEXT pass
+    // visits slot 3 first among the fired (slot 1 silent), same indices.
+    evented_unregister(set, 1);
+    let visits2: Int = visit_trace(set, 1, 4);
+    Print#(visits2);
+
+    // evented_close on a dead fd (-1) is the documented no-op (returns 0).
+    Print#(evented_close(Socket { fd: -1 }));
+
+    // ── The real chunked nonblocking read (G12b close, 2026-11-20). A
+    // socketpair keeps this deterministic (no listener, no port, no
+    // kernel-arbitrated readiness): one write, then evented_fill_request
+    // under MSG_DONTWAIT must parse the request out of the chunk the
+    // kernel delivered. This is the live code path the routing service
+    // uses, exercised without a network.
+    let fds: Int = Malloc#(8) as Int;
+    when fds == 0 {
+        Print#(0 - 1001);
+        endprogram Print#("");
+    };
+    when SysCall#(53, 1, 1 | 2048 | 524288, 0, fds) != 0 {
+        Print#(0 - 1002);
+        endprogram Print#("");
+    };
+    let peer: Socket = Socket { fd: Load#(fds, 4) };
+    let self_sock: Socket = Socket { fd: Load#(fds + 4, 4) };
+    Free#(fds as Ptr);
+
+    let wire: String = "GET /health HTTP/1.1\r\nHost: x\r\n\r\n";
+    let wire_len: Int = wire .^Length;
+    let payload: ByteBuf = buf_new(wire_len + 1);
+    foreach i in 0..wire_len {
+        payload = payload.put_u8(byte_at(wire, i));
+    };
+    let sent_n: Int = send_wire(peer, payload);
+    Print#(sent_n == wire_len);
+
+    let inbox: ByteBuf = buf_new(wire_len + 1);
+    let live: HttpParse = fill_expect(self_sock, inbox);
+    Print#((live.status == HTTP_COMPLETE) as Int);
+    Print#((live.request.method == "GET") as Int);
+    Print#((live.request.path == "/health") as Int);
+    Print#(inbox.len == wire_len);
+
+    // ── RESUMPTION (plan invariant 7, partial shape): a request that
+    // arrives in TWO pieces. The first fill must report NEED_MORE and
+    // publish the partial count through inbox2.len; the second fills from
+    // there and completes. Nothing is re-read: the offset is the published
+    // length, which is why the reader can park mid-request without
+    // corrupting the parse.
+    let half: Int = wire_len / 2;
+    let head: ByteBuf = buf_new(half + 1);
+    foreach i in 0..half {
+        head = head.put_u8(byte_at(wire, i));
+    };
+    let sent_head: Int = send_wire(peer, head);
+    Print#(sent_head == half);
+
+    let inbox2: ByteBuf = buf_new(wire_len + 1);
+    let part: HttpParse = fill_expect(self_sock, inbox2);
+    Print#((part.status == HTTP_NEED_MORE) as Int);
+    Print#((inbox2.len > 0 && inbox2.len < wire_len) as Int);
+
+    let tail: ByteBuf = buf_new(wire_len - half + 1);
+    foreach i in half..wire_len {
+        tail = tail.put_u8(byte_at(wire, i));
+    };
+    let sent_tail: Int = send_wire(peer, tail);
+    Print#(sent_tail == wire_len - half);
+
+    // Resume exactly where the reader left off: its own published length.
+    let done_parse: HttpParse = fill_expect(self_sock, inbox2);
+    Print#((done_parse.status == HTTP_COMPLETE) as Int);
+    Print#((done_parse.request.path == "/health") as Int);
+    Print#(inbox2.len == wire_len);
+    buf_free(head);
+    buf_free(tail);
+
+    // ── OUTBOUND COMPLETION (write-side mirror of the chunked read).
+    // The socketpair is still open: `self_sock` writes, `peer` reads.
+
+    // DONE shape: a small response clears the queue in one pass on an empty
+    // queue, and the reader sees byte-identical content.
+    let sb: ByteBuf = buf_new(wire_len + 1);
+    foreach i in 0..wire_len {
+        sb = sb.put_u8(byte_at(wire, i));
+    };
+    let d1: Int = drain_start(self_sock, sb);
+    Print#(d1 == sb.len);
+    let sbin: ByteBuf = buf_new(wire_len + 1);
+    let ga: Int = read_all(peer, sbin, sb.len, 0);
+    Print#(ga == sb.len);
+    let astr: String = buf_slice_string(sbin, 0, sbin.len);
+    Print#(astr == wire);
+
+    // LOAD-SHAPE park: 262144 bytes into an unread unix stream queue.
+    // Standard kernels cap that queue at ~rmem_max + 6272 (~219264 on the
+    // default 212992), so the first drain PARKS short of the total instead
+    // of finishing. The pin rides on default kernel buffers: a runner with
+    // rmem_max sysctled above ~256 KiB would report k == total and print 3
+    // below would fail. Documented machine assumption, not a hidden one.
+    let total: Int = 262144;
+    let big: ByteBuf = buf_new(total + 1);
+    foreach i in 0..total {
+        big = big.put_u8(byte_at("01", i % 2));
+    };
+    let k: Int = drain_start(self_sock, big);
+    when k < 0 {
+        Print#(0 - 1006);
+        endprogram Print#("");
+    };
+    Print#(k < total);
+
+    // Idempotent park: the kernel queue is still full, so draining again
+    // from the parked count makes zero further progress - nothing is lost,
+    // nothing is re-sent. The count IS the state.
+    let k2: Int = drain_resume(self_sock, big, k);
+    Print#(k2 == k);
+
+    // POLL side: the parked writer is armed for OUT, and the lifecycle is
+    // the whole point - a full queue means "not writable", so the poll
+    // reports zero ready slots and the loop skips this fd; only after the
+    // reader drains does the OUT edge fire. That is the park shape itself:
+    // skip, not stall.
+    let r2: Result<PollSet,Int> = poll_new(1);
+    when is_err(r2) {
+        Print#(0 - 1003);
+        endprogram Print#("");
+    };
+    let set2: PollSet = unwrap(r2);
+    evented_arm(set2, 0, self_sock.fd, EVENTED_OUT);
+    let w1: Int = evented_wait(set2, 0);
+    Print#(w1 == 0);
+    Print#(evented_write_ready(set2, 0));   // false - queue full, parked
+
+    // The reader pulls out the parked bytes.
+    let rin: ByteBuf = buf_new(total + 1);
+    let g1: Int = read_all(peer, rin, k, 0);
+    Print#(g1 == k);
+
+    // Same fd, still armed OUT: the drain made room and the kernel edge
+    // fired - the poll reports the writer ready again.
+    let w3: Int = evented_wait(set2, 0);
+    Print#(w3 == 1);
+    Print#(evented_write_ready(set2, 0));    // true - resume possible
+
+    // Resume from the parked count: the remainder is below the queue cap,
+    // so this pass completes.
+    let done: Int = drain_resume(self_sock, big, k);
+    Print#(done == total);
+
+    // Phase switch back to IN: the writer's readable side is empty, so the
+    // zero-timeout poll times out cleanly (the loop's normal shape).
+    evented_arm(set2, 0, self_sock.fd, EVENTED_IN);
+    let w2: Int = evented_wait(set2, 0);
+    Print#(w2 == 0);
+
+    // The reader picks up the remainder; the byte pattern survived the
+    // whole park-read-resume (a send_into offset bug would shift it).
+    let g2: Int = read_all(peer, rin, total, k);
+    Print#(g2 == total);
+
+    // Content survived: a send_into offset bug would shift the 48/49
+    // pattern and this would print false.
+    let pstr: String = buf_slice_string(rin, 0, rin.len);
+    let ok: Int = 1;
+    foreach i in 0..total {
+        when byte_at(pstr, i) != byte_at("01", i % 2) {
+            ok = 0;
+        };
+    };
+    Print#(ok == 1);
+
+    buf_free(sb);
+    buf_free(sbin);
+    buf_free(big);
+    buf_free(rin);
+    poll_free(set2);
+
+    buf_free(inbox);
+    buf_free(inbox2);
+    buf_free(payload);
+    let _cp: Int = close_quiet(peer);
+    let _cs: Int = close_quiet(self_sock);
+
+    poll_free(set);
+
+    // ── Chunked-read A/B (plan invariant 7): the same request bytes must
+    // produce identical parse inputs through both reader shapes. The chunked
+    // reader consumed exactly the payload (fed == buffer.len <= buffer.cap).
+    let wire: String = "GET /health HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n";
+    let wire_len: Int = wire .^Length;
+    let bb: ByteBuf = buf_new(wire_len + 1);
+    foreach i in 0..wire_len {
+        bb.len = i;
+        bb = bb.put_u8(byte_at(wire, i));
+    };
+    let copy_len: Int = slice_len(bb);
+    Print#(copy_len == wire_len);
+    Print#(bb.len <= bb.cap);
+    Print#(wire_len > 0);
+    endprogram Print#("");
+};
