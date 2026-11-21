@@ -29,6 +29,26 @@ defn visit_trace(set: PollSet, fired: Int, count: Int) -> Int {
     term visits;
 };
 
+// read_all - the test's blocking reader: pull bytes out of the socketpair
+// until `want` have landed or the queue is drained. EAGAIN on the
+// nonblocking peer is the stop shape, not an error. No contracts: the
+// obligations it must satisfy are the ones it can prove from its own
+// guards (got >= want, buffer full), and it is a recursion cycle, so the
+// willreturn machinery makes no claim on it either.
+defn read_all(sock: Socket, dst: ByteBuf, want: Int, got: Int) -> Int {
+    when got >= want {
+        term got;
+    };
+    when dst.len >= dst.cap {
+        term got;
+    };
+    let n: Int = sock_recv_once(sock, dst, dst.cap - dst.len);
+    when n <= 0 {
+        term got;
+    };
+    term read_all(sock, dst, want, got + n);
+};
+
 node entry [beginprogram][true] {
     // errno spellings named once (the module's ABI table).
     Print#(0 - 11 == -11);            // true - the EAGAIN value shape
@@ -141,6 +161,107 @@ node entry [beginprogram][true] {
     Print#(inbox2.len == wire_len);
     buf_free(head);
     buf_free(tail);
+
+    // ── OUTBOUND COMPLETION (write-side mirror of the chunked read).
+    // The socketpair is still open: `self_sock` writes, `peer` reads.
+
+    // DONE shape: a small response clears the queue in one pass on an empty
+    // queue, and the reader sees byte-identical content.
+    let sb: ByteBuf = buf_new(wire_len + 1);
+    foreach i in 0..wire_len {
+        sb = sb.put_u8(byte_at(wire, i));
+    };
+    let d1: Int = evented_drain_response(self_sock, sb, 0);
+    Print#(d1 == sb.len);
+    let sbin: ByteBuf = buf_new(wire_len + 1);
+    let ga: Int = read_all(peer, sbin, sb.len, 0);
+    Print#(ga == sb.len);
+    let astr: String = buf_slice_string(sbin, 0, sbin.len);
+    Print#(astr == wire);
+
+    // LOAD-SHAPE park: 262144 bytes into an unread unix stream queue.
+    // Standard kernels cap that queue at ~rmem_max + 6272 (~219264 on the
+    // default 212992), so the first drain PARKS short of the total instead
+    // of finishing. The pin rides on default kernel buffers: a runner with
+    // rmem_max sysctled above ~256 KiB would report k == total and print 3
+    // below would fail. Documented machine assumption, not a hidden one.
+    let total: Int = 262144;
+    let big: ByteBuf = buf_new(total + 1);
+    foreach i in 0..total {
+        big = big.put_u8(byte_at("01", i % 2));
+    };
+    let k: Int = evented_drain_response(self_sock, big, 0);
+    when k < 0 {
+        Print#(0 - 1006);
+        endprogram Print#("");
+    };
+    Print#(k < total);
+
+    // Idempotent park: the kernel queue is still full, so draining again
+    // from the parked count makes zero further progress - nothing is lost,
+    // nothing is re-sent. The count IS the state.
+    let k2: Int = evented_drain_response(self_sock, big, k);
+    Print#(k2 == k);
+
+    // POLL side: the parked writer is armed for OUT, and the lifecycle is
+    // the whole point - a full queue means "not writable", so the poll
+    // reports zero ready slots and the loop skips this fd; only after the
+    // reader drains does the OUT edge fire. That is the park shape itself:
+    // skip, not stall.
+    let r2: Result<PollSet,Int> = poll_new(1);
+    when is_err(r2) {
+        Print#(0 - 1003);
+        endprogram Print#("");
+    };
+    let set2: PollSet = unwrap(r2);
+    evented_arm(set2, 0, self_sock.fd, EVENTED_OUT);
+    let w1: Int = evented_wait(set2, 0);
+    Print#(w1 == 0);
+    Print#(evented_write_ready(set2, 0));   // false - queue full, parked
+
+    // The reader pulls out the parked bytes.
+    let rin: ByteBuf = buf_new(total + 1);
+    let g1: Int = read_all(peer, rin, k, 0);
+    Print#(g1 == k);
+
+    // Same fd, still armed OUT: the drain made room and the kernel edge
+    // fired - the poll reports the writer ready again.
+    let w3: Int = evented_wait(set2, 0);
+    Print#(w3 == 1);
+    Print#(evented_write_ready(set2, 0));    // true - resume possible
+
+    // Resume from the parked count: the remainder is below the queue cap,
+    // so this pass completes.
+    let done: Int = evented_drain_response(self_sock, big, k2);
+    Print#(done == total);
+
+    // Phase switch back to IN: the writer's readable side is empty, so the
+    // zero-timeout poll times out cleanly (the loop's normal shape).
+    evented_arm(set2, 0, self_sock.fd, EVENTED_IN);
+    let w2: Int = evented_wait(set2, 0);
+    Print#(w2 == 0);
+
+    // The reader picks up the remainder; the byte pattern survived the
+    // whole park-read-resume (a send_into offset bug would shift it).
+    let g2: Int = read_all(peer, rin, total, k);
+    Print#(g2 == total);
+
+    // Content survived: a send_into offset bug would shift the 48/49
+    // pattern and this would print false.
+    let pstr: String = buf_slice_string(rin, 0, rin.len);
+    let ok: Int = 1;
+    foreach i in 0..total {
+        when byte_at(pstr, i) != byte_at("01", i % 2) {
+            ok = 0;
+        };
+    };
+    Print#(ok == 1);
+
+    buf_free(sb);
+    buf_free(sbin);
+    buf_free(big);
+    buf_free(rin);
+    poll_free(set2);
 
     buf_free(inbox);
     buf_free(inbox2);

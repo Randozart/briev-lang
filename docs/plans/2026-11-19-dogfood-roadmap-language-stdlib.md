@@ -13,8 +13,8 @@ closed at the stdlib layer). L2 (chunked read) is DONE in this PR;
 L1's fact source is landed, convergence pending; S4 (signals) and true
 async-I/O-under-await remain open.
 
-WHAT THE CHUNKED READ TAUGHT the contract discipline — three rules worth
-carrying into the next primitives:
+WHAT THE CHUNKED READ AND THE OUTBOUND MIRROR TAUGHT the contract
+discipline - four rules worth carrying into the next primitives:
 
 1. **Bounds as arguments, not loop-carried state.** `recv_into(socket,
    buf, offset, room, flags)` proves at every call site because the
@@ -35,10 +35,26 @@ carrying into the next primitives:
    frames too), which is what makes `buffer.len` a real out-channel: a
    partial request parks and resumes with
    `fill_request(sock, buf, buf.len, flags)`. The publish must happen in
-   the frame that still OWNS the caller's binding — `claim` returns a
+   the frame that still OWNS the caller's binding - `claim` returns a
    fresh value, so a deeper frame's write lands on that temporary and is
    lost. Linearness of the publish point decides correctness here, and
    the resumption test in `evented_smoke` is the thing that caught it.
+
+OUTBOUND COMPLETION (2026-11-21, same PR): the write-side mirror landed
+so the evented lane can finish a transfer, not just intake one.
+`send_into` (bounds as arguments, mirroring `recv_into`),
+`drain_response` (advance-until-the-kernel-stops, reports the running
+count: total = DONE, 0 <= k < total = PARKED, negative = -errno), and
+`evented_arm`/`evented_write_ready` (the per-connection IN/OUT phase
+switch). The lifecycle pin is machine-dependent by documented design: a
+256 KiB payload against the kernel's unix stream queue cap (~219264 bytes
+on the default rmem_max 212992 - SO_RCVBUF does not cap unix stream
+queues, so the cap IS the machine's buffer size), then park, drain,
+OUT-edge, resume, content check. Numeric postconditions on Int results
+did project through the deny gate (the `drain_response` recursion
+proves from `send_into`'s range), refining the #150 note: the asymmetry
+is about posts naming OBJ-FIELD facts on a returned obj, not about Int
+ranges.
 
 Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
