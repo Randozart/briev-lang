@@ -96,9 +96,15 @@ one-line "simplification" that looks harmless) initially broke nothing either;
 `checkfree_rejects_fact_from_nonterminating_guard` now catches it. A test that
 cannot distinguish a missing rule is not a test of that rule.
 
-**Interpreter parity.** `brievc test tests/tier1/checkfree_ok.bv` pins the same
-golden (`8|-1`) as the native path, and a deliberately wrong golden is caught
-(Rule 5: the interpreter is the reference).
+**Interpreter parity — corrected 2026-11-20 (wave-7).** The first version of
+this record claimed that `brievc test tests/tier1/checkfree_ok.bv` was an
+interpreter check. It is not: a `.golden` fixture is executed **natively**, and
+only a file carrying SPEC §8.11 `test { }` blocks reaches the reference
+interpreter (`test_runner.rs` decides between the two). So the coverage that
+claim described did not exist, and the claim itself was a defect in the record.
+It is real now: `tests/tier1/checkfree_interp.bv` pins the meaning of both
+forms — guarded read, rejected index, offset neighbour, offset rejection —
+through four interpreter tests. The golden fixture remains a *native* pin.
 
 ## 4. Scope boundaries (documented, not implied)
 
@@ -113,13 +119,22 @@ golden (`8|-1`) as the native path, and a deliberately wrong golden is caught
 
 ## 5. Follow-ups (not part of this landing)
 
-1. **Interval reasoning over the index** in the fact engine —
-   `i > 0` + `i <= count` ⇒ `xs[i-1]` safe. Generalizes every consumer.
-2. **A true index type** (`in` = index, `upto` = bound, Goose's split) needs a
-   total construction source for a growable collection, which does not exist
-   without a fallible constructor.
-3. **`checkfree` on generic defns** after monomorphization — the obligation is
-   currently checked on the declared body only.
+1. ~~**Interval reasoning over the index**~~ — **LANDED** 2026-11-20
+   (wave-7 W7-2). It did not need building: the fact engine already reasons
+   over linear combinations, so `i > 0` + `i <= Count#()` proves both halves of
+   `xs[i - 1]`. The obligation had simply been matching guard *spellings*
+   instead of posing goals. F1/F2 now go to `callgate::prove_precondition`, so
+   the claim in §2 — a consumer of the proof engine, inheriting its upgrades —
+   is true rather than aspirational. Measured before changing anything:
+   `[i > 0, i <= n] ⊢ i - 1 < n` Proven; `[i <= n] ⊬ i < n` (no off-by-one);
+   `[i < ys.Count#()] ⊬ i < xs.Count#()` (collection identity held).
+2. **A true index type** (`in` = index, `upto` = bound, Goose's split) — **not
+   worth doing**. It needs a total construction source for a growable
+   collection, and none exists without a fallible constructor.
+3. **`checkfree` on generic defns** — **re-scoped, not scheduled**. There is no
+   monomorphization pass in the tree (`fn monomorph` does not exist), so
+   "obligation per instantiation" has no hook to attach to. Whoever proposes it
+   needs to name that hook first.
 
 ## 6. Gate record
 

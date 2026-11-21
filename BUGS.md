@@ -1,3 +1,65 @@
+## 2026-11-20 — A diverging match arm killed the whole continuation (FIXED, wave-7 W7-1)
+
+`emit_match` reset `fun.terminated` at the top of every arm and never restored
+the value it had on entry. A value `match` whose **last** arm diverges
+(`endprogram`, `term`) therefore returned `terminated = true`, and the
+enclosing body loop (`emit_toplevel.rs:5563`) read that as "stop emitting" —
+so the merge block was written with a `phi`, no terminator, and no
+continuation, and the epilogue `ret` was skipped. LLVM rejected the module
+("expected instruction opcode") and the program failed to build (issue #148).
+
+The issue's own diagnosis blamed the phi's predecessor list. That part is
+correct behaviour: a diverging arm ends `unreachable` and contributes no edge.
+The defect was purely the stale flag. Fix: save it at `emit_match` entry,
+restore it before the merge block; the all-diverging path still reports
+`true`. Scope: only the last-arm-diverges shape; first/middle positions reset
+the flag again on the next arm. Regression: `tests/diverging_arm_match.rs`
+(6 shapes, 3 of which fail without the restore) plus the native and
+interpreter tier1 fixtures.
+
+## 2026-11-20 — Bare `term;` in a defn: interpreter continues, native returns (OPEN)
+
+Found while making the contract gate honest (wave-7 W7-3), on
+`tests/tier1/divergent_loop_attrs.bv`:
+
+```briev
+defn f(x: Int) -> Void {
+    when x > 0 { term; };
+    Print#("after");
+};
+```
+
+`f(1)` prints nothing before the final `|end` — the backend treats the bare
+`term;` in a defn as an unconditional `ret void`. The reference interpreter
+does not: `Statement::Term(None)` is "a convergence checkpoint — continue"
+(`src/interpreter/eval.rs:2980`), with no defn/ret distinction. SPEC §11.3
+scopes the convergence checkpoint to `node`/`txn` bodies and says nothing
+about a bare `term;` in a defn, so the two engines are both defensible and
+therefore divergent — Rule 5 makes the interpreter the reference, which makes
+the backend the bug.
+
+Consequence: no fallthrough fact may be recorded for a guard whose body is a
+bare `term;` (`crate::analysis::termination::statement_always_terminates`
+correctly excludes it, and an attempted "fix" that included it was reverted —
+it would have let the compiler PROVE `n - 1 >= 0` from a guard that does not
+return). The fixture now recurses on the true side of its guard, which is
+provable and unambiguous.
+
+Not fixed here: settling it needs a decision on which engine is right (and a
+SPEC line), then a test per engine.
+
+## 2026-11-20 — `brievc test` cannot link an export-surface fixture (OPEN, pre-existing)
+
+`brievc test tests/tier1/strexp.bv` fails at link time with `multiple
+definition of _start` (the fixture's `#export` surface emits its own startup,
+and the test runner links a normal program). Identical before and after the
+wave-7 changes (verified with binaries from both trees), so it is not a
+regression — but it means the tier1 corpus is 86/87, not 87/87, and a
+`brievc test tests/tier1` run always reports one failure. `tests/daily_use_smoke.rs`
+already documents that `strexp`/`strexp2` belong to the `brievc lib` surface,
+so the likely fix is a runner-side classification (link as a library, or skip
+with a stated reason) rather than a source change.
+
 ## 2026-11-20 — Free# on a possibly-static producer result was an unsound @free (FIXED, K3)
 
 The kiosk daemon's `detect_faces` response builder (`append_owned`/

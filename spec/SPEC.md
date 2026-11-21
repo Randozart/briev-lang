@@ -3669,25 +3669,42 @@ a contract also satisfies `checkfree`.
 
 A subscript `coll[idx]` is discharged when **both** halves hold:
 
-- **F1 — upper bound.** A dominating guard establishes `idx < coll.Count#()`
-  (or `idx <= coll.Count#() - 1`, or the mirrored `>`/`>=` spellings). The
-  guard must name the index expression **as written**: `xs[i]` is discharged
-  by `when i < xs.Count#()`, and `xs[i - 1]` by `when i - 1 < xs.Count#()`.
-- **F2 — lower bound.** A dominating guard establishes `0 <= idx`, **or**
-  `idx` is a value of `u32 in coll` for the same collection — its
-  construction rule gives `0 ..= Count#()`, which supplies the lower half
-  and only the lower half.
+- **F1 — upper bound.** The facts that dominate the subscript prove
+  `idx < coll.Count#()`.
+- **F2 — lower bound.** They prove `0 <= idx`, **or** `idx` is a value of
+  `u32 in coll` for the same collection — its construction rule gives
+  `0 ..= Count#()`, which supplies the lower half and only the lower half.
 
-A literal index into a fixed `Vector<_, N>` is the other discharge: `< N` is
-a static fact. A literal into a **dynamic** collection is rejected — its
-length is not statically known, so a small number proves nothing. That is
-the difference between an obligation and a lint.
+Both goals are posed to the same fact engine the call-site contract gate uses
+(§10.1), so the obligation inherits every reasoning rule that engine has, and
+a guard that satisfies a contract also satisfies `checkfree`. In particular
+the engine reasons over **linear combinations**, not over spellings:
 
-An upper bound alone is not a proof (a negative index is still possible),
-and an `IndexIn` value alone is not a proof either (§15.4a). Rejection is the
-default: a subscript the compiler cannot prove is a compile error naming the
-collection, the failing half, and the guard to write. `foreach` needs no
-proof — it never subscripts.
+```briev
+checkfree defn previous(xs: List<Int>, i: Int) -> Int {
+    when i > 0 {                        // F2 — 0 <= i - 1 follows from i > 0
+        when i <= xs.Count#() {         // F1 — i - 1 < Count#() follows
+            term xs[i - 1];             // the neighbour read proves
+        };
+    };
+    term 0 - 1;
+};
+```
+
+Neither guard names `i - 1`; the bounds on `i` imply them. A guard that names
+the index expression directly is the degenerate case of the same reasoning.
+
+What the engine will **not** do is invent a bound it has not been given:
+
+- An **inclusive** upper bound is not an exclusive one: `when i <= xs.Count#()`
+  does not license `xs[i]`, because `i == Count#()` is one past the last
+  element. `when i <= xs.Count#() - 1`, or `when i < xs.Count#()`, does.
+- A guard on one collection says nothing about another: a fact about
+  `ys.Count#()` cannot discharge `xs[i]`. Collection identity is part of the
+  goal, not a detail of the spelling.
+- `Count#(xs)` and `xs.Count#()` are distinct terms to the engine, so both
+  spellings are tried for F1 — a guard written one way discharges a subscript
+  written the other way.
 
 `checkfree` is analysis-only: it changes no emitted code (`--llvm` output is
 byte-identical with and without it), because a proof is not a runtime check.
