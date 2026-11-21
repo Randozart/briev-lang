@@ -585,6 +585,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     if !task_errors.is_empty() {
         return Err(format!("task handle errors:\n{}", task_errors.join("\n")));
     }
+    // 2026-11-20 (evented-net Wave 2): linear-object gate, parity with the
+    // pipeline.rs check path (acceptance must not diverge).
+    let obj_errors = briev_compiler::analysis::obj_linear::analyze(&items);
+    if !obj_errors.is_empty() {
+        return Err(format!("linear object errors:\n{}", obj_errors.join("\n")));
+    }
     // 2026-08-07 (object instance pools): spawn pools must be predictably
     // inexhaustible — the spawn-count analysis rejects any spawn whose
     // multiplicity cannot be statically bounded (Briev has no runtime errors).

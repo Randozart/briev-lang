@@ -1,3 +1,58 @@
+## 2026-11-21 — The wave-8 contract tightening makes the kiosk daemon uncompilable (OPEN)
+
+`brievc build briev/service/daemon.bv` (briev-kiosk-avatar) fails with **41
+contract refutations** at trunk `3bf2fc375` (post-`81f1de8a5` wave-8 linear
+`term` + totality rules). Grouped: `tensor_get` ×17, `tensor_set` ×13,
+`sp_cached_model` ×3, `tensor_new` ×2, `sock_send`/`sock_recv`/
+`sock_connect_unix`/`sock_bind_listen_unix`/`buf_slice_string` ×1 each.
+Representative message:
+
+```
+invalid operation 'call to `tensor_get` — the precondition
+'((idx >= 0) && (idx < obt.n))' is not provable at this call site.
+```
+
+**The regression is in trunk, not in the consumer.** Controlled A/B, same
+sources, same model, only the compiler differs:
+
+| compiler | daemon build |
+|---|---|
+| `e1c016c97` (pre-wave-8) | 0 errors, binary emitted |
+| `3bf2fc375` (post-wave-8) | **41 errors, no binary** |
+| `3bf2fc375` with the K3 R2 ownership patch stashed | **41 errors** (unchanged) |
+
+So the ownership work neither causes nor masks it. The failing shape, reduced
+to its minimal form:
+
+```briev
+defn get(t: Int, i: Int) [i >= 0 && i < t][true] -> Int { term i; };
+defn chan(i: Int) [i >= 0][term >= 0 && term < 8] -> Int { term i % 8; };
+defn use(n: Int) -> Int {
+    let acc: Int = 0;
+    foreach i in 0..n {
+        let c: Int = 0;
+        when n > 1 { c = chan(i); };   // join {c = 0} with {c ∈ [0,8)}
+        acc = acc + get(8, c);        // c >= 0 && c < 8 NOT provable
+    };
+    term acc;
+};
+```
+
+`4caace291` accepts this; `3bf2fc375` refutes it. Verified narrower: a DIRECT
+`let c: Int = chan(i)` is still accepted — only the **conditional
+reassignment join** loses the fact. So the wave-8 change dropped the fact
+join for a local assigned a provable value on one path and a call result on
+the other. The daemon's 41 sites are all this shape (`let c = 0; when … { c =
+axis_channel(…) }; tensor_get(scale, c)`).
+
+Impact: the kiosk cannot re-pin past `4caace291` and cannot run any
+end-to-end measurement (soak, ASan, native smoke) against current trunk.
+
+Not fixed here: the repair is the checker's fact join across `when`
+reassignment, not 41 daemon-side guards — adding guards would paper over a
+discharge the checker used to do. Tracked separately so the R2 ownership work
+can land on its own evidence.
+
 ## 2026-11-20 — A diverging match arm killed the whole continuation (FIXED, wave-7 W7-1)
 
 `emit_match` reset `fun.terminated` at the top of every arm and never restored

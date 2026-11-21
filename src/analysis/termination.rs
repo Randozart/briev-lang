@@ -608,10 +608,7 @@ mod tests {
             "n",
             vec![
                 Statement::Guarded(Expr::Bool(true), vec![Statement::Term(None)]),
-                Statement::Assign(
-                    Expr::Identifier("x".into()),
-                    Expr::Decimal(1),
-                ),
+                Statement::Assign(Expr::Identifier("x".into()), Expr::Decimal(1)),
             ],
         )]);
         assert!(errors.is_empty());

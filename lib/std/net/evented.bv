@@ -1,0 +1,401 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// evented - poll-multiplexed connection handling composed from the net stack
+// (net campaign, 2026-11-20). `server_loop.bv`'s own header names this as the
+// next step: "not poll-multiplexed - os/poll.bv exists but nothing composes
+// them yet."
+//
+// WHAT THIS ADDS over server_loop: a listener can hold MANY connections at
+// once; poll(2) tells us which are ready; each ready connection advances by
+// ONE bounded nonblocking step (recv-once/send-once). A slow or silent client
+// no longer pins the loop: every step returns immediately (EAGAIN spelled as
+// EVENTED_EAGAIN), and the loop simply moves on to the next ready fd.
+//
+// DETERMINISM CONTRACT (why this is testable): poll(2) reports readiness in
+// REGISTRATION ORDER (index order of the PollSet), and the module's iteration
+// is index order - so for a fixed registration order and fixed readiness, the
+// visit order is fixed. Handlers are plain defns the application owns; the
+// module never stores function values (the checker has no function values -
+// server_loop.bv header, same decision).
+//
+// OWNERSHIP CONTRACT: the PollSet never owns fds ("polling never owns the
+// fds" - os/poll.bv). The program owns every Socket it registers; closing is
+// the program's job, through evented_close (which makes the LOCAL copy dead
+// defensively). Since wave 2 this discipline is a CHECKER FACT: Socket
+// carries `attr linear`, so a double close, a use after close, or a live
+// socket at scope end is a compile error rather than a debugging session
+// (analysis::obj_linear).
+//
+// CHUNKED READS (2026-11-20, closes Knooppunt G12b): fill_request reads a
+// request through the parser in CHUNKS rather than a byte at a time. Two
+// facts make it verifiable under config/contracts.dbvl `policy: deny`:
+// recv_into takes the bounds as ARGUMENTS (nothing loop-carried to reason
+// about), and ByteBuf.claim advances the valid length as an obj-method
+// POSTCONDITION (a mid-body `len` write leaves no projection - see issue
+// #150 for the free-defn/obj-method asymmetry behind that choice).
+//
+// RESUMPTION CONTRACT: a partial request PARKS instead of restarting. Every
+// exit (and every descent) publishes the running count through `buffer.len`;
+// obj parameters are references, so the caller's own binding carries the
+// progress and the next call is `fill_request(sock, buf, buf.len, flags)`.
+// `evented_smoke` pins this with a request delivered in two pieces.
+//
+// OUTBOUND COMPLETION (write-side mirror): drain_response advances a
+// buffer's write by as much as the kernel accepts this pass and reports the
+// running count - total = DONE, 0 <= k < total = PARKED (arm the slot for
+// EVENTED_OUT via evented_arm, resume at k on the next edge, nothing is
+// re-sent), negative = -errno (EINTR: retry now; the reset family: peer
+// gone). A full send queue means "not writable", so a parked writer sees a
+// poll with zero ready slots and the loop skips it - skip, not stall - and
+// the OUT edge fires only when the peer's queue has room. `evented_smoke`
+// pins the whole lifecycle over a live socketpair with a 256 KiB payload
+// against the kernel's unread-queue cap (~219264 bytes on standard rmem_max;
+// SO_RCVBUF does not cap unix stream queues - the cap is the machine's
+// buffer size, documented in the fixture).
+//
+// RELATIONSHIP TO THE SEGMENT SCHEDULER: independent on purpose. An evented
+// handler MAY be a spawned task advanced by `yield;` - the two compose
+// because poll_wait is just another syscall in a segment - but nothing here
+// requires it. The smoke fixture pins the plain-loop composition first.
+import "std/os/poll.bv";
+import "std/net/socket.bv";
+import "std/net/nonblocking.bv";
+import "std/net/bytes.bv";
+import "std/net/http.bv";
+
+// ── errno spellings (Linux x86_64) - named ONCE so "would block" is a
+// checkable value, not a magic negative. The syscall family returns -errno
+// (socket.bv header), so these compare NEGATED.
+const EVENTED_EAGAIN: Int = -11;
+const EVENTED_EWOULDBLOCK: Int = -11; // same value on Linux, both spellings
+const EVENTED_EINTR: Int = -4;
+
+// poll(2) event masks, re-spelled from os/poll.bv so the evented API is
+// self-contained (poll.bv's are private consts; re-deriving keeps module
+// boundaries honest - same values, single ABI).
+const EVENTED_IN: Int = 1;
+const EVENTED_OUT: Int = 4;
+const EVENTED_ERROR: Int = 8;
+const EVENTED_HANGUP: Int = 16;
+
+// evented_listener - a NONBLOCKING listening socket on `port` with
+// SO_REUSEADDR (quick restart rebinds over TIME_WAIT). Result<Socket,Int>
+// carries the socket or the -errno; Err distinguishes failure from the
+// closed-Socket convention because a listener error is a boot failure,
+// not a per-connection condition.
+defn evented_listener(port: Int) [port > 0 && port < 65536] -> Result<Socket,Int> {
+    let listener: Socket = sock_tcp_nonblocking();
+    when listener.fd < 0 {
+        term Err(listener.fd);
+    };
+    let reuse: Int = sock_set_reuseaddr(listener);
+    when reuse < 0 {
+        term Err(reuse);
+    };
+    // backlog 16 mirrors server_loop's SERVE_BACKLOG.
+    let bound: Int = sock_bind_listen(listener, port, 16);
+    when bound < 0 {
+        term Err(bound);
+    };
+    term Ok(listener);
+};
+
+// evented_accept - accept(2) on a NONBLOCKING listener. Returns the new
+// connection socket (fd >= 0) or a Socket with the -errno; EVENTED_EAGAIN
+// means "no pending connection" and is the loop's normal "skip" signal.
+// The new socket inherits O_NONBLOCK from the listener (Linux accept(2)
+// rule), so every later step on it is bounded.
+defn evented_accept(listener: Socket) [listener.fd >= -4096] -> Socket {
+    when listener.fd < 0 {
+        term Socket { fd: -1 };
+    };
+    term sock_accept(listener);
+};
+
+// evented_register - put one fd into the set at `index` for POLL_IN.
+// Registration order IS visit order (determinism contract) - callers
+// register listeners first, then connections, and keep indices stable.
+defn evented_register(set: PollSet, index: Int, fd: Int) -> Void {
+    poll_set(set, index, fd, EVENTED_IN);
+};
+
+// evented_unregister - mark the slot unused (fd = -1, kernel ignores it).
+// The slot keeps its index: later registrations do not shift visit order.
+defn evented_unregister(set: PollSet, index: Int) -> Void {
+    poll_set(set, index, -1, 0);
+};
+
+// evented_wait - ONE bounded wait over the whole set. Returns the poll(2)
+// count (> 0: that many slots have events; 0: timeout; EVENTED_EINTR: a
+// signal arrived - the PollSet is untouched, just call again; other
+// negatives: -errno). Finite timeout only: a timeout of 0 is the honest
+// "poll, do not park" (the evented loop never parks forever - the timeout
+// budget belongs to the application).
+defn evented_wait(set: PollSet, timeout_ms: Int) -> Int {
+    term poll_wait(set, timeout_ms);
+};
+
+// evented_ready - did slot `index` fire POLL_IN this pass? (Errors and
+// hangups are reported as readable too - the caller's recv-once will see
+// the truth; that keeps the hot path one bit wide.)
+defn evented_ready(set: PollSet, index: Int) -> Bool {
+    term (poll_events(set, index) & (EVENTED_IN | EVENTED_ERROR | EVENTED_HANGUP)) != 0;
+};
+
+// evented_recv_once - ONE bounded read into the buffer's free tail. Returns:
+//   > 0  bytes appended (buffer.len advanced by exactly that many),
+//   0    peer EOF (the clean half-close signal),
+//   EVENTED_EAGAIN  no bytes right now - NOT an error, try again after the
+//                   next readiness edge,
+//   < -1  a real -errno recv failure.
+// The EAGAIN-after-POLL_IN case is impossible for the same readiness edge
+// (kernel poll/recv contract - invariant 2 of the plan) and is still
+// returned honestly rather than hidden.
+defn evented_recv_once(socket: Socket, buffer: ByteBuf) -> Int {
+    when buffer.len >= buffer.cap {
+        term 0 - EVENTED_EAGAIN; // full buffer: report the "would block" shape? no - full is full.
+    };
+    term sock_recv_once(socket, buffer, buffer.cap - buffer.len);
+};
+
+// evented_send_once - ONE bounded write of buf's logical bytes. Returns
+// bytes sent (>= 0, possibly a SHORT count - the caller keeps the tail) or
+// -errno. Short writes are the normal case on nonblocking sockets; the
+// caller re-registers for POLL_OUT or simply retries on the next edge.
+defn evented_send_once(socket: Socket, buffer: ByteBuf) -> Int {
+    term sock_send_once(socket, buffer, 0, buffer.len);
+};
+
+// evented_close - close(2) one socket. Returns the syscall result (0 or
+// -errno). Defensive local dead-marking: the CALLER'S binding is a value
+// copy, so this cannot reach the caller's binding (obj assignment is by
+// value); the fd is closed at the kernel exactly once per call. Wave 2's
+// [[linear]] check is what makes double-close a COMPILE error - until then
+// this module documents the discipline and the smoke fixture pins the
+// single-close shape.
+defn evented_close(socket: Socket) -> Int {
+    when socket.fd < 0 {
+        term 0;
+    };
+    term sock_close(socket);
+};
+
+// ── Chunked provable read (Wave 4 / Knooppunt G12b) ──────────────────────
+//
+// The byte-a-time loop in server_loop costs one syscall per request byte
+// (~200 for a typical JSON control request) because a recv into a FIXED
+// ByteBuf cannot prove `len + n <= cap` across the loop — the bounds are
+// loop-carried obj state, and the sweep rejects what it cannot see. The
+// fix is the checksum-sweep lesson applied to buffers: put the BOUNDS IN
+// THE ARGUMENTS. recv_into takes offset/room as parameters and its
+// postcondition names exactly what the caller needs:
+//
+//   [offset >= 0 && room >= 1 && offset + room <= buf.cap]
+//   [term.len >= 0]  (bytes appended; -errno or 0-for-EAGAIN surfaced)
+//
+// One call = one bounded syscall. The caller proves `offset + room <=
+// buf.cap` at the call site from ITS local facts — no loop-carried state
+// involved.
+//
+// evented_fill_request then composes: on each POLL_IN readiness edge, one
+// recv_into + one parse attempt. Complete → return; else keep reading.
+// The nonblocking discipline means every step returns immediately — the
+// loop holds MANY connections, never parking on one.
+
+// recv_into - ONE bounded read into buffer[offset .. offset+room).
+//
+// The contract that makes chunked reading PROVABLE (Knooppunt G12b): the
+// bounds are ARGUMENTS, so the caller supplies `offset + room <= buffer.cap`
+// from its own local facts — no loop-carried buffer state to reason about,
+// which is exactly what the byte-at-a-time loop could not offer. One call =
+// one syscall.
+//
+// `flags` selects the discipline: MSG_DONTWAIT (the evented lane) or 0 (the
+// sequential lane, where the socket's receive budget bounds the wait).
+// Returns the byte count (>= 1) or the -errno — EVENTED_EAGAIN included:
+// "nothing right now" is a VALUE here, never a stall. A read cannot move
+// more than `room` bytes; the postcondition NAMES that bound so the next
+// chunk's arithmetic closes.
+defn recv_into(socket: Socket, buffer: ByteBuf, offset: Int, room: Int, flags: Int)
+    [socket.fd >= -4096 && offset >= 0 && room >= 1 && offset + room <= buffer.cap]
+    [term >= -1040 && term <= room]
+    -> Int
+{
+    term SysCall#(45, socket.fd, buffer.ptr + offset, room, flags);
+};
+
+// fill_request - read one request through the parser in CHUNKS.
+//
+// The read lands straight in the destination buffer (no staging copy); the
+// landed bytes are made valid by ByteBuf.claim, whose POSTCONDITION is the
+// fact the next iteration needs (`len` advanced by exactly the count). A
+// mid-body `buffer.len = …` write would leave the projection unprovable —
+// obj field facts do not survive a field write — which is why this shape,
+// not the obvious one, verifies under the config/contracts deny gate.
+//
+// Stops on a terminal parse (HTTP_COMPLETE or an error shape), a full
+// window, EOF, or EAGAIN. The last three return HTTP_NEED_MORE: the evented
+// caller waits for the next POLL_IN edge and calls again; the sequential
+// caller's receive budget supplies that edge.
+//
+// RESUMPTION CONTRACT: every exit publishes the running count through
+// `buffer.len = fed`. Obj parameters are REFERENCES (a callee's field write
+// lands in the caller's object, verified through recursive frames too), so
+// after a NEED_MORE the caller's own binding already carries the progress
+// and the next call is simply `fill_request(sock, buf, buf.len, flags)`.
+// Nothing is re-read and nothing is lost, which is the whole point of the
+// chunked shape: a partial request parks, it does not corrupt.
+defn fill_request(socket: Socket, buffer: ByteBuf, fed: Int, flags: Int)
+    [socket.fd >= -4096 && fed >= 0 && fed == buffer.len && fed <= buffer.cap]
+    [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
+    -> HttpParse
+{
+    let parsed: HttpParse = http_parse_request(buffer, fed);
+    when parsed.status == HTTP_COMPLETE {
+        buffer.len = fed;
+        term parsed;
+    };
+    when fed >= buffer.cap {
+        // Window exhausted without a complete request.
+        buffer.len = fed;
+        term parsed;
+    };
+    let got: Int = recv_into(socket, buffer, fed, buffer.cap - fed, flags);
+    when got <= 0 {
+        // EOF or EAGAIN: nothing more is available right now.
+        buffer.len = fed;
+        term parsed;
+    };
+    let extended: ByteBuf = buffer.claim(got);
+    // Publish BEFORE descending: `extended` is a fresh value, so a write
+    // from the deeper frame would land on that temporary instead of the
+    // caller's object. Writing here, in the frame that still holds the
+    // caller's binding, is what makes the progress visible — the exits
+    // above cover the frames that stop early.
+    buffer.len = fed + got;
+    term fill_request(socket, extended, fed + got, flags);
+};
+
+// evented_fill_request - the evented lane: fill_request under MSG_DONTWAIT.
+// Returns HTTP_NEED_MORE when the request is not complete yet (EAGAIN on a
+// nonblocking socket is the normal case, not an error) — the caller
+// registers the fd for POLL_IN and comes back on the next edge, resuming
+// with `buffer.len` (see fill_request's resumption contract).
+defn evented_fill_request(socket: Socket, buffer: ByteBuf, fed: Int)
+    [socket.fd >= -4096 && fed >= 0 && fed == buffer.len && fed <= buffer.cap]
+    [term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
+    -> HttpParse
+{
+    term fill_request(socket, buffer, fed, MSG_DONTWAIT);
+};
+
+// ── OUTBOUND COMPLETION (write-side mirror of the chunked read) ────────────
+//
+// The read side parks on a partial request; the write side must park the
+// same way on a full send queue, or the evented lane can intake but never
+// finish. The mirror: one bounded write step with the bounds as arguments
+// (send_into), a recursion that advances until the kernel stops it and
+// reports the running count (drain_response), the MSG_NOSIGNAL spelling for
+// the evented lane, and the poll primitives that flip a slot between
+// EVENTED_IN and EVENTED_OUT (evented_arm / evented_write_ready).
+
+// EVENTED_NOSIGNAL - MSG_NOSIGNAL (2048): a peer reset during a write
+// reports EPIPE (-32) as a value instead of killing the process with
+// SIGPIPE. Every evented drain passes it; a sequential caller may choose
+// 0, but then a RST takes the process down - the evented lane is the one
+// where a dead peer is an ordinary case.
+const EVENTED_NOSIGNAL: Int = 2048;
+
+// send_into - ONE bounded write of buffer[offset .. offset+room).
+// The write-side mirror of recv_into: bounds are ARGUMENTS, so the caller
+// proves `offset + room <= buffer.len` from its own local facts; the
+// postcondition names the range the next step's arithmetic closes on.
+// Only VALID bytes cross the wire (offset + room <= len, not cap).
+// Returns the short count (0 .. room) or the -errno - EAGAIN among them.
+defn send_into(socket: Socket, buffer: ByteBuf, offset: Int, room: Int, flags: Int)
+    [socket.fd >= -4096 && offset >= 0 && room >= 1 && offset + room <= buffer.len]
+    [term >= -1040 && term <= room]
+    -> Int
+{
+    term SysCall#(44, socket.fd, buffer.ptr + offset, room, flags);
+};
+
+// drain_response - advance a buffer's write by as much as the kernel will
+// accept this pass. The running count IS the report (the write-side twin of
+// fill_request's resumption contract - nothing is re-sent, the next call
+// simply starts where the kernel stopped us):
+//   term == buffer.len   DONE: the whole buffer crossed the wire.
+//   0 <= term < len      PARKED: the kernel accepted up to `term` and then
+//                        stopped (EAGAIN, or a zero-progress step). The
+//                        caller re-arms the slot for EVENTED_OUT and resumes
+//                        with drain_response(sock, buf, term, flags).
+//   term < 0             -errno: EINTR (-4) means "retry now"; the reset
+//                        family (EPIPE/ECONNRESET/ECONNABORTED) means the
+//                        peer is gone - close the slot.
+// The tail recursion climbs `sent` (an Int the caller owns; strictly
+// increasing at every step), so the count is the termination measure, not
+// the stack. Every step is bounded: one send_into is one syscall.
+//
+// The precondition is `sent >= 0` and NOTHING else, deliberately. This is
+// the caller-facing drain (the same style as evented_recv_once /
+// evented_send_once): a dead fd reports -EBADF as a VALUE, and an
+// over-large `sent` is clamped by the first guard (nothing left to write),
+// so neither has to be proven by a caller holding a raw-loaded descriptor
+// or a buffer whose invariant it cannot name.
+defn drain_response(socket: Socket, buffer: ByteBuf, sent: Int, flags: Int)
+    [sent >= 0]
+    [term >= -1040 && term <= buffer.len]
+    -> Int
+{
+    when sent >= buffer.len {
+        // Terminal: nothing left to write; the count itself is the DONE report.
+        term buffer.len;
+    };
+    when socket.fd < 0 {
+        // Dead handle: -EBADF, named rather than crashed into.
+        term -9;
+    };
+    let n: Int = send_into(socket, buffer, sent, buffer.len - sent, flags);
+    when n == EVENTED_EAGAIN {
+        // The kernel stopped us at `sent`: that running count is the report.
+        term sent;
+    };
+    when n < 0 {
+        // A real -errno (EINTR / the reset family): surface the value.
+        term n;
+    };
+    when n == 0 {
+        // No progress this step (a shape TCP cannot produce with nonzero
+        // room; unix keeps the shape honest). The count IS the report.
+        term sent;
+    };
+    term drain_response(socket, buffer, sent + n, flags);
+};
+
+// evented_drain_response - the evented lane: drain_response under
+// MSG_NOSIGNAL. A parked report (0 <= k < buffer.len) means: arm the slot
+// for EVENTED_OUT (evented_arm) and call again at k on the next edge.
+defn evented_drain_response(socket: Socket, buffer: ByteBuf, sent: Int)
+    [sent >= 0]
+    [term >= -1040 && term <= buffer.len]
+    -> Int
+{
+    term drain_response(socket, buffer, sent, EVENTED_NOSIGNAL);
+};
+
+// evented_arm - register slot `index` for `mask` (EVENTED_IN | EVENTED_OUT
+// | EVENTED_ERROR | EVENTED_HANGUP). evented_register is the IN spelling;
+// this is the per-connection phase switch: a parked writer arms OUT, and
+// re-arms IN once the buffer is done. Registration order is still visit
+// order (determinism contract) - the slot keeps its index through re-arms.
+defn evented_arm(set: PollSet, index: Int, fd: Int, mask: Int) -> Void {
+    poll_set(set, index, fd, mask);
+};
+
+// evented_write_ready - did slot `index` fire POLL_OUT this pass? (Errors
+// and hangups are reported as writable too - the caller's drain sees the
+// truth; same one-bit-wide hot-path decision as evented_ready.)
+defn evented_write_ready(set: PollSet, index: Int) -> Bool {
+    term (poll_events(set, index) & (EVENTED_OUT | EVENTED_ERROR | EVENTED_HANGUP)) != 0;
+};

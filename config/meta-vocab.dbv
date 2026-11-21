@@ -37,6 +37,7 @@ as MetaField {
     alu: String; "Hardware ALU that computes the type"; compiler;
     encoding: String; "String encoding resolved via config/encodings.dbvl"; compiler;
     tbaa: String; "LLVM TBAA node name (a claim, not a proof)"; llvm;
+    linear: Bool; "Object is linear: move-on-assign, close consumes, use-after-consume and live-at-scope-end are compile errors"; checker;
 };
 
 as BackendMapping {

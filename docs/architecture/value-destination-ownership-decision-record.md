@@ -1021,3 +1021,50 @@ the default for the semantics, not an opt-in speed keyword.
 
 **Migration:** Phases 0–7 in the plan. Unknown ⇒ box/copy/leak at every phase.
 **Rollback:** delete this part; D1–D26 remain authoritative.
+
+---
+
+### D39. A nameless owned value gets an inserted destination — DECIDED
+
+**2026-11-21 (K3).** A value that is owned (allocated by the expression that
+produced it) and consumed by nobody — no binding, no parameter that consumes
+it — has no destination for the scope sweep to release. Two shapes reach
+codegen today and both leaked every call:
+
+1. a selector's losing candidate blocks (an inline `[1]`/`[42]` argument in a
+   multi-candidate runtime pick);
+2. an owned temporary in a **borrowed** argument position
+   (`append_str(b, substr(s, a, b))` — the copy is neither kept nor freed by
+the callee, and the caller has no name for it).
+
+Both are repaired the same way: the frontend pass that decides ownership
+(`src/hir/owned_storage.rs`) gives the value a destination — a pure-insert
+`HirStmtKind::LetInsert` binding before the statement, a `ReleaseOwned` after
+it, or at scope end when the value must survive the statement. Loop bodies get
+the pair per iteration, because that is the lifetime.
+
+Constraints that follow from this record:
+
+- **Pure inserts carry no AST slot.** The body walk pairs HIR statements with
+  AST statements one-for-one; a net-new counted statement breaks the pairing
+  and silently drops every inserted release. `LetInsert` and `ReleaseOwned`
+  are therefore emitted natively and never counted.
+- **The release type follows the value, not its stamp.** A list literal has no
+  collection type of its own in the HIR, so it is derived from the elements;
+  the literal's stamp can be the element type or the declared parameter type,
+  which would pick a `free()` release for a collection handle.
+- **A replaced argument keeps its original carrier stamp**, and the inserted
+  binding records the REGISTER's type: restamping makes the argument adapter
+  convert a value the callee already takes directly (`inttoptr ptr` — invalid
+  IR).
+- **Refusals are conservative.** No escape-visible position, no intrinsic
+  argument (an intrinsic takes raw words whose retention no escape summary
+  models — freeing after a `Store#` would dangle whatever now holds the
+  value), and no value whose type cannot be named. Those keep leaking exactly
+  as before: a leak is a budget problem, a wrong release is a correctness bug.
+
+**Evidence:** ASan two-point slope on the kiosk daemon, 101.4 → 56.6 (D37-era
+selector losers) → 42.0 KB/call; allocations 1,148 → 904 per call; emitted
+`malloc` sites unchanged while `coll_destroy`/`free` sites grow.
+**Rollback:** delete the hoist pre-pass; the selector branch and the accounting
+invariants are independent of it.

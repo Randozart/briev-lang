@@ -392,6 +392,20 @@ fn insert_releases_with_report(
             events: &mut events,
         };
         let mut selector_results: HashSet<String> = HashSet::new();
+        // 2026-11-21 (K3 residual): bind owned ARGUMENT temporaries to
+        // pure-insert temps before the main rewrite, so a value produced
+        // inline for a borrowing parameter has a name the paired
+        // ReleaseOwned can reach. Runs first so the rewrite sees the
+        // rewritten arguments and the inserted statements.
+        {
+            let fn_freed = freed.get(&callable.name).cloned().unwrap_or_default();
+            hoist_owned_arg_temps(
+                &mut callable.body.statements,
+                &fresh_vars,
+                &mut ctx,
+                &fn_freed,
+            );
+        }
         let body = rewrite_list(
             &callable.body.statements,
             &mut owned,
@@ -2660,6 +2674,349 @@ fn fresh_temp_name(name: &str, ctx: &mut Pass<'_>) -> String {
     tname
 }
 
+/// The ownership mode a call applies to argument `i`.
+///
+/// 2026-11-21 (K3 residual): extracted from `uses` so the argument-temporary
+/// hoister classifies arguments EXACTLY as the escape walk does — one
+/// decision point, two consumers (DRY).
+fn mode_for_arg(callee: &str, i: usize, ctx: &Pass<'_>) -> Mode {
+    if callee == "Free#" {
+        return Mode::Consume;
+    }
+    if ctx.fresh.contains(callee) {
+        return Mode::Borrow;
+    }
+    if ctx.consumed.get(callee).is_some_and(|s| s.contains(&i)) {
+        return Mode::Consume;
+    }
+    if let Some(summary) = ctx.escapes.get(callee) {
+        if summary.get(i).copied().unwrap_or(true) {
+            return Mode::Escape;
+        }
+        return Mode::Borrow;
+    }
+    if callee.ends_with('#') {
+        return Mode::Borrow;
+    }
+    Mode::Escape
+}
+
+/// True when `e` allocates storage that the enclosing scope must release and
+/// that has no name of its own: a fresh-set call result or a list literal.
+///
+/// Deliberately excludes `Literal` (static storage — releasing it is a
+/// free-of-.rodata) and every borrow-shaped read. A String-typed argument is
+/// excluded too: the STAMP decides ownership, and a String stamp means the
+/// caller's bookkeeping already owns the buffer — a slice result like
+/// `r.buf[a:b]` passed to a fresh callee is borrowed, and releasing it would
+/// free the caller's underlying data.
+fn is_owned_temp_expr(e: &HirExpr, ctx: &Pass<'_>) -> bool {
+    match &e.kind {
+        HirExprKind::Call { callee, .. } => {
+            // Only a COLLECTION temporary is hoisted. A String temporary's
+            // binding round-trip records the value in `let_binding_types`, and
+            // the argument adapter then feeds the callee a word where it takes
+            // a pointer (`inttoptr ptr` — invalid IR). String argument
+            // temporaries therefore stay on their current path: they leak
+            // exactly as they do today, never miscompiled.
+            if !e.ty.as_ref().is_some_and(is_list) {
+                return false;
+            }
+            // A multi-candidate selector's candidates are owned through the
+            // dedicated Phase C branch; hoisting one here would double-release.
+            !ctx.param_return
+                .get(callee.as_str())
+                .is_some_and(|c| c.len() > 1)
+                && (ctx.fresh.contains(callee) || ctx.ok_fresh.contains(callee))
+        }
+        HirExprKind::List(items) => {
+            // A list literal is only hoistable when the emitter can recover a
+            // collection type for it: the element type comes from the first
+            // item, and an untyped or empty literal falls back to the bare HIR
+            // operand path, which panics (a bare list literal has no codegen
+            // shape of its own). Skipping keeps the value leaking exactly as
+            // it does today — never miscompiled.
+            items.first().is_some_and(|i| i.ty.is_some())
+        }
+        _ => false,
+    }
+}
+
+/// 2026-11-21 (K3 residual leak): the type a hoisted temporary must be bound
+/// with.
+///
+/// A list literal carries no collection type of its own in the HIR — the
+/// typechecker stamps one only at the source let site. Its type is therefore
+/// derived from the first element, and that derivation MUST win: the literal's
+/// own stamp can be the element type or the declared parameter type, which
+/// would (a) route the construction onto the bare operand path and (b) pick
+/// the wrong destroy (a String release on a list handle). `None` means the
+/// value cannot be named and must not be hoisted — it keeps leaking exactly as
+/// it does today, never miscompiled.
+fn hoist_value_type(e: &HirExpr) -> Option<Type> {
+    if let HirExprKind::List(items) = &e.kind {
+        let elem = items.first()?.ty.clone()?;
+        return Some(Type::Applied("List".to_string(), vec![elem]));
+    }
+    e.ty.clone()
+}
+
+/// 2026-11-21 (K3 residual leak): hoist owned ARGUMENT temporaries.
+///
+/// An owned value produced inline and handed to a BORROWING parameter has no
+/// name for the scope sweep to release. `parse_str_chars(p, n, append_str(b,
+/// briev_str_substr(s, a, b)))` leaked the substring copy on every call, and
+/// the same shape leaked the attribute-parser list temporaries.
+///
+/// Fix: bind such a temporary to a pure-insert `HirStmtKind::LetInsert`
+/// placed BEFORE its statement, and release it with a `ReleaseOwned` placed
+/// AFTER the statement. A borrowing parameter cannot retain the pointer (a
+/// callee that would stash it is classified `Escape` by the escape summary),
+/// so the release is sound; placing it after the statement rather than at
+/// scope end keeps it correct inside loop bodies (each iteration binds and
+/// frees its own block).
+fn hoist_owned_arg_temps(
+    stmts: &mut Vec<HirStmt>,
+    fresh_vars: &HashMap<String, bool>,
+    ctx: &mut Pass<'_>,
+    fn_freed: &HashSet<String>,
+) {
+    let mut out: Vec<HirStmt> = Vec::with_capacity(stmts.len());
+    for mut s in std::mem::take(stmts) {
+        hoist_in_stmt_bodies(&mut s, fresh_vars, ctx, fn_freed);
+        let mut pre: Vec<HirStmt> = Vec::new();
+        let mut post: Vec<HirStmt> = Vec::new();
+        match &mut s.kind {
+            HirStmtKind::Let { expr: Some(e), .. }
+            | HirStmtKind::Expression(e)
+            | HirStmtKind::Check(e)
+            | HirStmtKind::Gate(e) => {
+                hoist_in_expr(e, &mut pre, &mut post, fresh_vars, ctx, fn_freed);
+            }
+            HirStmtKind::Assign(_, rhs) => {
+                hoist_in_expr(rhs, &mut pre, &mut post, fresh_vars, ctx, fn_freed);
+            }
+            _ => {}
+        }
+        out.extend(pre);
+        out.push(s);
+        out.extend(post);
+    }
+    *stmts = out;
+}
+
+/// Recurse the hoister into a statement's nested bodies (each is its own
+/// release scope, and each may hold loop bodies that must free per iteration).
+fn hoist_in_stmt_bodies(
+    s: &mut HirStmt,
+    fresh_vars: &HashMap<String, bool>,
+    ctx: &mut Pass<'_>,
+    fn_freed: &HashSet<String>,
+) {
+    match &mut s.kind {
+        HirStmtKind::Guarded(_, b)
+        | HirStmtKind::Block(b)
+        | HirStmtKind::SyncBlock(b)
+        | HirStmtKind::Mutex(b)
+        | HirStmtKind::Defer(b) => hoist_owned_arg_temps(b, fresh_vars, ctx, fn_freed),
+        HirStmtKind::Foreach { body, .. } => hoist_owned_arg_temps(body, fresh_vars, ctx, fn_freed),
+        HirStmtKind::Match { arms, .. } => {
+            for a in arms {
+                hoist_owned_arg_temps(&mut a.body, fresh_vars, ctx, fn_freed);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Depth-first walk of `e`'s child expressions, then hoist this node's own
+/// owned arguments. Unknown variants are NOT descended into — conservative:
+/// the value keeps leaking exactly as it does today, never miscompiled.
+#[allow(clippy::too_many_arguments)]
+fn hoist_in_expr(
+    e: &mut HirExpr,
+    pre: &mut Vec<HirStmt>,
+    post: &mut Vec<HirStmt>,
+    fresh_vars: &HashMap<String, bool>,
+    ctx: &mut Pass<'_>,
+    fn_freed: &HashSet<String>,
+) {
+    hoist_in_children(e, pre, post, fresh_vars, ctx, fn_freed);
+    let HirExprKind::Call { callee, args, .. } = &mut e.kind else {
+        return;
+    };
+    let callee = callee.clone();
+    if ctx
+        .param_return
+        .get(callee.as_str())
+        .is_some_and(|c| c.len() > 1)
+    {
+        // Phase C owns selector candidates (LetInsert + scope-end release).
+        return;
+    }
+    for i in 0..args.len() {
+        let mode = mode_for_arg(&callee, i, ctx);
+        if !matches!(mode, Mode::Borrow) {
+            continue;
+        }
+        // `mode_for_arg` treats a fresh callee's parameters as borrowed so the
+        // READ analysis can see through them; an explicit escape summary still
+        // wins here, because releasing a value the callee may have stashed is a
+        // use-after-free.
+        if ctx
+            .escapes
+            .get(callee.as_str())
+            .is_some_and(|s| s.get(i).copied().unwrap_or(true))
+        {
+            continue;
+        }
+        // Intrinsics take raw words and pointers whose retention no escape
+        // summary models — `Store#` writes the value itself into memory, so a
+        // release after the statement would dangle whatever now holds it.
+        if callee.ends_with('#') {
+            continue;
+        }
+        if !is_owned_temp_expr(&args[i], ctx) {
+            continue;
+        }
+        // The binding type classifies the VALUE (and picks the destroy); the
+        // replaced argument keeps its ORIGINAL carrier stamp. Restamping it
+        // with the value type makes the argument adapter convert a register the
+        // callee already takes directly (`inttoptr ptr` — invalid IR).
+        let Some(value_ty) = hoist_value_type(&args[i]) else {
+            continue;
+        };
+        let arg_ty = args[i].ty.clone();
+        let tname = fresh_temp_name(&callee, ctx);
+        let orig = std::mem::replace(
+            &mut args[i],
+            HirExpr {
+                id: NodeId(ctx.next),
+                span: None,
+                ty: arg_ty,
+                kind: HirExprKind::Identifier(tname.clone()),
+            },
+        );
+        ctx.next += 1;
+        pre.push(HirStmt {
+            id: NodeId(ctx.next),
+            span: None,
+            kind: HirStmtKind::LetInsert {
+                name: tname.clone(),
+                ty: Some(value_ty.clone()),
+                expr: Box::new(orig),
+            },
+        });
+        ctx.next += 1;
+        let kind = kind_of(&value_ty);
+        post.push(release(&tname, kind, ctx));
+    }
+}
+
+/// Descend into every child expression the hoister understands.
+fn hoist_in_children(
+    e: &mut HirExpr,
+    pre: &mut Vec<HirStmt>,
+    post: &mut Vec<HirStmt>,
+    fresh_vars: &HashMap<String, bool>,
+    ctx: &mut Pass<'_>,
+    fn_freed: &HashSet<String>,
+) {
+    macro_rules! go {
+        ($x:expr) => {
+            hoist_in_expr($x, pre, post, fresh_vars, ctx, fn_freed)
+        };
+    }
+    match &mut e.kind {
+        HirExprKind::Call { args, .. } | HirExprKind::List(args) | HirExprKind::Tuple(args) => {
+            for a in args {
+                go!(a);
+            }
+        }
+        HirExprKind::MethodCall { receiver, args, .. } => {
+            go!(receiver);
+            for a in args {
+                go!(a);
+            }
+        }
+        HirExprKind::Binary { left, right, .. } => {
+            go!(left);
+            go!(right);
+        }
+        HirExprKind::Unary { inner, .. }
+        | HirExprKind::Deref(inner)
+        | HirExprKind::AddrOf(inner)
+        | HirExprKind::Consume(inner)
+        | HirExprKind::Await(inner)
+        | HirExprKind::IsType { inner, .. }
+        | HirExprKind::Cast { inner, .. }
+        | HirExprKind::Field {
+            receiver: inner, ..
+        }
+        | HirExprKind::Reflect {
+            receiver: inner, ..
+        } => go!(inner),
+        HirExprKind::Index(base, idx) => {
+            go!(base);
+            go!(idx);
+        }
+        HirExprKind::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
+            go!(array);
+            for x in [start, end, stride].into_iter().flatten() {
+                go!(x);
+            }
+        }
+        HirExprKind::Range { start, end, .. } | HirExprKind::Within(start, end) => {
+            go!(start);
+            go!(end);
+        }
+        HirExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            go!(condition);
+            go!(then_branch);
+            if let Some(x) = else_branch {
+                go!(x);
+            }
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            go!(scrutinee);
+            for a in arms {
+                go!(&mut a.body);
+            }
+        }
+        HirExprKind::StructLiteral { fields, specs, .. } => {
+            for (_, x) in fields.iter_mut() {
+                go!(x);
+            }
+            for (_, x) in specs.iter_mut() {
+                go!(x);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for a in args {
+                go!(a);
+            }
+        }
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            if let Some(r) = receiver {
+                go!(r);
+            }
+            for a in args {
+                go!(a);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn release(name: &str, kind: OwnKind, ctx: &mut Pass<'_>) -> HirStmt {
     let id = NodeId(ctx.next);
     ctx.next += 1;
@@ -2810,25 +3167,8 @@ fn uses(e: &HirExpr, owned: &mut HashMap<String, OwnKind>, ctx: &mut Pass<'_>) {
             // the escape gate above) lets no argument escape: its args are
             // reads. Identity-return callees (param_return) still hit the
             // Escape path so the caller drops the handle the result now owns.
-            let fresh_callee = ctx.fresh.contains(callee);
             for (i, a) in args.iter().enumerate() {
-                let mode = if callee == "Free#" {
-                    Mode::Consume
-                } else if fresh_callee {
-                    Mode::Borrow
-                } else if ctx.consumed.get(callee).is_some_and(|s| s.contains(&i)) {
-                    Mode::Consume
-                } else if let Some(summary) = ctx.escapes.get(callee) {
-                    if summary.get(i).copied().unwrap_or(true) {
-                        Mode::Escape
-                    } else {
-                        Mode::Borrow
-                    }
-                } else if callee.ends_with('#') {
-                    Mode::Borrow
-                } else {
-                    Mode::Escape
-                };
+                let mode = mode_for_arg(callee, i, ctx);
                 let reason = if mode_is_escape_or_consume(mode) {
                     callee.clone()
                 } else {
@@ -3740,6 +4080,240 @@ defn use() [true][true] -> Int {
         assert!(
             destroys >= 3,
             "expected >= 3 List destroys (one per inline literal), got {destroys}"
+        );
+    }
+
+    // 2026-11-21 (K3 residual): an EMPTY list literal has no element type to
+    // recover, so the emitter cannot construct it through the collection ops —
+    // a bare list literal has no codegen shape of its own (the operand path
+    // panics). The hoister must leave such an argument alone.
+    #[test]
+    fn empty_list_literal_arg_is_not_hoisted() {
+        let mut program = annotated(
+            r#"
+defn total(xs: List<Int>) -> Int { let s: Int = 0; foreach x in xs { s = s + x; }; term s; };
+defn use() -> Int { term total([]); };
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        let inserted = releases_of(use_fn).len()
+            + use_fn
+                .body
+                .statements
+                .iter()
+                .filter(|s| matches!(s.kind, HirStmtKind::LetInsert { .. }))
+                .count();
+        assert_eq!(
+            inserted, 0,
+            "an empty list literal has no recoverable element type; hoisting it \
+             emits a bare literal and panics the emitter (got {inserted} inserts)"
+        );
+    }
+
+    // 2026-11-21 (K3 residual): an owned value produced INLINE and handed to a
+    // BORROWING parameter has no name for the scope sweep. The hoister binds it
+    // to a pure-insert temp and releases it after the statement.
+    #[test]
+    fn owned_arg_temp_to_borrowing_param_is_released() {
+        let mut program = annotated(
+            r#"
+defn mk() -> List<Int> { term [1, 2]; };
+defn relay(x: List<Int>) -> List<Int> { term [3]; };
+defn use() -> Int { let ys: List<Int> = relay(mk()); term 1; };
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        let temps: Vec<String> = releases_of(use_fn)
+            .into_iter()
+            .filter(|(k, _)| *k == StorageKind::List)
+            .map(|(_, n)| n)
+            .collect();
+        assert!(
+            temps.iter().any(|n| n.starts_with("__seltrelay")),
+            "the borrowed inline `mk()` result must be released through a \
+             synthesized temp, got {temps:?}"
+        );
+        // The temp must be BOUND (LetInsert) as well as released, or the
+        // release would reference an undefined register.
+        fn has_let_insert(stmts: &[HirStmt], name: &str) -> bool {
+            stmts.iter().any(|s| match &s.kind {
+                HirStmtKind::LetInsert { name: n, .. } => n == name,
+                HirStmtKind::Guarded(_, b)
+                | HirStmtKind::Block(b)
+                | HirStmtKind::SyncBlock(b)
+                | HirStmtKind::Mutex(b)
+                | HirStmtKind::Defer(b) => has_let_insert(b, name),
+                HirStmtKind::Foreach { body, .. } => has_let_insert(body, name),
+                _ => false,
+            })
+        }
+        for t in temps.iter().filter(|t| t.starts_with("__selt")) {
+            assert!(
+                has_let_insert(&use_fn.body.statements, t),
+                "temp {t} is released but never bound"
+            );
+        }
+    }
+
+    // 2026-11-21 (K3 residual, String policy): a String argument temporary is
+    // NOT hoisted. Its binding round-trip records the value in
+    // `let_binding_types`, and the argument adapter then converts a register
+    // the callee already takes directly (`inttoptr ptr` — invalid IR, observed
+    // on the kiosk daemon's `owned_string(proto_bytes(r))`). Such a temporary
+    // keeps leaking exactly as it did before R2; it is never miscompiled.
+    #[test]
+    fn string_arg_temp_is_not_hoisted() {
+        let mut program = annotated(
+            r#"
+defn mk() -> String { term "a" + "b"; };
+defn relay(x: String) -> String { term "c" + "d"; };
+defn use() -> Int { let n: Int = CharCount#(relay(mk())); term n; };
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        let inserts = use_fn
+            .body
+            .statements
+            .iter()
+            .filter(|s| matches!(s.kind, HirStmtKind::LetInsert { .. }))
+            .count();
+        assert_eq!(
+            inserts, 0,
+            "a String argument temporary must not be hoisted: the binding makes \
+             the argument adapter emit `inttoptr` on an already-pointer register \
+             (got {inserts} inserts)"
+        );
+        assert!(
+            releases_of(use_fn)
+                .iter()
+                .all(|(k, _)| *k != StorageKind::List),
+            "no collection release may appear for a String-only program"
+        );
+    }
+
+    // 2026-11-21 (K3 residual): a parameter the callee CONSUMES is the
+    // callee's to free — the caller must not release it too.
+    #[test]
+    fn owned_arg_temp_to_consuming_param_is_not_released() {
+        let mut program = annotated(
+            r#"
+import "std/alloc.bv";
+defn mk() -> String { term "a" + "b"; };
+defn sink(x: String) [true][true] -> Void { Free#(x); term; };
+defn use() [true][true] -> Void { sink(mk()); term; };
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        let frees = releases_of(use_fn)
+            .into_iter()
+            .filter(|(k, _)| *k == StorageKind::Str)
+            .count();
+        assert_eq!(
+            frees, 0,
+            "a consuming parameter is freed by the callee; the caller adding a \
+             release is a double-free (got {frees})"
+        );
+    }
+
+    // 2026-11-21 (K3 residual): the hoisted statements are PURE INSERTS. The
+    // backend's HIR/AST pair walk requires the counted-statement count to stay
+    // equal to the AST body length; a net-new counted statement would force a
+    // whole-body AST fallback and silently drop every inserted release.
+    #[test]
+    fn owned_insert_keeps_pair_walk_aligned() {
+        let program = annotated(
+            r#"
+defn mk() -> List<Int> { term [1, 2]; };
+defn relay(x: List<Int>) -> List<Int> { term [3]; };
+defn use() -> Int { let ys: List<Int> = relay(mk()); term 1; };
+"#,
+        );
+        let before = program
+            .callables
+            .iter()
+            .find(|c| c.name == "use")
+            .unwrap()
+            .body
+            .statements
+            .len();
+        let mut program2 = program.clone();
+        insert_releases(&mut program2, &HashMap::new());
+        let use_fn = program2.callables.iter().find(|c| c.name == "use").unwrap();
+        let counted = use_fn
+            .body
+            .statements
+            .iter()
+            .filter(|s| {
+                !matches!(
+                    s.kind,
+                    HirStmtKind::ReleaseOwned { .. } | HirStmtKind::LetInsert { .. }
+                )
+            })
+            .count();
+        assert_eq!(
+            counted, before,
+            "inserted statements must be pure inserts; the AST pair walk counts \
+             {before} but the pass produced {counted} counted statements"
+        );
+    }
+
+    // 2026-11-21 (K3 residual): the cast owned-return door builds into a
+    // staging buffer, copies it out (`briev_bits_to_str`), frees the staging
+    // buffer and returns the copy. The authored Free# on the staging handle is
+    // CORRECT and must survive the pass untouched (neither dropped nor
+    // duplicated). Removing it would leak the staging buffer; duplicating it
+    // would be a double-free.
+    #[test]
+    fn cast_copy_door_keeps_staging_free() {
+        let mut program = annotated(
+            r#"
+import "std/alloc.bv";
+defn door(n: Int) [true][term .^Length >= 0] -> String {
+    let buf: Int = Alloc#(n + 9) as Int;
+    Store#(buf, n, 8);
+    let owned: String = (buf as Data) as String;
+    Free#(buf as Ptr<Bit<8>>);
+    term owned;
+};
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let door = program.callables.iter().find(|c| c.name == "door").unwrap();
+        // Count authored Free# sites regardless of argument SHAPE: the cast
+        // door writes `Free#(buf as Ptr<Bit<8>>)`, whose argument is a Cast,
+        // not a bare identifier.
+        fn count_frees(stmts: &[HirStmt]) -> usize {
+            let mut n = 0;
+            for s in stmts {
+                match &s.kind {
+                    HirStmtKind::Expression(HirExpr {
+                        kind: HirExprKind::Call { callee, .. },
+                        ..
+                    }) if callee == "Free#" => n += 1,
+                    HirStmtKind::Guarded(_, b)
+                    | HirStmtKind::Block(b)
+                    | HirStmtKind::SyncBlock(b)
+                    | HirStmtKind::Mutex(b)
+                    | HirStmtKind::Defer(b) => n += count_frees(b),
+                    HirStmtKind::Foreach { body, .. } => n += count_frees(body),
+                    HirStmtKind::Match { arms, .. } => {
+                        for a in arms {
+                            n += count_frees(&a.body);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            n
+        }
+        let frees = count_frees(&door.body.statements);
+        assert_eq!(
+            frees, 1,
+            "the staging handle must be freed exactly once, got {frees}"
         );
     }
 }

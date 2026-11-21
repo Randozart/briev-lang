@@ -30,6 +30,7 @@
 import "std/net/socket.bv";
 import "std/net/bytes.bv";
 import "std/net/http.bv";
+import "std/net/evented.bv";
 
 // How many pending connections the kernel may queue before refusing.
 const SERVE_BACKLOG: Int = 16;
@@ -91,12 +92,26 @@ defn serve_accept(listener: Socket) [listener.fd >= -4096][term.fd >= -4096] -> 
 // buffer fills. `fed` is the byte count so far (a plain Int: the recursion's
 // arithmetic stays provable, unlike a buffer whose length a mutation advanced).
 //
-// ONE BYTE PER recv() mirrors the in-tree `task_board` reader, which is the
-// shape the contract checker accepts for a mutating buffer. It costs one
-// syscall per request byte (~200 syscalls for a typical JSON control request) —
-// acceptable here and logged as a follow-up (a chunked read needs the growth to
-// be provable across the loop; see the Knooppunt gap register G12b).
+// CHUNKED since 2026-11-20 (G12b close): this used to read ONE BYTE PER
+// recv() — ~200 syscalls for a typical JSON control request — because the
+// growth of a mutating buffer looked unprovable across the loop. It is not:
+// ByteBuf.claim carries `len` forward as a POSTCONDITION, and recv_into
+// takes the bounds as arguments. The blocking flags (0) suit this lane: the
+// socket's receive budget supplies the readiness edge that the evented lane
+// gets from POLL_IN. The old byte-at-a-time reader is kept beside it as
+// serve_next_request_bytewise — the A/B baseline the parity fixture pins.
 defn serve_next_request(conn: Socket, buf: ByteBuf, fed: Int)
+    [conn.fd >= -4096 && fed >= 0 && fed == buf.len && fed <= buf.cap]
+    [term.len >= 0 && term.len <= term.cap]
+    -> HttpParse
+{
+    term fill_request(conn, buf, fed, 0);
+};
+
+// serve_next_request_bytewise - the original one-syscall-per-byte reader,
+// retained as the reference implementation and A/B baseline (see
+// tests/tier1/server_loop_smoke.bv). Do not use it on a new path.
+defn serve_next_request_bytewise(conn: Socket, buf: ByteBuf, fed: Int)
     [conn.fd >= -4096 && fed >= 0 && fed == buf.len && fed <= buf.cap]
     [term.len >= 0 && term.len <= term.cap]
     -> HttpParse
@@ -117,7 +132,7 @@ defn serve_next_request(conn: Socket, buf: ByteBuf, fed: Int)
     let byte: Int = get_u8(chunk, 0);
     buf_free(chunk);
     let extended: ByteBuf = buf.put_u8(byte);
-    term serve_next_request(conn, extended, fed + 1);
+    term serve_next_request_bytewise(conn, extended, fed + 1);
 };
 
 // serve_respond_json - write one complete JSON response. `http_json_response`

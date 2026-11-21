@@ -58,7 +58,12 @@ defn check_pair() -> Void {
         };
     };
     when !eof || received != sent { trap; };
-    when sock_close(sender) != 0 || sock_close(receiver) != 0 { trap; };
+    // Linear discipline: consume each socket in statement position (the
+    // short-circuited `||` left the receiver path open — a consume call in
+    // a guard does not discharge the binding on every path).
+    let sender_closed: Int = sock_close(sender);
+    let receiver_closed: Int = sock_close(receiver);
+    when sender_closed != 0 || receiver_closed != 0 { trap; };
     when poll_wait(polls,0) != 2 { trap; };
     when (poll_events(polls,0) & POLL_INVALID) == 0 { trap; };
     poll_set(polls,0,-1,0);

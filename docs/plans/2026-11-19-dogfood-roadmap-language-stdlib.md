@@ -1,6 +1,102 @@
 # Briev roadmap from the Knooppunt dogfood — language + stdlib (2026-11-19)
 
-**Status:** EXECUTION RECORD (2026-11-20). Rescued from session-only
+**Status:** EXECUTION RECORD (2026-11-20).
+
+**Update 2026-11-20 (evented-net, PR #147):** the concurrency half of
+this roadmap's runtime gaps got its first wave. `feat/evented-net`
+lands the composition `server_loop.bv`'s header named: poll-multiplexed
+connections (`std/net/evented.bv`), fd linearity as a checker fact
+(`attr linear` + analysis::obj_linear), the io/pure strand
+classification (analysis::strand — the fact source L1 needs to upgrade
+#15's conservative #15 routing), and the chunked provable read (G12b
+closed at the stdlib layer). L2 (chunked read) is DONE in this PR;
+L1's fact source is landed, convergence pending; S4 (signals) and true
+async-I/O-under-await remain open.
+
+WHAT THE CHUNKED READ AND THE OUTBOUND MIRROR TAUGHT the contract
+discipline - four rules worth carrying into the next primitives:
+
+1. **Bounds as arguments, not loop-carried state.** `recv_into(socket,
+   buf, offset, room, flags)` proves at every call site because the
+   caller supplies `offset + room <= buf.cap` from its own locals.
+2. **Advance lengths through a contract, never a field write.** A
+   mid-body `buf.len = fed + got` leaves no projection the checker can
+   carry into the next iteration; `ByteBuf.claim(count)` — an obj method
+   whose postcondition names `term.len == sink.len + count` — does. The
+   same defn as a FREE function does not project (issue #150), and that
+   asymmetry decides whether a primitive can be a function or must hang
+   off an obj.
+3. **The deny gate was test-suite-only — FIXED upstream (2026-11-21).**
+   At the time of this wave `brievc check` and `build` never installed
+   `config/contracts.dbvl`, so the conformance sweep was the first place an
+   unprovable call site appeared — one CI round-trip per discovery. Issue
+   #149 closed that: main `f819a43b5` ("an inspection run reports the gate,
+   it does not refuse") installs the gate for inspection runs
+   (`--verify-report` / `--verify-bodies`) and **announces at `warn` instead
+   of refusing at `deny`**, because a refusal would suppress the very report
+   that was asked for. Verified on this branch: `brievc build
+   lib/std/net/evented.bv --verify-bodies` now prints
+   `warning: --verify-bodies could not prove: …` for real gaps that used to
+   pass silently, and none of the evented defns (`send_into`, `drain_response`,
+   `recv_into`, `fill_request`) nor the fixture helpers appear in that list.
+   The remaining warnings (`ip_v4`, `sha1_padded_len`) are pre-existing
+   stdlib prover limits, now merely *visible*.
+4. **Obj parameters are references, so a reader can publish progress.**
+   A callee's field write lands in the caller's object (through recursive
+   frames too), which is what makes `buffer.len` a real out-channel: a
+   partial request parks and resumes with
+   `fill_request(sock, buf, buf.len, flags)`. The publish must happen in
+   the frame that still OWNS the caller's binding - `claim` returns a
+   fresh value, so a deeper frame's write lands on that temporary and is
+   lost. Linearness of the publish point decides correctness here, and
+   the resumption test in `evented_smoke` is the thing that caught it.
+
+OUTBOUND COMPLETION (2026-11-21, same PR): the write-side mirror landed
+so the evented lane can finish a transfer, not just intake one.
+`send_into` (bounds as arguments, mirroring `recv_into`),
+`drain_response` (advance-until-the-kernel-stops, reports the running
+count: total = DONE, 0 <= k < total = PARKED, negative = -errno), and
+`evented_arm`/`evented_write_ready` (the per-connection IN/OUT phase
+switch). The lifecycle pin is machine-dependent by documented design: a
+256 KiB payload against the kernel's unix stream queue cap (~219264 bytes
+on the default rmem_max 212992 - SO_RCVBUF does not cap unix stream
+queues, so the cap IS the machine's buffer size), then park, drain,
+OUT-edge, resume, content check. Numeric postconditions on Int results
+did project through the deny gate (the `drain_response` recursion
+proves from `send_into`'s range), refining the #150 note: the asymmetry
+is about posts naming OBJ-FIELD facts on a returned obj, not about Int
+ranges.
+
+FIFTH FINDING, from the same rebase (issue #151): establishing a caller-side
+fact is only possible behind a `defn`. `when cond { endprogram … }` in a
+node body does not refine the fall-through, `trap;` does not either, and a
+call inside a guard branch CLEARS the obj-field facts that earlier guards
+set - so the ORDER of guards changes what proves. The evented fixture
+carries the workaround in five small wrappers (fill_expect, drain_start,
+drain_resume, slice_len, close_quiet), which is exactly the kind of
+"shape the checker needs" cost worth tracking while the gate matures.
+
+RECONCILIATION (2026-11-21): the branch was re-synced to `origin/main` before
+merge; by that point main had advanced past `3db43e4c2` with a "wave 8" that is
+itself about the checker rules this branch's fixtures were working around:
+
+- `227ac8e08` a guard's bare `term;` licenses its negation, gated by the post
+- `0a4f1cf2f` the totality rule follows what the emitter returns
+- `81f1de8a5` spec: `term` is one conditional exit + the two obligations
+- plus the earlier `f819a43b5` (closes #149: inspection installs the gate,
+  announces at warn) and `3db43e4c2` (derived_length_facts + tensor
+  term.n==n, and the loud `tests/saltpetre, tests/fixtures/load` exemption)
+
+Re-verified the whole branch against that base: lib 3997 green (sweep
+included), daily_use_smoke 53, nonblocking_transport green, gate.sh quick
+pass, `evented_smoke` golden byte-identical. Re-ran the T5 probe (drop
+`slice_len` → `buf_slice_string(bb,0,bb.len)`): still fails with
+`bb.len >= 0` unprovable, so #150/#151 survive wave 8 — the fix reached
+`.^Length` (a derived String fact) and the `term;` negation, not ByteBuf
+obj-field invariants. The five wrappers stay; `tests/tier1` is not in the
+exempted roots, so this work is still checked under `deny`.
+
+Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
 main via PR #146 `fee5ce003` — checksum ladder kept in the integration
 merge); S5 CANCELLED (argv/env already covered by `cli.bv` + `env.bv`);
