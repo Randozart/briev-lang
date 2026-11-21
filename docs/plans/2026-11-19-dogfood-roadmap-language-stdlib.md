@@ -26,10 +26,21 @@ discipline - four rules worth carrying into the next primitives:
    same defn as a FREE function does not project (issue #150), and that
    asymmetry decides whether a primitive can be a function or must hang
    off an obj.
-3. **The deny gate lives only in the test suite.** `brievc check` and
-   `build` never install `config/contracts.dbvl`, so the conformance
-   sweep is the first place an unprovable call site appears — one CI
-   round-trip per discovery until issue #149 is fixed.
+3. **The deny gate was test-suite-only — FIXED upstream (2026-11-21).**
+   At the time of this wave `brievc check` and `build` never installed
+   `config/contracts.dbvl`, so the conformance sweep was the first place an
+   unprovable call site appeared — one CI round-trip per discovery. Issue
+   #149 closed that: main `f819a43b5` ("an inspection run reports the gate,
+   it does not refuse") installs the gate for inspection runs
+   (`--verify-report` / `--verify-bodies`) and **announces at `warn` instead
+   of refusing at `deny`**, because a refusal would suppress the very report
+   that was asked for. Verified on this branch: `brievc build
+   lib/std/net/evented.bv --verify-bodies` now prints
+   `warning: --verify-bodies could not prove: …` for real gaps that used to
+   pass silently, and none of the evented defns (`send_into`, `drain_response`,
+   `recv_into`, `fill_request`) nor the fixture helpers appear in that list.
+   The remaining warnings (`ip_v4`, `sha1_padded_len`) are pre-existing
+   stdlib prover limits, now merely *visible*.
 4. **Obj parameters are references, so a reader can publish progress.**
    A callee's field write lands in the caller's object (through recursive
    frames too), which is what makes `buffer.len` a real out-channel: a
@@ -64,6 +75,29 @@ set - so the ORDER of guards changes what proves. The evented fixture
 carries the workaround in five small wrappers (fill_expect, drain_start,
 drain_resume, slice_len, close_quiet), which is exactly the kind of
 "shape the checker needs" cost worth tracking while the gate matures.
+
+RECONCILIATION (2026-11-21): `feat/evented-net` was already based exactly on
+`origin/main` (`3db43e4c2`) when this was checked - 0 behind, so there was
+nothing to pull. Two gate commits had landed in that base without touching
+this branch's assumptions, and both were verified against it:
+
+- `f819a43b5` closed #149 (the CLI now installs the gate for inspection runs
+  and announces at `warn` rather than suppressing the report). Rule 3 above
+  is updated to match; the warning list on this branch contains only
+  pre-existing stdlib limits, never an evented defn.
+- `3db43e4c2` fixed two "the source already decided this, the prover did not
+  read it" gaps - `derived_length_facts` (so `x.^Length` composes
+  arithmetically) and tensor `term.n == n` - and declared a LOUD, config-checked
+  exemption for `tests/saltpetre, tests/fixtures/load`.
+
+Neither fix reaches the fifth finding, and the probe says so concretely:
+removing `slice_len` and calling `buf_slice_string(bb, 0, bb.len)` directly
+still fails the gate with `bb.len >= 0` unprovable. `derived_length_facts`
+is about `.^Length` (a String derived fact); this is a ByteBuf OBJ-FIELD
+invariant, which #150 says does not project across a free-defn boundary. So
+#151 survives as filed, and the five wrappers stay. The tier1 corpus is also
+*not* in the exempted roots, so the evented fixture is still checked under
+`deny` - the exemption did not quietly absorb the work.
 
 Rescued from session-only
 snapshots and committed after the wave landed. S1/S2/S3 DONE (landed on
