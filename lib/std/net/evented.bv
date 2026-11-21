@@ -79,12 +79,20 @@ const EVENTED_OUT: Int = 4;
 const EVENTED_ERROR: Int = 8;
 const EVENTED_HANGUP: Int = 16;
 
-// evented_listener - a NONBLOCKING listening socket on `port` with
-// SO_REUSEADDR (quick restart rebinds over TIME_WAIT). Result<Socket,Int>
-// carries the socket or the -errno; Err distinguishes failure from the
-// closed-Socket convention because a listener error is a boot failure,
-// not a per-connection condition.
-defn evented_listener(port: Int) [port > 0 && port < 65536] -> Result<Socket,Int> {
+// evented_listener_at - a NONBLOCKING listening socket on `addr`:`port` with
+// SO_REUSEADDR (quick restart rebinds over TIME_WAIT), where `addr` is a
+// HOST-order IPv4 integer: LOOPBACK keeps the lane off the network,
+// INADDR_ANY exposes it. Result<Socket,Int> carries the socket or the -errno;
+// Err distinguishes failure from the closed-Socket convention because a
+// listener error is a boot failure, not a per-connection condition.
+//
+// The address is a parameter since 2026-11-21 (knooppunt G22): this used to
+// inherit the wildcard from sock_bind_listen, so an evented service could not
+// be loopback-only with the stdlib alone.
+defn evented_listener_at(port: Int, addr: Int)
+    [port > 0 && port < 65536 && addr >= 0 && addr <= 4294967295]
+    -> Result<Socket,Int>
+{
     let listener: Socket = sock_tcp_nonblocking();
     when listener.fd < 0 {
         term Err(listener.fd);
@@ -94,11 +102,17 @@ defn evented_listener(port: Int) [port > 0 && port < 65536] -> Result<Socket,Int
         term Err(reuse);
     };
     // backlog 16 mirrors server_loop's SERVE_BACKLOG.
-    let bound: Int = sock_bind_listen(listener, port, 16);
+    let bound: Int = sock_bind_listen_at(listener, addr, port, 16);
     when bound < 0 {
         term Err(bound);
     };
     term Ok(listener);
+};
+
+// evented_listener - the ANY-address form (exposed on every interface).
+// Delegates to evented_listener_at so both names share one bind path.
+defn evented_listener(port: Int) [port > 0 && port < 65536] -> Result<Socket,Int> {
+    term evented_listener_at(port, INADDR_ANY);
 };
 
 // evented_accept - accept(2) on a NONBLOCKING listener. Returns the new

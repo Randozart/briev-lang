@@ -439,31 +439,52 @@ defn sock_bind_listen_unix(s: Socket, path: String, backlog: Int)
 
 // ── 1.7  server side: bind + listen + accept ────────────────────────────────
 //
-// sock_bind_listen - make `s` a listening server socket on 0.0.0.0:port (bound
-// to the ANY address so it accepts on every interface, loopback included).
-// Sets SO_REUSEADDR first (so a restart can rebind), then bind(2) the
-// sockaddr_in, then listen(2) with the given backlog (the kernel's queue of
-// not-yet-accepted completed connections). Returns 0 on success or the first
-// -errno. ANY = 0.0.0.0 = the host integer 0, which make_sockaddr_in writes as
-// four zero bytes at offset 4.
+// sock_bind_listen_at - make `s` a listening server socket on `addr`:`port`,
+// where `addr` is a HOST-order IPv4 integer: LOOPBACK (2130706433) for a
+// service that must be unreachable from the network, INADDR_ANY (0) for a
+// public one. Sets SO_REUSEADDR first (so a restart can rebind over
+// TIME_WAIT), then bind(2) the sockaddr_in, then listen(2) with the given
+// backlog (the kernel's queue of not-yet-accepted completed connections).
+// Returns 0 on success or the first -errno.
+//
+// WHY THE ADDRESS IS A PARAMETER (2026-11-21, knooppunt G22): this helper used
+// to take no address at all and hardcoded the wildcard, so there was no way to
+// write a local-only service with the stdlib — and no way to NOT find out by
+// accident, since `ss` was the only observer. A kernel sidecar meant to be
+// dialled by a loopback proxy listened on 0.0.0.0 for a day while two source
+// files claimed otherwise. `sock_local_addr` makes the result checkable now;
+// this makes it expressible.
 const INADDR_ANY: Int = 0;
 
-defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
-    [s.fd >= -4096 && port >= 0 && port <= 65535 && backlog >= 0][term >= -4096]
+defn sock_bind_listen_at(s: Socket, addr: Int, port: Int, backlog: Int)
+    [s.fd >= -4096 && addr >= 0 && addr <= 4294967295 && port >= 0 && port <= 65535 && backlog >= 0]
+    [term >= -4096]
     -> Int
 {
     let reuse: Int = sock_set_reuseaddr(s);
     when reuse < 0 {
         term reuse;
     };
-    // INADDR_ANY
-    let sa: ByteBuf = make_sockaddr_in(0, port);
+    let sa: ByteBuf = make_sockaddr_in(addr, port);
     let brc: Int = syscall(SYS_BIND, s.fd, sa.ptr, SOCKADDR_IN_LEN);
     sockaddr_free(sa);
     when brc < 0 {
         term brc;
     };
     term syscall(SYS_LISTEN, s.fd, backlog);
+};
+
+// sock_bind_listen - the ANY-address form: accepts on every interface,
+// loopback included. Kept as its own name (not deprecated) because "bind a
+// public port" is the common case and reading `INADDR_ANY` at every server
+// call site is noise. Since 2026-11-21 it is a DELEGATION to
+// sock_bind_listen_at, so there is exactly one bind implementation — if the
+// two ever diverged, the wildcard path would silently lose a fix.
+defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
+    [s.fd >= -4096 && port >= 0 && port <= 65535 && backlog >= 0][term >= -4096]
+    -> Int
+{
+    term sock_bind_listen_at(s, INADDR_ANY, port, backlog);
 };
 
 // sock_local_addr - the address `s` is actually bound to, in host order (the
