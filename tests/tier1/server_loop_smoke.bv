@@ -214,7 +214,7 @@ node entry [beginprogram][true] {
     Print#((fast.status == slow.status) as Int);
     Print#((fast.request.method == slow.request.method) as Int);
     Print#((fast.request.path == slow.request.path) as Int);
-    Print#((fast.request.body .^Length == slow.request.body .^Length) as Int);
+    Print#((fast.request.body ^^Length == slow.request.body ^^Length) as Int);
     buf_free(buf_slow);
     buf_free(buf_fast);
 

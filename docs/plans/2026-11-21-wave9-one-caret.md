@@ -128,3 +128,25 @@ gate green with the deduplicated row.
 **Spec row:** `value^^Field` — reflection, a representation property: a stored
 header slot or a type-derivable fact, never a computation (that is the `#`
 family's job).
+
+## Addendum — post-merge holdouts (2026-11-21, second gate run)
+
+The K3-R2 merge (remote `0698324e7`…`1f9f3c823`) re-touched `.bv` fixtures on
+the remote side, re-introducing 5 dotted sites (`server_loop_smoke` 2,
+`evented_smoke` 3). A further sweep found the same class in: top-level test
+crates embedding `.bv` sources (`interpreter_callable_txn`, `wasm32_parity`),
+`.rbv` view fixtures (`browser_json_values`, `generic_wasm_scan` — reflection
+inside txn contracts), tracked `.smoke` copies, and the HIR twin of
+`defn_liveness` dispatching by tag while the AST twin dispatches by name (the
+backend/mod.rs:647 parity assert fired, as designed).
+
+Two gate-caught test defects of my own:
+* the reject-path parser test used the old spellings as its input — the sweep
+  rewrote them into accept-path inputs. Inputs are now built from fragments
+  the sweep cannot touch.
+* the HIR closed set was narrower than the AST's (missed
+  Size/Bytes/Alignment/Type) — widened to the identical list.
+
+Final: full gate 4587/4587-class green (tier1 corpus + sweep + smoke
+included), same-compiler IR determinism ALL DETERMINISTIC, cross-compiler
+function-body equivalence PASS for the reflection-using bodies.
