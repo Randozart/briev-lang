@@ -413,9 +413,10 @@ impl<'a> Parser<'a> {
                 if self.check_identifier("return") {
                     self.pos += 1; // consume `return`
                     return Err(SyntaxError::InvalidStatement {
-                        reason: "Briev has no `return` statement. To return a value \
-                                 from a defn use `term <value>`; to mark a convergence \
-                                 checkpoint use bare `term;`; `term!` closes the program."
+                        reason: "Briev has no `return` statement. A defn's value is its trailing \
+                                 expression, or `term <value>` for an early exit; a bare \
+                                 `term;` is the completeness check at that point. \
+                                 `endprogram` closes the program."
                             .to_string(),
                         span: crate::errors::Span::dummy(),
                     });

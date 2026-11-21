@@ -288,41 +288,60 @@ fn check_list(
             alive = false;
         }
         recurse(name, stmt, kind, errors, warnings);
-        // 2026-08-04: hint for the bare-term-guard confusion — a `when` guard
-        // ending in bare `term;` with more code after it. The author expected
-        // early exit; the language continues. Only warn when code actually
-        // follows the guard (a trailing checkpoint is harmless).
-        if let Statement::Guarded(_, body) = stmt {
-            let ends_in_void_term = matches!(
-                body.last(),
-                Some(Statement::Term(None)) | Some(Statement::EndProgram(None))
-            );
-            // 2026-11-21 (wave-8): the hint is about a GATED term. In a defn
-            // whose postcondition is vacuous the term always exits, so there is
-            // nothing to warn about; the old text taught node semantics to defn
-            // authors and cited `term!`, which no longer exists.
-            let gated = match kind {
-                BodyKind::Defn { post_vacuous } => !post_vacuous,
-                BodyKind::Cyclic => true,
-            };
-            if ends_in_void_term && gated && i + 1 < stmts.len() {
-                warnings.push(match kind {
-                    BodyKind::Defn { .. } => format!(
-                        "{name}: a `when` guard ending in bare `term;` exits only when the \
-                         postcondition holds — with a non-vacuous post, execution continues to \
-                         the statement after the guard. Return a value with `term <value>` if the \
-                         early exit must be unconditional."
-                    ),
-                    BodyKind::Cyclic => format!(
-                        "{name}: a `when` guard ending in bare `term;` is a convergence \
-                         checkpoint — the node fires again rather than continuing, so the \
-                         statement after the guard runs on the next pass only if the goal was \
-                         unmet. Use `endprogram` to close the program here."
-                    ),
-                });
-            }
+        // 2026-08-04: hint for the bare-term-guard confusion. The wording
+        // depends on the body kind (a defn's term exits, a node's does not), so
+        // the message lives in its own function.
+        if let Some(warning) = bare_term_guard_hint(name, kind, stmt, i + 1 < stmts.len()) {
+            warnings.push(warning);
         }
     }
+}
+
+/// The bare-term-guard hint, or `None` when there is nothing to say.
+///
+/// A guard whose body ends in bare `term;` behaves differently by body kind: in
+/// a defn with a vacuous postcondition the term always exits, so the statement
+/// after the guard is unreachable and there is no confusion to warn about. In a
+/// defn with a real postcondition it exits only when the post holds. In a node
+/// or txn the term is a convergence checkpoint and the node fires again.
+///
+/// 2026-11-21 (wave-8): the previous text told DEFN authors "execution
+/// continues" — node semantics — and cited `term!`, which was removed in favour
+/// of `endprogram`.
+fn bare_term_guard_hint(
+    name: &str,
+    kind: BodyKind,
+    stmt: &Statement,
+    code_follows: bool,
+) -> Option<String> {
+    let Statement::Guarded(_, body) = stmt else {
+        return None;
+    };
+    let ends_in_void_term = matches!(
+        body.last(),
+        Some(Statement::Term(None)) | Some(Statement::EndProgram(None))
+    );
+    let gated = match kind {
+        BodyKind::Defn { post_vacuous } => !post_vacuous,
+        BodyKind::Cyclic => true,
+    };
+    if !(ends_in_void_term && gated && code_follows) {
+        return None;
+    }
+    Some(match kind {
+        BodyKind::Defn { .. } => format!(
+            "{name}: a `when` guard ending in bare `term;` exits only when the \
+             postcondition holds — with a non-vacuous post, execution continues to \
+             the statement after the guard. Return a value with `term <value>` if the \
+             early exit must be unconditional."
+        ),
+        BodyKind::Cyclic => format!(
+            "{name}: a `when` guard ending in bare `term;` is a convergence \
+             checkpoint — the node fires again rather than continuing, so the \
+             statement after the guard runs on the next pass only if the goal was \
+             unmet. Use `endprogram` to close the program here."
+        ),
+    })
 }
 
 /// Recurse into nested statement lists owned by this statement.

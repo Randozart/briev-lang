@@ -2877,19 +2877,39 @@ A trailing expression without `;` is the block's implicit value.
 Zero-payload variant patterns use `Variant()` (with parens) to distinguish
 from variable binding patterns.
 
-In `node` and `txn` bodies, `term expr;` (or bare `term;`) means **"check
-if this loop is complete."** It is a convergence checkpoint: the reactor
-evaluates the goal (postcondition) at this point. If satisfied, the node
-stops firing; otherwise it fires again on the next reactor cycle. Without
-`term`, the reactor has no point at which to evaluate the goal and decide
-whether to continue or converge — which is why it is mandatory in looping
-bodies.
+#### `term` is one conditional exit, not two keywords
 
-In `defn` bodies and match-arm blocks, a trailing expression WITHOUT `;`
-is the implicit return value. No convergence check occurs because defns
-and match arms are not loops. The two forms are semantically distinct:
-`term` invokes a completeness evaluation; a bare tail expression produces
-a value.
+`term` evaluates the enclosing item's **postcondition** at that point. If it
+holds, control leaves the body with the `term` value (or with nothing, for a
+bare `term;`). If it does not hold, execution **continues** to the next
+statement. That is the whole rule; what differs between body kinds is only how
+many times you can arrive at it.
+
+- **`node` / `txn` (cyclic).** The same `term` is reached on every pass. The
+  reactor evaluates the goal there; unmet means the node fires again on the next
+  cycle. Without a `term` the reactor has no point at which to evaluate the goal
+  and decide whether to continue or converge — which is why it is mandatory in
+  looping bodies.
+- **`defn` (linear).** The body runs once, so a `term` is reached once. The
+  postcondition at that point is a *static* obligation: if any valid input could
+  arrive at a `term` whose postcondition does not hold, the program does not
+  compile. A defn whose postcondition is vacuous (`[true]`, or no contract at
+  all) therefore has an **unconditional** exit at every `term`, and the code
+  after a `when … { term; }` guard can rely on the guard being false.
+
+Two obligations follow, and both are compile-time:
+
+1. **Every path produces a value.** A defn with a return type must reach an exit
+   that produces it — a trailing expression, `term <value>`, `endprogram`, or
+   `trap`. Falling off the end of a value-returning body is an error. A
+   `-> Void` body may fall off its end: that is the only value the type has.
+2. **The value has the declared type.** A tail whose type is not the return type
+   is an error.
+
+A trailing expression is the body's value; writing it without `;` is the
+idiomatic form. `term` invokes the completeness evaluation, a tail expression
+does not — but in a `defn` with a vacuous postcondition both simply produce the
+value.
 
 ### 11.4 Iteration
 
