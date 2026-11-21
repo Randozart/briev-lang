@@ -97,17 +97,26 @@ defn tensor_named(name: String, dims: List<Int>, n: Int) -> Tensor {
 
 // tensor_take — OWNING constructor: the returned Tensor owns the dims list
 // and tensor_drop destroys it. For freshly built shape lists.
-defn tensor_take(name: String, dims: List<Int>, n: Int) -> Tensor {
+// 2026-11-20 (issue #149 fallout): the post states `n` — the element count
+// the caller already knows — so `tensor_set(t, i, v)`'s `i < t.n` bound is
+// provable from the same bound the caller used to size the loop.
+defn tensor_take(name: String, dims: List<Int>, n: Int) [true][term.n == n] -> Tensor {
     let (addr, in_arena) = tensor_alloc(n);
     term Tensor { name: name, dims: dims, owns_dims: 1, n: n, ptr: addr, arena: in_arena };
 };
 
-defn tensor_named_owned(name: String, dims: List<Int>, n: Int) -> Tensor {
+// 2026-11-20 (issue #149 fallout): the post states `n` — the element count
+// the caller already knows — so `tensor_set(t, i, v)`'s `i < t.n` bound is
+// provable from the same bound the caller used to size the loop.
+defn tensor_named_owned(name: String, dims: List<Int>, n: Int) [true][term.n == n] -> Tensor {
     let addr: Int = tensor_alloc_owned(n);
     term Tensor { name: name, dims: dims, owns_dims: 1, n: n, ptr: addr, arena: false };
 };
 
-defn tensor_named4(name: String, dims: List<Int>, n: Int) -> Tensor {
+// 2026-11-20 (issue #149 fallout): the post states `n` — the element count
+// the caller already knows — so `tensor_set(t, i, v)`'s `i < t.n` bound is
+// provable from the same bound the caller used to size the loop.
+defn tensor_named4(name: String, dims: List<Int>, n: Int) [true][term.n == n] -> Tensor {
     let addr: Int = tensor_alloc_owned(n);
     term Tensor { name: name, dims: dims, owns_dims: 1, n: n, ptr: addr, arena: false };
 };
@@ -129,7 +138,10 @@ defn tensor_drop(t: Tensor) -> Void {
         // The `as Int` is load-bearing for the H4.2 comparison view: pass-
         // inserted releases are bare-identifier calls, authored ones carry a
         // cast — the view strips only the bare shape.
-        when dims_handle != 0 { coll_destroy(dims_handle as Int); };
+        // 2026-11-20: an address is 0 or positive, so `> 0` is the same test as
+        // `!= 0` and it is the one that proves `coll_destroy`'s
+        // `dims >= 0` precondition from a dominating fact.
+        when dims_handle > 0 { coll_destroy(dims_handle as Int); };
     };
     when t.ptr != 0 {
         Free#(((t as Data) as Int) as Ptr<Bit<8>>);

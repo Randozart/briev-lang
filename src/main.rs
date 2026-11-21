@@ -1380,6 +1380,37 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Install the contract policy that fits this invocation.
+///
+/// 2026-11-20 (issue #149): one policy governs every acceptance entry, so this
+/// decides in one place instead of at each call site.
+///
+/// * An INSPECTION run (`--verify-report`, `--verify-bodies`) was asked for a
+///   document; a `deny` refusal would suppress it, so those announce.
+/// * A source inside a config-exempted root is skipped, with a note on stderr,
+///   because its programs pin other subjects.
+/// * Everything else is acceptance and takes the configured stage.
+fn install_contract_policy(args: &[String]) {
+    if args
+        .iter()
+        .any(|a| a == "--verify-report" || a == "--verify-bodies")
+    {
+        briev_compiler::pipeline::install_contract_gate_for_inspection();
+        return;
+    }
+    match source_arg(args) {
+        Some(source) => briev_compiler::pipeline::install_contract_gate_for_source(source),
+        None => briev_compiler::pipeline::install_contract_gate_from_config(),
+    }
+}
+
+/// The `.bv` source named in an argument list, if any.
+fn source_arg(args: &[String]) -> Option<&str> {
+    args.iter()
+        .find(|arg| !arg.starts_with("--") && arg.ends_with(".bv"))
+        .map(String::as_str)
+}
+
 fn run_build(args: &[String]) -> Result<(), String> {
     // 2026-11-20 (issue #149): the contract policy is part of acceptance, not
     // a test-suite detail. `build` and `run` both land here.
@@ -1387,14 +1418,7 @@ fn run_build(args: &[String]) -> Result<(), String> {
     // Inspection runs are the exception: `--verify-report` / `--verify-bodies`
     // were asked for a report, and a `deny` refusal would suppress it (the
     // report file is written after typechecking). They announce at `warn`.
-    if args
-        .iter()
-        .any(|a| a == "--verify-report" || a == "--verify-bodies")
-    {
-        briev_compiler::pipeline::install_contract_gate_for_inspection();
-    } else {
-        briev_compiler::pipeline::install_contract_gate_from_config();
-    }
+    install_contract_policy(args);
     let opts = parse_build_args(args)?;
 
     // --config-dir must reach the IR-lowering tuning too (baked config is the
@@ -1913,7 +1937,7 @@ fn run_check(args: &[String]) -> Result<(), String> {
     // 2026-11-20 (issue #149): `check` must answer the same question the
     // conformance sweep answers. Before this, a change could pass `check`
     // and fail CI on an unprovable call site.
-    briev_compiler::pipeline::install_contract_gate_from_config();
+    install_contract_policy(args);
     // 2026-11-17 (issue #5): `brievc check --validate` runs the backend
     // normalizer + codegen + `opt -passes=verify` (no link) so a program
     // whose frontend typechecks but whose emitted IR is invalid is caught

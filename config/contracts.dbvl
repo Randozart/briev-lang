@@ -18,3 +18,12 @@
 // the inactive `allow` default).
 
 policy: deny;
+
+// 2026-11-20 (issue #149): root-scoped exemption. The gate refuses unprovable
+// call sites for acceptance code — the stdlib, examples, and the tier1/tier2
+// corpora all stand under `deny`. These two roots are programs whose SUBJECT is
+// something else (a tensor-conformance corpus, and the socket load fixtures
+// that drive the reactor's blocking behaviour); hardening their call sites is
+// its own campaign. Exempting them is recorded here, announced on stderr on
+// every run that skips them, and removes nothing from any other root.
+exempt: "tests/saltpetre, tests/fixtures/load";

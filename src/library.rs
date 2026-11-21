@@ -14,9 +14,9 @@ use crate::typechecker;
 
 /// Run the library mode pipeline: compile a .bv to .a
 pub fn run_library_mode(args: &[String]) -> Result<(), String> {
-    // 2026-11-20 (issue #149): building a static library is acceptance.
-    crate::pipeline::install_contract_gate_from_config();
     let file_path = args.first().ok_or("missing file argument")?;
+    // 2026-11-20 (issue #149): building a static library is acceptance.
+    crate::pipeline::install_contract_gate_for_source(file_path);
 
     // Step 1: Compile to LLVM IR
     let source = std::fs::read_to_string(file_path)

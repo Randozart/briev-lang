@@ -1052,6 +1052,74 @@ pub fn install_contract_gate_from_config() {
     install_contract_gate_policy(policy);
 }
 
+/// Source-path prefixes where the contract gate does not refuse, from
+/// `config/contracts.dbvl` (`exempt: "<prefix>";` rows, one per row).
+///
+/// 2026-11-20 (issue #149): enforcing `deny` on the CLI made the fixture
+/// corpora honest about call sites they never had to prove. Two of them are
+/// programs whose subject is something else entirely — a Saltpetre tensor
+/// conformance corpus and the socket load fixtures — and hardening them is a
+/// campaign, not a commit. Exempting them is the honest middle: acceptance
+/// (`lib/`, `examples/`, `tests/tier1`, `tests/tier2`) keeps `deny`, the
+/// exemption is a visible config row rather than a silent special case, and
+/// every run that skips one says so on stderr.
+fn contract_gate_exempt_roots() -> Vec<String> {
+    let path = crate::resource_root().join("config/contracts.dbvl");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(db) = crate::dbriev::config_db::ConfigDb::from_quoted_str(&content) else {
+        return Vec::new();
+    };
+    // One row, comma-separated: the dbriev reader keeps a single value per
+    // key, so repeated `exempt:` rows would silently collapse to the last one.
+    db.field_string("exempt", 0)
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|root| !root.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Is `source_path` inside `root`? A prefix must end at a path separator.
+///
+/// The path is first made repo-relative, so the same file exempts whether it
+/// was named `tests/saltpetre/x.bv` or by its absolute path — an exemption that
+/// depends on how the path was spelled is a hole, not a policy.
+fn path_within(source_path: &str, root: &str) -> bool {
+    let source = std::path::Path::new(source_path);
+    let relative = source
+        .strip_prefix(crate::resource_root())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|_| source.to_path_buf());
+    let normalised = relative.to_string_lossy();
+    let normalised = normalised.strip_prefix("./").unwrap_or(&normalised);
+    normalised == root
+        || normalised
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with(std::path::MAIN_SEPARATOR))
+}
+
+/// Install the gate for a compile of `source_path`, honouring an exempt root.
+pub fn install_contract_gate_for_source(source_path: &str) {
+    use crate::config_tuning::{install_contract_gate_policy, ContractGatePolicy};
+    install_contract_gate_from_config();
+    let Some(root) = contract_gate_exempt_roots()
+        .into_iter()
+        .find(|root| path_within(source_path, root))
+    else {
+        return;
+    };
+    eprintln!(
+        "note: the contract gate is not enforced for `{source_path}` — \
+         config/contracts.dbvl exempts `{root}` (its programs pin other subjects)"
+    );
+    install_contract_gate_policy(ContractGatePolicy::Allow);
+}
+
 /// Install the gate for an INSPECTION run (`--verify-report`,
 /// `--verify-bodies`).
 ///

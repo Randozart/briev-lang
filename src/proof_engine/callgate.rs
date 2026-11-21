@@ -1307,6 +1307,13 @@ fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
         return direct;
     }
     current = expand_defs(&current, &defs);
+    // 2026-11-20: the `let` expansion can turn `hs.Count#()` into
+    // `[a, b].Count#()`, which is decidable — but only if the simplifier runs
+    // again on the expanded form. Without this, a literal collection's count
+    // stayed an unknown atom one step after the goal that needed it.
+    if let Some(simplified) = simplify_for_proof(&current) {
+        current = simplified;
+    }
     if &current == goal {
         return direct;
     }
@@ -1534,31 +1541,118 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
     Verdict::Unproven
 }
 
-/// Replace `"<literal>".^Length` with its byte count, recursively.
+/// Simplify the compile-time decidable parts of an expression for the prover.
 ///
 /// Returns `None` when nothing changed, so the caller can skip the rebuild.
-fn fold_literal_lengths(e: &Expr) -> Option<Expr> {
+/// Three simplifications, each for a goal that was otherwise unprovable purely
+/// because the answer was written down rather than derived:
+///
+/// * `"<literal>".^Length` — a literal's length is a number.
+/// * `Count#([a, b, c])` / `[a, b, c].Count#()` — a literal collection's count.
+/// * `"<literal>" == "<literal>"` (and `!=`) — decided, not deferred.
+///
+/// 2026-11-20 (issue #149 fallout): installing the contract gate on the CLI
+/// exposed these one after another; each is a fact the source already stated,
+/// just not in a form the prover recognised.
+fn simplify_for_proof(e: &Expr) -> Option<Expr> {
     match e {
-        Expr::Reflect(base, field, crate::ast::ReflectKind::Runtime)
-            if field == "Length" =>
-        {
+        Expr::Reflect(base, field, crate::ast::ReflectKind::Runtime) if field == "Length" => {
             if let Expr::Quoted(bytes) = base.as_ref() {
                 return Some(Expr::Decimal(bytes.len() as i64));
             }
-            fold_literal_lengths(base)
-                .map(|b| Expr::Reflect(Box::new(b), field.clone(), crate::ast::ReflectKind::Runtime))
+            simplify_for_proof(base).map(|b| {
+                Expr::Reflect(Box::new(b), field.clone(), crate::ast::ReflectKind::Runtime)
+            })
         }
-        Expr::BinaryOp(k, l, r) => match (fold_literal_lengths(l), fold_literal_lengths(r)) {
-            (None, None) => None,
-            (a, b) => Some(Expr::BinaryOp(
-                *k,
-                Box::new(a.unwrap_or_else(|| l.as_ref().clone())),
-                Box::new(b.unwrap_or_else(|| r.as_ref().clone())),
-            )),
+        // `Count#([..])` and `[..].Count#()`: the element count of a literal.
+        Expr::Call(name, args, _) if name == "Count#" => match args.as_slice() {
+            [Expr::List(items)] => Some(Expr::Decimal(items.len() as i64)),
+            _ => simplify_args(args).map(|a| Expr::Call(name.clone(), a, None)),
         },
-        Expr::UnaryOp(k, inner) => fold_literal_lengths(inner)
-            .map(|i| Expr::UnaryOp(*k, Box::new(i))),
+        Expr::MethodCall(recv, name, args, _) if name == "Count#" && args.is_empty() => {
+            match recv.as_ref() {
+                Expr::List(items) => Some(Expr::Decimal(items.len() as i64)),
+                _ => simplify_for_proof(recv).map(|r| {
+                    Expr::MethodCall(Box::new(r), name.clone(), Vec::new(), None)
+                }),
+            }
+        }
+        Expr::BinaryOp(k, l, r) => {
+            if let (Expr::Quoted(a), Expr::Quoted(b)) = (l.as_ref(), r.as_ref()) {
+                let equal = a == b;
+                match k {
+                    BinaryOpKind::Eq => return Some(Expr::Bool(equal)),
+                    BinaryOpKind::Neq => return Some(Expr::Bool(!equal)),
+                    _ => {}
+                }
+            }
+            match (simplify_for_proof(l), simplify_for_proof(r)) {
+                (None, None) => None,
+                (a, b) => Some(Expr::BinaryOp(
+                    *k,
+                    Box::new(a.unwrap_or_else(|| l.as_ref().clone())),
+                    Box::new(b.unwrap_or_else(|| r.as_ref().clone())),
+                )),
+            }
+        }
+        Expr::UnaryOp(k, inner) => {
+            simplify_for_proof(inner).map(|i| Expr::UnaryOp(*k, Box::new(i)))
+        }
         _ => None,
+    }
+}
+
+/// Rebuild an argument list when any argument simplified.
+fn simplify_args(args: &[Expr]) -> Option<Vec<Expr>> {
+    let simplified: Vec<Option<Expr>> = args.iter().map(simplify_for_proof).collect();
+    if simplified.iter().all(Option::is_none) {
+        return None;
+    }
+    Some(
+        simplified
+            .into_iter()
+            .zip(args)
+            .map(|(s, original)| s.unwrap_or_else(|| original.clone()))
+            .collect(),
+    )
+}
+
+/// Facts that hold for every well-formed value, derived from the expression
+/// shapes they mention rather than from a guard.
+///
+/// A managed String/collection stores its length in a header slot, so
+/// `x.^Length >= 0` is an invariant of the type — `prove_conjunct` already
+/// answers that ONE goal from nothing. Recording it as a fact generalises the
+/// rule: `x.^Length + 1 >= 1` is the same invariant plus arithmetic, and it is
+/// what a caller writing `buf_new(text.^Length + 1)` has to prove.
+fn derived_length_facts(e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::Reflect(base, field, crate::ast::ReflectKind::Runtime) if field == "Length" => {
+            // The goal is about the LENGTH, not the holder: `x.^Length >= 0`.
+            out.push(Expr::BinaryOp(
+                BinaryOpKind::Ge,
+                Box::new(e.clone()),
+                Box::new(Expr::Decimal(0)),
+            ));
+            derived_length_facts(base, out);
+        }
+        Expr::BinaryOp(_, l, r) | Expr::Index(l, r) => {
+            derived_length_facts(l, out);
+            derived_length_facts(r, out);
+        }
+        Expr::UnaryOp(_, inner) | Expr::Field(inner, _) => derived_length_facts(inner, out),
+        Expr::Call(_, args, _) => {
+            for a in args {
+                derived_length_facts(a, out);
+            }
+        }
+        Expr::MethodCall(recv, _, args, _) => {
+            derived_length_facts(recv, out);
+            for a in args {
+                derived_length_facts(a, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1571,22 +1665,25 @@ pub fn prove_precondition(goal: &Expr, facts: &[Expr]) -> Verdict {
     if matches!(goal, Expr::Bool(false)) {
         return Verdict::Refuted;
     }
-    // 2026-11-20 (issue #149 fallout): `"…".^Length` is a compile-time
-    // property of a literal, so fold it before any reasoning. Without this a
-    // call site guarded by a path bound (`0 < PATH.^Length && PATH.^Length <
-    // 108`, the sockaddr_un limit) was unprovable whenever PATH was a `const
-    // String` — the constant substitution inlined the literal, and the prover
-    // then treated its length as an unknown atom. Folding is sound and
-    // general: a literal cannot change, so its length is a number.
-    let folded_goal;
-    let folded_facts;
-    let (goal, facts) = if let Some(g) = fold_literal_lengths(goal) {
-        folded_goal = g;
-        folded_facts = facts.iter().map(|f| fold_literal_lengths(f).unwrap_or_else(|| f.clone())).collect::<Vec<_>>();
-        (&folded_goal, folded_facts.as_slice())
-    } else {
-        (goal, facts)
-    };
+    // 2026-11-20 (issue #149 fallout): simplify what the source already
+    // decided — a literal's length, a literal collection's count, a comparison
+    // of two literals — before any reasoning, and record the length
+    // invariants the goal mentions. Without these, a call site was unprovable
+    // purely because the answer was written down instead of derived
+    // (`buf_new(text.^Length + 1)`, `run("exit 7")`, `first_greet(["a", "b"])`).
+    let goal = simplify_for_proof(goal).unwrap_or_else(|| goal.clone());
+    let mut facts: Vec<Expr> = facts
+        .iter()
+        .map(|f| simplify_for_proof(f).unwrap_or_else(|| f.clone()))
+        .collect();
+    let mut length_facts: Vec<Expr> = Vec::new();
+    derived_length_facts(&goal, &mut length_facts);
+    for f in &facts {
+        derived_length_facts(f, &mut length_facts);
+    }
+    facts.append(&mut length_facts);
+    let goal = &goal;
+    let facts = facts.as_slice();
     let mut split: Vec<Expr> = Vec::new();
     conjuncts(goal, &mut split);
     let mut any_refuted = false;

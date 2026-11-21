@@ -99,25 +99,89 @@ fn contract_gate_parity_across_entries() {
     }
 }
 
-#[test]
-fn contract_gate_does_not_exempt_the_fixture_roots() {
-    // An exemption is allowed only when a fixture exists to test the ABSENCE
-    // of a proof, and it must be visible in the config. Today there is none:
-    // the config carries the policy and nothing else. If a root list is ever
-    // added, this test must be updated deliberately rather than silently.
+/// Read the config's `exempt:` row as the list of roots it names.
+fn exempt_roots() -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let config =
-        fs::read_to_string(root.join("config/contracts.dbvl")).expect("read contracts.dbvl");
-    let policy_lines: Vec<&str> = config
+    let config = fs::read_to_string(root.join("config/contracts.dbvl")).expect("read contracts.dbvl");
+    config
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("//"))
-        .collect();
+        .filter_map(|line| line.strip_prefix("exempt:"))
+        .flat_map(|rest| rest.trim_end_matches(';').split(','))
+        .map(|root| root.trim().trim_matches('"').to_string())
+        .filter(|root| !root.is_empty())
+        .collect()
+}
+
+#[test]
+fn exemptions_name_real_directories_and_never_acceptance_roots() {
+    // An exemption is allowed only when the root is real and is NOT acceptance
+    // code: the stdlib, the examples, and the tier corpora stay under `deny`.
+    // This is the mechanical half of "no silent exemption" — the other half is
+    // the announcement tested below.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = exempt_roots();
+    for exempt in &roots {
+        assert!(
+            root.join(exempt).is_dir(),
+            "config/contracts.dbvl exempts `{exempt}`, which is not a directory"
+        );
+        for acceptance in ["lib", "examples", "src", "tests/tier1", "tests/tier2"] {
+            assert!(
+                exempt != acceptance && !exempt.starts_with(&format!("{acceptance}/")),
+                "`{exempt}` is acceptance code and must not be exempt from the gate"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_exempt_root_announces_itself() {
+    // An exemption that runs silently is indistinguishable from a gate that is
+    // not installed. Every skipped file says so.
+    let roots = exempt_roots();
+    let Some(exempt) = roots.first() else {
+        return; // no exemptions configured; nothing to announce
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let Some(source) = first_bv_under(&root.join(exempt)) else {
+        return; // the exempt root holds no fixture; nothing to announce
+    };
+    let dir = scratch("exempt_announce");
+    let output = Command::new(env!("CARGO_BIN_EXE_brievc"))
+        .current_dir(root)
+        .env("BRIEV_HOME", root)
+        .arg("build")
+        .arg(&source)
+        .args(["--stdlib-path", "lib", "--config-dir", "config", "--llvm", "--out"])
+        .arg(&dir)
+        .output()
+        .expect("start brievc");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        policy_lines.iter().all(|l| l.starts_with("policy")),
-        "config/contracts.dbvl grew a key beyond `policy` — if it is a per-root \
-         exemption, the tests above no longer prove parity across roots. Keys: {policy_lines:?}"
+        stderr.contains("the contract gate is not enforced for"),
+        "`{}` is under the exempt root `{exempt}` but the run said nothing:\n{stderr}",
+        source.display()
     );
+}
+
+/// The first `*.bv` under `dir`, depth-first.
+fn first_bv_under(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .collect();
+    entries.sort();
+    for entry in &entries {
+        if entry.is_dir() {
+            if let Some(found) = first_bv_under(entry) {
+                return Some(found);
+            }
+        } else if entry.extension().is_some_and(|ext| ext == "bv") {
+            return Some(entry.clone());
+        }
+    }
+    None
 }
 
 #[test]
