@@ -16,27 +16,36 @@ defn clamp_byte(v: Int) [v >= 0 && v <= U8_MAX][term >= 0 && term <= U8_MAX] -> 
     term v;
 };
 
-defn mismatches(acc: Int, actual: Int, want: Int) [acc >= 0][term >= acc] -> Int {
-    when actual != want { term acc + 1; };
-    term acc;
+// 2026-11-20 (issue #149 fallout): the counter used to be threaded through
+// `mismatches` itself (`mismatches(failures, actual, want)`), which forced the
+// call site to prove `failures >= 0` — and the fact engine cannot carry a
+// variable's invariant across an in-place assignment from a contracted call
+// (killing `v`'s facts and re-deriving them from a postcondition that mentions
+// the OLD `v` is a two-state problem). Stated as a predicate plus an arithmetic
+// accumulator the same program needs no such proof, and the accumulator's
+// non-negativity rides the existing `v = v + e` re-derivation.
+defn mismatches(actual: Int, want: Int) [true][term == 0 || term == 1] -> Int {
+    when actual != want { term 1; };
+    term 0;
 };
 
 let done: Int = 0;
 let failures: Int = 0;
 
 node entry [done == 0][done == 1] {
-    failures = mismatches(failures, clamp_byte(200), 255);
-    failures = mismatches(failures, I8_MAX, 127);
-    failures = mismatches(failures, I16_MAX, 32767);
-    failures = mismatches(failures, I32_MAX, 2147483647);
-    failures = mismatches(failures, I64_MAX, 9223372036854775807);
-    failures = mismatches(failures, U16_MAX, 65535);
-    failures = mismatches(failures, U32_MAX, 4294967295);
-    failures = mismatches(failures, KIB, 1024);
-    failures = mismatches(failures, MIB, 1048576);
-    failures = mismatches(failures, PAGE_SIZE, 4096);
-    failures = mismatches(failures, UTF16_OFFSET, 65536);
-    failures = mismatches(failures, NSEC_PER_SEC, 1000000000);
+    failures = failures + mismatches(clamp_byte(200), 255);
+    failures = failures + mismatches(I8_MAX, 127);
+    failures = failures + mismatches(I16_MAX, 32767);
+    failures = failures + mismatches(I32_MAX, 2147483647);
+    failures = failures + mismatches(I64_MAX, 9223372036854775807);
+    failures = failures + mismatches(U16_MAX, 65535);
+    failures = failures + mismatches(U32_MAX, 4294967295);
+    failures = failures + mismatches(KIB, 1024);
+    failures = failures + mismatches(MIB, 1048576);
+    failures = failures + mismatches(PAGE_SIZE, 4096);
+    failures = failures + mismatches(UTF16_OFFSET, 65536);
+    failures = failures + mismatches(NSEC_PER_SEC, 1000000000);
+
     print_int(failures);
     done = 1;
     term;

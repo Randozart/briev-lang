@@ -1009,7 +1009,23 @@ pub fn check_source_with_options(
 /// row = `allow` — the migration stage. The flip to `deny` is the config
 /// commit that ends the stdlib contract migration (plan
 /// 2026-10-19-contract-tiers-and-regularity.md).
-fn install_contract_gate_from_config() {
+/// Install the contract gate's stage from `config/contracts.dbvl`.
+///
+/// 2026-11-20 (issue #149): this used to be reachable only from
+/// `check_source_for` (the conformance sweep), so `policy: deny` was enforced
+/// inside `cargo test` and NOWHERE ELSE — `brievc check`, `build`, `run`,
+/// `test` and `library` all compiled under `Allow`. A library author could
+/// pass every local command and fail CI 21 minutes later on an unprovable
+/// call site. Every acceptance entry now installs it, so one policy governs
+/// them all.
+///
+/// Deliberately NOT installed from the library pipeline functions
+/// (`check_source_with_options`, `compile_source`): the policy is
+/// process-global (`config_tuning::CONTRACT_GATE_POLICY`), so installing it
+/// there would flip the stage for every other test in the same process. The
+/// CLI is a fresh process per invocation — that is the boundary where the
+/// config belongs.
+pub fn install_contract_gate_from_config() {
     use crate::config_tuning::{ContractGatePolicy, install_contract_gate_policy};
     let path = crate::resource_root().join("config/contracts.dbvl");
     let Ok(content) = std::fs::read_to_string(&path) else {

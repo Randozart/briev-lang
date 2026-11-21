@@ -1381,6 +1381,9 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
 }
 
 fn run_build(args: &[String]) -> Result<(), String> {
+    // 2026-11-20 (issue #149): the contract policy is part of acceptance, not
+    // a test-suite detail. `build` and `run` both land here.
+    briev_compiler::pipeline::install_contract_gate_from_config();
     let opts = parse_build_args(args)?;
 
     // --config-dir must reach the IR-lowering tuning too (baked config is the
@@ -1896,6 +1899,10 @@ fn render_nav_html(pages: &[(String, String)]) -> String {
 }
 
 fn run_check(args: &[String]) -> Result<(), String> {
+    // 2026-11-20 (issue #149): `check` must answer the same question the
+    // conformance sweep answers. Before this, a change could pass `check`
+    // and fail CI on an unprovable call site.
+    briev_compiler::pipeline::install_contract_gate_from_config();
     // 2026-11-17 (issue #5): `brievc check --validate` runs the backend
     // normalizer + codegen + `opt -passes=verify` (no link) so a program
     // whose frontend typechecks but whose emitted IR is invalid is caught

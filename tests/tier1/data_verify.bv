@@ -12,7 +12,10 @@ import { data_check } from "std/data_verify.bv";
 
 // make_block — build a writable [len][bytes][NUL] block (the String/Data
 // ABI, SPEC §16.2) so the fixture owns its storage and can tamper with it.
-defn make_block(len: Int) [len >= 0 && len <= 32] -> Int {
+// 2026-11-20 (issue #149 fallout): the returned word is a heap address, so it
+// is non-negative — a fact `data_check` requires and the caller can now
+// discharge instead of asserting it.
+defn make_block(len: Int) [len >= 0 && len <= 32] [term >= 0] -> Int {
     let block: Int = Alloc#(64) as Int;
     Store#(block, len, 8);
     Store#(block + 8, 104, 1);

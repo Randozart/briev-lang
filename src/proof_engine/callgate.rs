@@ -1534,6 +1534,34 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
     Verdict::Unproven
 }
 
+/// Replace `"<literal>".^Length` with its byte count, recursively.
+///
+/// Returns `None` when nothing changed, so the caller can skip the rebuild.
+fn fold_literal_lengths(e: &Expr) -> Option<Expr> {
+    match e {
+        Expr::Reflect(base, field, crate::ast::ReflectKind::Runtime)
+            if field == "Length" =>
+        {
+            if let Expr::Quoted(bytes) = base.as_ref() {
+                return Some(Expr::Decimal(bytes.len() as i64));
+            }
+            fold_literal_lengths(base)
+                .map(|b| Expr::Reflect(Box::new(b), field.clone(), crate::ast::ReflectKind::Runtime))
+        }
+        Expr::BinaryOp(k, l, r) => match (fold_literal_lengths(l), fold_literal_lengths(r)) {
+            (None, None) => None,
+            (a, b) => Some(Expr::BinaryOp(
+                *k,
+                Box::new(a.unwrap_or_else(|| l.as_ref().clone())),
+                Box::new(b.unwrap_or_else(|| r.as_ref().clone())),
+            )),
+        },
+        Expr::UnaryOp(k, inner) => fold_literal_lengths(inner)
+            .map(|i| Expr::UnaryOp(*k, Box::new(i))),
+        _ => None,
+    }
+}
+
 /// Classify a full precondition goal (a conjunction) against facts.
 /// All conjuncts must be Proven; any Refuted makes the whole REFUTED.
 pub fn prove_precondition(goal: &Expr, facts: &[Expr]) -> Verdict {
@@ -1543,6 +1571,22 @@ pub fn prove_precondition(goal: &Expr, facts: &[Expr]) -> Verdict {
     if matches!(goal, Expr::Bool(false)) {
         return Verdict::Refuted;
     }
+    // 2026-11-20 (issue #149 fallout): `"…".^Length` is a compile-time
+    // property of a literal, so fold it before any reasoning. Without this a
+    // call site guarded by a path bound (`0 < PATH.^Length && PATH.^Length <
+    // 108`, the sockaddr_un limit) was unprovable whenever PATH was a `const
+    // String` — the constant substitution inlined the literal, and the prover
+    // then treated its length as an unknown atom. Folding is sound and
+    // general: a literal cannot change, so its length is a number.
+    let folded_goal;
+    let folded_facts;
+    let (goal, facts) = if let Some(g) = fold_literal_lengths(goal) {
+        folded_goal = g;
+        folded_facts = facts.iter().map(|f| fold_literal_lengths(f).unwrap_or_else(|| f.clone())).collect::<Vec<_>>();
+        (&folded_goal, folded_facts.as_slice())
+    } else {
+        (goal, facts)
+    };
     let mut split: Vec<Expr> = Vec::new();
     conjuncts(goal, &mut split);
     let mut any_refuted = false;
@@ -2377,6 +2421,37 @@ mod tests {
             linify(&field),
             Some((vec![("fd".to_string(), 1)], 0)),
             "literal field must reduce to the field value"
+        );
+    }
+
+    #[test]
+    fn literal_string_length_folds_to_a_number() {
+        // `"abc".^Length` is 3 at compile time. Without the fold, a call site
+        // guarded by a constant path's length (a sockaddr_un bound, an HTTP
+        // header limit) was unprovable: constant substitution inlined the
+        // literal and the prover treated its length as an unknown atom.
+        let facts = vec![];
+        assert_eq!(
+            prove_precondition(&e("\"abc\".^Length == 3"), &facts),
+            Verdict::Proven
+        );
+        assert_eq!(
+            prove_precondition(&e("\"abc\".^Length > 0 && \"abc\".^Length < 108"), &facts),
+            Verdict::Proven
+        );
+        assert_eq!(
+            prove_precondition(&e("\"abc\".^Length < 3"), &facts),
+            Verdict::Refuted
+        );
+    }
+
+    #[test]
+    fn literal_string_length_does_not_fold_runtime_lengths() {
+        // The fold is about literals only. A runtime String's length stays a
+        // symbol: proving `s.^Length == 3` from nothing would be a lie.
+        assert_eq!(
+            prove_precondition(&e("s.^Length == 3"), &[]),
+            Verdict::Unproven
         );
     }
 

@@ -40,8 +40,19 @@ obj RatingPopulation {
 // IntVec of user/item indices (0-based, us[k] in [0,nusers), it[k] in
 // [0,nitems)); `val` is the parallel FloatVector of rating values. nusers/nitems are
 // the index-space sizes. Returns the fully populated RatingPopulation.
+// 2026-11-20 (issue #149 fallout): the post states the CSR lengths the obj
+// field comments always documented (`len nusers+1`, `len nnz`) — they were
+// true by construction but undeclared, so every `ivec_get(pop.user_off, i)`
+// in a caller with `policy: deny` was unprovable. A postcondition that states
+// what the builder guarantees is what makes the type usable, not a favour to
+// the checker.
 defn pop_build(us: IntVec, it: IntVec, val: FloatVector, nnz: Int, nusers: Int, nitems: Int)
-    [nnz >= 0 && nusers >= 1 && nitems >= 1][term.nnz == nnz]
+    [nnz >= 0 && nusers >= 1 && nitems >= 1]
+    [term.nnz == nnz
+        && term.user_off.len == nusers + 1 && term.user_item.len == nnz
+        && term.user_val.len == nnz
+        && term.item_off.len == nitems + 1 && term.item_user.len == nnz
+        && term.item_val.len == nnz]
     -> RatingPopulation
 {
     // per-user orientation: key = user index, parallel payload = (item, value)
