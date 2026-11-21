@@ -20,7 +20,7 @@ a different syntax. The receiver is preserved as the operation's input.
 | `#` | intrinsic / operation identity | `obj.Add#(x)` |
 | `$` | compile-time navigation (`eval_nav_call`) | `obj.Nav$(x)` |
 | `!` | plugin intercept (carries receiver) | `obj.serialize!(x)` |
-| `^` / `^^` | reflection (separate tokens) | `obj.^Length`, `obj.^^Size` |
+| `^` / `^^` | reflection (separate tokens) | `obj^^Length`, `obj^^Size` |
 
 **Priority:** member → operation/intrinsic (`#`) → plugin intercept (`!`) →
 UFCS fallback.

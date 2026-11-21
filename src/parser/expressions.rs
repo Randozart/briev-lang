@@ -1632,6 +1632,60 @@ mod tests {
         assert_eq!(a, b, "'{as_form}' must parse identically to '{paren_form}'");
     }
 
+    // ─── wave-9 (one caret): reflection spelling ─────────────────────────
+
+    #[test]
+    fn dotted_reflection_is_a_parse_error() {
+        // The old spellings are retired with no alias; the error must name the
+        // current one so the fix is in the message.
+        for src in ["x^^Length", "x^^Bytes"] {
+            let err = parse_expr(src).expect_err(src);
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("two carets") && msg.contains("x^^"),
+                "the rejection must name the `^^` spelling: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_caret_parses_every_property() {
+        // Every property the emitter table knows, through the one spelling.
+        for src in [
+            "x^^Length",
+            "x^^Ptr",
+            "x^^Size",
+            "x^^Bytes",
+            "x^^Alignment",
+            "x^^Type",
+            "x^^Element",
+            "x^^Available",
+            "wire^^Ready",
+        ] {
+            let Expr::Reflect(_, name, kind) = parse_expr(src).expect(src) else {
+                panic!("{src} must parse as a Reflect");
+            };
+            assert_eq!(name, src.trim_start_matches("x^^").trim_start_matches("wire^^"));
+            // The unified spelling carries the unified tag; the emitter's
+            // per-property table decides folding, not this tag.
+            assert!(matches!(kind, ReflectKind::CompileTime));
+        }
+    }
+
+    #[test]
+    fn xor_unaffected_by_caret_token() {
+        // `^` stays bitwise XOR: `a ^ b` parses as BinaryOp(BitXor), and the
+        // assignment form still works.
+        let Expr::BinaryOp(op, _, _) = parse_expr("a ^ b").expect("xor") else {
+            panic!("a ^ b must parse as a BinaryOp");
+        };
+        assert!(matches!(op, BinaryOpKind::BitXor));
+        // The xor-ASSIGN spelling (`^=`) keeps its meaning too — it is a
+        // distinct token that never collided with reflection. (Its statement
+        // parsing lives in the .bld compound-assignment path; the token and its
+        // BitXor binding are what this test pins.)
+    }
+
     #[test]
     fn c_style_cast_string_matches_as() {
         assert_cast_equiv("n as String", "(String) n");

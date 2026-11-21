@@ -89,3 +89,42 @@ knows; XOR regression test (`a ^ b` unaffected); goldens.
 - No deprecation window or alias — owner-confirmed hard retirement.
 - No new properties; the emitter table is unchanged.
 - The `;`-after-tail question (wave-8 note) stays out.
+
+## Outcome (2026-11-21)
+
+**Landed.** `^^` is the only reflection spelling. Census: 328 `.bv` sites +
+257 embedded-in-Rust sites rewritten; 191 live-doc sites; historical
+plans/reports/archive untouched (frozen history policy); `learn-briev/examples`
+rewritten (live tutorial); `.smoke` fixtures rewritten (tracked, sweep-covered).
+
+**Equivalence evidence (S4).** The probe (byte_len via `^^Length` + inline
+`^^Length` + `^^Bytes`) compiled by the new binary produces function bodies for
+`byte_len` and `txn_entry` that are **instruction-identical** to the same
+program in the old spelling compiled by the pre-wave-9 binary. Three module-level
+differences were individually attributed to trunk drift between the two
+binaries (K3-era stdlib), not reflection: an unconditional Family-I clock
+declare, the stdlib's own `.^Ready` error-message string (now `^^Ready`), and
+attribute-id renumbering from the first. `ll_determinism_check.sh --quick`:
+ALL DETERMINISTIC.
+
+**Bugs found by the migration itself:**
+
+- My first corpus rewrite used a broken capture group (`r'\1'` against
+  `\.\^(\^?)`) and deleted the caret entirely in ~19 embedded-Rust sites
+  (`s.^Length` → `s Length`). Caught by the analysis/embedded-source tests;
+  repaired by diffing every touched file against HEAD. The correct pattern
+  (`r'\.\^\^?'` → `"^^"`) is the one that shipped.
+- `defn_liveness`'s open/closed reflection split keyed on the AST tag. Under
+  the unified surface every site carries `CompileTime`, so the keep-all arm
+  became dead and the closed-read arm swallowed everything — pinned by
+  `unclassified_reflection_pins_everything`. Fixed by dispatching on property
+  NAME: `Length`/`Ptr`/`Ready` are closed reads; anything else keep-all.
+
+**Tests:** `dotted_reflection_is_a_parse_error` (invariant 1),
+`double_caret_parses_every_property` (2), `xor_unaffected_by_caret_token` (4),
+plus the existing iterable-protocol/async/data-cast suites pinning 5–7. Vocab
+gate green with the deduplicated row.
+
+**Spec row:** `value^^Field` — reflection, a representation property: a stored
+header slot or a type-derivable fact, never a computation (that is the `#`
+family's job).

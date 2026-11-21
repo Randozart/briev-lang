@@ -249,7 +249,7 @@ Iteration requires `txn` with `[pre][post]` convergence, NOT `defn` + `[guard]`
 
 ```briev
 txn iter_map<T, U>(list: List<T>, f: T -> U, result: List<U>, i: Int)
-    [i < list.^Len][i == list.^Len] -> List<U>
+    [i < list^^Len][i == list^^Len] -> List<U>
 {
     result = result.append(f(list[i]));
     i = i + 1;

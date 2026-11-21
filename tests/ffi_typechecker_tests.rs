@@ -80,7 +80,7 @@ fn test_optional_frgn_available_is_bool() {
 optional frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature.^^Available;
+    let avail: Bool = feature^^Available;
     fired = fired + 1;
     term;
 };
@@ -97,7 +97,7 @@ fn test_available_on_non_optional_frgn_is_error() {
 frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature.^^Available;
+    let avail: Bool = feature^^Available;
     fired = fired + 1;
     term;
 };

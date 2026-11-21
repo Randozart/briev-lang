@@ -347,7 +347,6 @@ impl LanguageVocab {
                 "name!(...)",
                 "$(Stage)",
                 "^^Field",
-                "^^Field",
                 "!value",
                 "?",
             ]),

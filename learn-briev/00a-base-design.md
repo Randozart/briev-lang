@@ -15,7 +15,7 @@ Briev's symbols are not arbitrary ASCII choices. Each symbol's **visual shape** 
 | **`->`** | An arrow pointing right | Forward motion, transformation | Dataflow / State transition — something becomes something else. | — |
 | **`<-`** | An arrow pointing left | Backward motion, extraction | Mutation / Discard — something comes out of something. | **Transfer** |
 | **`:`** | Two stacked dots | Identity, equivalence | Static type / definition — "This IS that." | — |
-| **`.^` / `.^^`** | Pinpoint + caret(s) | Reflecting on a value/type | **Reflection** — read compiler-known metadata. `.^` = runtime (length, pointer), `.^^` = compile-time (size, bytes, alignment). | **Reflection** |
+| **`^^` / `^^`** | Pinpoint + caret(s) | Reflecting on a value/type | **Reflection** — read compiler-known metadata. `^^` = runtime (length, pointer), `^^` = compile-time (size, bytes, alignment). | **Reflection** |
 | **`[]`** | Brackets that enclose | Containment, boundary | Constraints, bounds, guards — everything inside `[]` is bounded. | **Partition** |
 | **`{}`** | Curly braces that hug | Grouping, bundling | Code block / organizational unit. | — |
 | **`()`** | Parentheses that cup | Holding, containing | Parameter / argument enclosure. | **Application** |
@@ -146,7 +146,7 @@ list.len()           // UFCS: desugars to len(list)
 result.value         // Result unwrapping
 ```
 
-**UFCS (Uniform Function Call Syntax):** `subject.method(args)` resolves to `method(subject, args)`. There is zero magic — the compiler has no hardcoded knowledge of `.len()` or any method name. `list.len()` becomes `len(list)`, which calls the standard library function that uses `list.^Length`. **2026-08-14 (Universal Operation Language):** every operation has three surfaces — a symbol (`+`, `c[i]`, `<-`), an intrinsic (`OpName#(a, b)`), and the UFCS method form (`a.OpName#(b)`). `a.OpName#(b)` resolves through the intrinsic/op identity when no literal member exists.
+**UFCS (Uniform Function Call Syntax):** `subject.method(args)` resolves to `method(subject, args)`. There is zero magic — the compiler has no hardcoded knowledge of `.len()` or any method name. `list.len()` becomes `len(list)`, which calls the standard library function that uses `list^^Length`. **2026-08-14 (Universal Operation Language):** every operation has three surfaces — a symbol (`+`, `c[i]`, `<-`), an intrinsic (`OpName#(a, b)`), and the UFCS method form (`a.OpName#(b)`). `a.OpName#(b)` resolves through the intrinsic/op identity when no literal member exists.
 
 **Priority hierarchy:**
 1. **Internal struct field/defn** — if `subject` has a field or internal `defn` defined in its struct body, it compiles as a direct access
@@ -180,27 +180,27 @@ value.rawParse().(Int).clamp(0, 255);
 
 ---
 
-### Reflection (`.^` runtime, `.^^` compile-time)
+### Reflection (`^^` runtime, `^^` compile-time)
 
 Reflection reads compiler-known metadata about a value or its type. Think of
 it as "ask the compiler for a property of this thing":
 
 ```briev
-list.^Len;       // runtime length (elements)
-x.^^Bytes;       // compile-time storage size
-&x;              // verified pointer (the & operator; x.^Ptr is the reflection form)
-x.^^Size;        // compile-time element count (Int[8].^^Size → 8)
-x.^^Alignment;   // compile-time alignment
-x.^^Type;        // compile-time type identity
+list^^Len;       // runtime length (elements)
+x^^Bytes;       // compile-time storage size
+&x;              // verified pointer (the & operator; x^^Ptr is the reflection form)
+x^^Size;        // compile-time element count (Int[8]^^Size → 8)
+x^^Alignment;   // compile-time alignment
+x^^Type;        // compile-time type identity
 ```
 
-`.^` is **runtime** reflection (value-derived: length, pointer); `.^^` is
+`^^` is **runtime** reflection (value-derived: length, pointer); `^^` is
 **compile-time** reflection (type-derived, foldable: size, bytes, alignment).
 Targets are PascalCase compiler-known identifiers — using one with the wrong
 operator (or an unknown name) is a compile error. The historical `:>`/`<:`
 lens operators and bit-intrinsic projections (Popcount, Absolute, …) were
 removed with the hashword-protocol architecture; the LLVM bit intrinsics are
-declared but have no operator form. Every `.^`/`.^^` target maps to either a
+declared but have no operator form. Every `^^`/`^^` target maps to either a
 compile-time constant or a zero-cost intrinsic.
 
 See `learn-briev/13-projections.md` for the complete reference.
@@ -233,7 +233,7 @@ txn withdraw(amount: Int)
 let nibble = word @/0..3;
 
 // String anchor — compile-time memory slot
-@"hello world" .^Len   // 11
+@"hello world" ^^Len   // 11
 ```
 
 ---
@@ -514,7 +514,7 @@ And `escape` means "Rollback everything - pretend this never happened." Not "bre
 `node` can self-verify when to end:
 
 ```briev
-node fill_buffer() [buffer .^Len < 100][buffer .^Len == 100] {
+node fill_buffer() [buffer ^^Len < 100][buffer ^^Len == 100] {
     buffer = buffer + [new_item];
     term;
 };
@@ -607,7 +607,7 @@ When you see **arrow** `<-` → think **mutation / discard**
 
 When you see **colon** `:` → think **type identity**
 
-When you see **dot-caret** `.^` / `.^^` → think **reflection** — compiler-known metadata about a value/type
+When you see **dot-caret** `^^` / `^^` → think **reflection** — compiler-known metadata about a value/type
 
 When you see **semicolon** `;` → think **statement boundary**
 

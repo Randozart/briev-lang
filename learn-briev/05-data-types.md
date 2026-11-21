@@ -37,7 +37,7 @@ defn count_words(text: String) -> HashMap<String, Int> {
     let words = text.split(" ");
     
     let i: Int = 0;
-    [i < words .^Len] {
+    [i < words ^^Len] {
         let word = words[i];
         let current = counts.get(word);
         [current.is_some()] {
@@ -75,7 +75,7 @@ set = set.insert("cherry");
 set = set.remove("banana");
 
 // Metadata
-let len = set .^Length;
+let len = set ^^Length;
 [set.is_empty()] {
     println("Set is empty");
 };
@@ -92,7 +92,7 @@ defn unique_items(list: List<String>) -> List<String> {
     let result: List<String> = [];
     
     let i: Int = 0;
-    [i < list .^Len] {
+    [i < list ^^Len] {
         let item = list[i];
         [!seen.contains(item)] {
             seen = seen.insert(item);
@@ -148,7 +148,7 @@ defn evaluate_rpn(expr: List<String>) -> Int {
     let stack: Stack<Int> = new_stack();
     
     let i: Int = 0;
-    [i < expr .^Len] {
+    [i < expr ^^Len] {
         let token = expr[i];
         [token == "+"] {
             let (b, s) = stack.pop().unwrap();
@@ -195,7 +195,7 @@ let result = queue.dequeue();
 let front = queue.front();
 
 // Metadata
-let len = queue .^Length;
+let len = queue ^^Length;
 [queue.is_empty()] {
     println("Queue is empty");
 };
@@ -222,7 +222,7 @@ defn bfs(start: Node) -> List<Node> {
         
         let neighbors = node.get_neighbors();
         let i: Int = 0;
-        [i < neighbors .^Len] {
+        [i < neighbors ^^Len] {
             let neighbor = neighbors[i];
             [!visited.contains(neighbor)] {
                 visited = visited.insert(neighbor);
@@ -256,7 +256,7 @@ sb = sb.append_float(3.14);
 let result = sb.to_string();  // "Hello42true3.14"
 
 // Metadata
-let len = sb .^Length;
+let len = sb ^^Length;
 [sb.is_empty()] {
     println("Builder is empty");
 };
@@ -272,10 +272,10 @@ defn build_csv(rows: List<List<String>>) -> String {
     let sb = new_builder();
     
     let i: Int = 0;
-    [i < rows .^Len] {
+    [i < rows ^^Len] {
         let row = rows[i];
         let j: Int = 0;
-        [j < row .^Len] {
+        [j < row ^^Len] {
             [j > 0] {
                 sb = sb.append_char(',');
             };
@@ -425,7 +425,7 @@ struct Cache {
 ```
 
 `Int[1024]` → `[1024 x i64]`, `Frame[256]` → `[256 x %Frame]`.
-Bounds proven by contract: `[i >= 0 && i < stack .^Len]`.
+Bounds proven by contract: `[i >= 0 && i < stack ^^Len]`.
 
 #### Hardware state arrays: `mem let` / `reg let`
 
@@ -536,7 +536,7 @@ and are not overloadable (`op` is for user types). The hierarchy:
 - **`coll obj` / `coll struct`** — the native strategy keyword for
   collections: declare the one sequence member (the storage shape) and the
   compiler owns the rest — hidden `cap`/`len`, scaffolded `op Count`/`op At`/
-  construction/iteration, `.^Length`, `Count#`, and default `op Grow`/
+  construction/iteration, `^^Length`, `Count#`, and default `op Grow`/
   `op Shrink`. **The compiler picks the most effective storage** (heap block
   for growable `Ptr<T>`, inline array for fixed `T[N]`, pooled columns for a
   fixed named instance). **`seq coll`** forces the elements into one
@@ -590,7 +590,7 @@ node go [done == 0][done == 1] {
     let q: MyQueue = [5, 6, 7];   // literal → op Init + op InsertAt
     q <- 8;                        // push → op InsertAt (default cap 16)
     let n: Int = q.Count#();       // 4 — element count
-    let len: Int = q.^Length;      // 4 — stored length (the hidden len slot)
+    let len: Int = q^^Length;      // 4 — stored length (the hidden len slot)
     let cap: Int = Capacity#(q);   // 16 — the hidden capacity
     let first: Int = q[0];         // 5 — op At
     let sum: Int = 0;
@@ -630,7 +630,7 @@ explicit-control intrinsics.
 compiler-owned capacity: `Capacity#(h)` reads it, `Resize#(h, cap)` sets it,
 `EnsureCap#(h, n)` grows to at least `n`, `TrimCap#(h)` shrinks to `len`.
 They are intrinsics (operations), never reflection — there is no
-`.^Capacity`.
+`^^Capacity`.
 
 ## 8. Complete Example: Contact Manager
 
@@ -683,7 +683,7 @@ txn lookup(name: String) [name != ""][contacts == contacts] {
 txn list_all() [true][contacts == contacts] {
     let names = contacts.keys();
     let i: Int = 0;
-    when i < names .^Len {
+    when i < names ^^Len {
         println(names[i]);
         i = i + 1;
     };
@@ -857,7 +857,7 @@ let p: Ptr<Int> = &x;
 let list_ptr: Ptr<Int> = &my_list[0];
 
 // Reflection form (same meaning as &x)
-let p2: Ptr<Int> = x.^Ptr;
+let p2: Ptr<Int> = x^^Ptr;
 ```
 
 ### Dereferencing
@@ -877,9 +877,9 @@ after proving the access is within bounds.
 
 | Property | Guaranteed by |
 |----------|---------------|
-| Bounds | `i * sizeof(T) < ptr.^^Bytes` is proven by the SMT solver |
+| Bounds | `i * sizeof(T) < ptr^^Bytes` is proven by the SMT solver |
 | Non-null | `Ptr<T>` from `&x` or `&list[0]` is always valid |
-| Alignment | Address is always aligned to `T.^^Alignment` |
+| Alignment | Address is always aligned to `T^^Alignment` |
 | No use-after-free | Briev has no `free` — global state lives forever |
 
 ### Standard Library
@@ -889,7 +889,7 @@ after proving the access is within bounds.
 ```briev
 import { read_i64, write_i64, copy, address } from "std/ptr.bv";
 
-// Safe read — precondition: i >= 0 && (i+1)*8 <= p .^^Bytes
+// Safe read — precondition: i >= 0 && (i+1)*8 <= p ^^Bytes
 let v = read_i64(p, 0);
 
 // Safe write — same precondition

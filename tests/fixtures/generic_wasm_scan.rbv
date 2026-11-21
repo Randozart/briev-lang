@@ -7,7 +7,7 @@ let items: List<Item> = [
 ];
 defn scan(movies: List<Item>, offset: Int, limit: Int, idx: Int,
     total: Int, page: List<Item>) -> Int {
-    when idx >= movies .^Length { term total; };
+    when idx >= movies ^^Length { term total; };
     let movie: Item = movies[idx];
     when movie.id >= 0 {
         when total >= offset && total < offset + limit { page <- movie; };
@@ -23,12 +23,12 @@ let page_len: Int = 0;
 let ready: Bool = false;
 txn run [true][ready] {
     count = scan(items, 0, 2, 0, 0, page);
-    page_len = page .^Length;
+    page_len = page ^^Length;
     ready = true;
     term;
 };
 <view>
   <main><button id="go" b-trigger:click="run">go</button>
-    <pre id="out">count=<span id="count" b-text="count">0</span> page=<span id="page_len" b-text="page.^Size">0</span> f=<span id="f" b-text="f">0</span> f_ok=<span id="fok" b-text="f_ok">false</span> local=<span id="local" b-text="page_len">0</span></pre>
+    <pre id="out">count=<span id="count" b-text="count">0</span> page=<span id="page_len" b-text="page^^Size">0</span> f=<span id="f" b-text="f">0</span> f_ok=<span id="fok" b-text="f_ok">false</span> local=<span id="local" b-text="page_len">0</span></pre>
   </main>
 </view>

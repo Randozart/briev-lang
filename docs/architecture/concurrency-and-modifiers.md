@@ -11,7 +11,7 @@ directives — and it does not pretend otherwise. What it forbids is *hiding*
 that treatment behind ordinary-looking syntax.
 
 - **Compiler-knowns are disclosed** with markers: `#` (intrinsic `Sqrt#`,
-  hashword `Int`), `!` (compile-time expansion `my_macro!`), `.^`/`.^^`
+  hashword `Int`), `!` (compile-time expansion `my_macro!`), `^^`/`^^`
   (reflection).
 - **User-facing directives are ordinary keywords** — `seq`, `vol`, `async`,
   `sync<group>` — requiring no special computer-science knowledge to read.
