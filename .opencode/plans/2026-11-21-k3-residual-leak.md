@@ -220,7 +220,10 @@ once, never duplicated.
 ### RSS soak (the staircase problem)
 
 Both builds show the same staircase: flat stretches, then 5–29 MB steps at
-unpredictable call counts. `MALLOC_ARENA_MAX=1` does NOT remove the steps, so
+unpredictable call counts — and the steps go DOWN as well as up (one recorded
+run of this daemon rose 142.7 → 159.0 MB over 300 calls, then fell to 151.5 MB
+by call 350 and settled at 154.4 MB). A curve that returns memory cannot
+produce a slope; a leak can only add. `MALLOC_ARENA_MAX=1` does NOT remove the steps, so
 they are not per-arena retention — but they are large enough to swamp a
 ~18 KB/call difference inside any 600-call window. The staircase is why the
 30-call soak in the Phase C record looked dead flat while ASan showed 56 KB/call
