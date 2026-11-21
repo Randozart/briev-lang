@@ -17,16 +17,15 @@ import "std/io.bv";
 // The cycle is STATIC (loop2 -> loop2), deliberately runtime-terminating so
 // the corpus harness can run this program to completion; willreturn removal
 // is decided by the call-graph cycle, not by runtime divergence.
-// 2026-11-20 (issue #149 fallout): the recursion sits on the TRUE side of the
-// guard. Written the other way round (`when n < 1 { term; }; loop2(n - 1)`) the
-// call site cannot be proven — a bare `term;` is a convergence checkpoint, not
-// a return, so nothing establishes `n >= 1` after the guard. This shape states
-// the same cycle (loop2 -> loop2) and carries its own proof.
+// 2026-11-21 (wave-8): written the natural way. The guard's bare `term;` exits
+// unconditionally because this defn's postcondition is vacuous, so the call
+// after it sees `n >= 1` and proves `n - 1 >= 0`. (Wave-7 had to restructure
+// the recursion onto the true side of the guard; that workaround is retired.)
 defn loop2(n: Int) [n >= 0] -> Void {
-    when n >= 1 {
-        loop2(n - 1);
+    when n < 1 {
+        term;
     };
-    term;
+    loop2(n - 1);
 };
 
 defn serve(n: Int) [n >= 0] -> Void {

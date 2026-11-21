@@ -3272,9 +3272,10 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
             elaborate_stmts(body, ctx, errors);
             ctx.known_facts.truncate(base);
             if ctx.in_defn
-                && body
-                    .iter()
-                    .any(crate::analysis::termination::statement_always_terminates)
+                && crate::analysis::termination::stmts_end_defn(
+                    body,
+                    current_defn_post_is_vacuous(ctx),
+                )
             {
                 ctx.known_facts
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
@@ -5150,9 +5151,10 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // (`when n == 0 { term 1; }; term pow2(n-1)*2;`). Defn context
             // only: a txn `term` is P-gated, not an unconditional return.
             if ctx.in_defn
-                && body
-                    .iter()
-                    .any(crate::analysis::termination::statement_always_terminates)
+                && crate::analysis::termination::stmts_end_defn(
+                    body,
+                    current_defn_post_is_vacuous(ctx),
+                )
             {
                 ctx.known_facts
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
@@ -5435,7 +5437,7 @@ fn checkfree_defn_obligation(defn: &Definition) -> Vec<TypeError> {
                 sites.push((e.clone(), facts.to_vec()));
             }
         };
-        walk_scoped_stmts(&defn.body, &mut facts, &mut sink);
+        walk_scoped_stmts(&defn.body, &mut facts, post_is_vacuous(defn), &mut sink);
     }
     sites
         .into_iter()
@@ -5468,6 +5470,7 @@ fn declared_types_of(defn: &Definition) -> HashMap<String, Type> {
 fn walk_scoped_stmts(
     stmts: &[Statement],
     facts: &mut Vec<Expr>,
+    post_vacuous: bool,
     sink: &mut impl FnMut(&Expr, &[Expr]),
 ) {
     for stmt in stmts {
@@ -5475,12 +5478,9 @@ fn walk_scoped_stmts(
             Statement::Guarded(cond, body) => {
                 let base = facts.len();
                 facts.extend(crate::proof_engine::callgate::facts_of(cond));
-                walk_scoped_stmts(body, facts, sink);
+                walk_scoped_stmts(body, facts, post_vacuous, sink);
                 facts.truncate(base);
-                if body
-                    .iter()
-                    .any(crate::analysis::termination::statement_always_terminates)
-                {
+                if crate::analysis::termination::stmts_end_defn(body, post_vacuous) {
                     let negated = crate::proof_engine::callgate::fallthrough_facts(cond);
                     facts.extend(negated);
                 }
@@ -5488,9 +5488,13 @@ fn walk_scoped_stmts(
             Statement::Block(inner)
             | Statement::SyncBlock(inner)
             | Statement::Defer(inner)
-            | Statement::Mutex(inner) => walk_scoped_stmts(inner, facts, sink),
-            Statement::Foreach { body, .. } => walk_scoped_stmts(body, facts, sink),
-            Statement::InlineDefn(inner) => walk_scoped_stmts(&inner.body, facts, sink),
+            | Statement::Mutex(inner) => walk_scoped_stmts(inner, facts, post_vacuous, sink),
+            Statement::Foreach { body, .. } => {
+                walk_scoped_stmts(body, facts, post_vacuous, sink)
+            }
+            Statement::InlineDefn(inner) => {
+                walk_scoped_stmts(&inner.body, facts, post_vacuous, sink)
+            }
             // `Match` arms carry their own bindings; their patterns establish
             // no facts here, so subscripts inside an arm are checked against
             // the OUTER facts only. Conservative in the safe direction (fewer
@@ -5570,6 +5574,38 @@ fn subscript_proven(
     }
     upper_bounded(receiver, index, facts) && lower_bounded(receiver, index, facts, types)
 }
+
+/// Is this defn's postcondition vacuous, in the sense `stmts_end_defn` means?
+///
+/// Shared by the two call sites that have a `Definition` in hand and by the
+/// context-based one that has only `ctx`; the rule must not drift between them.
+fn post_is_vacuous(defn: &Definition) -> bool {
+    !defn.contract.explicit
+        || defn.contract.post_authority
+        || matches!(defn.contract.post_condition, Expr::Bool(true))
+}
+
+/// Is the postcondition of the defn currently being checked vacuous?
+///
+/// 2026-11-21 (wave-8): a defn's bare `term;` exits only when the gate is met.
+/// `lower_bare_terms` folds a `true` post into an unconditional return
+/// (`interpreter/eval.rs:2485`), so a vacuous post is exactly the case where the
+/// term always exits — and therefore the only case where a guard body ending in
+/// `term;` licenses its negation for the code after it. A non-vacuous post is
+/// gated: whether it holds at that point is the verifier's business, not the
+/// fact engine's.
+fn current_defn_post_is_vacuous(ctx: &TypecheckContext) -> bool {
+    let Some(name) = ctx.current_fn_name.as_deref() else {
+        return true;
+    };
+    match ctx.fn_contracts.get(name) {
+        Some(contract) => matches!(contract.post, Expr::Bool(true)),
+        // No registered contract: the defn declared none, which is `[true][true]`.
+        None => true,
+    }
+}
+
+/// The same answer, from the item the obligation owns.
 
 /// F1 — a dominating fact places `index` below the receiver's own count.
 ///
@@ -10375,6 +10411,25 @@ defn peek(xs: List<Int>, i: Int) -> Int {
                 .any(|e| format!("{e:?}").contains("cannot be proven")),
             "names the fix: {errs:#?}"
         );
+    }
+
+    /// A guard body ending in a bare `term;` licenses its negation when the
+    /// defn's postcondition is vacuous: `lower_bare_terms` folds a `true` post
+    /// into an unconditional return, so the term really does exit and the code
+    /// after the guard sees `!cond`.
+    ///
+    /// This is the natural recursive base case written the way an author writes
+    /// it — no restructuring, no duplicate guard.
+    #[test]
+    fn guard_negation_licensed_by_unconditional_term() {
+        let _deny = DenyGate::install();
+        check(
+            "defn loop2(n: Int) [n >= 0] -> Void { \
+                 when n < 1 { term; }; \
+                 loop2(n - 1); \
+             };",
+        )
+        .expect("the bare term exits, so n >= 1 after the guard proves n - 1 >= 0");
     }
 
     /// Issue #150 claimed a free defn's postcondition does not project onto

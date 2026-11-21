@@ -12,9 +12,18 @@
 //! cannot be mirrored (HIR carries only globals); they are inert for this
 //! rule in practice (a top-level `term` is not valid Briev).
 
-use super::expr::HirExprKind;
+use super::expr::{HirExprKind, HirLiteral};
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
+
+/// Mirror of the AST pass's `BodyKind`: what a bare `term;` means depends on
+/// whether the body is linear (a defn) or cyclic (a node/txn), and — for a
+/// defn — on whether its postcondition gates the term.
+#[derive(Clone, Copy)]
+enum BodyKind {
+    Defn { post_vacuous: bool },
+    Cyclic,
+}
 
 pub fn analyze(program: &HirProgram) -> (Vec<String>, Vec<String>) {
     let mut errors = Vec::new();
@@ -25,7 +34,17 @@ pub fn analyze(program: &HirProgram) -> (Vec<String>, Vec<String>) {
             && !c.exported
             && c.sync_domains.is_empty()
     }) {
-        check_list(&c.name, &c.body.statements, &mut errors, &mut warnings);
+        let kind = match c.kind {
+            HirCallableKind::Defn => BodyKind::Defn {
+                post_vacuous: c
+                    .contract
+                    .as_ref()
+                    .map(|contract| matches!(&contract.post.kind, HirExprKind::Literal(HirLiteral::Bool(true))))
+                    .unwrap_or(true),
+            },
+            _ => BodyKind::Cyclic,
+        };
+        check_list(&c.name, &c.body.statements, kind, &mut errors, &mut warnings);
     }
     (errors, warnings)
 }
@@ -47,7 +66,13 @@ fn list_always_terminates(stmts: &[HirStmt]) -> bool {
     stmts.iter().any(statement_always_terminates)
 }
 
-fn check_list(name: &str, stmts: &[HirStmt], errors: &mut Vec<String>, warnings: &mut Vec<String>) {
+fn check_list(
+    name: &str,
+    stmts: &[HirStmt],
+    kind: BodyKind,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
     let mut alive = true;
     for (i, stmt) in stmts.iter().enumerate() {
         if !alive {
@@ -61,33 +86,51 @@ fn check_list(name: &str, stmts: &[HirStmt], errors: &mut Vec<String>, warnings:
         if statement_always_terminates(stmt) {
             alive = false;
         }
-        recurse(name, stmt, errors, warnings);
+        recurse(name, stmt, kind, errors, warnings);
         if let HirStmtKind::Guarded(_, body) = &stmt.kind {
             let ends_in_void_term = matches!(
                 body.last().map(|s| &s.kind),
                 Some(HirStmtKind::Term(None)) | Some(HirStmtKind::EndProgram(None))
             );
-            if ends_in_void_term && i + 1 < stmts.len() {
-                warnings.push(format!(
-                    "{name}: a `when` guard ending in bare `term;` is a convergence checkpoint — \
-                     execution continues to the statement after the guard. To close the program here \
-                     use `term! ->`, to return a value early use `term <value>`, or restructure so \
-                     the postcondition excludes later guards."
-                ));
+            let gated = match kind {
+                BodyKind::Defn { post_vacuous } => !post_vacuous,
+                BodyKind::Cyclic => true,
+            };
+            if ends_in_void_term && gated && i + 1 < stmts.len() {
+                warnings.push(match kind {
+                    BodyKind::Defn { .. } => format!(
+                        "{name}: a `when` guard ending in bare `term;` exits only when the \
+                         postcondition holds — with a non-vacuous post, execution continues to \
+                         the statement after the guard. Return a value with `term <value>` if the \
+                         early exit must be unconditional."
+                    ),
+                    BodyKind::Cyclic => format!(
+                        "{name}: a `when` guard ending in bare `term;` is a convergence \
+                         checkpoint — the node fires again rather than continuing, so the \
+                         statement after the guard runs on the next pass only if the goal was \
+                         unmet. Use `endprogram` to close the program here."
+                    ),
+                });
             }
         }
     }
 }
 
-fn recurse(name: &str, stmt: &HirStmt, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
+fn recurse(
+    name: &str,
+    stmt: &HirStmt,
+    kind: BodyKind,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
     match &stmt.kind {
         HirStmtKind::Guarded(_, body)
         | HirStmtKind::Block(body)
         | HirStmtKind::Foreach { body, .. }
-        | HirStmtKind::SyncBlock(body) => check_list(name, body, errors, warnings),
+        | HirStmtKind::SyncBlock(body) => check_list(name, body, kind, errors, warnings),
         HirStmtKind::Match { arms, .. } => {
             for arm in arms {
-                check_list(name, &arm.body, errors, warnings);
+                check_list(name, &arm.body, kind, errors, warnings);
             }
         }
         _ => {}

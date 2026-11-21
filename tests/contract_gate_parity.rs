@@ -185,6 +185,47 @@ fn first_bv_under(dir: &std::path::Path) -> Option<PathBuf> {
 }
 
 #[test]
+fn node_term_is_a_checkpoint_not_a_return() {
+    // A node's bare `term;` is a convergence checkpoint: it may continue, so it
+    // establishes nothing for the code after it. The same guard in a defn DOES
+    // license its negation, because a defn's bare term exits when the post is
+    // vacuous (`lower_bare_terms` folds a `true` post into a return).
+    //
+    // Checked through the CLI rather than a unit test: the licence is a
+    // typechecker-context decision, and the CLI is where the policy, the
+    // context and the call gate are all installed together.
+    let src = r#"
+import "std/io.bv";
+
+defn needs(x: Int) [x >= 1][term >= 0] -> Int { term x; };
+
+node n [beginprogram][true] {
+    let y: Int = get_env_int!("N");
+    when y < 1 { term; };
+    Print#(needs(y) as String);
+    endprogram Print#("");
+};
+"#;
+    let dir = scratch("node_term");
+    let source = dir.join("node_term.bv");
+    fs::write(&source, src).expect("write fixture");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new(env!("CARGO_BIN_EXE_brievc"))
+        .current_dir(root)
+        .env("BRIEV_HOME", root)
+        .arg("check")
+        .arg(&source)
+        .args(["--stdlib-path", "lib", "--config-dir", "config"])
+        .output()
+        .expect("start brievc");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && stderr.contains("not provable"),
+        "a node's bare term must not license `y >= 1`:\n{stderr}"
+    );
+}
+
+#[test]
 fn config_deny_is_what_the_cli_reads() {
     // The gate's stage comes from the shipped config; if someone flips it to
     // `allow`, every test above would pass for the wrong reason. Pin the file's

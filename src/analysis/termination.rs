@@ -53,17 +53,42 @@ pub fn analyze_dual(items: &[TopLevel]) -> (Vec<String>, Vec<String>) {
     hir
 }
 
+/// Which kind of body the walker is inside — it decides what a bare `term;`
+/// means. A defn is linear: its `term` is a post-gated exit, unconditional when
+/// the post is vacuous. A node/txn is cyclic: its `term` is a convergence
+/// checkpoint that legitimately continues until the post holds.
+#[derive(Clone, Copy)]
+enum BodyKind {
+    Defn { post_vacuous: bool },
+    Cyclic,
+}
+
 pub fn analyze(items: &[TopLevel]) -> (Vec<String>, Vec<String>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     for item in items {
         match item {
-            TopLevel::Transaction(t) => check_list(&t.name, &t.body, &mut errors, &mut warnings),
-            TopLevel::Definition(d) => check_list(&d.name, &d.body, &mut errors, &mut warnings),
+            TopLevel::Transaction(t) => check_list(
+                &t.name,
+                &t.body,
+                BodyKind::Cyclic,
+                &mut errors,
+                &mut warnings,
+            ),
+            TopLevel::Definition(d) => check_list(
+                &d.name,
+                &d.body,
+                BodyKind::Defn {
+                    post_vacuous: post_is_vacuous(d),
+                },
+                &mut errors,
+                &mut warnings,
+            ),
             TopLevel::Statement(stmt) => {
                 check_list(
                     "top-level",
                     std::slice::from_ref(stmt.as_ref()),
+                    BodyKind::Cyclic,
                     &mut errors,
                     &mut warnings,
                 );
@@ -106,6 +131,16 @@ fn list_always_terminates(stmts: &[Statement]) -> bool {
 // continue (its gate is unmet), while a defn's bare `term;` exits whenever the
 // defn's postcondition is vacuous, because `lower_bare_terms` makes it
 // unconditional in that case (`interpreter/eval.rs:2485`).
+
+/// Does this statement list guarantee the enclosing defn produced its value?
+///
+/// Public so the typechecker can ask the same question when it records a
+/// guard's negation as a fact: a guard body that unconditionally exits makes
+/// `!cond` true for the code after it. `post_vacuous` decides whether a bare
+/// `term;` is such an exit (see `statement_ends_defn`).
+pub fn stmts_end_defn(stmts: &[Statement], post_vacuous: bool) -> bool {
+    list_ends_defn(stmts, post_vacuous)
+}
 
 /// Errors for every non-void defn whose body can fall off the end.
 pub fn defn_totality_errors(items: &[TopLevel]) -> Vec<String> {
@@ -225,6 +260,7 @@ pub fn analyze_all(items: &[TopLevel]) -> (Vec<String>, Vec<String>) {
 fn check_list(
     name: &str,
     stmts: &[Statement],
+    kind: BodyKind,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
@@ -241,7 +277,7 @@ fn check_list(
         if statement_always_terminates(stmt) {
             alive = false;
         }
-        recurse(name, stmt, errors, warnings);
+        recurse(name, stmt, kind, errors, warnings);
         // 2026-08-04: hint for the bare-term-guard confusion — a `when` guard
         // ending in bare `term;` with more code after it. The author expected
         // early exit; the language continues. Only warn when code actually
@@ -251,28 +287,50 @@ fn check_list(
                 body.last(),
                 Some(Statement::Term(None)) | Some(Statement::EndProgram(None))
             );
-            if ends_in_void_term && i + 1 < stmts.len() {
-                warnings.push(format!(
-                    "{name}: a `when` guard ending in bare `term;` is a convergence checkpoint — \
-                     execution continues to the statement after the guard. To close the program here \
-                     use `term! ->`, to return a value early use `term <value>`, or restructure so \
-                     the postcondition excludes later guards."
-                ));
+            // 2026-11-21 (wave-8): the hint is about a GATED term. In a defn
+            // whose postcondition is vacuous the term always exits, so there is
+            // nothing to warn about; the old text taught node semantics to defn
+            // authors and cited `term!`, which no longer exists.
+            let gated = match kind {
+                BodyKind::Defn { post_vacuous } => !post_vacuous,
+                BodyKind::Cyclic => true,
+            };
+            if ends_in_void_term && gated && i + 1 < stmts.len() {
+                warnings.push(match kind {
+                    BodyKind::Defn { .. } => format!(
+                        "{name}: a `when` guard ending in bare `term;` exits only when the \
+                         postcondition holds — with a non-vacuous post, execution continues to \
+                         the statement after the guard. Return a value with `term <value>` if the \
+                         early exit must be unconditional."
+                    ),
+                    BodyKind::Cyclic => format!(
+                        "{name}: a `when` guard ending in bare `term;` is a convergence \
+                         checkpoint — the node fires again rather than continuing, so the \
+                         statement after the guard runs on the next pass only if the goal was \
+                         unmet. Use `endprogram` to close the program here."
+                    ),
+                });
             }
         }
     }
 }
 
 /// Recurse into nested statement lists owned by this statement.
-fn recurse(name: &str, stmt: &Statement, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
+fn recurse(
+    name: &str,
+    stmt: &Statement,
+    kind: BodyKind,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
     match stmt {
-        Statement::Guarded(_, body) => check_list(name, body, errors, warnings),
-        Statement::Block(body) => check_list(name, body, errors, warnings),
-        Statement::Foreach { body, .. } => check_list(name, body, errors, warnings),
-        Statement::SyncBlock(body) => check_list(name, body, errors, warnings),
+        Statement::Guarded(_, body) => check_list(name, body, kind, errors, warnings),
+        Statement::Block(body) => check_list(name, body, kind, errors, warnings),
+        Statement::Foreach { body, .. } => check_list(name, body, kind, errors, warnings),
+        Statement::SyncBlock(body) => check_list(name, body, kind, errors, warnings),
         Statement::Match { arms, .. } => {
             for arm in arms {
-                check_list(name, &arm.body, errors, warnings);
+                check_list(name, &arm.body, kind, errors, warnings);
             }
         }
         _ => {}
