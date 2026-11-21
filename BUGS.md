@@ -17,36 +17,36 @@ the flag again on the next arm. Regression: `tests/diverging_arm_match.rs`
 (6 shapes, 3 of which fail without the restore) plus the native and
 interpreter tier1 fixtures.
 
-## 2026-11-20 — Bare `term;` in a defn: interpreter continues, native returns (OPEN)
+## 2026-11-21 — RETRACTED: "bare `term;` in a defn diverges between engines"
 
-Found while making the contract gate honest (wave-7 W7-3), on
-`tests/tier1/divergent_loop_attrs.bv`:
+An entry here claimed the reference interpreter continues past a bare `term;`
+in a defn while the backend returns. **That is wrong, and the entry is
+withdrawn rather than left to be "fixed".**
+
+The 2026-10-16 *term-semantics plan §1* already implemented the owner's rule:
+`lower_bare_terms` (`src/interpreter/eval.rs:2485`) rewrites every bare `term;`
+into `when P { term <void>; }` at `FunctionDef` construction, and a vacuous
+post (`Bool(true)`) lowers to an unconditional return. Measured through the
+reference interpreter — a defn whose guard exits with `term;` does not run the
+statement after the guard:
 
 ```briev
-defn f(x: Int) -> Void {
-    when x > 0 { term; };
-    Print#("after");
-};
+let hits: Int = 0;
+defn f(x: Int) -> Void { when x > 0 { term; }; hits = hits + 1; };
+test ... { f(1); expect hits == 0; };      // PASS
 ```
 
-`f(1)` prints nothing before the final `|end` — the backend treats the bare
-`term;` in a defn as an unconditional `ret void`. The reference interpreter
-does not: `Statement::Term(None)` is "a convergence checkpoint — continue"
-(`src/interpreter/eval.rs:2980`), with no defn/ret distinction. SPEC §11.3
-scopes the convergence checkpoint to `node`/`txn` bodies and says nothing
-about a bare `term;` in a defn, so the two engines are both defensible and
-therefore divergent — Rule 5 makes the interpreter the reference, which makes
-the backend the bug.
+The mistake was reading the raw `Term(None)` arm (`eval.rs:2980`) — which only
+sees terms that were *not* lowered — and concluding the engines disagreed. The
+header of `src/analysis/termination.rs` repeated the same reading and is
+corrected in the same commit.
 
-Consequence: no fallthrough fact may be recorded for a guard whose body is a
-bare `term;` (`crate::analysis::termination::statement_always_terminates`
-correctly excludes it, and an attempted "fix" that included it was reverted —
-it would have let the compiler PROVE `n - 1 >= 0` from a guard that does not
-return). The fixture now recurses on the true side of its guard, which is
-provable and unambiguous.
-
-Not fixed here: settling it needs a decision on which engine is right (and a
-SPEC line), then a test per engine.
+What is genuinely missing is not the gate but the **obligations around it**:
+totality ("any valid input reaches a valid term/output") is not checked at all
+today — `defn f(x: Int) -> Int { let y: Int = x + 1; };` compiles — and a
+defn's postcondition is discharged only under `--verify-bodies` or the strict
+profile. Both are wave-8 work; see
+`.opencode/plans/2026-11-21-wave8-linear-exit.md`.
 
 ## 2026-11-20 — `brievc test` cannot link an export-surface fixture (OPEN, pre-existing)
 

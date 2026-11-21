@@ -7,8 +7,12 @@
 //   - `term <val>` / `term! <val>`  → Err(TermReturn(val)): the whole
 //     transaction unwinds (mod.rs:128-139 breaks; Guarded uses `?`), so every
 //     later sibling statement in the same list never runs.
-//   - bare `term;` / `term!;`        → Ok(Void): a convergence checkpoint,
-//     execution continues to the next statement.
+//   - bare `term;` / `term!;`        → **post-gated**: `lower_bare_terms`
+//     (`interpreter/eval.rs:2485`) rewrites it at registration into
+//     `when P { term <void>; }`, so it exits when the postcondition holds and
+//     continues when it does not. A vacuous post makes it unconditional.
+//     2026-11-21: this comment previously said bare `term;` always continues,
+//     which read the un-lowered arm and cost a wrong BUGS.md entry.
 //
 // This pass emits a hard ERROR for unreachable statements after an
 // always-terminating statement, and a WARNING for the bare-term-guard-ending
