@@ -62,8 +62,8 @@ defn trunc(acc: Int) [acc >= 1][term >= 1 && term < 1000000000000000000] -> Int 
 // acc's leading digits are exact; only the low digit is dropped per /10.
 // Returns (acc, k) with value ~= acc x 10^k, acc < 1000000000000000000 (<= 18 digits).
 defn sscale(acc: Int, e: Int, k: Int)
-    [acc >= 1 && acc < 1000000000000000000 && e >= 0 && e <= 104 && k >= -30]
-    [term.0 >= 1 && term.0 < 1000000000000000000 && term.1 >= 0 && term.1 <= 40]
+    [acc >= 1 && acc < 1000000000000000000 && e >= 0 && e <= 971 && k >= -30]
+    [term.0 >= 1 && term.0 < 1000000000000000000 && term.1 >= 0 && term.1 <= 320]
     -> (Int, Int)
 {
     when e == 0 {
@@ -91,7 +91,7 @@ defn pow2b(b: Int) [b >= 0 && b <= 60][term >= 1 && term <= 1 << 60] -> Int {
 // into the EXACT integer part (m >> b) whose digits come first, then the
 // fraction continues by long division.
 defn frac_all_digits(m: Int, b: Int, count: Int)
-    [m >= 0 && m < 1000000000000000000 && b >= 0 && b <= 149 && count >= 1 && count <= 10]
+    [m >= 0 && m < 1000000000000000000 && b >= 0 && b <= 1100 && count >= 1 && count <= 10]
     [term >= 0 && term < 10000000000]
     -> Int
 {
@@ -177,7 +177,7 @@ defn frac_digit_loop(m: Int, b: Int, count: Int)
 
 // frac_exp - the leading-digit decimal exponent k of m / 2^b (b >= 1).
 defn frac_exp(m: Int, b: Int)
-    [m >= 1 && m < 1000000000000000000 && b >= 0 && b <= 149][term >= -45 && term <= 40]
+    [m >= 1 && m < 1000000000000000000 && b >= 0 && b <= 1100][term >= -340 && term <= 310]
     -> Int
 {
     when b == 0 {
@@ -197,8 +197,8 @@ defn frac_exp(m: Int, b: Int)
 // float_rounded - the rounded leading `precision` digits of M x 2^E as an
 // integer, plus the leading-digit exponent k.
 defn float_rounded(m: Int, e: Int, precision: Int)
-    [m > 0 && m < 1 << 24 && e >= -149 && e <= 104 && precision >= 1 && precision <= 9]
-    [term.0 >= 0 && term.0 < 1000000000000000000 && term.1 >= -45 && term.1 <= 40]
+    [m > 0 && m < 1 << 53 && e >= -1074 && e <= 971 && precision >= 1 && precision <= 9]
+    [term.0 >= 0 && term.0 < 1000000000000000000 && term.1 >= -340 && term.1 <= 310]
     -> (Int, Int)
 {
     when e >= 0 {
@@ -280,7 +280,7 @@ defn int_leading(acc: Int, nd: Int, k: Int, want: Int)
 // ---- %g assembly: rounding, style, sign ---------------------------------
 // int_leading_int - the leading `want` digits of acc x 10^k as an integer.
 defn int_leading_int(acc: Int, nd: Int, k: Int, want: Int)
-    [acc >= 1 && nd >= 1 && nd <= 19 && k >= 0 && k <= 40 && want >= 1 && want <= 10]
+    [acc >= 1 && nd >= 1 && nd <= 19 && k >= 0 && k <= 320 && want >= 1 && want <= 10]
     [term >= 0 && term < 10000000000]
     -> Int
 {
@@ -353,7 +353,7 @@ defn strip_frac_zeros(frac: String) [true][term ^^Length >= 0] -> String {
 
 // exp_style - exponential %g form: d[.ddd]e±XX from the digit string + k.
 defn exp_style(ds: String, k: Int, sign: Int)
-    [ds ^^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
+    [ds ^^Length >= 1 && k >= -340 && k <= 310 && sign >= 0 && sign <= 1]
     [term ^^Length >= 2]
     -> String
 {
@@ -379,7 +379,7 @@ defn exp_style_mant(mant: String, exp: String, sign: Int)
 };
 
 // exp_digits - "e±XX": the exponent field with sign and >= 2 digits.
-defn exp_digits(k: Int) [k >= -45 && k <= 40][term ^^Length >= 2 && term ^^Length <= 3] -> String {
+defn exp_digits(k: Int) [k >= -340 && k <= 310][term ^^Length >= 2 && term ^^Length <= 4] -> String {
     when k < 0 {
         let a: Int = 0 - k;
         when a < 10 {
@@ -395,7 +395,7 @@ defn exp_digits(k: Int) [k >= -45 && k <= 40][term ^^Length >= 2 && term ^^Lengt
 
 // fixed_style - fixed %g form: place the decimal point at position k+1.
 defn fixed_style(ds: String, k: Int, sign: Int)
-    [ds ^^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
+    [ds ^^Length >= 1 && k >= -340 && k <= 310 && sign >= 0 && sign <= 1]
     [term ^^Length >= 1]
     -> String
 {
@@ -407,7 +407,7 @@ defn fixed_style(ds: String, k: Int, sign: Int)
 };
 
 // fixed_body - the unsigned fixed-form body.
-defn fixed_body(ds: String, k: Int) [ds ^^Length >= 1 && k >= -45 && k <= 40][term ^^Length >= 1] -> String {
+defn fixed_body(ds: String, k: Int) [ds ^^Length >= 1 && k >= -340 && k <= 310][term ^^Length >= 1] -> String {
     let n: Int = ds ^^Length;
     when k < 0 {
         let z: Int = 0 - k - 1;
@@ -455,11 +455,80 @@ defn float_format(f: Float, precision: Int)
     };
     let m: Int = mantissa_val(exp8, mant);
     let e: Int = exponent_val(exp8);
+    term binary_body(m, e, sign, precision);
+};
+
+// float64_format - %g over a binary64 value. Decomposition: 1 sign bit,
+// 11 exponent bits (bias 1023), 52 stored mantissa bits; the significand is
+// the hidden-bit form (2^52 .. 2^53-1), which still fits the engine's
+// 18-digit integer window. Binary64 spans a far wider exponent range than
+// binary32, so the digit pipeline carries [-1074, 971] - the same helpers,
+// widened, never a second implementation.
+defn float64_format(f: Float64, precision: Int)
+    [precision >= 1 && precision <= 9][term ^^Length >= 1]
+    -> String
+{
+    let bits: Int = double_bits(f);
+    let sign: Int = (bits >> 63) & 1;
+    let exp11: Int = (bits >> 52) & 0x7FF;
+    let mant: Int = bits & 0xFFFFFFFFFFFFF;
+    when exp11 > 2046 {
+        when mant == 0 {
+            when sign == 1 {
+                term "-inf";
+            };
+            term "inf";
+        };
+        term "nan";
+    };
+    when exp11 == 0 && mant == 0 {
+        when sign == 1 {
+            term "-0";
+        };
+        term fresh_string("0");
+    };
+    let m: Int = double_mantissa_val(exp11, mant);
+    let e: Int = double_exponent_val(exp11);
+    term binary_body(m, e, sign, precision);
+};
+
+// double_bits - the IEEE-754 binary64 bit pattern (identical route to
+// float_bits: the Data-protocol bitcast chain, 64 bits wide here).
+defn double_bits(f: Float64) [true][term >= 0] -> Int {
+    term (f as Data) as Int;
+};
+
+// double_mantissa_val - the 53-bit significand (hidden bit when normal).
+defn double_mantissa_val(exp11: Int, mant: Int)
+    [exp11 >= 0 && exp11 <= 2047 && mant >= 0 && mant < 1 << 52]
+    [term >= 1 && term < 1 << 53]
+    -> Int
+{
+    when exp11 == 0 && mant == 0 { term 1; };
+    when exp11 == 0 && mant > 0 { term mant; };
+    term mant + (1 << 52);
+};
+
+// double_exponent_val - E such that value = M x 2^E. Subnormals carry the
+// minimum exponent (52-bit shift + 1023 bias); normals are exp11 - 1075.
+defn double_exponent_val(exp11: Int) [exp11 >= 0 && exp11 <= 2046][term >= -1074 && term <= 971] -> Int {
+    when exp11 == 0 {
+        term 1 - 1075;
+    };
+    term exp11 - 1075;
+};
+
+// binary_body - the shared %g tail: round to `precision` significant digits,
+// then choose the style (`k >= precision` or `k < -4` selects exponential).
+defn binary_body(m: Int, e: Int, sign: Int, precision: Int)
+    [m >= 1 && m < 1 << 53 && e >= -1074 && e <= 971 && sign >= 0 && sign <= 1 && precision >= 1 && precision <= 9]
+    [term ^^Length >= 1]
+    -> String
+{
     let (r, k): (Int, Int) = float_rounded(m, e, precision);
     let ds0: String = digits_of_int(r);
     let d: Int = ds0 ^^Length;
     let ds: String = pad_digits(ds0, d);
-    // k >= precision (P sig digits: exponent form) or k < -4 → exponential.
     when k >= precision || k < -4 {
         term exp_style(ds, k, sign);
     };
