@@ -23,6 +23,17 @@
 #   BRIEV_PTL_SSH="ssh user@host" bash benchmarks/intel_ptl/g0.sh
 #
 # Env: BRIEV_PTL_SSH, BRIEV_PTL_WORK, BRIEVC (same as run.sh).
+#   BRIEV_PTL_ENV          env prefix for the node's shell, e.g.
+#                          "XDG_CACHE_HOME=/tmp/briev-cache" when the node's
+#                          home filesystem is full (see below)
+#
+# BRIEV_PTL_ENV (2026-11-22, P3): the compiler's FFI object cache lives under
+# `dirs::cache_dir()`/briev-compiler/ffi — i.e. `$HOME/.cache` — and `BRIEV_HOME`
+# does NOT redirect it. On the PTL node (2026-11-22) `/` was 100% full (64 K
+# free), so every `brievc` run that compiles lib/runtime/briev_rt.c died with
+# "No space left on device" and this gate aborted on its first rung with no
+# verdict. `BRIEV_PTL_ENV="XDG_CACHE_HOME=/tmp/briev-cache"` moves the cache to
+# the 31 G /tmp tmpfs and the same gate runs unchanged.
 # The generated binaries need a larger stack than 8 MB (two 1 Mi / 512^2 f32
 # arrays); the runner sets `ulimit -s 65536` (BUGS.md 2026-11-06).
 
@@ -33,6 +44,7 @@ SSH_CMD="${BRIEV_PTL_SSH:-ssh overlordx86-64}"
 read -r -a SSH <<< "$SSH_CMD"
 WORK="${BRIEV_PTL_WORK:-/tmp/briev-ptl}"
 BRIEVC="${BRIEVC:-$ROOT/target/release/brievc}"
+REMOTE_ENV="${BRIEV_PTL_ENV:-}"
 
 command -v "${SSH[0]}" >/dev/null || { echo "missing command: ${SSH[0]}" >&2; exit 2; }
 [ -x "$BRIEVC" ] || { echo "build brievc first: cargo build --release" >&2; exit 2; }
@@ -48,12 +60,12 @@ tar -C "$ROOT" -cf - target/compiler-in-briv \
 fail=0
 sample_report() {
     local bench="$1" dev="$2"
-    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" | grep -E "G0_.*_BAD|compiled on" | tail -3 || true
+    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && $REMOTE_ENV BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" | grep -E "G0_.*_BAD|compiled on" | tail -3 || true
 }
 run_gate() {
     local bench="$1" dev="$2"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && $REMOTE_ENV BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
     local bad compiled
     # Fixtures name their own label (e.g. G0_SUM_BAD, G0_MINMAX_BAD); accept
     # the last must-be-zero counter line.
@@ -110,7 +122,7 @@ run_gate g0_fsum_exact vulkan
 run_gate_reported() {
     local bench="$1" dev="$2"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 90 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && $REMOTE_ENV BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 90 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
     local bad compiled
     bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
     compiled=$(printf '%s\n' "$out" | grep -c "kernel '.*' compiled on '$dev'" || true)
@@ -122,8 +134,13 @@ run_gate_reported() {
         if [ "$gpu" = "$cpu" ]; then kinds="$kinds $k=ok"; else kinds="$kinds $k=DIFF"; fi
     done
     case "$kinds" in *DIFF) mismatch=1 ;; esac
-    if [ "$compiled" -lt 1 ]; then
-        echo "-- $bench on $dev: HANG/no output (bad=${bad:-?}) — reported"
+    # 2026-11-22 (P3): "no verdict" is not "wrong". A hang can happen AFTER the
+    # kernel compiled (NEO's clFinish class, BUGS.md), and this branch used to
+    # classify that as WRONG — which flipped the whole gate to FAIL and hid the
+    # fact that nothing was measured. A `_BAD` line is the only thing that can
+    # testify either way; without it, say so.
+    if [ -z "$bad" ]; then
+        echo "-- $bench on $dev: no verdict (compiled=${compiled}, timeout/hang) — reported"
     elif [ "${bad:-x}" != "0" ] || [ "$mismatch" -ne 0 ]; then
         echo "-- $bench on $dev: WRONG (bad=${bad:-?}${kinds})"
         fail=1
@@ -135,7 +152,7 @@ run_gate_reported() {
 report_gemm_fallback() {
     local dev="$1"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 300 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/g0_gemm.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && $REMOTE_ENV BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 300 $WORK/bin/brievc run --accel=force --deny-accel-cpu-fallback benchmarks/intel_ptl/g0_gemm.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
     local bad
     bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
     if printf '%s\n' "$out" | grep -q "has no OpenCL projection"; then
@@ -179,7 +196,7 @@ echo "== g1.5 stage F: per-lane smoke (reported) =="
 report_lane() {
     local dev="$1"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/g1_lane_smoke.abv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && $REMOTE_ENV BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/g1_lane_smoke.abv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
     if printf '%s\n' "$out" | grep -q "compiled on '$dev'"; then
         local endpoints
         endpoints=$(printf '%s\n' "$out" | grep -o "dst\[0\] = i64 [0-9-]* | dst\[255\] = i64 [0-9-]*" | tail -1)

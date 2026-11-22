@@ -240,6 +240,42 @@ So: the per-call verdict rests on the ASan slope (two points, same builder,
 reproducible to 0.05%), with RSS corroborating the lower absolute footprint and
 refusing to resolve an 18 KB/call difference — never as the primary instrument.
 
+### The 600-call A/B, completed (2026-11-22)
+
+An earlier arm of this soak (`/scratch/k3-asan/soak-r2h`) terminated between
+calls 501 and 550 with `RpcError: connection closed mid-frame`, the daemon
+logging nothing and leaving no core. That result is superseded: the run was
+repeated with a harness that captures the daemon's own exit status via `wait`,
+on both builds, on the identical geometry (5 MB zero frame, `yunet.onnx`,
+`frame_path` ingress, sample every 50 calls):
+
+| arm | binary | calls | RSS | verdict |
+|---|---|---|---|---|
+| `fixed12` — pre-R2 | `build-fixed12/daemon` | 600/600 | 143.7 → 188.6 MB (+44.9) | daemon ALIVE; harness-killed |
+| `r2h` — R2 | `build-r2h/daemon` | 600/600 | 143.7 → 173.1 MB (+29.4) | daemon ALIVE; harness-killed |
+
+Raw curves: `/scratch/k3-asan/soak-closeout/{fixed12,r2h}.curve.txt`; both
+daemon logs are empty (0 B), as expected for a daemon that never faults.
+
+What this settles:
+
+- The ~500-call death was **run-specific**, not a property of either build. A
+  500-call death is no longer a RESULT to report; it was noise from that run's
+  conditions and is closed. The stack-depth hypothesis was already falsified
+  (`handle_conn` frame is 96 B in the linked binary ⇒ ~87,000 requests of
+  8 MB), and the survival of both arms confirms it empirically.
+- R2's footprint stays **~15 MB lower at every sample** across the full 600
+  calls (173.1 vs 188.6 MB at call 600), consistent with the ASan slope: more
+  releases, less live heap. RSS still cannot resolve the per-call rate — the
+  staircase steps both ways — but the absolute separation is stable, not a
+  transient.
+
+Superseded hypotheses, kept for the record: H1 ("pre-R2 also dies ~500 ⇒
+pre-existing") — falsified, `fixed12` survives; H3 (5 s `sock_set_recv_timeout`
+starving a slow client) — not tested and no longer motivated, since no arm
+died; H5 (coll-arena block regrowth) — same, untested and unmotivated (both
+`daemon.log` are empty, so no arena exhaustion was reached).
+
 ## Geometry note
 
 Every number above is the `frame_path` ingress (raw f32 CHW). `image_path`

@@ -18,6 +18,17 @@
 #   BRIEV_PTL_BENCHES      comma list (default elem,gemm,sdpa)
 #   BRIEV_PTL_RESULTS_JSON local results output path
 #   BRIEVC                 local brievc (default target/release/brievc)
+#   BRIEV_PTL_ENV          env prefix for the node's shell, e.g.
+#                          "XDG_CACHE_HOME=/tmp/briev-cache" when the node's
+#                          home filesystem is full (see below)
+#
+# BRIEV_PTL_ENV (2026-11-22, P3): the compiler's FFI object cache lives under
+# `dirs::cache_dir()`/briev-compiler/ffi — i.e. `$HOME/.cache` — and `BRIEV_HOME`
+# does NOT redirect it. On the PTL node (2026-11-22) `/` was 100% full (64 K
+# free), so every `brievc` run that compiles lib/runtime/briev_rt.c died with
+# "No space left on device" and this gate aborted on its first rung with no
+# verdict. `BRIEV_PTL_ENV="XDG_CACHE_HOME=/tmp/briev-cache"` moves the cache to
+# the 31 G /tmp tmpfs and the same gate runs unchanged.
 
 set -euo pipefail
 
@@ -26,6 +37,7 @@ SSH_CMD="${BRIEV_PTL_SSH:-ssh overlordx86-64}"
 read -r -a SSH <<< "$SSH_CMD"
 WORK="${BRIEV_PTL_WORK:-/tmp/briev-ptl}"
 BRIEVC="${BRIEVC:-$ROOT/target/release/brievc}"
+REMOTE_ENV="${BRIEV_PTL_ENV:-}"
 BENCHES="${BRIEV_PTL_BENCHES:-elem,gemm,sdpa}"
 RESULTS_JSON="${BRIEV_PTL_RESULTS_JSON:-$ROOT/benchmarks/results/2026-11-06-intel-ptl-first-pass.json}"
 
@@ -42,10 +54,10 @@ tar -C "$ROOT" -cf - target/compiler-in-briv \
     | "${SSH[@]}" "tar -C '$WORK' -xf -"
 
 echo "== correctness gates + perf_counter samples =="
-"${SSH[@]}" "bash -lc 'cd $WORK && python3 benchmarks/intel_ptl/harness.py --work $WORK/run --benches $BENCHES'"
+"${SSH[@]}" "bash -lc 'cd $WORK && $REMOTE_ENV python3 benchmarks/intel_ptl/harness.py --work $WORK/run --benches $BENCHES'"
 
 echo "== build collector (Briev timing source) =="
-"${SSH[@]}" "bash -lc 'cd $WORK && BRIEV_HOME=$WORK $WORK/bin/brievc build benchmarks/intel_ptl/collector.bv --stdlib-path lib --config-dir config --out $WORK/bin'"
+"${SSH[@]}" "bash -lc 'cd $WORK && $REMOTE_ENV BRIEV_HOME=$WORK $WORK/bin/brievc build benchmarks/intel_ptl/collector.bv --stdlib-path lib --config-dir config --out $WORK/bin'"
 
 run_collector() {
     local bench="$1" dev="$2" iters="$3" width="$4"
@@ -57,7 +69,7 @@ run_collector() {
         *) echo "unknown bench $bench" >&2; exit 2 ;;
     esac
     echo "-- collector $bench $dev (iters=$iters, width=${width}ns)"
-    "${SSH[@]}" "bash -lc 'cd $WORK && OV_MODEL=$WORK/run/$bench.xml OV_DEVICE=$dev OV_ITERS=$iters OV_WIDTH_NS=$width $inputs $WORK/bin/collector'"
+    "${SSH[@]}" "bash -lc 'cd $WORK && $REMOTE_ENV OV_MODEL=$WORK/run/$bench.xml OV_DEVICE=$dev OV_ITERS=$iters OV_WIDTH_NS=$width $inputs $WORK/bin/collector'"
 }
 
 case ",$BENCHES," in *,elem,*) run_collector elem GPU 60 1000; run_collector elem CPU 8 1000 ;; esac

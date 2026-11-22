@@ -9,6 +9,10 @@ import "./onnx.bv";
 import "std/collections.bv";
 import "./tensor.bv";
 import "std/string.bv";
+// 2026-11-22 (op-backend ledger plan, S2): strides_of / round_even / pow_float
+// moved to the stdlib floor — Tensor-free leaves that an op must be able to
+// reach without dragging saltpetre along.
+import "std/tensor_util.bv";
 
 
 defn attr_ints(node: OnnxNode, name: String, fallback: List<Int>) -> List<Int> {
@@ -506,16 +510,6 @@ defn flatten(node: OnnxNode, x: Tensor) -> Result<Tensor, String> {
     term Ok(result);
 };
 
-defn round_even(v: Float) -> Float {
-    let f: Float = Floor#(v);
-    let d: Float = v - f;
-    when d > 0.5 { term f + 1.0; };
-    when d < 0.5 { term f; };
-    let i: Int = f as Int;
-    when i % 2 == 0 { term f; };
-    term f + 1.0;
-};
-
 defn axis_channel(idx: Int, dims: List<Int>, axis: Int) -> Int {
     let stride: Int = 1;
     foreach i in 0..dims.Count#() {
@@ -681,24 +675,6 @@ defn tensor_slice(node: OnnxNode, x: Tensor, starts: Tensor, ends_t: Tensor, axe
     term Ok(result);
 };
 
-defn pow_float(a: Float, b: Float) -> Float {
-    let bi: Int = b as Int;
-    let is_int: Bool = (bi as Float) == b;
-    when is_int && bi >= 0 {
-        let acc: Float = 1.0;
-        foreach i in 0..bi { acc = acc * a; };
-        term acc;
-    };
-    when is_int && bi < 0 {
-        let acc: Float = 1.0;
-        let n: Int = 0 - bi;
-        foreach i in 0..n { acc = acc * a; };
-        term 1.0 / acc;
-    };
-    when b == 0.5 { term Sqrt#(a); };
-    term 0.0;
-};
-
 defn apply_binop(a: Float, b: Float, op: Int) -> Float {
     let v: Float = a + b;
     when op == 1 { v = a - b; };
@@ -761,19 +737,6 @@ defn tensor_binary(x: Tensor, y: Tensor, op: Int) -> Result<Tensor, String> {
         tensor_set(result, i, apply_binop(tensor_get(x, i), tensor_get(y, i), op));
     };
     term Ok(result);
-};
-
-defn strides_of(dims: List<Int>) -> List<Int> {
-    let rank: Int = dims.Count#();
-    let st: List<Int> = [];
-    foreach i in 0..rank { st <- 1; };
-    let acc: Int = 1;
-    foreach k in 0..rank {
-        let axis: Int = rank - 1 - k;
-        st[axis] = acc;
-        acc = acc * dims[axis];
-    };
-    term st;
 };
 
 defn tensor_gather(node: OnnxNode, x: Tensor, idx_t: Tensor) -> Result<Tensor, String> {

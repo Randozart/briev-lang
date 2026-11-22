@@ -417,6 +417,11 @@ tests/tier1/*
 # Compiled saltpetre library probes (lib/saltpetre/*.bv builds in place).
 lib/saltpetre/*
 !lib/saltpetre/*.bv
+# 2026-11-22 (op-backend ledger plan): the per-op provenance ledger and its
+# census are SOURCE, not build output — the ignore above is about the ELF
+# probes brievc drops next to the .bv files. Keep them tracked.
+!lib/saltpetre/*.dbvl
+!lib/saltpetre/*.txt
 
 # Compiled example binaries (extension-less ELF next to their sources).
 examples/apps/task_board/backend/main

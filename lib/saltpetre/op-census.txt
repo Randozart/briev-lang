@@ -1,0 +1,16 @@
+# op-backend census for lib/saltpetre (plan 2026-11-22-saltpetre-op-backend-ledger.md).
+#
+# briev      — ops served by Briev code (scalar CPU today, Briev-emitted later)
+# delegated  — ops served by a vendor lib (ffi(...) or model(...))
+# total      — dispatched ops with a ledger row
+#
+# The ratchet is one-directional: `briev` may only go UP and `delegated` only
+# go DOWN (tests/saltpetre_op_ledger.rs::census_only_improves). Update this file
+# only when a retirement lands, and say which op in the commit message.
+#
+# 2026-11-22: baseline — the whole surface is Briev code. No op-level vendor
+# binding exists yet (lib/std/ai/openvino.bv is model-level and serves no op
+# here), so there is genuinely nothing delegated and nothing to retire.
+briev=30
+delegated=0
+total=30

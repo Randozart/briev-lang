@@ -1,0 +1,159 @@
+// gemm_baseline.bv — P3 baseline: saltpetre's scalar Gemm at the g0 geometry.
+//
+// 2026-11-22 (plan 2026-11-22-saltpetre-gemm-graduation.md, M1): the CPU
+// baseline a Gemm graduation number requires. It builds the ONE-node graph in
+// source — `empty_onnx_graph` + a hand-built `OnnxNode{op_type: "Gemm"}` — and
+// drives it through the real session path (`sp_begin`/`sp_open_coll`/`sp_run`),
+// so the measured time is saltpetre's `gemm` op (exec.bv), not a hand-copied
+// kernel.
+//
+// WHY THIS LIVES UNDER tests/saltpetre: the fixture's subject is the tensor
+// conformance corpus, and `config/contracts.dbvl` records that root as an
+// exemption from the `deny` call-site gate (the saltpetre call sites are
+// hardened by their own campaign, not by this benchmark). Putting the fixture
+// beside the corpus it exercises keeps the exemption root unchanged; widening
+// the exemption to a benchmarks root would be weakening the gate instead.
+//
+// The geometry is g0_gemm.bv's: M=N=K=512, f32, and the SAME closed-form
+// inputs, so the three parties (saltpetre CPU, Briev device lane, OpenVINO)
+// are comparable on one shape. The verify phase recomputes 4096 sampled
+// outputs as CPU dots exactly as g0_gemm's verify node does.
+//
+// Output lines:
+//   SALT_GEMM_BAD=<n>          sampled mismatches (must be 0)
+//   SALT_GEMM_SUM=<f>          spot-check sum of 4096 sampled outputs
+//   SALT_GEMM_CPU_US=<n>       wall time of the sp_run call, microseconds
+//
+// Run: brievc run tests/saltpetre/gemm_baseline.bv --stdlib-path lib
+//      --config-dir config --out /tmp/salt_gemm_cpu
+
+import "saltpetre/session.bv";
+import { now_ns } from "std/os/time.bv";
+import { float_format } from "std/float_fmt.bv";
+import "std/io.bv";
+
+const M: Int = 512;
+const N: Int = 512;
+const K: Int = 512;
+const MN: Int = 262144;
+
+defn a_val(idx: Int) -> Float {
+    term (((idx * 7) % 13) as Float * 0.125 - 0.5);
+};
+
+defn b_val(idx: Int) -> Float {
+    term (((idx * 3) % 11) as Float * 0.25 - 1.0);
+};
+
+node entry [beginprogram][true] {
+    sp_begin(1048576);
+    sp_open_coll(1048576);
+
+    // A and B are allocated OUTSIDE the arena (tensor_named_owned, arena:
+    // false), so they survive sp_run's arena reset — the conformance.bv
+    // input-lifetime rule. tensor_named_owned's post `term.n == n` makes
+    // `a.n == MN` known here, so the fills' `idx < a.n` is provable.
+    let a_dims: List<Int> = [M, K];
+    let b_dims: List<Int> = [K, N];
+    let a: Tensor = tensor_named_owned("A", a_dims, MN);
+    let b: Tensor = tensor_named_owned("B", b_dims, MN);
+
+    // The one-Gemm ONNX graph, assembled here rather than in a helper.
+    // No alpha/beta attrs: the defaults (alpha=1.0, beta=1.0) apply, and with
+    // the C input absent the output is exactly 1.0*acc + 1.0*0 = acc.
+    //
+    // The graph declares ONE input (A) and carries B as an initializer — the
+    // ONNX idiom for a weight, and the shape `execute_env_inputs` requires
+    // (`inputs.Count#() == graph.ins.Count#()`). `run_node`'s Gemm arm then
+    // resolves `ins[1]` from the environment, which is where initializers land.
+    //
+    // WHY INLINE, not a `build_gemm_graph(b) -> OnnxGraph` helper: a `defn`
+    // that creates a `List<struct>`, appends to it, and returns it hands back a
+    // corrupted element store (SIGSEGV when the caller reads an element), while
+    // the same list assembled in the caller or grown in a callee is sound. This
+    // is a recorded compiler defect, not a graph idiom — see BUGS.md
+    // 2026-11-22 "List<struct> grown and returned by the same defn". Every list
+    // literal is bound with an explicit element type first: a bare literal
+    // reaches codegen untyped (BUGS.md, same date family).
+    let no_attrs: List<OnnxAttr> = [];
+    let operand_names: List<String> = [];
+    operand_names <- "A";
+    operand_names <- "B";
+    let y_names: List<String> = [];
+    y_names <- "Y";
+    let node0: OnnxNode = OnnxNode {
+        op_type: "Gemm",
+        ins: operand_names,
+        outs: y_names,
+        attrs: no_attrs,
+    };
+    let nodes: List<OnnxNode> = [];
+    nodes <- node0;
+    let value_ins: List<OnnxValue> = [];
+    value_ins <- OnnxValue { name: "A", dims: a_dims };
+    let value_outs: List<OnnxValue> = [];
+    value_outs <- OnnxValue { name: "Y", dims: b_dims };
+    let inits: List<Tensor> = [];
+    inits <- b;
+    let graph: OnnxGraph = OnnxGraph {
+        nodes: nodes,
+        ins: value_ins,
+        outs: value_outs,
+        inits: inits,
+    };
+    foreach idx in 0..MN {
+        tensor_set(a, idx, a_val(idx));
+    };
+    foreach idx in 0..MN {
+        tensor_set(b, idx, b_val(idx));
+    };
+
+    let t0: Int = now_ns();
+    let result: Result<Tensor, String> = sp_run(graph, a, 0);
+    let t1: Int = now_ns();
+    when is_err(result) {
+        print_str("SALT_GEMM_ERR=");
+        print_str(unwrap_err(result));
+        print_str("\n");
+        endprogram 1;
+    };
+    let y: Tensor = unwrap(result);
+    let us: Int = (t1 - t0) / 1000;
+
+    // Spot-check: every 64th output (4096 samples across the 512x512 grid),
+    // each recomputed from the closed form as a CPU dot — g0's method, but
+    // with the reference from the formulas, so no input-side tensor bounds
+    // are in play. The loop variable's `i < y.n` fact is what tensor_get
+    // needs.
+    let bad: Int = 0;
+    let sum: Float = 0.0;
+    foreach i in 0..y.n {
+        when i % 64 == 0 {
+            let row: Int = i / N;
+            let col: Int = i % N;
+            let acc: Float = 0.0;
+            foreach j in 0..K {
+                acc = acc + a_val(row * K + j) * b_val(j * N + col);
+            };
+            let got: Float = tensor_get(y, i);
+            when acc != got { bad = bad + 1; };
+            sum = sum + got;
+        };
+    };
+
+    print_str("SALT_GEMM_BAD=");
+    print_int(bad);
+    print_str("\n");
+    print_str("SALT_GEMM_SUM=");
+    print_str(float_format(sum, 9));
+    print_str("\n");
+    print_str("SALT_GEMM_CPU_US=");
+    print_int(us);
+    print_str("\n");
+
+    tensor_free(y);
+    tensor_free(a);
+    tensor_free(b);
+    sp_end();
+    endprogram 0;
+};

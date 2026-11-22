@@ -72,3 +72,45 @@ defn toggle_bit(x: Int, i: Int) -> Int {
 defn test_bit(x: Int, i: Int) -> Bool {
     term (x >> i) & 1 == 1;
 };
+
+// --- word decoding from a byte string -------------------------------------
+//
+// 2026-11-22 (plan 2026-11-22-saltpetre-op-backend-ledger.md, S2): moved here
+// from lib/saltpetre/tensor.bv. Reinterpreting bytes as words is a bit-level
+// primitive, not a tensor concept, and three saltpetre modules (audio, frame,
+// onnx) needed it across module boundaries. Bodies are byte-identical to the
+// originals — the op surface is pinned bit-for-bit by
+// tests/saltpetre_conformance.rs.
+//
+// NOT moved into lib/std/encoding.bv, which is the obvious-looking home: that
+// file re-implements helpers std/string.bv already carries and defines four of
+// them twice, and its only importer (lib/ffi/init.bv) cannot build because of a
+// `count_char_loop` name conflict. Bit-level word decoding is this module's
+// subject anyway. See BUGS.md 2026-11-22.
+
+// f32_from_bytes — read a little-endian f32 at `off` from a byte string.
+// Goes through a Malloc'd staging block and a Ptr<Float> reinterpretation
+// (the same discipline as the float-print path); the 8-byte request leaves
+// headroom so the 4-byte fill can never straddle the allocation.
+defn f32_from_bytes(bytes: String, off: Int) -> Float {
+    let buf: Int = Malloc#(8) as Int;
+    let base: Ptr<Bit<8>> = buf as Ptr<Bit<8>>;
+    foreach i in 0..4 {
+        base[i] = byte_at(bytes, off + i) as Bit<8>;
+    };
+    let fbase: Ptr<Float> = buf as Ptr<Float>;
+    let v: Float = fbase[0];
+    Free#(buf as Ptr<Bit<8>>);
+    term v;
+};
+
+// int_from_bytes_le — read a little-endian unsigned integer of `width` bytes
+// at `off` and return it as an Int. Byte i contributes to bit range
+// [8i, 8i+8), which is the ONNX raw-data layout.
+defn int_from_bytes_le(bytes: String, off: Int, width: Int) -> Int {
+    let acc: Int = 0;
+    foreach i in 0..width {
+        acc = acc | (byte_at(bytes, off + i) << (8 * i));
+    };
+    term acc;
+};

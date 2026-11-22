@@ -1,3 +1,5 @@
+## 2026-11-22 — a `defn` that creates, appends to and returns a `List<struct>` hands back a corrupt element store (OPEN)
+
 ## 2026-11-22 — The reference interpreter has no cast-lane prelude, so `Float as String` renders differently (OPEN)
 
 `1.25 as String` prints `1.25` from codegen and `1.25000` from the reference
@@ -32,58 +34,212 @@ case to the fixture. Do NOT paper over it by changing `float_format`'s contract
 
 ## 2026-11-21 — The wave-8 contract tightening makes the kiosk daemon uncompilable (OPEN)
 
-`brievc build briev/service/daemon.bv` (briev-kiosk-avatar) fails with **41
-contract refutations** at trunk `3bf2fc375` (post-`81f1de8a5` wave-8 linear
-`term` + totality rules). Grouped: `tensor_get` ×17, `tensor_set` ×13,
-`sp_cached_model` ×3, `tensor_new` ×2, `sock_send`/`sock_recv`/
-`sock_connect_unix`/`sock_bind_listen_unix`/`buf_slice_string` ×1 each.
-Representative message:
+Found while building the P3 Gemm baseline fixture (plan
+`2026-11-22-saltpetre-gemm-graduation.md`, M1). The defect is in the shape of
+the *return*, not in the ONNX/saltpetre types it was first seen with.
+
+Repro A (segfault). A helper returning a list of structs:
+
+```briev
+defn mk_nodes() -> List<OnnxNode> {
+    let operand_names: List<String> = [];
+    operand_names <- "A";
+    let node: OnnxNode = OnnxNode { op_type: "Gemm", ins: operand_names, outs: y_names, attrs: no_attrs };
+    let nodes: List<OnnxNode> = [];
+    nodes <- node;
+    term nodes;
+};
+```
+
+called as `let nodes: List<OnnxNode> = mk_nodes();` from a node body → exit
+139 (SIGSEGV). gdb on the same program built through a `build_gemm_graph(b)`
+helper stops in `run_node ()` at `run_node+24: mov 0x10(%r14),%r12` with
+`r14 = 0x0` — the struct element was read through a null base, i.e. the
+returned list's element store pointer is dead, not shifted.
+
+Repro B (corrupt read, no crash). The read side alone is sound; it is the
+producer that is broken. Given a list built in the caller and appended in a
+callee, `nodes[0].op_type` / `nodes[0].ins[0]` read correctly.
+
+The boundary, measured (each point is a build+run that was observed):
+
+| shape | result |
+|---|---|
+| `List<OnnxNode>` created **and** appended **and** returned in the same `defn` | corrupt (repro A) |
+| `List<OnnxNode>` created in caller, appended in a **different** `defn`, returned | correct |
+| `List<OnnxNode>` created and appended in the **node body** (no `defn` boundary) | correct |
+| `List<Int>` / `List<String>` created, appended, returned in the same `defn` | correct (`Count#`/element read both exact) |
+
+So the surviving pattern — which the saltpetre parser already uses — is
+"create in one frame, grow in another" (`lib/saltpetre/onnx.bv`'s
+`parse_graph` creates `let nodes: List<OnnxNode> = [];` and `parse_graph_loop`
+appends, then returns the graph). That is why the tracked ONNX corpus never
+caught this: it never exercises the same-frame grow-and-return shape. Any
+`defn f() -> List<Struct>` written in the obvious way is silently a landmine;
+it crashes or returns garbage at the call site, with no diagnostic.
+
+Observed IR for the crashing helper:
+`define i64 @mk_nodes(ptr noundef dereferenceable(32) noalias nocapture align 8 %state)`
+reclamation-classified as `Mode::Barrier` (`%briev.region.saved = call ptr
+@__briev_region_suspend()` on entry, `@__briev_region_restore` on exit), the
+list handle from `__briev_region_malloc(i64 24)` with the element store from
+`__briev_region_malloc(i64 128)`, handle fields stored at offsets 0/8/16. The
+128-byte store for a list later holding 32-byte `OnnxNode` elements is the
+first thing to check (element-stride vs store-width), but the mechanism is
+**unconfirmed** — this entry records the shape, not a diagnosis.
+
+Why not fixed here: the work this was found in is a benchmark graduation whose
+invariants forbid touching the compiler (`src/**`, `lib/std/**`). The fixture
+was restructured to build its one-node graph inline in the node body, which is
+sound, and the measured run then produced `SALT_GEMM_BAD=0`.
+`tests/saltpetre/gemm_baseline.bv` carries a comment at that site pointing
+here. The codegen defect itself is open and wants its own fix plus a
+`List<struct>`-return test in the backend suite; until then the rule for
+authors is: grow a `List<struct>` in a callee, or grow it in the frame that
+consumes it — never grow and return it from the same `defn`.
+
+## 2026-11-22 — `lib/std/encoding.bv` cannot be imported by anything that also uses `std/string` (OPEN, latent)
+
+Found while adding the op-backend ledger (plan
+`2026-11-22-saltpetre-op-backend-ledger.md`, S2). Three verified facts, and one
+correction to a claim this entry first made:
+
+1. **`lib/std/encoding.bv` defines four functions twice each** in the same
+   module — `url_decode_simple`, `reverse_string`, `is_hex_string`,
+   `count_char`. Built alone it still compiles (`brievc build
+   lib/std/encoding.bv` → exit 0), so within-file duplication is last-wins, not
+   an error.
+2. **It has exactly one importer** — `lib/ffi/init.bv:17`
+   (`import "std/encoding";`, note: no `.bv` suffix, which is why a grep for
+   `std/encoding.bv` misses it).
+3. **That importer cannot build** — exit 1:
+
+```
+error: import name 'count_char_loop' conflicts: provided by 'std/string' and
+also by 'std/encoding' — one shared root namespace means the winner would
+depend on import order. Fix: rename one side with a selective import
+(`{ Local: Exported }`) or make the two definitions identical.
+```
+
+`count_char_loop` is defined in both `lib/std/string.bv:514` and
+`lib/std/encoding.bv:141`, and `encoding.bv` re-implements helpers
+(`reverse_string`, `count_char`, `is_hex_string`) that `std/string.bv` already
+carries. So `encoding.bv` is a stale near-duplicate of `std/string`'s surface,
+and the one module that imports it is unbuildable as a result.
+
+Nothing consumes `lib/ffi/init.bv` either (no `.bv`, `.rs` or `.toml`
+reference), which is why this has gone unnoticed: the broken importer is itself
+unreferenced. Pre-existing and unrelated to the ledger work — both files are
+untouched by it.
+
+Why it is recorded rather than fixed here: repairing it is a stdlib
+consolidation (delete `encoding.bv`'s duplicates of `std/string`, or make the
+definitions identical so the conflict resolves), which deserves its own review
+of whether `lib/ffi/init.bv` should exist at all. It is recorded because it
+**changed a decision in this work**: the natural-looking home for the
+byte-word decoders (`f32_from_bytes`, `int_from_bytes_le`) was this file, and
+they went to `lib/std/bits.bv` instead — bit-level word decoding is that
+module's subject, and adding new dependents to `encoding.bv` would have spread
+the conflict. The reasoning is recorded in `bits.bv` so it is not
+re-discovered.
+
+## 2026-11-21 — The kiosk daemon's 41 refutations: two separate findings (CORRECTED 2026-11-22)
+
+> **This entry was wrong in one important respect and right in another, and the
+> two were conflated. Both halves are recorded below; the original text follows
+> the correction for the record.**
+
+`brievc build briev/service/daemon.bv` (briev-kiosk-avatar) reports **41
+contract refutations** at trunk `3bf2fc375`/`0698324e7`. Grouped: `tensor_get`
+×17, `tensor_set` ×13, `sp_cached_model` ×3, `tensor_new` ×2, and ×1 each
+`sock_send`/`sock_recv`/`sock_connect_unix`/`sock_bind_listen_unix`/
+`buf_slice_string`. Representative message:
 
 ```
 invalid operation 'call to `tensor_get` — the precondition
 '((idx >= 0) && (idx < obt.n))' is not provable at this call site.
 ```
 
-**The regression is in trunk, not in the consumer.** Controlled A/B, same
-sources, same model, only the compiler differs:
+### Finding A (WRONG in the original): the A/B table's "0 errors" arm never passed
 
-| compiler | daemon build |
+The original entry compared `e1c016c97` ("0 errors, binary emitted") against
+`3bf2fc375` ("41 errors") and concluded "the regression is in trunk". The
+table is invalid: **the two arms differ by the call-site gate being
+installed**, not by wave-8's fact handling. `git merge-base --is-ancestor
+3db43e4c2 4caace291` → NO. `3db43e4c2` added `install_contract_policy`
+(`src/main.rs`) and `install_contract_gate_from_config` (`src/pipeline.rs:1028`),
+the two doors through which `config/contracts.dbvl:20` (`policy: deny;`) reaches
+the CLI. Before those doors existed the checker's gate was unreachable from
+`brievc build`, so **every** call site passed silently.
+
+That is not a theory; it is measurable. A provably **violated** contract — not
+an unproven one — is accepted by the pre-merge compiler:
+
+```briev
+defn f(x: Int) [x > 10][true] -> Int { term x; };
+defn use() -> Int { term f(1); };   // 1 > 10 is false: this call MUST be rejected
+```
+
+| compiler | `f(1)` against `[x > 10]` |
 |---|---|
-| `e1c016c97` (pre-wave-8) | 0 errors, binary emitted |
-| `3bf2fc375` (post-wave-8) | **41 errors, no binary** |
-| `3bf2fc375` with the K3 R2 ownership patch stashed | **41 errors** (unchanged) |
+| `4caace291` / `/var/tmp/briev-pin-target` | **exit 0, binary emitted — unsound** |
+| `3bf2fc375`, `0698324e7` (main) | `the contract is REFUTED at this call: '(1 > 10)'` |
 
-So the ownership work neither causes nor masks it. The failing shape, reduced
-to its minimal form:
+So "0 errors" at `e1c016c97` means "no call-site gate", not "clean program".
+Every 41-site comparison against a pre-`3db43e4c2` compiler is void. The
+`policy: deny` flip (`config/contracts.dbvl`, 2026-10-20) plus that installation
+is the rustc-lint precedent done correctly: a staged `allow → warn → deny`
+finally arriving at `deny`.
+
+### Finding B (RIGHT in the original, and still open): a provable fact is lost at a conditional join
+
+The original mechanism story survives an isolated test. On the **merged**
+compiler, two semantically identical shapes disagree:
 
 ```briev
 defn get(t: Int, i: Int) [i >= 0 && i < t][true] -> Int { term i; };
 defn chan(i: Int) [i >= 0][term >= 0 && term < 8] -> Int { term i % 8; };
-defn use(n: Int) -> Int {
-    let acc: Int = 0;
-    foreach i in 0..n {
-        let c: Int = 0;
-        when n > 1 { c = chan(i); };   // join {c = 0} with {c ∈ [0,8)}
-        acc = acc + get(8, c);        // c >= 0 && c < 8 NOT provable
-    };
-    term acc;
-};
+
+// A: direct — c gets 0 <= c < 8 from chan's postcondition; get(8, c) discharges.
+let c: Int = chan(i);
+
+// B: conditional reassignment — c is 0 on one path, chan(i) on the other.
+let c: Int = 0;
+when n > 1 { c = chan(i); };
 ```
 
-`4caace291` accepts this; `3bf2fc375` refutes it. Verified narrower: a DIRECT
-`let c: Int = chan(i)` is still accepted — only the **conditional
-reassignment join** loses the fact. So the wave-8 change dropped the fact
-join for a local assigned a provable value on one path and a call result on
-the other. The daemon's 41 sites are all this shape (`let c = 0; when … { c =
-axis_channel(…) }; tensor_get(scale, c)`).
+| shape | merged refutations | pre-merge |
+|---|---|---|
+| A — direct `let c = chan(i)` | **0** (proved) | 0 |
+| B — `let c = 0; when … { c = chan(i); }` | **1** (refuted) | 0 |
+| `foreach i in 0..n` extent after `List<Int>[n]` | 0 (proved) | 0 |
+| extent via a `r.Count#() == n` parameter fact | 0 (proved) | 0 |
+| `f(1)` vs `[x > 10]` (genuinely violated) | 1 (correctly refuted) | 0 (**unsound**) |
 
-Impact: the kiosk cannot re-pin past `4caace291` and cannot run any
-end-to-end measurement (soak, ASan, native smoke) against current trunk.
+Shape B is provable: `c ∈ {0} ∪ [0,8)` and `0 ∈ [0,8)`. The merged compiler
+loses the postcondition fact when a local is reassigned inside `when` and the
+branches merge, while the direct form keeps it. That is a genuine prover
+incompleteness — a bug worth fixing — and it is *independent* of Finding A.
 
-Not fixed here: the repair is the checker's fact join across `when`
-reassignment, not 41 daemon-side guards — adding guards would paper over a
-discharge the checker used to do. Tracked separately so the R2 ownership work
-can land on its own evidence.
+### What this means for the 41 sites (two repairs, not one)
+
+The 41 are a mix, and only measurement separates them:
+
+1. **Provable-but-lost-fact sites** (shape B). Repair = the prover's
+   conditional-join fact handling, in the compiler. Do not paper over these
+   with daemon guards: the checker proved them before and should again.
+2. **Genuinely unproven obligations.** Repair = honest daemon-side guards or
+   strengthened contracts. This is the kiosk's own work and belongs in the
+   kiosk repo, not here.
+
+What is NOT true is the original entry's framing that this is one trunk
+regression to be reverted, or that the ownership work is implicated (the
+original table's third row — "same 41 with the K3 R2 patch stashed" — remains
+valid and shows R2 is orthogonal).
+
+Impact unchanged: the kiosk cannot re-pin past `4caace291` until the shape-B
+prover gap is closed or the sites are classified and the second class guarded.
+
 
 ## 2026-11-20 — A diverging match arm killed the whole continuation (FIXED, wave-7 W7-1)
 
