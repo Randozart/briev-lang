@@ -1,3 +1,48 @@
+## 2026-11-22 — `lib/std/encoding.bv` cannot be imported by anything that also uses `std/string` (OPEN, latent)
+
+Found while adding the op-backend ledger (plan
+`2026-11-22-saltpetre-op-backend-ledger.md`, S2). Three verified facts, and one
+correction to a claim this entry first made:
+
+1. **`lib/std/encoding.bv` defines four functions twice each** in the same
+   module — `url_decode_simple`, `reverse_string`, `is_hex_string`,
+   `count_char`. Built alone it still compiles (`brievc build
+   lib/std/encoding.bv` → exit 0), so within-file duplication is last-wins, not
+   an error.
+2. **It has exactly one importer** — `lib/ffi/init.bv:17`
+   (`import "std/encoding";`, note: no `.bv` suffix, which is why a grep for
+   `std/encoding.bv` misses it).
+3. **That importer cannot build** — exit 1:
+
+```
+error: import name 'count_char_loop' conflicts: provided by 'std/string' and
+also by 'std/encoding' — one shared root namespace means the winner would
+depend on import order. Fix: rename one side with a selective import
+(`{ Local: Exported }`) or make the two definitions identical.
+```
+
+`count_char_loop` is defined in both `lib/std/string.bv:514` and
+`lib/std/encoding.bv:141`, and `encoding.bv` re-implements helpers
+(`reverse_string`, `count_char`, `is_hex_string`) that `std/string.bv` already
+carries. So `encoding.bv` is a stale near-duplicate of `std/string`'s surface,
+and the one module that imports it is unbuildable as a result.
+
+Nothing consumes `lib/ffi/init.bv` either (no `.bv`, `.rs` or `.toml`
+reference), which is why this has gone unnoticed: the broken importer is itself
+unreferenced. Pre-existing and unrelated to the ledger work — both files are
+untouched by it.
+
+Why it is recorded rather than fixed here: repairing it is a stdlib
+consolidation (delete `encoding.bv`'s duplicates of `std/string`, or make the
+definitions identical so the conflict resolves), which deserves its own review
+of whether `lib/ffi/init.bv` should exist at all. It is recorded because it
+**changed a decision in this work**: the natural-looking home for the
+byte-word decoders (`f32_from_bytes`, `int_from_bytes_le`) was this file, and
+they went to `lib/std/bits.bv` instead — bit-level word decoding is that
+module's subject, and adding new dependents to `encoding.bv` would have spread
+the conflict. The reasoning is recorded in `bits.bv` so it is not
+re-discovered.
+
 ## 2026-11-21 — The kiosk daemon's 41 refutations: two separate findings (CORRECTED 2026-11-22)
 
 > **This entry was wrong in one important respect and right in another, and the
