@@ -104,7 +104,7 @@ coll obj List<T> {
 // §13 copy discipline). Lives HERE, not in the prelude: the copy iterates
 // with the coll op surface, which only exists when this module is loaded
 // (minimal corpora that load cast_lanes alone must not require it).
-// `.^Count#()` is not parseable in a contract position (only in expressions)
+// `^^Count#()` is not parseable in a contract position (only in expressions)
 // and `[true][true]` is rejected as a trivial pair — omit the brackets.
 defn fresh_int_list(items: List<Int>) -> List<Int> {
     let copy: List<Int> = [];
@@ -356,7 +356,7 @@ obj PiggyBank<K> {
         Error#("a PiggyBank is opaque — a sealed jar cannot be iterated. Smash it to extract everything at once: `let all: List<K>; all ~<- piggy;`");
     };
 
-    txn init(v: K) [true][items.^Size == 0] {
+    txn init(v: K) [true][items^^Size == 0] {
         let e: List<K> = [];
         items = e;
     };

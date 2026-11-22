@@ -105,7 +105,7 @@ pub fn static_struct_resolved_ty(
         min_bits: max_bits,
         max_bits,
         alignment: int_md("alignment").unwrap_or(default_align),
-        // All `spec` keys (incl. endian) surface via reflection (`.^^`).
+        // All `spec` keys (incl. endian) surface via reflection (`^^`).
         properties: def.metadata.clone(),
         fields,
     }
@@ -309,7 +309,7 @@ pub fn register_typedefs(
         // 2026-08-13 (layout-keywords plan): `spec` keys — including
         // `endian` (Big/Little/Target) — share the metadata map with `attr`,
         // so they surface on `ResolvedType.properties` verbatim and are
-        // queryable from Briev via reflection (`.^^`). Phase 2 pack emission
+        // queryable from Briev via reflection (`^^`). Phase 2 pack emission
         // reads `endian` here (absent ⇒ Target/native).
         // 2026-08-04 (compiler-in-Briev): when re-registering a primordial (e.g.
         // `type Int: Int { ... }` in bootstrap.bv), inherit the primordial's

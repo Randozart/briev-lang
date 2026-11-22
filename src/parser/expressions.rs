@@ -434,6 +434,16 @@ impl<'a> Parser<'a> {
                     }
                 }
             } else if self.eat(&Token::Dot) {
+                // 2026-11-21 (wave-9, one caret): the old `^^` / `^^`
+                // reflection spellings are retired. A dot followed by a caret
+                // is exactly that leftover, so name the current spelling
+                // instead of the generic member-parse error.
+                if self.check(&Token::BitXor) || self.check(&Token::CaretCaret) {
+                    return self.error_at_current(
+                        "reflection is spelled with two carets and no dot: `x^^Length`, \
+                         `x^^Bytes`. The dotted forms (`^^`, `^^`) were retired in wave-9.",
+                    );
+                }
                 // 2026-11-08 (chaining plan): cast step in a chain — `.(Type)`.
                 if self.check(&Token::LParen) {
                     if let Some(cast_expr) = self.try_parse_cast_step(&expr)? {
@@ -581,14 +591,33 @@ impl<'a> Parser<'a> {
                 } else {
                     expr = Expr::Field(Box::new(expr), name);
                 }
-            } else if self.eat(&Token::DotCaretCaret) {
-                // 2026-07-31: Compile-time reflection: a.^^Size → foldable constant.
+            } else if self.eat(&Token::CaretCaret) {
+                // 2026-11-21 (wave-9, one caret): reflection has ONE spelling.
+                // `^^` reads a representation property — a stored header slot or
+                // a type-derivable fact (`x^^Length`, `x^^Bytes`); operations
+                // stay in the `#` family. The old `^^` / `^^` runtime and
+                // compile-time split is retired: runtime `Size` was already
+                // deleted (2026-08-14 §6a), and `^^Length` on a Vector emits the
+                // same fold compile-time `^^Size` does, so the tag carried no
+                // semantic. The CompileTime tag here is the unified path; the
+                // emitter's per-property table decides folding, exactly as
+                // before.
                 let name = self.expect_identifier()?;
                 expr = Expr::Reflect(Box::new(expr), name, ReflectKind::CompileTime);
-            } else if self.eat(&Token::DotCaret) {
-                // 2026-07-31: Runtime reflection: a.^Length, a.^Ptr.
-                let name = self.expect_identifier()?;
-                expr = Expr::Reflect(Box::new(expr), name, ReflectKind::Runtime);
+            } else if self.check(&Token::BitXor)
+                && matches!(self.peek(), Some(Token::Identifier(_)))
+            {
+                // 2026-11-21 (wave-9, one caret): the old `^^` / `^^` spellings
+                // are retired. A single caret after a value is bitwise XOR in
+                // `a ^ b`; `x ^Ident` here is a dotted-reflection leftover, so
+                // reject it with the current spelling.
+                return Err(SyntaxError::InvalidStatement {
+                    reason: "reflection is spelled with two carets: `x^^Length`, \
+                             `x^^Bytes`. The dotted forms (`^^`, `^^`) were retired \
+                             in wave-9."
+                        .to_string(),
+                    span: crate::errors::Span::dummy(),
+                });
             } else if self.eat(&Token::LBracket) {
                 // 2026-09-28 (E3): `arr[*]` — the wildcard selector, every
                 // element of the array. `*` here is the wildcard INSIDE the
@@ -1601,6 +1630,67 @@ mod tests {
         let a = parse_expr(as_form).expect(as_form);
         let b = parse_expr(paren_form).expect(paren_form);
         assert_eq!(a, b, "'{as_form}' must parse identically to '{paren_form}'");
+    }
+
+    // ─── wave-9 (one caret): reflection spelling ─────────────────────────
+
+    #[test]
+    fn dotted_reflection_is_a_parse_error() {
+        // The old spellings are retired with no alias; the error must name the
+        // current one so the fix is in the message.
+        // Built from fragments so no future mechanical sweep "fixes" the test's
+        // own input.
+        let dot = ".";
+        let caret = "^";
+        for (dot_form, prop) in [
+            (format!("x{dot}{caret}Length").as_str(), "Length"),
+            (format!("x{dot}{caret}{caret}Bytes").as_str(), "Bytes"),
+        ] {
+            let err = parse_expr(dot_form).expect_err(dot_form);
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("two carets") && msg.contains("^^"),
+                "the rejection must name the `^^` spelling for {prop}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_caret_parses_every_property() {
+        // Every property the emitter table knows, through the one spelling.
+        for src in [
+            "x^^Length",
+            "x^^Ptr",
+            "x^^Size",
+            "x^^Bytes",
+            "x^^Alignment",
+            "x^^Type",
+            "x^^Element",
+            "x^^Available",
+            "wire^^Ready",
+        ] {
+            let Expr::Reflect(_, name, kind) = parse_expr(src).expect(src) else {
+                panic!("{src} must parse as a Reflect");
+            };
+            assert_eq!(name, src.trim_start_matches("x^^").trim_start_matches("wire^^"));
+            // The unified spelling carries the unified tag; the emitter's
+            // per-property table decides folding, not this tag.
+            assert!(matches!(kind, ReflectKind::CompileTime));
+        }
+    }
+
+    #[test]
+    fn xor_unaffected_by_caret_token() {
+        // `^` stays bitwise XOR: `a ^ b` parses as BinaryOp(BitXor), and the
+        // assignment form still works.
+        let Expr::BinaryOp(op, _, _) = parse_expr("a ^ b").expect("xor") else {
+            panic!("a ^ b must parse as a BinaryOp");
+        };
+        assert!(matches!(op, BinaryOpKind::BitXor));
+        // The xor-ASSIGN spelling (`^=`) keeps its meaning too — it is a
+        // distinct token that never collided with reflection. (Its statement
+        // parsing lives in the .bld compound-assignment path; the token and its
+        // BitXor binding are what this test pins.)
     }
 
     #[test]

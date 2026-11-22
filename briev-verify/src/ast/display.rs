@@ -175,8 +175,8 @@ impl fmt::Display for Expr {
                 write!(f, ")")
             }
             Expr::Reflect(recv, name, kind) => match kind {
-                ReflectKind::Runtime => write!(f, "{}.^{}", recv, name),
-                ReflectKind::CompileTime => write!(f, "{}.^^{}", recv, name),
+                ReflectKind::Runtime => write!(f, "{}^^{}", recv, name),
+                ReflectKind::CompileTime => write!(f, "{}^^{}", recv, name),
             },
             Expr::MethodCall(recv, name, args, _) => {
                 write!(f, "{}.{}(", recv, name)?;

@@ -36,7 +36,7 @@ import "std/cast_lanes.bv";
 // Briev String. The param is the cstr ADDRESS as an Int — every call site
 // (`name as Int`, `proj as Int`) already holds the pointer in an Int, and
 // as a pure-Briev defn the body does raw Int arithmetic over Load#/Copy#.
-defn cstr_to_briev(p: Int) -> String [true][term .^Length >= 0] {
+defn cstr_to_briev(p: Int) -> String [true][term ^^Length >= 0] {
     when p <= 0 {
         term "";
     };

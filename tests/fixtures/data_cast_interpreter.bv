@@ -15,10 +15,10 @@ defn probe_data() -> Bool {
     let pair: (Data, Int) = (returned, 1);
     let text: String = text_from_data(pair.0);
     Free#(address as Ptr<Bit<8>>);
-    when text .^Length != 3 || text[0] != 97 || text[1] != 0 || text[2] != 98 { term false; };
+    when text ^^Length != 3 || text[0] != 97 || text[1] != 0 || text[2] != 98 { term false; };
     let number: Int = -42;
     let word: Data = number as Data;
-    when word .^^Bytes != 8 { term false; };
+    when word ^^Bytes != 8 { term false; };
     when (word as Int) != number { term false; };
     when ((word as UInt) as Int) != number { term false; };
     when ((65 as Data) as Char) != 'A' { term false; };

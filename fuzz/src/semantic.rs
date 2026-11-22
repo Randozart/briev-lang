@@ -340,7 +340,7 @@ pub fn check_enum_dispatch(data: &[u8]) {
 //
 // Fuzz bytes select a string operation (length, concat, index) on a short
 // string literal; the oracle tracks the expected result. Exercises: string
-// construction, .^Length, and character indexing.
+// construction, ^^Length, and character indexing.
 
 /// Decode up to three bytes: (op, len, flag) into a string program. The
 /// oracle tracks the expected result; the generated program builds the same
@@ -361,9 +361,9 @@ pub fn string_ops_program(data: &[u8]) -> Option<(String, i64, String)> {
         _ => (len as i64) * 2,
     };
     let body = match op {
-        0 => "term str .^Length;".to_string(),
-        1 => "term str .^Length + 100;".to_string(),
-        _ => "let doubled: String = str + str;\n  term doubled .^Length;".to_string(),
+        0 => "term str ^^Length;".to_string(),
+        1 => "term str ^^Length + 100;".to_string(),
+        _ => "let doubled: String = str + str;\n  term doubled ^^Length;".to_string(),
     };
     let _ = flag;
     let source = format!(

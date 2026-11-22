@@ -66,8 +66,8 @@ defn is_empty(builder: StringBuilder) -> Bool {
 };
 
 defn capacity(builder: StringBuilder)
-    [true][term >= builder.buffer .^Length]
+    [true][term >= builder.buffer ^^Length]
     -> Int
 {
-    term builder.buffer .^Length;
+    term builder.buffer ^^Length;
 };

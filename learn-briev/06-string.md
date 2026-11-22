@@ -18,14 +18,14 @@ let b: Blob   = #b"\x89PNG\r\n"; // byte literal: raw bytes (exact \xHH content)
 - `#r"..."` is a raw string — backslashes are kept literally (useful for regex
   and Windows paths).
 - `#b"..."` is a Blob byte literal — `\xHH` yields the exact byte, and the
-  result is typed `Blob`, not `String`. `x.^Len` on a Blob value is the byte
+  result is typed `Blob`, not `String`. `x^^Len` on a Blob value is the byte
   length (O(1), reads the `[len]` header). `Blob` is the `[len][bytes]` byte
   buffer — raw bytes with no encoding interpretation; `String` is the same
   buffer interpreted as UTF-8. `blob as String` is an unchecked lens.
 
 ```briev
 let bytes: Blob = #b"\x00\xff";
-let n: Int = bytes.^Length;  // 2
+let n: Int = bytes^^Length;  // 2
 ```
 
 ## 1. Basic Operations
@@ -34,7 +34,7 @@ let n: Int = bytes.^Length;  // 2
 let s: String = "Hello, World!";
 
 // Length (method syntax)
-let len = s .^Length;  // 13
+let len = s ^^Length;  // 13
 
 // Concatenation
 let combined = "Hello" + "World";  // "HelloWorld"
@@ -207,7 +207,7 @@ defn analyze_text(text: String) -> TextStats {
     
     // Count spaces
     let i: Int = 0;
-    [i < text .^Len] {
+    [i < text ^^Len] {
         let c = text.char_at(i);
         [c == ' '] {
             &stats.space_count = stats.space_count + 1;
@@ -228,7 +228,7 @@ defn reverse_words(text: String) -> String {
     let words = text.split(" ");
     let reversed: List<String> = [];
     
-    let i: Int = words .^Len - 1;
+    let i: Int = words ^^Len - 1;
     [i >= 0] {
         reversed = reversed.append(words[i]);
         i = i - 1;

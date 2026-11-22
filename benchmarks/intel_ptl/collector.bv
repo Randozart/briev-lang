@@ -80,13 +80,13 @@ defn bind_input(request: Int, idx: Int, path: String) -> Int
 let done: Int = 0;
 node main [done == 0][done == 1] {
     let model_path: String = get_env("OV_MODEL");
-    when model_path .^Length == 0 {
+    when model_path ^^Length == 0 {
         println!("collector: OV_MODEL is required");
         endprogram 2;
     };
 
     let device: String = get_env("OV_DEVICE");
-    when device .^Length == 0 { device = "GPU"; };
+    when device ^^Length == 0 { device = "GPU"; };
 
     let iters: Int = get_env_int("OV_ITERS");
     when iters <= 0 { iters = 10; };
@@ -125,19 +125,19 @@ node main [done == 0][done == 1] {
     };
 
     let p0: String = get_env("OV_INPUT0");
-    when p0 .^Length > 0 {
+    when p0 ^^Length > 0 {
         when bind_input(request, 0, p0) != 0 { endprogram 10; };
     };
     let p1: String = get_env("OV_INPUT1");
-    when p1 .^Length > 0 {
+    when p1 ^^Length > 0 {
         when bind_input(request, 1, p1) != 0 { endprogram 11; };
     };
     let p2: String = get_env("OV_INPUT2");
-    when p2 .^Length > 0 {
+    when p2 ^^Length > 0 {
         when bind_input(request, 2, p2) != 0 { endprogram 12; };
     };
     let p3: String = get_env("OV_INPUT3");
-    when p3 .^Length > 0 {
+    when p3 ^^Length > 0 {
         when bind_input(request, 3, p3) != 0 { endprogram 13; };
     };
 

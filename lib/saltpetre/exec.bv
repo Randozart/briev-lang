@@ -56,7 +56,7 @@ defn env_add(env: List<Tensor>, t: Tensor) -> List<Tensor> {
 };
 
 defn tensor_of(env: List<Tensor>, name: String) -> Result<Tensor, String> {
-    when (name .^Length) == 0 { term Err("empty ONNX input name"); };
+    when (name ^^Length) == 0 { term Err("empty ONNX input name"); };
     term env_find(env, name);
 };
 

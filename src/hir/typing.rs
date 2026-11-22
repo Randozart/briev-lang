@@ -608,7 +608,7 @@ mod tests {
         let (mut program, resolved) = annotated(
             "obj Box { defn get(self) -> Int { term 1; }; };\n\
              defn f(b: Box, xs: List<Int>) -> Float { term b.get() as Float; };\n\
-             defn g(xs: List<Int>) -> Float { term xs.^Length as Float; };",
+             defn g(xs: List<Int>) -> Float { term xs^^Length as Float; };",
         );
         let typed = collect_typed(&mut program);
         assert!(typed.iter().any(|(n, _)| n == "method"), "{typed:?}");

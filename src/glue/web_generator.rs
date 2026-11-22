@@ -1028,8 +1028,8 @@ export async function createApp(wasmBytes) {{
     /// compound expressions) fall back to `None` — the binding is left to the
     /// default (log-only) applyFn rather than guessed.
     /// 2026-08-11: resolve a directive signal to its state-layout handle.
-    /// A view expression like `items.^Size` binds to the root field `items` —
-    /// the `.^X` reflection suffix is a projection applied on top of the
+    /// A view expression like `items^^Size` binds to the root field `items` —
+    /// the `^^X` reflection suffix is a projection applied on top of the
     /// field's value, so handle lookup uses the head only. Shared root_signal
     /// lives in view_compiler.rs (also used by verify_srbv — DRY).
     fn field_handle_for_signal(&self, signal: &str) -> Option<u32> {
@@ -1058,11 +1058,11 @@ export async function createApp(wasmBytes) {{
                 let Some(handle) = self.field_handle_for_signal(root) else {
                     return String::new();
                 };
-                // 2026-08-11: apply `.^X` reflection projections inline in JS.
-                // `.^Length` on a string/collection → `.length`; other
+                // 2026-08-11: apply `^^X` reflection projections inline in JS.
+                // `^^Length` on a string/collection → `.length`; other
                 // reflections pass through as a property access. 2026-08-14
                 // (§6b.5): a `Count#(field)` view signal projects `Count` →
-                // the materialized array's `.length`. `.^Size` is deleted.
+                // the materialized array's `.length`. `^^Size` is deleted.
                 let mut apply_value = "value".to_string();
                 for p in &proj {
                     match *p {
@@ -1596,7 +1596,7 @@ export async function createApp(wasmBytes) {{
         };
         // 2026-08-12 (2b3): a bare identifier INCLUDING dotted instance slots
         // (`p1.show`, `Counter.0.step`) is a field reference → the flushed
-        // value. (`items.^Size` projections contain `^` and never reach here.)
+        // value. (`items^^Size` projections contain `^` and never reach here.)
         if is_identifier(e) {
             return if value_var.is_empty() {
                 "true".to_string()

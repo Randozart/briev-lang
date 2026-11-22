@@ -22,7 +22,7 @@ import {
     syscall,
     SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN, SYS_ACCEPT,
     SYS_SEND, SYS_RECV, SYS_SHUTDOWN, SYS_SETSOCKOPT, SYS_FCNTL, SYS_CLOSE,
-    SYS_UNLINK
+    SYS_UNLINK, SYS_GETSOCKNAME
 } from "std/posix/syscall.bv";
 import { U8_MAX, U16_MAX, U32_MAX } from "std/constants.bv";
 
@@ -396,7 +396,7 @@ defn sock_unix() [true][term.fd >= -4096] -> Socket {
 // make_sockaddr_un - build family + NUL-terminated path in one buffer.
 // The logical length (`len`) is the address length passed to bind/connect.
 defn make_sockaddr_un(path: String)
-    [path.^Length > 0 && path.^Length < 108]
+    [path^^Length > 0 && path^^Length < 108]
     [term.len >= 3 && term.len <= 110]
     -> ByteBuf
 {
@@ -408,7 +408,7 @@ defn make_sockaddr_un(path: String)
 
 // sock_connect_unix - connect(2) to a Unix-domain path.
 defn sock_connect_unix(s: Socket, path: String)
-    [s.fd >= -4096 && path.^Length > 0 && path.^Length < 108]
+    [s.fd >= -4096 && path^^Length > 0 && path^^Length < 108]
     [term >= -4096]
     -> Int
 {
@@ -422,7 +422,7 @@ defn sock_connect_unix(s: Socket, path: String)
 // file from a previous process is unlinked first (unlink(2), path data at
 // String+8); bind then creates the node. Returns 0 or -errno.
 defn sock_bind_listen_unix(s: Socket, path: String, backlog: Int)
-    [s.fd >= -4096 && path.^Length > 0 && path.^Length < 108 && backlog >= 0]
+    [s.fd >= -4096 && path^^Length > 0 && path^^Length < 108 && backlog >= 0]
     [term >= -4096]
     -> Int
 {
@@ -439,31 +439,100 @@ defn sock_bind_listen_unix(s: Socket, path: String, backlog: Int)
 
 // ── 1.7  server side: bind + listen + accept ────────────────────────────────
 //
-// sock_bind_listen - make `s` a listening server socket on 0.0.0.0:port (bound
-// to the ANY address so it accepts on every interface, loopback included).
-// Sets SO_REUSEADDR first (so a restart can rebind), then bind(2) the
-// sockaddr_in, then listen(2) with the given backlog (the kernel's queue of
-// not-yet-accepted completed connections). Returns 0 on success or the first
-// -errno. ANY = 0.0.0.0 = the host integer 0, which make_sockaddr_in writes as
-// four zero bytes at offset 4.
+// sock_bind_listen_at - make `s` a listening server socket on `addr`:`port`,
+// where `addr` is a HOST-order IPv4 integer: LOOPBACK (2130706433) for a
+// service that must be unreachable from the network, INADDR_ANY (0) for a
+// public one. Sets SO_REUSEADDR first (so a restart can rebind over
+// TIME_WAIT), then bind(2) the sockaddr_in, then listen(2) with the given
+// backlog (the kernel's queue of not-yet-accepted completed connections).
+// Returns 0 on success or the first -errno.
+//
+// WHY THE ADDRESS IS A PARAMETER (2026-11-21, knooppunt G22): this helper used
+// to take no address at all and hardcoded the wildcard, so there was no way to
+// write a local-only service with the stdlib — and no way to NOT find out by
+// accident, since `ss` was the only observer. A kernel sidecar meant to be
+// dialled by a loopback proxy listened on 0.0.0.0 for a day while two source
+// files claimed otherwise. `sock_local_addr` makes the result checkable now;
+// this makes it expressible.
 const INADDR_ANY: Int = 0;
 
-defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
-    [s.fd >= -4096 && port >= 0 && port <= 65535 && backlog >= 0][term >= -4096]
+defn sock_bind_listen_at(s: Socket, addr: Int, port: Int, backlog: Int)
+    [s.fd >= -4096 && addr >= 0 && addr <= 4294967295 && port >= 0 && port <= 65535 && backlog >= 0]
+    [term >= -4096]
     -> Int
 {
     let reuse: Int = sock_set_reuseaddr(s);
     when reuse < 0 {
         term reuse;
     };
-    // INADDR_ANY
-    let sa: ByteBuf = make_sockaddr_in(0, port);
+    let sa: ByteBuf = make_sockaddr_in(addr, port);
     let brc: Int = syscall(SYS_BIND, s.fd, sa.ptr, SOCKADDR_IN_LEN);
     sockaddr_free(sa);
     when brc < 0 {
         term brc;
     };
     term syscall(SYS_LISTEN, s.fd, backlog);
+};
+
+// sock_bind_listen - the ANY-address form: accepts on every interface,
+// loopback included. Kept as its own name (not deprecated) because "bind a
+// public port" is the common case and reading `INADDR_ANY` at every server
+// call site is noise. Since 2026-11-21 it is a DELEGATION to
+// sock_bind_listen_at, so there is exactly one bind implementation — if the
+// two ever diverged, the wildcard path would silently lose a fix.
+defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
+    [s.fd >= -4096 && port >= 0 && port <= 65535 && backlog >= 0][term >= -4096]
+    -> Int
+{
+    term sock_bind_listen_at(s, INADDR_ANY, port, backlog);
+};
+
+// sock_local_addr - the address `s` is actually bound to, in host order (the
+// same integer ip_v4 / make_sockaddr_in take: LOOPBACK = 2130706433,
+// INADDR_ANY = 0).
+//
+// WHY THIS EXISTS (2026-11-21, knooppunt G22). `sock_bind_listen` binds the
+// ANY address, and every fixture that "tested loopback" only proved that a
+// loopback CONNECT works -- the bind was never readable, so a service could
+// claim "loopback by construction" while listening on 0.0.0.0 and no test
+// could disagree. getsockname(2) makes the bind an observable fact.
+//
+// It also makes the answer checkable for the ANY case: a listener bound at 0
+// READS BACK 0 on Linux (the wildcard is not resolved to a concrete address),
+// so a fixture can assert both halves instead of just the one it wants.
+//
+// The socklen_t is a real in/out pointer (Malloc# + Store# of 16), and the
+// kernel may write a shorter length back; that write-back is ignored on
+// purpose -- sin_addr is always at offset 4 of a sockaddr_in, and this reads a
+// FIXED sockaddr_in (SOCKADDR_IN_LEN). A sockaddr that is not AF_INET would
+// report whatever sits at offset 4, so callers pass an AF_INET socket.
+//
+// sin_addr is assembled from four single-byte Load# reads rather than one
+// word load: the bytes are network order (127 0 0 1 at offset 4), and reading
+// them individually is byte-order independent -- the same reason
+// bytes.get_u32_be reads bytes.
+defn sock_local_addr(s: Socket) [s.fd >= -4096] -> Result<Int,Int> {
+    let sa: Int = Malloc#(SOCKADDR_IN_LEN) as Int;
+    when sa == 0 { term Err(0 - 12); };
+    let len: Int = Malloc#(4) as Int;
+    when len == 0 {
+        Free#(sa as Ptr);
+        term Err(0 - 12);
+    };
+    Store#(len, SOCKADDR_IN_LEN, 4);
+    let rc: Int = syscall(SYS_GETSOCKNAME, s.fd, sa, len);
+    when rc < 0 {
+        Free#(sa as Ptr);
+        Free#(len as Ptr);
+        term Err(rc);
+    };
+    let byte0: Int = Load#(sa + 4, 1) & U8_MAX;
+    let byte1: Int = Load#(sa + 5, 1) & U8_MAX;
+    let byte2: Int = Load#(sa + 6, 1) & U8_MAX;
+    let byte3: Int = Load#(sa + 7, 1) & U8_MAX;
+    Free#(sa as Ptr);
+    Free#(len as Ptr);
+    term Ok((byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3);
 };
 
 // sock_accept - accept(2) one pending connection off the listen queue, giving a

@@ -103,7 +103,7 @@
 
 ### Reference
 
-13. **13-projections.md** - Reflection (`.^` runtime, `.^^` compile-time)
+13. **13-projections.md** - Reflection (`^^` runtime, `^^` compile-time)
     - Metadata projections (Size, Bytes, Ptr, Alignment, Range)
     - Bit manipulation projections (Popcount, LeadingZeros, TrailingZeros, Absolute, BitReverse)
     - Reflection (Type, Ptr!, Keys, Values, Contains, Pop, Index, Get, Top, Front, Elements)
@@ -162,7 +162,7 @@ frgn sqrt(x: Float) -> Result<Float, MathError>;
 | `List<T>` | Dynamic array | `[1, 2, 3]` |
 | `Option<T>` | Nullable | `Some(42)`, `None` |
 | `Result<T,E>` | Error handling | `Ok(42)`, `Err(e)` |
-| `Ptr<T>` | Verified pointer | `&x .^Ptr` |
+| `Ptr<T>` | Verified pointer | `&x ^^Ptr` |
 
 ### Collections
 

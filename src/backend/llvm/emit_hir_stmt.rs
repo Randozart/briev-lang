@@ -1346,7 +1346,7 @@ mod tests {
         let src = r#"
 defn mk() -> String { term "a" + "b"; };
 defn use(s: String) -> Int {
-    when s .^Length > 0 {
+    when s ^^Length > 0 {
         let y: String = mk();
         let n: Int = CharCount#(y);
         term n;

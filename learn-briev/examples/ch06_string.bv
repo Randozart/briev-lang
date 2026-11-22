@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 // ch06_string — companion to learn-briev/06-string.md: concat, stored-length
-// reflection (.^Length), comparison, and slicing.
+// reflection (^^Length), comparison, and slicing.
 import "std/io.bv";
 
 node entry [beginprogram][true] {
     let greet: String = "hello" + " " + "briev";
     Print#(greet as String);
     Print#("|");
-    Print#(greet.^Length as String);
+    Print#(greet^^Length as String);
     Print#("|");
     Print#((greet == "hello briev") as String);
     Print#("|");

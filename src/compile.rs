@@ -4254,7 +4254,7 @@ node go [done == false][done == true] {
             Binding {
                 element_id: "a".to_string(),
                 directive: Directive::Text {
-                    signal: "items.^Size".to_string(),
+                    signal: "items^^Size".to_string(),
                 },
             },
             Binding {

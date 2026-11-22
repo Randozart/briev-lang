@@ -1653,10 +1653,10 @@ fn collect_identifiers(expr: &Expr, out: &mut HashSet<String>) {
         Expr::Field(obj, _) => {
             collect_identifiers(obj, out);
         }
-        // 2026-08-01 (B3): reflection (`s.^Length`, `s.^^Bytes`, `s.^Ptr`)
+        // 2026-08-01 (B3): reflection (`s^^Length`, `s^^Bytes`, `s^^Ptr`)
         // READS its receiver — the field must stay live. Without this arm,
         // a String `let` used only via reflection was eliminated as a dead
-        // state field, and `s.^Length` emitted `load i64, ptr @s` with @s
+        // state field, and `s^^Length` emitted `load i64, ptr @s` with @s
         // undefined (the field was dropped from %State). This is the same
         // liveness rule as FFI args: an observation keeps the value alive.
         Expr::Reflect(recv, _, _) => {

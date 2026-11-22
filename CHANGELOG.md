@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.0 — the bind address is expressible and observable (2026-11-21)
+
+Two holes closed in the socket layer, both found by a downstream service that
+listened on `0.0.0.0` while two of its own source files claimed "loopback by
+construction":
+
+1. **the stdlib could not bind loopback** — `sock_bind_listen` hardcoded the
+   ANY address, so a local-only service was not expressible;
+2. **the bind address was not observable** — there was no `getsockname`, so no
+   fixture could disagree, and the one named `socket_loopback_smoke` only
+   proves a loopback *connect*.
+
+**Additive.** No existing caller changes: `sock_bind_listen`, `serve_listen`
+and `evented_listener` keep their signatures and now delegate.
+
+### Added
+
+- **`sock_local_addr(s) -> Result<Int,Int>`** — the address `s` is actually
+  bound to, in host order (`LOOPBACK`, `INADDR_ANY`, ...). Uses
+  `getsockname(2)` (`SYS_GETSOCKNAME`, audited by the existing `SYS_*`
+  conformance sweep) and assembles `sin_addr` from four single-byte loads, so
+  it is byte-order independent: a naive word load on a little-endian host
+  reports `16777343` where the correct value is `2130706433`.
+- **`sock_bind_listen_at(s, addr, port, backlog)`** — bind a listening TCP
+  socket to an explicit address. `sock_bind_listen` is now a delegation with
+  `INADDR_ANY`, so there is exactly one bind implementation.
+- **`serve_listen_at(port, addr)`** (`std/net/server_loop.bv`) and
+  **`evented_listener_at(port, addr)`** (`std/net/evented.bv`) — the same for
+  the two service lifecycles. `serve_listen` / `evented_listener` delegate with
+  `INADDR_ANY`.
+- **`tests/tier1/socket_bind_address_smoke`** — pins both halves of the
+  distinction: a wildcard bind reads back `0`, a connected socket reads back
+  `LOOPBACK`, and a `serve_listen_at(port, LOOPBACK)` listener both reports
+  loopback and still accepts (so "loopback-only" cannot be achieved by failing
+  to listen).
+
+### Documented
+
+- **`endprogram` and the exit status** (`docs/reference/MASTER-SYNTAX-REFERENCE.md`):
+  the operand IS the status (8-bit, so `endprogram 301` exits 45), while
+  `endprogram Print#(x)` prints x and exits **0** — `Print#` is void, so it
+  carries no status. A service that reported a failed boot that way told its
+  supervisor the boot succeeded. Pinned by `tests/endprogram_status.rs`.
+
 ## 0.4.0 — evented net + fd linearity (2026-11-21)
 
 Poll-multiplexed connection handling, a checked fd-discipline, and a provable

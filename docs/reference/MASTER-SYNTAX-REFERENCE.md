@@ -64,6 +64,39 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | `sync` | Group synchronization modifier (`sync<group>`) — bare `sync { }` block deprecated (§13, use `mutex { }`) |
 | `bootstrap` | Authored program machine entry: `bootstrap node name [<handoff-post>] { … }` — pre-reactor; compiler owns the sp/.bss scaffold (§13.2) |
 
+#### `endprogram` and the process exit status
+
+`endprogram <expr>;` lowers to `exit_prog(<expr>)`: **the operand IS the exit
+status**, truncated to 8 bits by the OS exactly as `exit(3)` is.
+Measured on the current backend (2026-11-21):
+
+| Source | Printed | Exit status |
+|---|---|---|
+| `endprogram 7;` | — | 7 |
+| `endprogram 301;` | — | 45 (301 & 0xFF) |
+| `endprogram 0 - 3;` | — | 253 (255 − 2) |
+| `endprogram;` | — | 0 |
+| `endprogram Print#(9);` | `9` | **0** |
+| `endprogram Print#(123456);` | `123456` | **0** |
+
+**The trap.** `endprogram Print#(x);` is not "print x and exit with x".
+`Print#` is a void-returning output intrinsic, so the operand carries no
+status and the process exits **0** — the printing works, the failure signal
+does not. A service that reports a failed startup this way tells its
+supervisor it succeeded. Printing and setting a status are two different
+statements:
+
+```briev
+when listener.fd < 0 {
+    endprogram 1;      // non-zero: the supervisor sees a failed start
+};
+```
+
+Pinned by `tests/endprogram_status.rs`, which asserts both halves — a
+regression that made the `Print#` form inherit a non-zero status would break
+callers that exit after printing, and one that made an operand non-fatal
+would break every supervisor.
+
 ### Storage / layout / concurrency qualifiers
 
 | Keyword | Meaning |
@@ -490,10 +523,9 @@ Rust plugin macros (`src/plugin/`):
 
 | Form | Meaning |
 |---|---|
-| `a.^Field` | Runtime reflection (value-derived) |
-| `a.^^Field` | Compile-time reflection (type-derived, foldable) |
-| `a.^Length` `a.^Ptr` | Runtime value-derived properties |
-| `a.^^Size` `a.^^Bytes` | Compile-time type-derived properties |
+| `a^^Field` | Reflection — a representation property: a stored header slot or a type-derivable fact (never a computation; operations are the `#` family). One spelling for all of them (wave-9; `.^`/`.^^` retired) |
+| `a^^Length` `a^^Ptr` `a^^Ready` | Stored/observed state reads (String byte header, handle address, event-port readiness) |
+| `a^^Size` `a^^Bytes` `a^^Type` `a^^Element` `a^^Alignment` | Type-derived facts, folded when the receiver's shape is known |
 
 ---
 

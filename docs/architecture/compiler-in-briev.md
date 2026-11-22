@@ -74,7 +74,7 @@ Rust (projection) ── tagged Data Briev string ──▶ Briev pass ──▶
 - `when cond { body }` is an **if-guard**, not a while loop (interpreter and
   LLVM backend agree). Iteration = tail recursion.
 - A **String param / frgn result is an i64 HANDLE** at the boundary; a String
-  in a register is a ptr. `.^Len` and `==` inttoptr it back
+  in a register is a ptr. `^^Len` and `==` inttoptr it back
   (`is_semantic_string` + `string_ptr`, emit_expr.rs).
 - **Dynamic String slices return the whole array** (emit_expr.rs:992) — use
   `briev_str_substr`. **String `+` codegens a register collision** — avoid.
@@ -85,7 +85,7 @@ Rust (projection) ── tagged Data Briev string ──▶ Briev pass ──▶
 
 ## Rust-side codegen rules learned the hard way
 
-- `.^Len` on a boxed String panicked (Phase-1b) — `is_semantic_string`
+- `^^Len` on a boxed String panicked (Phase-1b) — `is_semantic_string`
   recovers the binding's declared type. (emit_expr.rs Len arm)
 - `let_binding_allocas` leaked across functions (reg numbers rewind) — every
   function start must call `clear_locals()`, not a partial manual clear.

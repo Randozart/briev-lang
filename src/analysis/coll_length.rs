@@ -717,7 +717,7 @@ fn walk_expr(e: &Expr, tracks: &mut HashMap<String, Track>) {
                     match name.as_str() {
                         "push" => t.push(),
                         "pop" => t.pop(),
-                        _ => {} // reads (Count#, At#, .^Length, ...) — no change
+                        _ => {} // reads (Count#, At#, ^^Length, ...) — no change
                     }
                 }
             }

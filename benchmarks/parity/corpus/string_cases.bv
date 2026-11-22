@@ -1,6 +1,6 @@
 // Parity corpus — Family C string-op gate (plan §6.2).
 // Pins briev_str_eq (String ==), briev_str_substr (s[a:b]), briev_char_len
-// (.^Length), briev_str_next_char (foreach char), briev_bits_to_str (the
+// (^^Length), briev_str_next_char (foreach char), briev_bits_to_str (the
 // Data->String door) byte-for-byte against the C implementations.
 let done: Bool = false;
 node go [done == false][done == true] {
@@ -23,9 +23,9 @@ node go [done == false][done == true] {
         println!("{}", s[0:11]);
         println!("{}", s[5:5]);
         // Length (briev_char_len — codepoints, not bytes)
-        println!("{}", "hello" .^Length);
-        println!("{}", "héllo" .^Length);
-        println!("{}", "" .^Length);
+        println!("{}", "hello" ^^Length);
+        println!("{}", "héllo" ^^Length);
+        println!("{}", "" ^^Length);
         // foreach char (briev_str_next_char) — sum codepoints
         let sum: Int = 0;
         foreach c in "hello" {

@@ -1,0 +1,83 @@
+// spec: 19.1
+// socket bind-address — the BIND is now an observable fact (2026-11-21, G22).
+//
+// WHY THIS FIXTURE EXISTS. tests/tier1/socket_loopback_smoke.bv is named
+// "loopback" but its own header says it binds INADDR_ANY: it proves a loopback
+// CONNECT works, never what the listener is bound to. A service could listen on
+// every interface while every fixture in the corpus stayed green — which is
+// exactly what happened to a downstream kernel service, whose two source files
+// claimed "loopback by construction" while `ss` read 0.0.0.0:port.
+//
+// The fix that makes it checkable is sock_local_addr (getsockname(2)). This
+// fixture pins both halves of the distinction, so a reader that always returned
+// a constant -- or one that got the network/host byte order wrong -- cannot
+// pass:
+//
+//   1. a listener bound with sock_bind_listen (the ANY address) READS BACK 0;
+//   2. a client that connected to LOOPBACK READS BACK 2130706433.
+//
+// (2) is the case that catches a byte-order bug: 127.0.0.1 arrives on the wire
+// as bytes 127 0 0 1, and a naive word load on a little-endian host yields
+// 16777343, not 2130706433. Only the four-byte assembly reports LOOPBACK.
+//
+// Golden: "111111" -- wildcard bind ok, its address is INADDR_ANY, connect ok,
+// the connected socket's address is LOOPBACK, a loopback-bound listener reads
+// back LOOPBACK, and a client can still reach it (so "loopback-only" is not
+// achieved by failing to listen). Loopback needs no network, so this is
+// CI-safe like its neighbour.
+import "std/net/socket.bv";
+import "std/net/server_loop.bv";
+import "std/result.bv";
+
+// Distinct from socket_loopback_smoke's 39471 so the two can run back to back.
+const TEST_PORT: Int = 39473;
+// The loopback lane's own port.
+const LOOP_PORT: Int = 39474;
+
+// addr_or - sock_local_addr with a fallback, so a failure is visible as a wrong
+// number rather than as a trap. (The guard-and-unwrap shape keeps the checker
+// honest: unwrap is only reached when is_err was false.)
+defn addr_or(s: Socket, fallback: Int) [s.fd >= -4096] -> Int {
+    let r: Result<Int,Int> = sock_local_addr(s);
+    when is_err(r) { term fallback; };
+    term unwrap(r);
+};
+
+node entry [beginprogram][true] {
+    // (1) the ANY bind: SO_REUSEADDR is set inside sock_bind_listen.
+    let server: Socket = sock_tcp();
+    let lrc: Int = sock_bind_listen(server, TEST_PORT, 4);
+    Print#((lrc == 0) as Int);
+    // -1 is not a valid address, so a failed read cannot coincide with ANY.
+    Print#((addr_or(server, 0 - 1) == INADDR_ANY) as Int);
+
+    // (2) a real connection, then read the CLIENT's local address.
+    let client: Socket = sock_tcp();
+    let crc: Int = sock_connect(client, LOOPBACK, TEST_PORT);
+    Print#((crc == 0) as Int);
+    Print#((addr_or(client, 0 - 1) == LOOPBACK) as Int);
+
+    // (3) the service-level path: serve_listen_at(port, LOOPBACK) must both
+    // REPORT loopback and still accept a connection. Without the second half a
+    // listener that never bound would pass the first.
+    let lane: Socket = serve_listen_at(LOOP_PORT, LOOPBACK);
+    Print#((addr_or(lane, 0 - 1) == LOOPBACK) as Int);
+    let lane_client: Socket = sock_tcp();
+    let lcrc: Int = sock_connect(lane_client, LOOPBACK, LOOP_PORT);
+    Print#((lcrc == 0) as Int);
+    let lane_conn: Socket = sock_accept(lane);
+    let closed_lane_conn: Int = sock_close(lane_conn);
+    check closed_lane_conn >= -4096;
+    let closed_lane_client: Int = sock_close(lane_client);
+    check closed_lane_client >= -4096;
+    let closed_lane: Int = sock_close(lane);
+    check closed_lane >= -4096;
+
+    let conn: Socket = sock_accept(server);
+    let closed_conn: Int = sock_close(conn);
+    check closed_conn >= -4096;
+    let closed_client: Int = sock_close(client);
+    check closed_client >= -4096;
+    let closed_server: Int = sock_close(server);
+    check closed_server >= -4096;
+};

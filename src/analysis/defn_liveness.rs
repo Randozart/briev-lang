@@ -765,19 +765,24 @@ impl<'a> Builder<'a> {
                 // unknown reflection retains the conservative fallback below.
                 self.walk_expr(receiver, queue);
             }
-            Expr::Reflect(receiver, _, crate::ast::ReflectKind::Runtime) => {
-                // 2026-11-04: runtime metadata still evaluates its receiver.
-                // Calls under `value.^Length` must be live before ownership
+            // 2026-11-21 (wave-9): the runtime/compile-time tags no longer
+            // track the spelling — every surface site carries CompileTime. The
+            // dispatch is by property NAME: stored-length/ptr/readiness reads
+            // evaluate their receiver only; open-ended inspections
+            // (`Members`, anything unclassified) keep the conservative
+            // keep-all because they can reach members by name.
+            Expr::Reflect(receiver, target, _)
+                if matches!(target.as_str(), "Length" | "Ptr" | "Ready") =>
+            {
+                // Calls under `value^^Length` must be live before ownership
                 // analysis, not discovered by the emitted-call fixpoint.
                 // Retire only with exhaustive shared dependency traversal.
                 self.walk_expr(receiver, queue);
             }
-            Expr::Reflect(_, _, kind) => {
-                // `.^^` compile-time reflection can reach members by name —
-                // coarse keep-all (sound; refinement deferred).
-                if matches!(kind, crate::ast::ReflectKind::CompileTime) {
-                    self.keep_all = true;
-                }
+            Expr::Reflect(..) => {
+                // `^^` reflection can reach members by name — coarse keep-all
+                // (sound; refinement deferred).
+                self.keep_all = true;
             }
             Expr::BinaryOp(kind, l, r) => {
                 // `==` on `#String` values lowers to `briev_str_eq` when

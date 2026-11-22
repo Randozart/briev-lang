@@ -763,8 +763,7 @@ The names `sed`, `pvt`, and `reg` remain reserved for future language contracts.
 | `$name` | compile-time-only declaration/binding |
 | `name!(...)` | explicit compile-time expansion |
 | `$(Stage)` | staged compile-time execution |
-| `value.^Field` | runtime field reflection |
-| `value.^^Field` | compile-time descriptor reflection |
+| `value^^Field` | reflection — a representation property: a stored header slot or a type-derivable fact, never a computation (that is the `#` family's job) |
 
 `#` may occur only in recognized prefix hashwords or as the terminal intrinsic suffix. Embedded forms such as `foo#bar` are invalid.
 
@@ -1648,7 +1647,7 @@ any backend or plugin that consults the metadata vocabulary.
 > hidden compiler-managed slots, never declared fields) and a **scaffolded
 > operation surface** (§11.4/§15.2) — `op Count`, `op At`,
 > `op Init`/`op InsertAt`/`op ExtractFrom`, literal construction, `foreach`,
-> `.^Length`, `Count#`, and the default `op Grow`/`op Shrink` growth
+> `^^Length`, `Count#`, and the default `op Grow`/`op Shrink` growth
 > strategies. Iterability is still resolved through the operation surface;
 > `coll` synthesizes those operations. A `coll` collection is **as fast as
 > the compiler can make it**: the scaffolded ops fold to the same code a
@@ -1667,7 +1666,7 @@ coll struct Fixed<T, N> {
 ```
 
 - **Length and capacity are compiler properties** — exposed only through
-  `.^Length` (stored length, §17.1), `Count#` (element count), and the
+  `^^Length` (stored length, §17.1), `Count#` (element count), and the
   capacity intrinsics `Capacity#`/`Resize#`/`EnsureCap#`/`TrimCap#` (§15.2).
   They are not declared fields; a `coll` type declaring a `len` or `cap`
   slot is an error.
@@ -1681,7 +1680,7 @@ coll struct Fixed<T, N> {
   `Resize#`/`EnsureCap#` first. A type overrides the policy with its own
   `op Grow` handle-only binding (§15.2).
 - **`coll struct`** — fixed `T[N]` only (this slice): length == capacity
-  == N, no hidden slots, C ABI preserved. `.^Length` and `Capacity#` both
+  == N, no hidden slots, C ABI preserved. `^^Length` and `Capacity#` both
   return N (a compile-time constant; §17.1). `Ptr<T>`-backed structs are a
   documented follow-up. **Literal construction (2026-08-16):** `let f: Fixed =
   [1,2,3,4]` stores the elements DIRECTLY into the inline `data: T[N]` array —
@@ -1707,7 +1706,7 @@ coll struct Fixed<T, N> {
   policy. This is the same binding machinery as `op InsertAt`/`op ExtractFrom`
   (§15.3) — a custom Grow/Shrink may rehash-and-expand (e.g. a hash map)
   without the compiler knowing anything about hashing.
-- **No `.^Capacity` reflection** — capacity is operational (the Grow/Shrink
+- **No `^^Capacity` reflection** — capacity is operational (the Grow/Shrink
   control knob), so it is an intrinsic (`Capacity#`), never a reflection
   target (§17 boundary rule).
 
@@ -2011,7 +2010,7 @@ Objects use traits and composition rather than parent inheritance.
 
 Input ports expose two operations:
 
-- **`port.^Ready`** → Bool — runtime reflection on the port's internal state flag. True when a pending event is observable.
+- **`port^^Ready`** → Bool — runtime reflection on the port's internal state flag. True when a pending event is observable.
 - **`port.field`** → payload member projection. Falls through to the payload type's declared fields (`damage.amount` where damage is `Event<Damage>`).
 
 Output ports fire via ArrowAssign: `died <- value;` sets the shared slot's Ready flag and stores the payload. Wired consumers observe the same slot (shared storage — identity, not copy). Delivery order is deterministic — scheduler order, no implicit concurrency.
@@ -2021,7 +2020,7 @@ an unready port does not error — it suspends (`Waiting`) and registers as a
 waiter on that slot. Firing drains the waiter list, re-marking each blocked
 task schedulable. Wake is level-triggered: slot values are stable once
 written, so re-entry converges. Reads outside any task keep the strict
-error — top-level code gates on `.^Ready`.
+error — top-level code gates on `^^Ready`.
 
 The native backend executes this contract identically: a wire is an `i64`
 slot handle into the runtime event table; obj spawning allocates the
@@ -2566,7 +2565,7 @@ The six own unproven entries are the whole gap, named:
 |---|---|---|
 | `ip_v4` | `std/net/socket.bv` | needs disjoint-bit OR reasoning |
 | `sha1_padded_len` | `std/net/sha1.bv` | needs modular arithmetic |
-| `is_alpha_loop`, `is_numeric_loop` | `std/string.bv` | postcondition `i == s.^Length` — counter-versus-length |
+| `is_alpha_loop`, `is_numeric_loop` | `std/string.bv` | postcondition `i == s^^Length` — counter-versus-length |
 | `pf_exp` | `std/cast_lanes.bv` | a path returns a call to the recursive `pf_exp_digits`, whose declared post bounds only its first component; stating the domain in the precondition was tried and does not close it |
 | `read32le` | `std/ffi/xxhash.bv` | **newly visible**: before attribution it was one of 101 indistinguishable entries |
 
@@ -2591,12 +2590,12 @@ a **conversion** is never modelled. The pair decides, not the direction (§15.6)
 | `String ↔ Data`, `Data ↔ Int` | representation | identity on the word |
 | `String → Int`, `Int → String` | conversion (parses / formats) | never |
 
-**Length atoms.** `s.^Length` and `CharCount#(s)` evaluate to one integer atom per
+**Length atoms.** `s^^Length` and `CharCount#(s)` evaluate to one integer atom per
 handle, known non-negative. The atom is keyed on the base's *symbolic value*, not
-its text, so `s.^Length` in two places is one quantity, `a.^Length` and
-`b.^Length` stay distinct, and a rebinding yields a new atom instead of carrying
+its text, so `s^^Length` in two places is one quantity, `a^^Length` and
+`b^^Length` stay distinct, and a rebinding yields a new atom instead of carrying
 the old length across. Only **lower bounds at or below zero** are decidable from
-it: `term.^Length >= 0` proves; `== 1`, an upper bound, or a comparison against
+it: `term^^Length >= 0` proves; `== 1`, an upper bound, or a comparison against
 another handle's length is content/length-algebra reasoning and stays out.
 
 **Per-field results.** A tuple result is proved component-wise: each element is
@@ -3013,7 +3012,7 @@ Indexed read `c[i]` resolves `op At` (Tier 2). `foreach` lowering uses the
 iteration operations internally; it never consults the reflection surface.
 A collection's logical length is its element count, expressed by the
 `Count#` intrinsic (which dispatches to the type's declared `op Count`); the
-reflection target `.^Length` (§17.1) is stored-length reflection and is not
+reflection target `^^Length` (§17.1) is stored-length reflection and is not
 the collection-length mechanism. **2026-08-14 (Universal Operation Language,
 §6b):** every operation has three invocation surfaces — a symbol (`+`, `c[i]`,
 `<-`, `foreach`), an intrinsic (`OpName#(a, b)`), and the UFCS method form
@@ -3065,7 +3064,7 @@ contract structurally as a sequence of `Char` with encoding variants
 (`String<UTF8>`, `String<UTF16>`, `String<ASCII>`), selecting tiers by
 encoding. **2026-08-14 (current): a `String` operand iterates `Char` through
 a protocol-keyed char-decode lane** — the loop bound is the stored byte
-length (`.^Length` header) and each iteration decodes one UTF8 codepoint
+length (`^^Length` header) and each iteration decodes one UTF8 codepoint
 (`Char`); the compiler holds no String layout. `foreach c in str` binds `c`
 as `Char` (SPEC §17.2 `String` → `Char`), never a raw byte.
 Encoding-selective tiers are the future specialization:
@@ -3078,7 +3077,7 @@ Encoding-selective tiers are the future specialization:
   over the underlying buffer). Character random access by index on a
   variable-width encoding is a compile error, never a silent O(N) surprise.
 
-`.^Length` on a `String` is the **stored byte count** (header read). The
+`^^Length` on a `String` is the **stored byte count** (header read). The
 **character count** is a computed property and is an intrinsic operation —
 `CharCount#` — never a reflection target.
 
@@ -3274,7 +3273,7 @@ the awaited slot, which re-marks it schedulable (§9.5). Registration splits
 task bodies so a blocking read heads its own segment — statements before
 the read run exactly once, and the post-wake re-run starts AT the read.
 A read inside a `foreach` body sits behind the whole loop statement: gate
-loop reads with `.^Ready` checks so gated re-entry converges instead of
+loop reads with `^^Ready` checks so gated re-entry converges instead of
 repeating iterations.
 
 If every remaining task is blocked, no producer will ever fire: `await`
@@ -3463,7 +3462,7 @@ policy does for owned results and consumed inputs.
 - Mutable access requires proven exclusive provenance.
 - Intentional shared mutation requires atomic/synchronization behavior or a cell boundary.
 
-There is no `Ptr!` alias and no `.^Address` acquisition form.
+There is no `Ptr!` alias and no `^^Address` acquisition form.
 
 > **2026-09-06 (pointer arithmetic).** Pointer arithmetic exists as
 > compiler-known intrinsics, never as bare operators on `Ptr<T>`:
@@ -3506,7 +3505,7 @@ The frontend infers one effect set covering at least:
 - purity;
 - cancellation behavior.
 
-Traits and contracts may constrain effects. Compile-time reflection exposes `.^^Effects`.
+Traits and contracts may constrain effects. Compile-time reflection exposes `^^Effects`.
 
 ## 15. Expressions and operations
 
@@ -3880,7 +3879,7 @@ Custom parse-prefix/suffix bindings are not currently exposed. Unknown prefixes 
 > this contract, not an implementation shortcut. Changing the layout
 > requires migrating every consumer named here in the same commit.
 > The terminating NUL is present in the allocation but is not counted
-> by the length word (`.^Length` reads the length word, byte count).
+> by the length word (`^^Length` reads the length word, byte count).
 
 ### 16.3 Ordered and associative literals
 
@@ -3945,12 +3944,12 @@ Matrix<T, Rows, Cols>
 ### 17.1 Runtime reflection
 
 ```briev
-value.^Field
+value^^Field
 ```
 
 Runtime reflection reads a declared/materialized logical field. Missing fields are compile-time errors for the selected program/target.
 
-`value.^Length` is **stored-length reflection**: it reads a length that is an
+`value^^Length` is **stored-length reflection**: it reads a length that is an
 intrinsic property of the value's representation and unreachable through the
 declared member surface — the `Blob` byte header, the `String` byte header,
 the `Vector` descriptor count, or a `coll` type's hidden length slot
@@ -3962,10 +3961,10 @@ error, because that length is member-managed or computed, not intrinsic.
 explicitly, not a reflection target (§17.3). Character-level String access
 uses `char_at(s, i) -> Char` (stdlib), since raw indexing returns Int.
 
-> **2026-08-15 (`coll`).** A `coll obj`'s `.^Length` is its hidden length
+> **2026-08-15 (`coll`).** A `coll obj`'s `^^Length` is its hidden length
 > slot (O(1) header read); a `coll struct`'s is its fixed constant `N`
 > (folded at compile time). The element count is the `Count#` intrinsic,
-> never `.^Length` — the two coincide when the stored unit is the element and
+> never `^^Length` — the two coincide when the stored unit is the element and
 > diverge otherwise, exactly like String's stored bytes vs `CharCount#`.
 >
 > > **2026-08-16 (a hand-written collection obj).** A hand-written `obj`
@@ -3974,20 +3973,20 @@ uses `char_at(s, i) -> Char` (stdlib), since raw indexing returns Int.
 > > compiler's dispatch keys on the ops, never the `coll` keyword or a type
 > > name. A `HashMap<K,V>` (stdlib/collections.bv) is the reference example:
 > > `let m: HashMap<K,V> = 0` constructs via `op Init`, `Count#` reads
-> > `op Count`, `<-`/literals route through `op InsertAt`. `.^Length` stays a
+> > `op Count`, `<-`/literals route through `op InsertAt`. `^^Length` stays a
 > > compile error on it (no compiler-owned length).
 
-> > **2026-08-23 (`.^Ready` on event ports).** An `Event<T>` port exposes
-> > `.^Ready` → Bool — runtime reflection on the port's internal state flag.
+> > **2026-08-23 (`^^Ready` on event ports).** An `Event<T>` port exposes
+> > `^^Ready` → Bool — runtime reflection on the port's internal state flag.
 > > True when a pending event is observable. Payload members project through
-> > plain field access (`damage.amount`), NOT through reflection — `.^Ready`
+> > plain field access (`damage.amount`), NOT through reflection — `^^Ready`
 > > reflects on the PORT; `.amount` reaches into the PAYLOAD.
 
-> **2026-08-15 (boundary rule).** **Reflection (`.^`) = stored/frozen facts
+> **2026-08-15 (boundary rule).** **Reflection (`^^`) = stored/frozen facts
 > that "observe and never compute"; intrinsics (`X#`) = operations.** A value
 > with one notion that is operational is an intrinsic, not reflection.
 > Capacity is that case: it is the Grow/Shrink control knob, so it is
-> `Capacity#`/`Resize#`/`EnsureCap#`/`TrimCap#` — **no `.^Capacity`
+> `Capacity#`/`Resize#`/`EnsureCap#`/`TrimCap#` — **no `^^Capacity`
 > reflection exists.**
 
 > **2026-08-15 (the hierarchy).** `Data` is the universal reflective floor —
@@ -4014,11 +4013,11 @@ uses `char_at(s, i) -> Char` (stdlib), since raw indexing returns Int.
 ### 17.2 Compile-time descriptor reflection
 
 ```briev
-value.^^Type
-value.^^Ops
-value.^^Bytes
-value.^^Alignment
-value.^^Effects
+value^^Type
+value^^Ops
+value^^Bytes
+value^^Alignment
+value^^Effects
 ```
 
 Compile-time reflection occurs after semantic/layout freezing. Reflection-driven specialization may inspect the frozen descriptor but may not introduce new layout requirements that invalidate the freeze.
@@ -4029,14 +4028,14 @@ Descriptor fields include, where applicable:
 - `Bytes`, `Bits`, `MaxBits`, `Alignment`, `Endian`, `StorageClass`, `AddressSpace`, `Addressable`;
 - declaration metadata `Name`, `Params`, `Returns`, `Arity`, `Loc`, `FnSpan`, `Doc`, `Hash`, `Contracts`, `Module`, `IsPure`.
 
-`value.^^Element` is the element type of an iterable receiver. **2026-08-14:
+`value^^Element` is the element type of an iterable receiver. **2026-08-14:
 single-source proof form** — the element type IS the read op's return type
 (`op At` Tier 2 / `op Current` Tier 1, §11.4) substituted with the concrete
 generic args (`List<String>` → `String`, `HashMap<K,V>` → `V`), or the frozen
 `String` → `Char` fundamental fact. There is no second derivation to drift
 against; a non-iterable receiver is a compile error, never a silent `Int`.
 The descriptor folds to the element type's category code at compile time.
-Iteration capability is inspected via `value.^^Ops` (the type's operator
+Iteration capability is inspected via `value^^Ops` (the type's operator
 surface, §15.2).
 
 Declaration/source metadata is compile-time-only unless explicitly materialized.
@@ -4050,7 +4049,7 @@ Declaration/source metadata is compile-time-only unless explicitly materialized.
 `TrailingZeros#` (SPEC §18 intrinsics, dispatch to `llvm.abs`/`llvm.bitreverse`/
 `llvm.ctpop`/`llvm.ctlz`/`llvm.cttz`) — not universal projection names and not
 reflection targets. A computed truth is an intrinsic; reflection only observes
-stored/frozen facts. **2026-08-14:** the reflection target `.^Absolute` was
+stored/frozen facts. **2026-08-14:** the reflection target `^^Absolute` was
 removed after a one-release deprecated alias — it is now an unknown-target
 error directing to `Abs#`.
 
@@ -4298,7 +4297,7 @@ Platform families such as POSIX are target configuration, not source hashwords.
 ```briev
 optional frgn feature(...) -> T from #System;
 
-when feature.^^Available {
+when feature^^Available {
     use(feature(...));
 };
 ```
@@ -4603,7 +4602,7 @@ provides the iteration operations — Tier 2 (`op Count`+`op At`), Tier 1
 user-declared collection. It never depends on a compiler-known collection
 type. The web backend materializes the iterable into an array by driving the
 same iteration operations; the shim decodes each element by its type tag. A
-view expression `.^Length` on an iterable field reads the materialized array's
+view expression `^^Length` on an iterable field reads the materialized array's
 stored length; a non-iterable `b-each` iterable is a compile error, never a
 silently skipped render.
 

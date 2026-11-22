@@ -112,14 +112,14 @@ materializer copies only at the boundary (per flush, via `At`).
 
 | Surface | Meaning | Example |
 |---|---|---|
-| `.^Length` | **stored** length: `Data` byte header, `String` byte header, `Vector` descriptor count | `str.^Length` → byte count |
+| `^^Length` | **stored** length: `Data` byte header, `String` byte header, `Vector` descriptor count | `str^^Length` → byte count |
 | `CharCount#` | **computed** char count (operation intrinsic, protocol-dispatched) | `CharCount#(str)` |
 | `Abs#` | **computed** absolute value (intrinsic; SPEC §17.3) | `Abs#(-5)` |
 | `op Count` | **element count** (iteration contract) | `foreach`/`b-each` lowering |
 | `Count#` | **element count** — the intrinsic form of `op Count` (UOL §6b) | `Count#(c)` / `c.Count#()` |
 | `At#` | **element at index** — the intrinsic form of `op At` | `At#(c, i)` / `c.At#(i)` / `c[i]` |
-| `.^^Element` | element type — **implemented** (single-source proof form, §7) | `List<String>` → `String` |
-| `.^^Ops` | the type's operator surface (descriptor read) | iteration capability |
+| `^^Element` | element type — **implemented** (single-source proof form, §7) | `List<String>` → `String` |
+| `^^Ops` | the type's operator surface (descriptor read) | iteration capability |
 
 **2026-08-14 (Universal Operation Language, §6b):** every operation has three
 invocation surfaces — a symbol (`+`, `c[i]`, `<-`, `foreach`), an intrinsic
@@ -128,16 +128,16 @@ recognized for any disclosed operation identity (the `operation_identities`
 vocab); `a.OpName#(b)` desugars to `OpName#(a, b)` when no literal member
 exists (member wins, then UFCS). Symbols are sugar over the same dispatch.
 Metadata that is compiler-known but non-operational is reflection. Runtime
-`.^Size` is DELETED — the element count of a collection is an operation, so
+`^^Size` is DELETED — the element count of a collection is an operation, so
 its home is the `Count#` intrinsic, not a reflection target (§6a).
 
-`.^Length` never routes to an intrinsic. A `List`/`HashMap`/custom `.^Length`
+`^^Length` never routes to an intrinsic. A `List`/`HashMap`/custom `^^Length`
 is a compile error — that length is member-managed or computed, not intrinsic.
-**2026-08-14:** `.^Absolute` was REMOVED (after a one-release deprecated alias)
+**2026-08-14:** `^^Absolute` was REMOVED (after a one-release deprecated alias)
 — abs is a computed truth, so its home is the `Abs#` intrinsic, not a
 reflection target (SPEC §17.3). The bit transformations are intrinsics too:
 `BitReverse#`/`Popcount#`/`LeadingZeros#`/`TrailingZeros#`. `Bytes#` is not
-added — byte length is stored, `.^Length` reads it.
+added — byte length is stored, `^^Length` reads it.
 
 ## 7. Element type
 
@@ -157,7 +157,7 @@ is `Iterable<Char>`. (2026-08-15: category `#` removed from fundamentals —
 
 **2026-08-14 (current mechanism):** a `String` operand iterates `Char`
 through a **protocol-keyed char-decode lane** — the loop bound is the stored
-byte length (`.^Length` header) and each iteration calls `briev_str_next_char`
+byte length (`^^Length` header) and each iteration calls `briev_str_next_char`
 (UTF8 decode + advance) producing one `Char`. The compiler holds no String
 layout and no name match; `String` membership is the sole key
 (`is_string_operand`, a casting-graph protocol check). `Blob` (the renamed
@@ -172,7 +172,7 @@ Encoding-selective tiers are the future specialization:
   decoder → `Char`); Tier 2 on the byte view (`.Bytes`, a `Slice<U8>`/`Blob`).
   Character random access by index on UTF8 is a compile error.
 
-`.^Length` on `String` = stored byte count. `CharCount#` = char count. The
+`^^Length` on `String` = stored byte count. `CharCount#` = char count. The
 `is_string_operand` special-casing is gradually subsumed by the Iterable
 dispatch.
 
@@ -180,13 +180,13 @@ dispatch.
 
 | Syntax | Resolves via |
 |---|---|
-| `foreach(item in c)` | tier pick → Tier 2 (`op Count`+`op At`) counted loop, Tier 1 (`op Iter`+`op Step`+`op IsEnd`+`op Current`) cursor loop, or `String` char decode lane (ops internally, never `.^Length`) |
+| `foreach(item in c)` | tier pick → Tier 2 (`op Count`+`op At`) counted loop, Tier 1 (`op Iter`+`op Step`+`op IsEnd`+`op Current`) cursor loop, or `String` char decode lane (ops internally, never `^^Length`) |
 | `b-each:item="c"` | web snapshot materializer driving the same ops |
 | `c[i]` | `op At` (indexed borrow) |
-| `c.^Length` | stored-length reflection (Data/String-byte/Vector); error elsewhere |
+| `c^^Length` | stored-length reflection (Data/String-byte/Vector); error elsewhere |
 | `c <- x` / `x <- c` | `op InsertAt` / `op ExtractFrom` / `op CopyFrom` (unchanged) |
 | `let x: List<Int> = [1, 2, 3]` | type-directed literal → `op Init` + `op InsertAt`; unconstrained `= []` → "type annotation required" |
-| view `items.^Length` | the materialized array's stored `.length` (target capability) |
+| view `items^^Length` | the materialized array's stored `.length` (target capability) |
 
 Read-vs-extract stays distinct: bracket read → `op At` (borrow); arrow extract
 → `op ExtractFrom`/`op CopyFrom` (value out). The `"[]" => "ExtractFrom"`
@@ -199,7 +199,7 @@ The analysis produces an `IterablePlan` (tier, element type, ops). The backend
 emits a snapshot materializer — generated code that drives the same iteration
 ops to fill `[len][word…]` in a scratch buffer. The shim reads it by the
 element type tag (numbers raw, strings as pointers, objects as handles). View
-`.^Length` reads the materialized array's stored `.length`. `Applied`/`Vector`
+`^^Length` reads the materialized array's stored `.length`. `Applied`/`Vector`
 fields classify structurally (mirror `signal_type_for`).
 
 Implementation notes:
@@ -258,12 +258,12 @@ global; every `_txn` export takes `%state` first and the shim passes
 |---|---|---|
 | `foreach` `List` layout `[len][elem…]` i64, item forced `Int`, `panic!` | `emit_stmt.rs:186,1136,1166,197` | structural `op Count`+`op At`/`op Iter`+`op Step` loop, borrow-typed item |
 | `[]` `List` layout read | `emit_expr.rs:1017` | `op At` dispatch (inline member call) |
-| `.^Len` collection panic; runtime `.^Size` `name == "len"` slot heuristic | `emit_expr.rs:2477,2383-2393` | `.^Length` stored-length reflection; `CharCount#`; **2026-08-14 (§6a): runtime `.^Size` DELETED — the element count is the `Count#` intrinsic (element-bearing op return), never a `len` slot-name guess. `.^^Size` (compile-time) keeps the vector shape** |
+| `^^Len` collection panic; runtime `^^Size` `name == "len"` slot heuristic | `emit_expr.rs:2477,2383-2393` | `^^Length` stored-length reflection; `CharCount#`; **2026-08-14 (§6a): runtime `^^Size` DELETED — the element count is the `Count#` intrinsic (element-bearing op return), never a `len` slot-name guess. `^^Size` (compile-time) keeps the vector shape** |
 | `ringbuf_inline` ("any `op InsertAt` type is a 4-slot ring") | `context.rs:75`, `mod.rs:4601/4867`, `emit_stmt.rs:1402` | deleted after generic layout-on-observation |
 | `emit_heap_seq` / `emit_svo_list` / `emit_svo_index` | `emit_expr.rs:1573/1627/1686` | type-directed literals via `op Init`+`op InsertAt`; generic indexing |
 | `is_string_operand` special-casing | throughout | String's Iterable surface |
 | ~20 `"List"` string matches | `src/typechecker/`, `src/backend/llvm/`, `src/ssr.rs`, `src/lexer.rs` | structural resolution |
-| `.^Len` → `.^Length` rename | `resolve_reflect` (`typechecker/mod.rs:3125`), `emit_reflection` (`emit_expr.rs:2441`), shim | language-wide |
+| `^^Len` → `^^Length` rename | `resolve_reflect` (`typechecker/mod.rs:3125`), `emit_reflection` (`emit_expr.rs:2441`), shim | language-wide |
 
 Deletions strictly follow their replacements (Rule 5, additive only).
 

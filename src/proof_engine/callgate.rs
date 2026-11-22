@@ -1386,19 +1386,19 @@ fn replace_atoms(e: &Expr, defs: &[(Expr, Expr)]) -> Expr {
 }
 
 fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
-    // Structural facts (reflection `.^Length`, opaque predicates, field
+    // Structural facts (reflection `^^Length`, opaque predicates, field
     // chains) are not linear/interval expressions; an identical fact is the
     // proof.
     if facts.iter().any(|f| f == goal) {
         return Verdict::Proven;
     }
-    // A stored length (`.^Length`) is a non-negative header slot. This is an
-    // invariant of every managed String/collection, so `x.^Length >= 0`
+    // A stored length (`^^Length`) is a non-negative header slot. This is an
+    // invariant of every managed String/collection, so `x^^Length >= 0`
     // needs no separate fact.
     if let Expr::BinaryOp(BinaryOpKind::Ge, l, r) = goal {
         if matches!(
             l.as_ref(),
-            Expr::Reflect(_, field, crate::ast::ReflectKind::Runtime) if field == "Length"
+            Expr::Reflect(_, field, _) if field == "Length"
         ) && matches!(r.as_ref(), Expr::Decimal(0))
         {
             return Verdict::Proven;
@@ -1547,7 +1547,7 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
 /// Three simplifications, each for a goal that was otherwise unprovable purely
 /// because the answer was written down rather than derived:
 ///
-/// * `"<literal>".^Length` — a literal's length is a number.
+/// * `"<literal>"^^Length` — a literal's length is a number.
 /// * `Count#([a, b, c])` / `[a, b, c].Count#()` — a literal collection's count.
 /// * `"<literal>" == "<literal>"` (and `!=`) — decided, not deferred.
 ///
@@ -1556,7 +1556,7 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
 /// just not in a form the prover recognised.
 fn simplify_for_proof(e: &Expr) -> Option<Expr> {
     match e {
-        Expr::Reflect(base, field, crate::ast::ReflectKind::Runtime) if field == "Length" => {
+        Expr::Reflect(base, field, _) if field == "Length" => {
             if let Expr::Quoted(bytes) = base.as_ref() {
                 return Some(Expr::Decimal(bytes.len() as i64));
             }
@@ -1621,14 +1621,14 @@ fn simplify_args(args: &[Expr]) -> Option<Vec<Expr>> {
 /// shapes they mention rather than from a guard.
 ///
 /// A managed String/collection stores its length in a header slot, so
-/// `x.^Length >= 0` is an invariant of the type — `prove_conjunct` already
+/// `x^^Length >= 0` is an invariant of the type — `prove_conjunct` already
 /// answers that ONE goal from nothing. Recording it as a fact generalises the
-/// rule: `x.^Length + 1 >= 1` is the same invariant plus arithmetic, and it is
-/// what a caller writing `buf_new(text.^Length + 1)` has to prove.
+/// rule: `x^^Length + 1 >= 1` is the same invariant plus arithmetic, and it is
+/// what a caller writing `buf_new(text^^Length + 1)` has to prove.
 fn derived_length_facts(e: &Expr, out: &mut Vec<Expr>) {
     match e {
-        Expr::Reflect(base, field, crate::ast::ReflectKind::Runtime) if field == "Length" => {
-            // The goal is about the LENGTH, not the holder: `x.^Length >= 0`.
+        Expr::Reflect(base, field, _) if field == "Length" => {
+            // The goal is about the LENGTH, not the holder: `x^^Length >= 0`.
             out.push(Expr::BinaryOp(
                 BinaryOpKind::Ge,
                 Box::new(e.clone()),
@@ -1670,7 +1670,7 @@ pub fn prove_precondition(goal: &Expr, facts: &[Expr]) -> Verdict {
     // of two literals — before any reasoning, and record the length
     // invariants the goal mentions. Without these, a call site was unprovable
     // purely because the answer was written down instead of derived
-    // (`buf_new(text.^Length + 1)`, `run("exit 7")`, `first_greet(["a", "b"])`).
+    // (`buf_new(text^^Length + 1)`, `run("exit 7")`, `first_greet(["a", "b"])`).
     let goal = simplify_for_proof(goal).unwrap_or_else(|| goal.clone());
     let mut facts: Vec<Expr> = facts
         .iter()
@@ -1878,7 +1878,7 @@ fn negate_literal(e: &Expr) -> Option<Expr> {
 /// non-negative integer literal gives `v >= 0` (and `v == n` for exact
 /// reasoning). Sums of such literals too. 2026-10-19 (contract tiers v2).
 pub fn initializer_fact(name: &str, init: &Expr) -> Option<Expr> {
-    // A stored length (`.^Length`, `CharCount#`-free header slot) is never
+    // A stored length (`^^Length`, `CharCount#`-free header slot) is never
     // negative; declaring it lets a digest length flow into a callee that
     // requires a non-negative size without an assertion at every call site.
     if let Expr::Reflect(_, field, crate::ast::ReflectKind::Runtime) = init {
@@ -2523,21 +2523,21 @@ mod tests {
 
     #[test]
     fn literal_string_length_folds_to_a_number() {
-        // `"abc".^Length` is 3 at compile time. Without the fold, a call site
+        // `"abc"^^Length` is 3 at compile time. Without the fold, a call site
         // guarded by a constant path's length (a sockaddr_un bound, an HTTP
         // header limit) was unprovable: constant substitution inlined the
         // literal and the prover treated its length as an unknown atom.
         let facts = vec![];
         assert_eq!(
-            prove_precondition(&e("\"abc\".^Length == 3"), &facts),
+            prove_precondition(&e("\"abc\"^^Length == 3"), &facts),
             Verdict::Proven
         );
         assert_eq!(
-            prove_precondition(&e("\"abc\".^Length > 0 && \"abc\".^Length < 108"), &facts),
+            prove_precondition(&e("\"abc\"^^Length > 0 && \"abc\"^^Length < 108"), &facts),
             Verdict::Proven
         );
         assert_eq!(
-            prove_precondition(&e("\"abc\".^Length < 3"), &facts),
+            prove_precondition(&e("\"abc\"^^Length < 3"), &facts),
             Verdict::Refuted
         );
     }
@@ -2545,9 +2545,9 @@ mod tests {
     #[test]
     fn literal_string_length_does_not_fold_runtime_lengths() {
         // The fold is about literals only. A runtime String's length stays a
-        // symbol: proving `s.^Length == 3` from nothing would be a lie.
+        // symbol: proving `s^^Length == 3` from nothing would be a lie.
         assert_eq!(
-            prove_precondition(&e("s.^Length == 3"), &[]),
+            prove_precondition(&e("s^^Length == 3"), &[]),
             Verdict::Unproven
         );
     }
@@ -2722,9 +2722,9 @@ mod tests {
 
     #[test]
     fn structural_fact_proves_reflection_goal() {
-        let facts = vec![e("r .^Length >= 1")];
+        let facts = vec![e("r ^^Length >= 1")];
         assert_eq!(
-            prove_precondition(&e("r .^Length >= 1"), &facts),
+            prove_precondition(&e("r ^^Length >= 1"), &facts),
             Verdict::Proven
         );
     }

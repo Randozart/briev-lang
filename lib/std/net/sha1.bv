@@ -323,9 +323,9 @@ defn sha1_digest(src_addr: Int, msg_len: Int)
 
 // sha1_digest_str - convenience over sha1_digest for a String input: the bytes
 // start 8 past the String's [len] header (the bytes.bv put_cstr convention), the
-// count is .^Length. Returns the owned 20-byte digest ByteBuf.
+// count is ^^Length. Returns the owned 20-byte digest ByteBuf.
 defn sha1_digest_str(text: String) [true][term.len == 20 && term.cap >= 20] -> ByteBuf {
-    let count: Int = text .^Length;
+    let count: Int = text ^^Length;
     let data_addr: Int = ((text as Data) as Int) + 8;
     term sha1_digest(data_addr, count);
 };

@@ -71,7 +71,7 @@ pub enum Expr {
     /// 2026-11-08 (chaining plan): chain back-references are removed; a chain
     /// value is bound with `expr into name` and referenced by that name.
     MethodCall(Box<Expr>, String, Vec<Expr>, Option<usize>),
-    /// 2026-07-31: Reflection access: `a.^Length` (runtime) / `a.^^Size`
+    /// 2026-07-31: Reflection access: `a^^Length` (runtime) / `a^^Size`
     /// (compile-time). The receiver is preserved; the target is a PascalCase
     /// compiler-known identifier resolved by the D1 reflection table.
     Reflect(Box<Expr>, String, ReflectKind),
@@ -187,9 +187,9 @@ pub enum Expr {
 /// reflection from type-derived (compile-time, foldable) reflection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReflectKind {
-    /// `x.^Length`, `x.^Ptr` — runtime value-derived.
+    /// `x^^Length`, `x^^Ptr` — runtime value-derived.
     Runtime,
-    /// `x.^^Size`, `x.^^Bytes` — compile-time type-derived, foldable.
+    /// `x^^Size`, `x^^Bytes` — compile-time type-derived, foldable.
     CompileTime,
 }
 

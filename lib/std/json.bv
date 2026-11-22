@@ -68,7 +68,7 @@ defn json_parse(s: String) -> Result<JsonValue, String> {
 };
 
 defn json_complete(text: String, frame: ParseFrame) -> Result<JsonValue,String> {
-    when skip_ws(text,frame.pos) != text .^Length { term Err("trailing_input"); };
+    when skip_ws(text,frame.pos) != text ^^Length { term Err("trailing_input"); };
     term Ok(frame.value);
 };
 
@@ -179,7 +179,7 @@ defn json_encode_depth(value: JsonValue, depth: Int) -> Result<String,String> {
 };
 
 defn json_encode_text(text: String, pos: Int, encoded: String) -> Result<String,String> {
-    when pos >= text .^Length { term Ok(encoded+"\""); };
+    when pos >= text ^^Length { term Ok(encoded+"\""); };
     let byte: Int = char_at(text,pos) as Int;
     when byte == 34 || byte == 92 {
         term json_encode_text(text,pos+1,encoded+"\\"+text[pos:pos+1]);
@@ -195,7 +195,7 @@ defn json_encode_text(text: String, pos: Int, encoded: String) -> Result<String,
 
 defn json_encode_array(values: List<JsonValue>, depth: Int) -> Result<String,String> {
     let encoded: String = "[";
-    foreach idx in 0..values .^Length {
+    foreach idx in 0..values ^^Length {
         let entry: Result<String,String> = json_encode_depth(values[idx],depth);
         when is_err(entry) { term entry; };
         when idx > 0 { encoded = encoded+","; };
@@ -206,7 +206,7 @@ defn json_encode_array(values: List<JsonValue>, depth: Int) -> Result<String,Str
 
 defn json_encode_object(pairs: List<(String,JsonValue)>, depth: Int) -> Result<String,String> {
     let encoded: String = "{";
-    foreach idx in 0..pairs .^Length {
+    foreach idx in 0..pairs ^^Length {
         let key: Result<String,String> = json_encode_text(pairs[idx].0,0,"\"");
         when is_err(key) { term key; };
         let entry: Result<String,String> = json_encode_depth(pairs[idx].1,depth);
@@ -229,7 +229,7 @@ defn json_space(value: Char) -> Bool {
 
 defn skip_ws(text: String, pos: Int) [true] -> Int {
     when pos < 0 { term 0; };
-    when pos >= (text .^Length) || !json_space(char_at(text,pos)) { term pos; };
+    when pos >= (text ^^Length) || !json_space(char_at(text,pos)) { term pos; };
     term skip_ws(text,pos+1);
 };
 
@@ -244,7 +244,7 @@ defn parse_value(text: String, pos: Int) -> Result<ParseFrame,String> {
 defn json_value_depth(text: String, pos: Int, depth: Int) -> Result<ParseFrame,String> {
     when depth > 64 { term err_frame("nesting_limit"); };
     let cursor: Int = skip_ws(text,pos);
-    when cursor >= (text .^Length) { term err_frame(e_unexpend()); };
+    when cursor >= (text ^^Length) { term err_frame(e_unexpend()); };
     let token: Char = char_at(text,cursor);
     when token == '"' { term parse_string(text,cursor); };
     when token == '{' { term json_object_depth(text,cursor,depth+1); };
@@ -258,18 +258,18 @@ defn json_value_depth(text: String, pos: Int, depth: Int) -> Result<ParseFrame,S
 
 defn parse_keyword(text: String, pos: Int, word: String, value: JsonValue) -> Result<ParseFrame,String> {
     foreach idx in 0..CharCount#(word) {
-        when pos+idx >= (text .^Length) || char_at(text,pos+idx) != char_at(word,idx) { term err_frame(e_utoken()); };
+        when pos+idx >= (text ^^Length) || char_at(text,pos+idx) != char_at(word,idx) { term err_frame(e_utoken()); };
     };
     term Ok(ParseFrame { value: value, pos: pos+CharCount#(word) });
 };
 
 defn parse_string(text: String, pos: Int) -> Result<ParseFrame,String> {
-    when pos >= (text .^Length) || char_at(text,pos) != '"' { term err_frame(e_utoken()); };
+    when pos >= (text ^^Length) || char_at(text,pos) != '"' { term err_frame(e_utoken()); };
     term parse_str_chars(text,pos+1,new_builder());
 };
 
 defn parse_str_chars(text: String, pos: Int, builder: StringBuilder) -> Result<ParseFrame,String> {
-    when pos >= (text .^Length) { term err_frame(e_unexpend()); };
+    when pos >= (text ^^Length) { term err_frame(e_unexpend()); };
     let token: Char = char_at(text,pos);
     when token == '"' { term Ok(ParseFrame { value: StrVal(json_builder_string(builder)), pos: pos+1 }); };
     when token < ' ' { term err_frame(e_invesc()); };
@@ -280,7 +280,7 @@ defn parse_str_chars(text: String, pos: Int, builder: StringBuilder) -> Result<P
 };
 
 defn json_string_run(text: String, pos: Int) -> Int {
-    when pos >= text .^Length { term pos; };
+    when pos >= text ^^Length { term pos; };
     let byte: Int = text[pos];
     when byte == 34 || byte == 92 || byte < 32 { term pos; };
     let width: Int = json_utf8_width(text,pos);
@@ -295,7 +295,7 @@ defn json_utf8_width(text: String, pos: Int) -> Int {
     when byte >= 194 && byte <= 223 { width = 2; };
     when byte >= 224 && byte <= 239 { width = 3; };
     when byte >= 240 && byte <= 244 { width = 4; };
-    when width == 0 || pos+width > text .^Length { term 0; };
+    when width == 0 || pos+width > text ^^Length { term 0; };
     foreach idx in (pos+1)..(pos+width) {
         let continuation: Int = text[idx];
         when continuation < 128 || continuation > 191 { term 0; };
@@ -307,7 +307,7 @@ defn json_utf8_width(text: String, pos: Int) -> Int {
 };
 
 defn json_parse_escape(text: String, pos: Int, builder: StringBuilder) -> Result<ParseFrame,String> {
-    when pos >= (text .^Length) { term err_frame(e_unexpend()); };
+    when pos >= (text ^^Length) { term err_frame(e_unexpend()); };
     let token: Char = char_at(text,pos);
     when token == 'u' { term json_unicode(text,pos+1,builder); };
     when token == '"' || token == '\\' || token == '/' { term parse_str_chars(text,pos+1,append_char(builder,token)); };
@@ -320,7 +320,7 @@ defn json_parse_escape(text: String, pos: Int, builder: StringBuilder) -> Result
 };
 
 defn parse_hex_escape(text: String, pos: Int) -> Result<Int,String> {
-    when pos+4 > (text .^Length) { term Err(e_invesc()); };
+    when pos+4 > (text ^^Length) { term Err(e_invesc()); };
     let code: Int = 0;
     foreach idx in pos..(pos+4) {
         let digit: Char = char_at(text,idx);
@@ -336,7 +336,7 @@ defn json_unicode(text: String, pos: Int, builder: StringBuilder) -> Result<Pars
     let code: Int = unwrap(escaped);
     when code >= UTF16_LOW_MIN && code <= UTF16_LOW_MAX { term err_frame(e_invesc()); };
     when code < UTF16_HIGH_MIN || code > UTF16_HIGH_MAX { term parse_str_chars(text,pos+4,append_char(builder,code as Char)); };
-    when pos+10 > (text .^Length) || char_at(text,pos+4) != '\\' || char_at(text,pos+5) != 'u' { term err_frame(e_invesc()); };
+    when pos+10 > (text ^^Length) || char_at(text,pos+4) != '\\' || char_at(text,pos+5) != 'u' { term err_frame(e_invesc()); };
     let second: Result<Int,String> = parse_hex_escape(text,pos+6);
     when is_err(second) { term err_frame(e_invesc()); };
     let low: Int = unwrap(second);
@@ -346,25 +346,25 @@ defn json_unicode(text: String, pos: Int, builder: StringBuilder) -> Result<Pars
 };
 
 defn json_digit_end(text: String, pos: Int) -> Int {
-    when pos >= (text .^Length) || !is_digit(char_at(text,pos)) { term pos; };
+    when pos >= (text ^^Length) || !is_digit(char_at(text,pos)) { term pos; };
     term json_digit_end(text,pos+1);
 };
 
 defn json_number_end(text: String, pos: Int) -> Int {
     let cursor: Int = pos;
-    when cursor < (text .^Length) && char_at(text,cursor) == '-' { cursor = cursor+1; };
-    when cursor >= (text .^Length) || !is_digit(char_at(text,cursor)) { term -1; };
+    when cursor < (text ^^Length) && char_at(text,cursor) == '-' { cursor = cursor+1; };
+    when cursor >= (text ^^Length) || !is_digit(char_at(text,cursor)) { term -1; };
     let begin: Int = cursor;
     cursor = json_digit_end(text,cursor);
     when cursor > begin+1 && char_at(text,begin) == '0' { term -1; };
-    when cursor < (text .^Length) && char_at(text,cursor) == '.' {
+    when cursor < (text ^^Length) && char_at(text,cursor) == '.' {
         let fraction: Int = cursor+1;
         cursor = json_digit_end(text,fraction);
         when cursor == fraction { term -1; };
     };
-    when cursor < (text .^Length) && (char_at(text,cursor) == 'e' || char_at(text,cursor) == 'E') {
+    when cursor < (text ^^Length) && (char_at(text,cursor) == 'e' || char_at(text,cursor) == 'E') {
         cursor = cursor+1;
-        when cursor < (text .^Length) && (char_at(text,cursor) == '+' || char_at(text,cursor) == '-') { cursor = cursor+1; };
+        when cursor < (text ^^Length) && (char_at(text,cursor) == '+' || char_at(text,cursor) == '-') { cursor = cursor+1; };
         let exponent: Int = cursor;
         cursor = json_digit_end(text,cursor);
         when cursor == exponent { term -1; };
@@ -378,7 +378,7 @@ defn json_signed_integer(text: String, pos: Int, end: Int, negative: Int, value:
         term Ok(ParseFrame { value: IntVal(0-value), pos: end });
     };
     let digit: Int = json_digit_value(char_at(text,pos));
-    let minimum: Int = 1 << (value .^^Bytes * 8 - 1);
+    let minimum: Int = 1 << (value ^^Bytes * 8 - 1);
     let cutoff: Int = minimum / 10;
     let last: Int = 0 - (minimum % 10);
     when negative == 0 { last = last - 1; };
@@ -407,7 +407,7 @@ defn parse_number(text: String, pos: Int) -> Result<ParseFrame,String> {
 // remove these masks only in favor of a stdlib classification protocol.
 defn json_finite(value: Float) -> Bool {
     let bits: Int = (value as Data) as Int;
-    let width: Int = value .^^Bytes;
+    let width: Int = value ^^Bytes;
     when width == 2 { term (bits & 31744) != 31744; };
     when width == 4 { term (bits & 2139095040) != 2139095040; };
     when width == 8 { term (bits & 9218868437227405312) != 9218868437227405312; };
@@ -421,7 +421,7 @@ defn parse_array(text: String, pos: Int) -> Result<ParseFrame,String> {
 defn json_array_depth(text: String, pos: Int, depth: Int) -> Result<ParseFrame,String> {
     let empty: List<JsonValue> = [];
     let cursor: Int = skip_ws(text,pos+1);
-    when cursor < (text .^Length) && char_at(text,cursor) == ']' { term Ok(ParseFrame { value: Array(empty), pos: cursor+1 }); };
+    when cursor < (text ^^Length) && char_at(text,cursor) == ']' { term Ok(ParseFrame { value: Array(empty), pos: cursor+1 }); };
     term json_array_entries(text,cursor,empty,depth);
 };
 
@@ -432,7 +432,7 @@ defn json_array_entries(text: String, pos: Int, entries: List<JsonValue>, depth:
     let added: List<JsonValue> = [frame.value];
     let values: List<JsonValue> = entries + added;
     let cursor: Int = skip_ws(text,frame.pos);
-    when cursor >= (text .^Length) { term err_frame(e_unexpend()); };
+    when cursor >= (text ^^Length) { term err_frame(e_unexpend()); };
     when char_at(text,cursor) == ']' { term Ok(ParseFrame { value: Array(values), pos: cursor+1 }); };
     when char_at(text,cursor) != ',' { term err_frame(e_expcomma()); };
     term json_array_entries(text,skip_ws(text,cursor+1),values,depth);
@@ -445,7 +445,7 @@ defn parse_object(text: String, pos: Int) -> Result<ParseFrame,String> {
 defn json_object_depth(text: String, pos: Int, depth: Int) -> Result<ParseFrame,String> {
     let empty: List<(String,JsonValue)> = [];
     let cursor: Int = skip_ws(text,pos+1);
-    when cursor < (text .^Length) && char_at(text,cursor) == '}' { term Ok(ParseFrame { value: Object(empty), pos: cursor+1 }); };
+    when cursor < (text ^^Length) && char_at(text,cursor) == '}' { term Ok(ParseFrame { value: Object(empty), pos: cursor+1 }); };
     term json_object_entries(text,cursor,empty,depth);
 };
 
@@ -454,7 +454,7 @@ defn json_object_entries(text: String, pos: Int, pairs: List<(String,JsonValue)>
     when is_err(key) { term key; };
     let key_frame: ParseFrame = unwrap(key);
     let cursor: Int = skip_ws(text,key_frame.pos);
-    when cursor >= (text .^Length) || char_at(text,cursor) != ':' { term err_frame(e_expcolon()); };
+    when cursor >= (text ^^Length) || char_at(text,cursor) != ':' { term err_frame(e_expcolon()); };
     let value: Result<ParseFrame,String> = json_value_depth(text,cursor+1,depth);
     when is_err(value) { term value; };
     let frame: ParseFrame = unwrap(value);
@@ -463,7 +463,7 @@ defn json_object_entries(text: String, pos: Int, pairs: List<(String,JsonValue)>
     let entry: List<(String,JsonValue)> = [(unwrap(name),frame.value)];
     let updated: List<(String,JsonValue)> = pairs + entry;
     let after: Int = skip_ws(text,frame.pos);
-    when after >= (text .^Length) { term err_frame(e_unexpend()); };
+    when after >= (text ^^Length) { term err_frame(e_unexpend()); };
     when char_at(text,after) == '}' { term Ok(ParseFrame { value: Object(updated), pos: after+1 }); };
     when char_at(text,after) != ',' { term err_frame(e_expcomma()); };
     term json_object_entries(text,skip_ws(text,after+1),updated,depth);
