@@ -1079,16 +1079,33 @@ fn validate_cast_protocol_crossing(
     let Some(path) = graph.find_path(&src_cat, &src_var, &dst_cat, &dst_var) else {
         return Ok(());
     };
-    let cross_steps = path
-        .iter()
-        .filter(|s| s.src_category != s.dst_category)
-        .count();
-    if cross_steps > 1 {
+    // 2026-11-22 (issues #153/#154/#155): a single `as` crosses a category
+    // when it performs a REPR transform that is not the identity on
+    // storage. The Data root is the universal storage view: every
+    // category's bytes ARE a Data value, and reading them back (Data →
+    // Int, Data → String) is the SAME storage, not a new representation.
+    // The rule's purpose is to stop one `as` doing REPR work in two
+    // DIFFERENT content domains (parse a String, then format an Int) —
+    // no single lane performs both. So the crossing count is the number of
+    // distinct NON-Data categories the path departs from. `Float64 →
+    // Data → Int` departs only Float (Data is the hub) → one crossing.
+    // `String → Data → Int` departs only String → one crossing (the
+    // existing behavior, which the corpus relies on). A path like
+    // `String → Data → Int → Data` would depart String AND Int → two.
+    let mut departed: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+    for step in path.iter() {
+        if step.src_category == step.dst_category || step.src_category == "Data" {
+            continue;
+        }
+        departed.insert(step.src_category.as_str());
+    }
+    if departed.len() > 1 {
         return Err(TypeError::InvalidOperation {
             operation: format!(
                 "a single cast crosses {} protocol categories ({} → {}); \
                  chain the casts (value as A as B)",
-                cross_steps, src_ty, target_ty
+                departed.len(), src_ty, target_ty
             ),
             type_name: src_ty.to_string(),
         });
@@ -2005,6 +2022,29 @@ fn float_literal_admissible(target_ty: &Type, expr: &Expr, ctx: &TypecheckContex
     float_literal_fits(target_ty, f, ctx.universe, &ctx.type_max_bits)
 }
 
+/// 2026-11-22 (issue #153): a Float-CATEGORY value admitted where a
+/// Float-category type is declared. The variants (`Float`, `Float64`,
+/// `Float16`, ...) are representations of one numeric domain — the casting
+/// graph converts between them with a width lane — so a defn declared
+/// `-> Float64` must accept a value the operator rules typed at the category
+/// base. Refusing here forced every wide carrier to round itself at the
+/// source, which is how a binary64 parse ended up returning binary32 digits.
+/// A float LITERAL still passes the precision gate: a narrow declared width
+/// demands exact round-tripping, exactly as at a construction site.
+fn float_variant_admissible(
+    declared: &Type,
+    value: &Type,
+    expr: &Expr,
+    ctx: &TypecheckContext,
+) -> bool {
+    if !ctx.operand_implements_protocol(declared, "Float")
+        || !ctx.operand_implements_protocol(value, "Float")
+    {
+        return false;
+    }
+    float_literal_admissible(declared, expr, ctx)
+}
+
 /// The float literal carried by a numeric literal expression — `Expr::Float`
 /// directly, or the negated inner of `-3.25` (sign does not affect width
 /// exactness; the magnitude decides). 2026-09-02 (plan
@@ -2320,7 +2360,11 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
             // 2026-08-09 (Phase 12, SPEC §18.2): the meld admission is removed —
             // only an explicit coercion path admits the pair.
             // 2026-08-22 (Phase 3): a structural-sum parameter admits its members.
-            if !types_compatible(param_ty, &arg_ty, ctx) {
+            // 2026-11-22 (issues #153/#154/#155): one Float domain — the
+            // declared variant width wins and the width lane lands it.
+            if !types_compatible(param_ty, &arg_ty, ctx)
+                && !float_variant_admissible(param_ty, &arg_ty, arg, ctx)
+            {
                 let coercible = try_coerce_via_parse(arg, &arg_ty, param_ty, ctx);
                 if !coercible {
                     return Err(TypeError::TypeMismatch {
@@ -3054,7 +3098,14 @@ fn infer_variant_construction(
         if unify_free_params(pty, &aty, params.as_slice(), &mut subst) {
             continue;
         }
-        if !types_compatible(pty, &aty, ctx) && aty != *pty {
+        // 2026-11-22 (issues #153/#154/#155): a Float-category payload admits
+        // its narrow spellings — `FloatVal(1.25)` declares a Float64 payload
+        // but the literal types at the category base. The width lane lands
+        // the declared width at emission (see prime_float_literal_width).
+        if !types_compatible(pty, &aty, ctx)
+            && aty != *pty
+            && !float_variant_admissible(pty, &aty, a, ctx)
+        {
             return Err(TypeError::TypeMismatch {
                 expected: format!("{}", pty),
                 found: format!("{}", aty),
@@ -4770,6 +4821,16 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                         true
                     } else if types_compatible(declared, &inferred, ctx) {
                         true
+                    } else if expr.as_ref().is_some_and(|value_expr| {
+                        // 2026-11-22 (issues #153/#154/#155): a Float-typed
+                        // value (a call result, an arithmetic chain) bound to
+                        // a wider Float variant — the width lane lands the
+                        // declaration. Kept INSIDE the chain (not an `else
+                        // if let`) so the generic-constructor fallback below
+                        // still runs for every value-bearing let.
+                        float_variant_admissible(declared, &inferred, value_expr, ctx)
+                    }) {
+                        true
                     } else {
                         // 2026-07-31: `let lb: ListBuffer<Int> = ListBuffer {...}`
                         // — a generic-struct constructor infers the bare type; the
@@ -5137,7 +5198,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 if let Some(out) = &ctx.current_output_type {
                     // 2026-08-22 (Phase 3b): a structural-sum return admits
                     // its members (`term 7` inside `-> Int | String`).
-                    if !types_compatible(out, &vty, ctx) {
+                    if !types_compatible(out, &vty, ctx)
+                        && !float_variant_admissible(out, &vty, val, ctx)
+                    {
                         return Err(TypeError::TypeMismatch {
                             expected: format!("{}", out),
                             found: format!("{}", vty),
@@ -5153,7 +5216,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
         Statement::Tail(val) => {
             let vty = infer_type_only(val, ctx)?;
             if let Some(out) = &ctx.current_output_type {
-                if !types_compatible(out, &vty, ctx) {
+                if !types_compatible(out, &vty, ctx)
+                    && !float_variant_admissible(out, &vty, val, ctx)
+                {
                     return Err(TypeError::TypeMismatch {
                         expected: format!("{}", out),
                         found: format!("{}", vty),
@@ -9042,7 +9107,10 @@ fn resolve_method_call(
                     for (i, a) in args.iter().enumerate() {
                         let aty = infer_type_only(a, ctx)?;
                         let pty = &value_params[i].1;
-                        if !types_compatible(pty, &aty, ctx) && aty != *pty {
+                        if !types_compatible(pty, &aty, ctx)
+                            && aty != *pty
+                            && !float_variant_admissible(pty, &aty, a, ctx)
+                        {
                             return Err(TypeError::TypeMismatch {
                                 expected: format!("{}", pty),
                                 found: format!("{}", aty),
