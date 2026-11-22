@@ -3291,11 +3291,25 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                 .extend(crate::proof_engine::callgate::facts_of(cond));
             elaborate_stmts(body, ctx, errors);
             ctx.known_facts.truncate(base);
-            if ctx.in_defn
-                && crate::analysis::termination::stmts_end_defn(
-                    body,
-                    current_defn_post_is_vacuous(ctx),
+            // 2026-11-22 (wave-10, owner decision): `endprogram`/`trap`/
+            // `halt` are UNCONDITIONAL in any body — encountering them stops
+            // the program. Their guard therefore refines the fall-through in
+            // nodes and txns too. `term` (value or bare) stays defn-gated: a
+            // defn's term is gated by its postcondition (wave-8), and a
+            // node's bare `term;` is a convergence checkpoint that may
+            // continue — the boundary the term design draws stays intact.
+            let unconditional_exit = body.iter().any(|s| {
+                matches!(
+                    s,
+                    Statement::EndProgram(_) | Statement::Trap | Statement::Halt
                 )
+            });
+            if unconditional_exit
+                || (ctx.in_defn
+                    && crate::analysis::termination::stmts_end_defn(
+                        body,
+                        current_defn_post_is_vacuous(ctx),
+                    ))
             {
                 ctx.known_facts
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
@@ -5239,11 +5253,25 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // negation. This is the missing half of every recursive base case
             // (`when n == 0 { term 1; }; term pow2(n-1)*2;`). Defn context
             // only: a txn `term` is P-gated, not an unconditional return.
-            if ctx.in_defn
-                && crate::analysis::termination::stmts_end_defn(
-                    body,
-                    current_defn_post_is_vacuous(ctx),
+            // 2026-11-22 (wave-10, owner decision): `endprogram`/`trap`/
+            // `halt` are UNCONDITIONAL in any body — encountering them stops
+            // the program. Their guard therefore refines the fall-through in
+            // nodes and txns too. `term` (value or bare) stays defn-gated: a
+            // defn's term is gated by its postcondition (wave-8), and a
+            // node's bare `term;` is a convergence checkpoint that may
+            // continue — the boundary the term design draws stays intact.
+            let unconditional_exit = body.iter().any(|s| {
+                matches!(
+                    s,
+                    Statement::EndProgram(_) | Statement::Trap | Statement::Halt
                 )
+            });
+            if unconditional_exit
+                || (ctx.in_defn
+                    && crate::analysis::termination::stmts_end_defn(
+                        body,
+                        current_defn_post_is_vacuous(ctx),
+                    ))
             {
                 ctx.known_facts
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
@@ -10455,6 +10483,66 @@ defn peek(xs: List<Int>, i: Int) -> Int {
                 .any(|e| format!("{e:?}").contains("cannot be proven")),
             "names the fix: {errs:#?}"
         );
+    }
+
+    /// Stage C (wave-10): `endprogram` is UNCONDITIONAL (owner, 2026-11-21 —
+    /// "when it's encountered, the program stops"), so a guard body ending in
+    /// `endprogram` licenses `!cond` for the code after the guard in ANY body
+    /// kind — node included. Same for `trap;`. The wave-8 predicate
+    /// (`stmts_end_defn`) already counts both as exits; what was missing is
+    /// the node path using it. A bare `term;` in a node still licenses
+    /// nothing: it is a convergence checkpoint that may continue (the
+    /// boundary the term design draws stays intact).
+    #[test]
+    fn endprogram_guard_refines_node_fallthrough() {
+        let _deny = DenyGate::install();
+        check(
+            "defn needs(x: Int) [x >= 1][term >= 0] -> Int { term x; }; \
+             node n [beginprogram][true] { \
+                 let y: Int = get_env_int!(\"N\"); \
+                 when y < 1 { Print#(\"stall\"); endprogram Print#(\"\"); }; \
+                 Print#(needs(y) as String); \
+                 endprogram Print#(\"\"); \
+             };",
+        )
+        .expect("endprogram is unconditional, so y >= 1 holds after the guard");
+    }
+
+    /// `trap;` cannot fall through either — same refinement.
+    #[test]
+    fn trap_guard_refines_node_fallthrough() {
+        let _deny = DenyGate::install();
+        check(
+            "defn needs(x: Int) [x >= 1][term >= 0] -> Int { term x; }; \
+             node n [beginprogram][true] { \
+                 let y: Int = get_env_int!(\"N\"); \
+                 when y < 1 { trap; }; \
+                 Print#(needs(y) as String); \
+                 endprogram Print#(\"\"); \
+             };",
+        )
+        .expect("trap is unconditional, so y >= 1 holds after the guard");
+    }
+
+    /// A call inside a guard branch that ALWAYS exits cannot be observed on
+    /// the fall-through path, so it must not clear obj-field facts
+    /// established by earlier guards (issue #151, behaviour 3).
+    #[test]
+    fn diverging_branch_call_preserves_facts() {
+        let _deny = DenyGate::install();
+        check(
+            "obj Sock { fd: Int }; \
+             defn stall(x: Int) -> Int { term x; }; \
+             defn fill(s: Sock, b: Sock) [s.fd >= -4096 && b.fd >= -4096][true] -> Int { \
+                 term 0; \
+             }; \
+             defn use(a: Sock, b: Sock) -> Int { \
+                 when a.fd < 0 { term stall(1); }; \
+                 when b.fd < 0 { term stall(2); }; \
+                 term fill(a, b); \
+             };",
+        )
+        .expect("the second guard's call must not clear the first guard's fact");
     }
 
     /// A guard body ending in a bare `term;` licenses its negation when the
