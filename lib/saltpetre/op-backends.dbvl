@@ -1,0 +1,118 @@
+// op-backends.dbvl — per-op backend provenance for the saltpetre op surface.
+//
+// 2026-11-22 (plan 2026-11-22-saltpetre-op-backend-ledger.md): the per-op
+// retirement ledger. One row per op dispatched by `run_node` in
+// lib/saltpetre/exec.bv. The row states WHICH BACKEND serves the op and, when
+// that backend is a delegated one, the exact measurement that retires the
+// delegation.
+//
+// WHY THIS FILE EXISTS
+// --------------------
+// Saltpetre is the compat layer: today every op is Briev code (scalar CPU).
+// The destination is Briev-EMITTED codegen (`.abv` / `accel` nodes /
+// `attr declared_kind:` macros), per op, chosen by measurement. Without this
+// ledger "how much of the op surface is genuinely Briev" is unanswerable, and
+// a delegation could sit in the tree forever with nobody noticing.
+//
+// THE DOCTRINE BOUNDARY (why library FFI is allowed at all)
+// ---------------------------------------------------------
+// abv-gpu-doctrine.md §1.3 and
+// 2026-11-05-intel-xpu-openvino-harvest.md §1 guardrail 1 both forbid THE
+// COMPILER from delegating: "FFI lanes exist for users; they are not the
+// codegen path", and the vendor runtime "NEVER enters Briev's kernel path".
+// Neither forbids a LIBRARY from having an FFI arm — lib/std/ai/openvino.bv
+// exists under exactly that reading. The escape hatch is legitimate BECAUSE it
+// is temporary and tracked. That is what this file makes true:
+//
+//   every delegated row MUST name its `graduation` (the A/B that retires it),
+//   and a `briev` row may not secretly call FFI.
+//
+// BACKEND FORMS
+// -------------
+//   briev         — served by Briev code (scalar CPU now; Briev-emitted later)
+//   ffi(<lib>)    — delegated to a vendor OP-LEVEL lib (cublas, cudnn, onednn)
+//   model(<lib>)  — delegated to a MODEL-LEVEL runtime (openvino)
+//
+// A `briev` row uses `graduation: none;`. An `ffi(`/`model(` row with
+// `graduation: none;` is a build failure (tests/saltpetre_op_ledger.rs).
+//
+// GRADUATION FORM
+// ---------------
+//   graduation: <op> <shape> @ <device> vs <vendor> — <acceptance>;
+//
+// It must name a shape, a device, a competitor, and an acceptance criterion,
+// because a number only counts with a same-geometry correctness gate (house
+// benchmark rule). "faster later" is not a graduation.
+//
+// KEEPING THIS FILE HONEST
+// ------------------------
+// tests/saltpetre_op_ledger.rs is the gate. It cross-checks this file against
+// the actual `when node.op_type == "..."` arms in exec.bv in BOTH directions,
+// so neither an op nor a row can go missing silently. Adding an op to
+// run_node without a row here fails the build; adding a row for an op the
+// dispatcher does not have fails it too.
+
+// --- elementwise / unary ---------------------------------------------------
+
+op: Sign; backend: briev; impl: tensor_sign; graduation: none;
+op: Relu; backend: briev; impl: tensor_relu; graduation: none;
+op: Sqrt; backend: briev; impl: tensor_sqrt; graduation: none;
+op: Tanh; backend: briev; impl: tensor_tanh; graduation: none;
+op: Sigmoid; backend: briev; impl: tensor_sigmoid; graduation: none;
+op: Identity; backend: briev; impl: tensor_identity; graduation: none;
+
+// --- binary (all five share tensor_binary with an op code) ------------------
+
+op: Add; backend: briev; impl: tensor_binary; graduation: none;
+op: Sub; backend: briev; impl: tensor_binary; graduation: none;
+op: Mul; backend: briev; impl: tensor_binary; graduation: none;
+op: Div; backend: briev; impl: tensor_binary; graduation: none;
+op: Pow; backend: briev; impl: tensor_binary; graduation: none;
+
+// --- convolution (conv2d handles 2-D; conv1d the 1-D case) -----------------
+//
+// The first graduation candidate after Gemm: conv2d is the hot kernel in the
+// kiosk's YUNet path and the one with a measured ceil_* ceiling counterpart.
+
+op: Conv; backend: briev; impl: conv2d; graduation: none;
+
+// --- matrix multiply (the FIRST graduation candidate) ----------------------
+//
+// `matmul!` and `matmul_f16!` already exist in lib/std/numeric.bv with
+// `attr declared_kind: matmul`, and the .abv ceiling kernels
+// (benchmarks/intel_ptl/ceiling/ceil_gemm_*.abv) already measure the target.
+// Graduating Gemm therefore needs no new compiler machinery — only the A/B.
+
+op: Gemm; backend: briev; impl: gemm; graduation: none;
+
+// --- pooling ---------------------------------------------------------------
+
+op: MaxPool; backend: briev; impl: maxpool; graduation: none;
+
+// --- reductions ------------------------------------------------------------
+
+op: ReduceMean; backend: briev; impl: tensor_reduce_mean; graduation: none;
+op: GlobalAveragePool; backend: briev; impl: global_avg; graduation: none;
+
+// --- quantization ----------------------------------------------------------
+
+op: QuantizeLinear; backend: briev; impl: quantize_linear; graduation: none;
+op: DequantizeLinear; backend: briev; impl: dequantize_linear; graduation: none;
+
+// --- shape / layout --------------------------------------------------------
+
+op: Pad; backend: briev; impl: tensor_pad; graduation: none;
+op: Concat; backend: briev; impl: tensor_concat; graduation: none;
+op: Split; backend: briev; impl: split_into; graduation: none;
+op: Gather; backend: briev; impl: tensor_gather; graduation: none;
+op: Slice; backend: briev; impl: tensor_slice; graduation: none;
+op: Unsqueeze; backend: briev; impl: tensor_unsqueeze; graduation: none;
+op: Squeeze; backend: briev; impl: tensor_squeeze; graduation: none;
+op: Transpose; backend: briev; impl: transpose4; graduation: none;
+op: Resize; backend: briev; impl: resize_nearest; graduation: none;
+op: Reshape; backend: briev; impl: reshape; graduation: none;
+op: Flatten; backend: briev; impl: flatten; graduation: none;
+
+// --- normalization ---------------------------------------------------------
+
+op: BatchNormalization; backend: briev; impl: batchnorm; graduation: none;
