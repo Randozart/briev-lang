@@ -1242,6 +1242,12 @@ pub struct FunctionContext {
     /// Hidden hoisted sret slot parameter for the current tail-recursive
     /// defn, keyed by the sret callee.
     pub hoisted_sret_params: HashMap<String, String>,
+    /// 2026-11-22 (issue #153): the LLVM float width a LITERAL must be
+    /// encoded at, when the enclosing statement knows its declared type
+    /// (`let a: Float64 = 0.1`). Read-and-clear by the literal leaf
+    /// emitters, so a nested literal can never inherit an outer width by
+    /// accident. None ⇒ the binary32 default, i.e. the previous behaviour.
+    pub pending_float_width: Option<String>,
     /// Current defn when emitting a hoisted recursive body.
     pub tail_loop_fn: Option<String>,
     /// Direct self-tail-recursion lowering: current loop header and the
@@ -1585,6 +1591,7 @@ impl FunctionContext {
             object_sret_call_slot: None,
             destination_owner: None,
             hoisted_sret_params: HashMap::new(),
+            pending_float_width: None,
             tail_loop_fn: None,
             tail_loop_header: None,
             tail_param_slots: Vec::new(),

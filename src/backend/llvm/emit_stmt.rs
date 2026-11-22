@@ -1819,7 +1819,19 @@ pub(crate) fn emit_term_value_tail(
         // branches to post (convergence loop). The 'ret' is at done:.
         let val_ty = backend.llvm_type(&reg.ty);
         let store_name = if val_ty != backend.fun.fn_ret_ty {
-            if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
+            if let Some(op) = super::fp_cast_op(&val_ty, &backend.fun.fn_ret_ty) {
+                // 2026-11-22 (#153): a Float-category value at a different
+                // float width than the declared result — the typechecker
+                // admits the family, the width lane must land it.
+                let c = backend.fun.gen_reg();
+                writeln!(
+                    out,
+                    "{}{} = {} {} {} to {}",
+                    indent, c, op, val_ty, reg.name, backend.fun.fn_ret_ty
+                )
+                .ok();
+                c
+            } else if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
                 let c = backend.fun.gen_reg();
                 writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
                 c
@@ -1921,7 +1933,18 @@ pub(crate) fn emit_term_value_tail(
             // 2026-07-20: Insert type conversion when the expression type doesn't
             // match the function's declared return type (e.g., SysCall# returns i64
             // but function returns ptr → need inttoptr).
-            if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
+            if let Some(op) = super::fp_cast_op(&val_ty, &backend.fun.fn_ret_ty) {
+                // 2026-11-22 (#153): see the callable-txn site above — a
+                // Float-category return keeps its declared width.
+                let c = backend.fun.gen_reg();
+                writeln!(
+                    out,
+                    "{}{} = {} {} {} to {}",
+                    indent, c, op, val_ty, reg.name, backend.fun.fn_ret_ty
+                )
+                .ok();
+                c
+            } else if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
                 let c = backend.fun.gen_reg();
                 writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
                 c
@@ -4091,6 +4114,26 @@ fn emit_let_value(
     backend.emit_expr(out, e, indent)
 }
 
+/// 2026-11-22 (issue #153): the let-value funnel, width-primed. A literal
+/// bound to a declared float type is encoded at THAT width (see
+/// emit_float_literal_at) — a binary32 hop first would destroy mantissa
+/// bits no later widening recovers.
+fn emit_let_value_at(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    e: &Expr,
+    value: &LetValue<'_>,
+    declared: Option<&Type>,
+) -> TypedRegister {
+    backend.prime_float_literal_width(declared, e);
+    let reg = emit_let_value(backend, out, indent, e, value);
+    // Defensive: only a literal leaf consumes the prime, so clear whatever
+    // survived (a declined HIR operand path can skip the leaf entirely).
+    backend.fun.pending_float_width = None;
+    reg
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_let_statement(
     backend: &mut LlvmBackend,
@@ -4257,7 +4300,7 @@ pub(crate) fn emit_let_statement(
                     // constructs through `op Init` with the emitted
                     // register.
                     let briev = ty.cloned().unwrap_or(crate::ast::Type::int());
-                    let rhs = emit_let_value(backend, out, indent, e, value);
+                    let rhs = emit_let_value_at(backend, out, indent, e, value, ty);
                     let rhs_is_coll = {
                         let base = match &rhs.ty {
                             crate::ast::Type::Vector(inner, _) => match inner.as_ref() {
@@ -4286,7 +4329,7 @@ pub(crate) fn emit_let_statement(
             via_scaffolded_construction = constructed.is_some();
             let v = match constructed {
                 Some(v) => v,
-                None => emit_let_value(backend, out, indent, e, value),
+                None => emit_let_value_at(backend, out, indent, e, value, ty),
             };
             backend.fun.volatile_read = false;
             // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>`

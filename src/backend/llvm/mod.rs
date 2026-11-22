@@ -10490,6 +10490,15 @@ pub(crate) fn fp_width(llvm_ty: &str) -> Option<u32> {
     }
 }
 
+/// The bit width of an LLVM integer type string (`i8`/`i32`/`i64`), or `None`
+/// for anything else (`ptr`, `float`, aggregates). Twin of `fp_width` for the
+/// integer class: a landing conversion between two integer widths must be
+/// `sext`/`trunc`, which `bitcast` cannot express.
+pub(crate) fn int_width(llvm_ty: &str) -> Option<u32> {
+    let rest = llvm_ty.strip_prefix('i')?;
+    rest.parse::<u32>().ok()
+}
+
 /// The fp→fp conversion opcode for a width change, or `None` when the types are
 /// not both floating or the widths are equal (identity — emit nothing).
 pub(crate) fn fp_cast_op(src_ll: &str, dst_ll: &str) -> Option<&'static str> {
