@@ -1,0 +1,51 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// float64_precision — the binary64 seam (issues #153/#154/#155).
+//
+// A Float64 value must stay binary64 end to end: the decimal LITERAL is
+// encoded at the declared width in one step, the String door parses/formats
+// with the binary64 lanes, and a Float-family value is admitted where a
+// Float-category type is declared (the casting graph lands the width).
+//
+// Every line below printed a wrong number before the seam was closed:
+//   0.1 through the binary32 parser  -> 1000000014 after scaling by 1e10
+//   0.1 as a binary32 literal        -> 1000000014 after scaling by 1e10
+//   FloatVal(1.25) payload encoded as f32 -> the JSON encoder wrote 5.273
+//
+// The expected output is binary64 truth: 0.1 * 1e10 = 1000000000 exactly
+// (the double nearest 0.1 times the double 1e10 rounds to 1e9), and 1.25 is
+// exactly representable, so its %g rendering is "1.25".
+// spec: 8.2
+let done: Int = 0;
+
+defn wide() -> Float64 {
+    term 1.5;
+};
+
+node entry [done == 0][done == 1] {
+    // 1. String door: parse at binary64, scale, truncate to Int.
+    let parsed: Float64 = "0.1" as Float64;
+    Print#((parsed * 10000000000 as Float64) as Int as String);
+    Print#("|");
+
+    // 2. Literal at a declared width: the f32 hop would lose the mantissa.
+    let literal: Float64 = 0.1;
+    Print#((literal * 10000000000.0) as Int as String);
+    Print#("|");
+
+    // 3. Formatting door: one encoder per width, same %g contract.
+    Print#(1.25 as Float64 as String);
+    Print#("|");
+
+    // 4. A defn declared -> Float64 returning a category-typed value.
+    Print#(wide() as String);
+    Print#("|");
+
+    // 5. Round-trip through the binary64 parser preserves the value.
+    let back: Float64 = (1.25 as Float64 as String) as Float64;
+    Print#(back as String);
+
+    done = 1;
+    endprogram Print#("");
+};

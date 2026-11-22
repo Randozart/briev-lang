@@ -26,8 +26,10 @@ policy: deny;
 // that drive the reactor's blocking behaviour); hardening their call sites is
 // its own campaign. Exempting them is recorded here, announced on stderr on
 // every run that skips them, and removes nothing from any other root.
-// 2026-11-22 (wave-10): lib/saltpetre joins the exempt roots — the ONNX
-// operator family's bias-index convention (bias.n >= oc when has_bias) is a
-// real unproven boundary; hardening it is its own campaign. Announced on
-// every skip, same as the other roots.
-exempt: "tests/saltpetre, tests/fixtures/load, lib/saltpetre";
+// 2026-11-22 (wave-10): `lib/saltpetre` is NOT exempt. It was tentatively
+// listed this morning to get past an invalid-IR failure in its ONNX family;
+// the real defect was a width-illegal `bitcast`/`trunc` in the cast emitters,
+// and with that fixed the stdlib root proves under `deny` like every other
+// stdlib directory. Stdlib stays inside the gate — an exemption there would
+// silently drop the whole operator family out of verification.
+exempt: "tests/saltpetre, tests/fixtures/load";
