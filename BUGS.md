@@ -1,57 +1,100 @@
-## 2026-11-21 — The wave-8 contract tightening makes the kiosk daemon uncompilable (OPEN)
+## 2026-11-21 — The kiosk daemon's 41 refutations: two separate findings (CORRECTED 2026-11-22)
 
-`brievc build briev/service/daemon.bv` (briev-kiosk-avatar) fails with **41
-contract refutations** at trunk `3bf2fc375` (post-`81f1de8a5` wave-8 linear
-`term` + totality rules). Grouped: `tensor_get` ×17, `tensor_set` ×13,
-`sp_cached_model` ×3, `tensor_new` ×2, `sock_send`/`sock_recv`/
-`sock_connect_unix`/`sock_bind_listen_unix`/`buf_slice_string` ×1 each.
-Representative message:
+> **This entry was wrong in one important respect and right in another, and the
+> two were conflated. Both halves are recorded below; the original text follows
+> the correction for the record.**
+
+`brievc build briev/service/daemon.bv` (briev-kiosk-avatar) reports **41
+contract refutations** at trunk `3bf2fc375`/`0698324e7`. Grouped: `tensor_get`
+×17, `tensor_set` ×13, `sp_cached_model` ×3, `tensor_new` ×2, and ×1 each
+`sock_send`/`sock_recv`/`sock_connect_unix`/`sock_bind_listen_unix`/
+`buf_slice_string`. Representative message:
 
 ```
 invalid operation 'call to `tensor_get` — the precondition
 '((idx >= 0) && (idx < obt.n))' is not provable at this call site.
 ```
 
-**The regression is in trunk, not in the consumer.** Controlled A/B, same
-sources, same model, only the compiler differs:
+### Finding A (WRONG in the original): the A/B table's "0 errors" arm never passed
 
-| compiler | daemon build |
+The original entry compared `e1c016c97` ("0 errors, binary emitted") against
+`3bf2fc375` ("41 errors") and concluded "the regression is in trunk". The
+table is invalid: **the two arms differ by the call-site gate being
+installed**, not by wave-8's fact handling. `git merge-base --is-ancestor
+3db43e4c2 4caace291` → NO. `3db43e4c2` added `install_contract_policy`
+(`src/main.rs`) and `install_contract_gate_from_config` (`src/pipeline.rs:1028`),
+the two doors through which `config/contracts.dbvl:20` (`policy: deny;`) reaches
+the CLI. Before those doors existed the checker's gate was unreachable from
+`brievc build`, so **every** call site passed silently.
+
+That is not a theory; it is measurable. A provably **violated** contract — not
+an unproven one — is accepted by the pre-merge compiler:
+
+```briev
+defn f(x: Int) [x > 10][true] -> Int { term x; };
+defn use() -> Int { term f(1); };   // 1 > 10 is false: this call MUST be rejected
+```
+
+| compiler | `f(1)` against `[x > 10]` |
 |---|---|
-| `e1c016c97` (pre-wave-8) | 0 errors, binary emitted |
-| `3bf2fc375` (post-wave-8) | **41 errors, no binary** |
-| `3bf2fc375` with the K3 R2 ownership patch stashed | **41 errors** (unchanged) |
+| `4caace291` / `/var/tmp/briev-pin-target` | **exit 0, binary emitted — unsound** |
+| `3bf2fc375`, `0698324e7` (main) | `the contract is REFUTED at this call: '(1 > 10)'` |
 
-So the ownership work neither causes nor masks it. The failing shape, reduced
-to its minimal form:
+So "0 errors" at `e1c016c97` means "no call-site gate", not "clean program".
+Every 41-site comparison against a pre-`3db43e4c2` compiler is void. The
+`policy: deny` flip (`config/contracts.dbvl`, 2026-10-20) plus that installation
+is the rustc-lint precedent done correctly: a staged `allow → warn → deny`
+finally arriving at `deny`.
+
+### Finding B (RIGHT in the original, and still open): a provable fact is lost at a conditional join
+
+The original mechanism story survives an isolated test. On the **merged**
+compiler, two semantically identical shapes disagree:
 
 ```briev
 defn get(t: Int, i: Int) [i >= 0 && i < t][true] -> Int { term i; };
 defn chan(i: Int) [i >= 0][term >= 0 && term < 8] -> Int { term i % 8; };
-defn use(n: Int) -> Int {
-    let acc: Int = 0;
-    foreach i in 0..n {
-        let c: Int = 0;
-        when n > 1 { c = chan(i); };   // join {c = 0} with {c ∈ [0,8)}
-        acc = acc + get(8, c);        // c >= 0 && c < 8 NOT provable
-    };
-    term acc;
-};
+
+// A: direct — c gets 0 <= c < 8 from chan's postcondition; get(8, c) discharges.
+let c: Int = chan(i);
+
+// B: conditional reassignment — c is 0 on one path, chan(i) on the other.
+let c: Int = 0;
+when n > 1 { c = chan(i); };
 ```
 
-`4caace291` accepts this; `3bf2fc375` refutes it. Verified narrower: a DIRECT
-`let c: Int = chan(i)` is still accepted — only the **conditional
-reassignment join** loses the fact. So the wave-8 change dropped the fact
-join for a local assigned a provable value on one path and a call result on
-the other. The daemon's 41 sites are all this shape (`let c = 0; when … { c =
-axis_channel(…) }; tensor_get(scale, c)`).
+| shape | merged refutations | pre-merge |
+|---|---|---|
+| A — direct `let c = chan(i)` | **0** (proved) | 0 |
+| B — `let c = 0; when … { c = chan(i); }` | **1** (refuted) | 0 |
+| `foreach i in 0..n` extent after `List<Int>[n]` | 0 (proved) | 0 |
+| extent via a `r.Count#() == n` parameter fact | 0 (proved) | 0 |
+| `f(1)` vs `[x > 10]` (genuinely violated) | 1 (correctly refuted) | 0 (**unsound**) |
 
-Impact: the kiosk cannot re-pin past `4caace291` and cannot run any
-end-to-end measurement (soak, ASan, native smoke) against current trunk.
+Shape B is provable: `c ∈ {0} ∪ [0,8)` and `0 ∈ [0,8)`. The merged compiler
+loses the postcondition fact when a local is reassigned inside `when` and the
+branches merge, while the direct form keeps it. That is a genuine prover
+incompleteness — a bug worth fixing — and it is *independent* of Finding A.
 
-Not fixed here: the repair is the checker's fact join across `when`
-reassignment, not 41 daemon-side guards — adding guards would paper over a
-discharge the checker used to do. Tracked separately so the R2 ownership work
-can land on its own evidence.
+### What this means for the 41 sites (two repairs, not one)
+
+The 41 are a mix, and only measurement separates them:
+
+1. **Provable-but-lost-fact sites** (shape B). Repair = the prover's
+   conditional-join fact handling, in the compiler. Do not paper over these
+   with daemon guards: the checker proved them before and should again.
+2. **Genuinely unproven obligations.** Repair = honest daemon-side guards or
+   strengthened contracts. This is the kiosk's own work and belongs in the
+   kiosk repo, not here.
+
+What is NOT true is the original entry's framing that this is one trunk
+regression to be reverted, or that the ownership work is implicated (the
+original table's third row — "same 41 with the K3 R2 patch stashed" — remains
+valid and shows R2 is orthogonal).
+
+Impact unchanged: the kiosk cannot re-pin past `4caace291` until the shape-B
+prover gap is closed or the sites are classified and the second class guarded.
+
 
 ## 2026-11-20 — A diverging match arm killed the whole continuation (FIXED, wave-7 W7-1)
 
