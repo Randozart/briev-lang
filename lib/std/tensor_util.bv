@@ -1,0 +1,76 @@
+// tensor_util.bv — shape arithmetic and small float helpers over flat dims.
+//
+// 2026-11-22 (plan 2026-11-22-saltpetre-op-backend-ledger.md, S2): extracted
+// from lib/saltpetre, where these lived as private leaves. They carry no
+// `Tensor` dependency — they operate on `List<Int>` shapes and Floats — so
+// they belong on the compiler-owned floor (Rule 14: stdlib is the extension
+// mechanism; Rule 15: nothing here knows a specific type). Keeping them in
+// saltpetre meant an op could not be re-pointed at a different backend
+// without dragging shape arithmetic along with it.
+//
+// Bodies are byte-identical to their saltpetre originals: the op surface is
+// pinned bit-for-bit by tests/saltpetre_conformance.rs against ORT goldens, so
+// this move changes imports only, never arithmetic.
+
+// dims_product — the element count of a shape (row-major, order irrelevant
+// for a product). Empty dims is the scalar case: product 1, not 0, which is
+// what ONNX expects for a rank-0 tensor.
+defn dims_product(dims: List<Int>) -> Int {
+    let acc: Int = 1;
+    foreach i in 0..dims.Count#() {
+        acc = acc * dims[i];
+    };
+    term acc;
+};
+
+// strides_of — row-major strides for `dims`, in elements (not bytes).
+// Computed right-to-left: the last axis has stride 1, each earlier axis is the
+// product of everything to its right.
+defn strides_of(dims: List<Int>) -> List<Int> {
+    let rank: Int = dims.Count#();
+    let st: List<Int> = [];
+    foreach i in 0..rank { st <- 1; };
+    let acc: Int = 1;
+    foreach k in 0..rank {
+        let axis: Int = rank - 1 - k;
+        st[axis] = acc;
+        acc = acc * dims[axis];
+    };
+    term st;
+};
+
+// round_even — round half to EVEN (banker's rounding), the IEEE-754 default and
+// what ONNX's Round / quantize paths require. Deliberately NOT Floor#(v + 0.5),
+// which rounds halves up and is wrong for .5 cases.
+defn round_even(v: Float) -> Float {
+    let f: Float = Floor#(v);
+    let d: Float = v - f;
+    when d > 0.5 { term f + 1.0; };
+    when d < 0.5 { term f; };
+    let i: Int = f as Int;
+    when i % 2 == 0 { term f; };
+    term f + 1.0;
+};
+
+// pow_float — integer exponents by repeated multiplication (exact for small
+// negative/positive exponents, no libm), the 0.5 case by Sqrt#. Everything
+// else returns 0.0: a deliberately narrow, total function rather than a
+// vendor-matching `powf`, because ONNX Pow in the op surface only ever feeds
+// it integer exponents and 0.5 (the sqrt-of-variance path in normalization).
+defn pow_float(a: Float, b: Float) -> Float {
+    let bi: Int = b as Int;
+    let is_int: Bool = (bi as Float) == b;
+    when is_int && bi >= 0 {
+        let acc: Float = 1.0;
+        foreach i in 0..bi { acc = acc * a; };
+        term acc;
+    };
+    when is_int && bi < 0 {
+        let acc: Float = 1.0;
+        let n: Int = 0 - bi;
+        foreach i in 0..n { acc = acc * a; };
+        term 1.0 / acc;
+    };
+    when b == 0.5 { term Sqrt#(a); };
+    term 0.0;
+};

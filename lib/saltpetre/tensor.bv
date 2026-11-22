@@ -5,6 +5,12 @@
 // model weights/temporaries use owned Malloc blocks. Dims carry the logical
 // shape; kernels index flat and read shape as needed.
 
+// 2026-11-22 (op-backend ledger plan, S2): shape arithmetic and word decoding
+// are no longer defined here — they are Tensor-free leaves and now live on the
+// stdlib floor. See lib/std/tensor_util.bv and lib/std/bits.bv.
+import "std/tensor_util.bv";
+import "std/bits.bv";
+
 obj Tensor {
     name: String;
     dims: List<Int>;
@@ -65,14 +71,6 @@ defn tensor_alloc(n: Int) -> (Int, Bool) {
 
 defn tensor_alloc_owned(n: Int) -> Int {
     term Malloc#(n * 4) as Int;
-};
-
-defn dims_product(dims: List<Int>) -> Int {
-    let acc: Int = 1;
-    foreach i in 0..dims.Count#() {
-        acc = acc * dims[i];
-    };
-    term acc;
 };
 
 defn tensor_empty() -> Tensor {
@@ -182,24 +180,4 @@ defn tensor_byte_store(t: Tensor, at: Int, v: Int) -> Void {
     let base: Ptr<Bit<8>> = t.ptr as Ptr<Bit<8>>;
     base[at] = v as Bit<8>;
     term;
-};
-
-defn f32_from_bytes(bytes: String, off: Int) -> Float {
-    let buf: Int = Malloc#(8) as Int;
-    let base: Ptr<Bit<8>> = buf as Ptr<Bit<8>>;
-    foreach i in 0..4 {
-        base[i] = byte_at(bytes, off + i) as Bit<8>;
-    };
-    let fbase: Ptr<Float> = buf as Ptr<Float>;
-    let v: Float = fbase[0];
-    Free#(buf as Ptr<Bit<8>>);
-    term v;
-};
-
-defn int_from_bytes_le(bytes: String, off: Int, width: Int) -> Int {
-    let acc: Int = 0;
-    foreach i in 0..width {
-        acc = acc | (byte_at(bytes, off + i) << (8 * i));
-    };
-    term acc;
 };
