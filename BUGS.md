@@ -1,3 +1,69 @@
+## 2026-11-22 — a `defn` that creates, appends to and returns a `List<struct>` hands back a corrupt element store (OPEN)
+
+Found while building the P3 Gemm baseline fixture (plan
+`2026-11-22-saltpetre-gemm-graduation.md`, M1). The defect is in the shape of
+the *return*, not in the ONNX/saltpetre types it was first seen with.
+
+Repro A (segfault). A helper returning a list of structs:
+
+```briev
+defn mk_nodes() -> List<OnnxNode> {
+    let operand_names: List<String> = [];
+    operand_names <- "A";
+    let node: OnnxNode = OnnxNode { op_type: "Gemm", ins: operand_names, outs: y_names, attrs: no_attrs };
+    let nodes: List<OnnxNode> = [];
+    nodes <- node;
+    term nodes;
+};
+```
+
+called as `let nodes: List<OnnxNode> = mk_nodes();` from a node body → exit
+139 (SIGSEGV). gdb on the same program built through a `build_gemm_graph(b)`
+helper stops in `run_node ()` at `run_node+24: mov 0x10(%r14),%r12` with
+`r14 = 0x0` — the struct element was read through a null base, i.e. the
+returned list's element store pointer is dead, not shifted.
+
+Repro B (corrupt read, no crash). The read side alone is sound; it is the
+producer that is broken. Given a list built in the caller and appended in a
+callee, `nodes[0].op_type` / `nodes[0].ins[0]` read correctly.
+
+The boundary, measured (each point is a build+run that was observed):
+
+| shape | result |
+|---|---|
+| `List<OnnxNode>` created **and** appended **and** returned in the same `defn` | corrupt (repro A) |
+| `List<OnnxNode>` created in caller, appended in a **different** `defn`, returned | correct |
+| `List<OnnxNode>` created and appended in the **node body** (no `defn` boundary) | correct |
+| `List<Int>` / `List<String>` created, appended, returned in the same `defn` | correct (`Count#`/element read both exact) |
+
+So the surviving pattern — which the saltpetre parser already uses — is
+"create in one frame, grow in another" (`lib/saltpetre/onnx.bv`'s
+`parse_graph` creates `let nodes: List<OnnxNode> = [];` and `parse_graph_loop`
+appends, then returns the graph). That is why the tracked ONNX corpus never
+caught this: it never exercises the same-frame grow-and-return shape. Any
+`defn f() -> List<Struct>` written in the obvious way is silently a landmine;
+it crashes or returns garbage at the call site, with no diagnostic.
+
+Observed IR for the crashing helper:
+`define i64 @mk_nodes(ptr noundef dereferenceable(32) noalias nocapture align 8 %state)`
+reclamation-classified as `Mode::Barrier` (`%briev.region.saved = call ptr
+@__briev_region_suspend()` on entry, `@__briev_region_restore` on exit), the
+list handle from `__briev_region_malloc(i64 24)` with the element store from
+`__briev_region_malloc(i64 128)`, handle fields stored at offsets 0/8/16. The
+128-byte store for a list later holding 32-byte `OnnxNode` elements is the
+first thing to check (element-stride vs store-width), but the mechanism is
+**unconfirmed** — this entry records the shape, not a diagnosis.
+
+Why not fixed here: the work this was found in is a benchmark graduation whose
+invariants forbid touching the compiler (`src/**`, `lib/std/**`). The fixture
+was restructured to build its one-node graph inline in the node body, which is
+sound, and the measured run then produced `SALT_GEMM_BAD=0`.
+`tests/saltpetre/gemm_baseline.bv` carries a comment at that site pointing
+here. The codegen defect itself is open and wants its own fix plus a
+`List<struct>`-return test in the backend suite; until then the rule for
+authors is: grow a `List<struct>` in a callee, or grow it in the frame that
+consumes it — never grow and return it from the same `defn`.
+
 ## 2026-11-22 — `lib/std/encoding.bv` cannot be imported by anything that also uses `std/string` (OPEN, latent)
 
 Found while adding the op-backend ledger (plan
