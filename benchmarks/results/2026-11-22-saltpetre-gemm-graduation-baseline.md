@@ -134,7 +134,7 @@ BRIEV_PTL_SSH="ssh <user>@<host>" BRIEV_PTL_ENV="XDG_CACHE_HOME=/tmp/briev-cache
   bash benchmarks/intel_ptl/g0.sh
 ```
 
-## 4. Two harness defects found and fixed while measuring (not compiler changes)
+## 4. Three harness defects found and fixed while measuring (not compiler changes)
 
 Both are harness-only (invariant 7 untouched: no file under `src/` and no file under
 `lib/std/`).
@@ -158,6 +158,21 @@ Both are harness-only (invariant 7 untouched: no file under `src/` and no file u
    only when a `_BAD` line exists and disagrees. Same class as the rule this project
    already applies to device rows: an event that did not happen is recorded as
    unavailable-with-why, never as a pass and never as a failure.
+3. **The fixture gate raced itself under the project's own gate runner (CI).**
+   `tests/saltpetre_gemm_baseline.rs` memoised the compile-and-run in a `OnceLock`,
+   which is per *process*. Locally (`cargo test`, threads in one process) that is a
+   single build; in CI the runner is cargo-nextest, which executes every test in its
+   own process, so the file's two tests each built into the same `--out` directory
+   and one `remove_dir_all`'d the other's output between writing the `.ll` and
+   linking it. CI failed with `ld: cannot open output file
+   .../target/saltpetre-gemm-baseline/gemm_baseline: No such file or directory`
+   (run 45050623812), i.e. the *gate* was racing, not the fixture. Fixed with a
+   cross-process claim (atomic `create_dir`, released on drop, 300 s deadline) plus
+   a freshness check: the second process reuses the binary the first one produced
+   when it is newer than the `.bv`, so one compile per run and no shared-directory
+   window. Verified both ways: two tests in two processes → 14.6 s then 0.3 s
+   (reuse), 2/2 green under `cargo nextest run --release --test
+   saltpetre_gemm_baseline`.
 
 ## 5. What is not claimed
 

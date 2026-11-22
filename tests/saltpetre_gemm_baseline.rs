@@ -22,38 +22,103 @@ fn root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The fixture is compiled and run ONCE and shared: it is a timing probe, so
-/// two concurrent invocations would both corrupt the same output directory
-/// (`Text file busy`) and each pay the multi-second compile.
+/// The fixture is compiled and run ONCE and shared *within a process*: it is
+/// a timing probe, so two concurrent invocations would both corrupt the same
+/// output directory and each pay the multi-second compile.
 static FIXTURE: OnceLock<String> = OnceLock::new();
 
-/// Compile-and-run the fixture with the RELEASE brievc: the measurement is
-/// the point, so the debug binary is not acceptable.
+/// Cross-process exclusion around the fixture build, released on drop.
+struct FixtureLock {
+    dir: std::path::PathBuf,
+}
+
+impl Drop for FixtureLock {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.dir).ok();
+    }
+}
+
+/// Claim `dir` by atomic `create_dir`, waiting while another process holds it.
+///
+/// `OnceLock` memoises per PROCESS. That was enough locally but not in CI: the
+/// project's gate runner is cargo-nextest, which executes every test in its own
+/// process, so the two tests in this file each built into the same `--out`
+/// directory and one `remove_dir_all`'d the other's output between writing the
+/// `.ll` and linking it (`ld: cannot open output file .../gemm_baseline: No such
+/// file or directory`, CI run 45050623812). A directory is the portable atomic
+/// claim; the deadline turns a leaked claim into a loud failure, not a hang.
+fn claim(dir: &std::path::Path) -> FixtureLock {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        if std::fs::create_dir(dir).is_ok() {
+            return FixtureLock {
+                dir: dir.to_path_buf(),
+            };
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture lock {} held for over 300 s; remove it if no build is running",
+            dir.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// True when `bin` exists and is at least as new as `src`, so a binary left
+/// behind by an older fixture is never the thing measured.
+fn is_fresh(bin: &std::path::Path, src: &std::path::Path) -> bool {
+    let (Ok(bin_md), Ok(src_md)) = (std::fs::metadata(bin), std::fs::metadata(src)) else {
+        return false;
+    };
+    match (bin_md.modified(), src_md.modified()) {
+        (Ok(built), Ok(changed)) => built >= changed,
+        _ => false,
+    }
+}
+
+/// Compile-and-run the fixture: the measurement is the point, so the release
+/// brievc is required and the debug binary is not acceptable.
 fn run_fixture() -> &'static str {
     FIXTURE.get_or_init(|| {
         let root = root();
         let out_dir = root.join("target/saltpetre-gemm-baseline");
+        let bin = out_dir.join("gemm_baseline");
+        let src = root.join("tests/saltpetre/gemm_baseline.bv");
+        let _held = claim(&root.join("target/saltpetre-gemm-baseline.lock"));
+        if is_fresh(&bin, &src) {
+            return finish(
+                Command::new(&bin)
+                    .output()
+                    .expect("run the built gemm_baseline"),
+            );
+        }
         std::fs::remove_dir_all(&out_dir).ok();
-        let out = Command::new(root.join("target/release/brievc"))
-            .args([
-                "run",
-                "tests/saltpetre/gemm_baseline.bv",
-                "--stdlib-path",
-                "lib",
-                "--config-dir",
-                "config",
-                "--out",
-            ])
-            .arg(&out_dir)
-            .env("BRIEV_HOME", &root)
-            .current_dir(&root)
-            .output()
-            .expect("compile and run gemm_baseline.bv");
-        let text = String::from_utf8_lossy(&out.stdout).to_string()
-            + &String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success(), "fixture failed:\n{text}");
-        text
+        finish(
+            Command::new(root.join("target/release/brievc"))
+                .args([
+                    "run",
+                    "tests/saltpetre/gemm_baseline.bv",
+                    "--stdlib-path",
+                    "lib",
+                    "--config-dir",
+                    "config",
+                    "--out",
+                ])
+                .arg(&out_dir)
+                .env("BRIEV_HOME", &root)
+                .current_dir(&root)
+                .output()
+                .expect("compile and run gemm_baseline.bv"),
+        )
     })
+}
+
+/// Merge the two streams and refuse a non-zero exit, quoting the output.
+fn finish(out: std::process::Output) -> String {
+    let text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "fixture failed:\n{text}");
+    text
 }
 
 /// Invariants 1 and 2: the fixture runs clean, its sampled spot-check against

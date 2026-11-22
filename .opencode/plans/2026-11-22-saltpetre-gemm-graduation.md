@@ -117,6 +117,13 @@ baseline a `Gemm` graduation number requires, and give the ledger row's
   **DONE**: 512³ f32 → `SALT_GEMM_BAD=0`, `SALT_GEMM_SUM=131033.188`,
   `SALT_GEMM_CPU_US=319901` (319.9 ms, single-threaded scalar triple loop,
   ≈0.84 GFLOP/s), gated by `tests/saltpetre_gemm_baseline.rs`.
+  A second deviation was forced later by CI: the gate memoised the build in a
+  `OnceLock`, which is per *process*, and the project's gate runner is
+  cargo-nextest (one process per test) — so the file's two tests raced on one
+  `--out` directory and the linker lost it (`No such file or directory`, run
+  45050623812). The gate now takes a cross-process claim (atomic `create_dir`,
+  released on drop, 300 s deadline) and reuses the produced binary when it is
+  newer than the `.bv`: 14.6 s then 0.3 s, 2/2 under nextest.
 - **M2**: run the g0 rungs on PTL. **DONE**, with one environment deviation
   and one harness fix, both recorded:
   - **Deviation — the node's root filesystem is full.** PTL `/` sits at
