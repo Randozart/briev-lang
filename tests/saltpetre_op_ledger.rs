@@ -46,15 +46,19 @@ const EXTRACTED_HELPERS: &[&str] = &[
 const BACKEND_BRIEV: &str = "briev";
 /// A `briev` row's graduation is the literal `none` (nothing to retire).
 const GRADUATION_NONE: &str = "none";
+/// A `briev` row's graduation may instead be a `promote:` claim (see
+/// `lib/saltpetre/op-backends.dbvl` "GRADUATION FORMS").
+const GRADUATION_PROMOTE: &str = "promote: ";
 
 /// One ledger row: which backend serves an op, and how a delegated backend
-/// retires.
+/// retires (or, for a promoted `briev` row, the evidence that it holds its own).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Row {
     op: String,
     backend: String,
     imp: String,
     graduation: String,
+    evidence: String,
 }
 
 impl Row {
@@ -62,6 +66,26 @@ impl Row {
     fn is_delegated(&self) -> bool {
         self.backend.starts_with("ffi(") || self.backend.starts_with("model(")
     }
+
+    /// True when this row claims the op has been promoted to first-class Briev
+    /// code and holds its own on a measured shape.
+    fn is_promoted(&self) -> bool {
+        self.graduation.starts_with(GRADUATION_PROMOTE)
+    }
+}
+
+/// A `promote:` claim, split out of a `briev` row's graduation text.
+///
+/// Shape: `promote: <geometry> <dtype> @ <device> vs <vendor> <dtype> — ratio
+/// <= <N>, BAD=0, CANARY_BAD=0, compiled-on-vulkan;` with an `evidence:` field
+/// naming the results doc. Every piece is required because a promotion is a
+/// measured claim: without the shape it means nothing, without the competitor
+/// it means nothing, and without the evidence it cannot be re-read.
+#[derive(Debug)]
+struct Promotion {
+    geometry: String,
+    device: String,
+    bound: f64,
 }
 
 fn root() -> PathBuf {
@@ -88,6 +112,7 @@ fn parse_row(line: &str) -> Result<Row, String> {
     let mut backend = None;
     let mut imp = None;
     let mut graduation = None;
+    let mut evidence = None;
     for field in line.split(';') {
         let Some((key, value)) = field.split_once(':') else {
             continue;
@@ -98,6 +123,7 @@ fn parse_row(line: &str) -> Result<Row, String> {
             "backend" => backend = Some(value),
             "impl" => imp = Some(value),
             "graduation" => graduation = Some(value),
+            "evidence" => evidence = Some(value),
             other if !other.is_empty() => {
                 return Err(format!("unknown ledger field '{other}' in: {line}"));
             }
@@ -113,9 +139,86 @@ fn parse_row(line: &str) -> Result<Row, String> {
         backend,
         imp,
         graduation,
+        evidence: evidence.unwrap_or_default(),
     };
     validate_backend(&row)?;
+    validate_promotion(&row)?;
     Ok(row)
+}
+
+/// Parse the acceptance half of a `promote:` claim: the `ratio <= <N>` bound.
+fn promotion_bound(acceptance: &str) -> Result<f64, String> {
+    const TAG: &str = "ratio <= ";
+    let idx = acceptance
+        .find(TAG)
+        .ok_or_else(|| "promotion has no `ratio <= <N>` acceptance bound".to_string())?;
+    let rest = &acceptance[idx + TAG.len()..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(rest.len());
+    rest[..end]
+        .parse::<f64>()
+        .map_err(|e| format!("promotion bound '{rest}' is not a number: {e}"))
+}
+
+/// Split a `promote:` graduation into its measured shape, device and bound.
+///
+/// Errors (rather than defaults) on every missing part: a promotion that does
+/// not say where it was measured is not a claim this project can check.
+fn parse_promotion(graduation: &str) -> Result<Promotion, String> {
+    let body = graduation
+        .strip_prefix(GRADUATION_PROMOTE)
+        .ok_or_else(|| "not a promotion".to_string())?;
+    let (head, acceptance) = body
+        .split_once(" \u{2014} ")
+        .ok_or_else(|| format!("promotion '{body}' names no acceptance after an em dash"))?;
+    let (geometry, rest) = head
+        .split_once(" @ ")
+        .ok_or_else(|| format!("promotion '{head}' names no `@ <device>`"))?;
+    let (device, _vendor) = rest
+        .split_once(" vs ")
+        .ok_or_else(|| format!("promotion '{rest}' names no `vs <vendor>` competitor"))?;
+    // Compare acceptance tokens exactly. A substring test is not enough:
+    // `CANARY_BAD=0` contains `BAD=0`, so a claim that dropped the primary
+    // correctness token would still pass. The canary test pins this.
+    let tokens: Vec<&str> = acceptance.split(',').map(str::trim).collect();
+    for gate in ["BAD=0", "CANARY_BAD=0", "compiled-on-vulkan"] {
+        if !tokens.contains(&gate) {
+            return Err(format!(
+                "promotion acceptance '{acceptance}' omits the `{gate}` token — a promoted 
+                 number must carry the same-geometry correctness gate that produced it"
+            ));
+        }
+    }
+    Ok(Promotion {
+        geometry: geometry.trim().to_string(),
+        device: device.trim().to_string(),
+        bound: promotion_bound(acceptance)?,
+    })
+}
+
+/// Only a `briev` row can be promoted, and it must name its evidence doc.
+fn validate_promotion(row: &Row) -> Result<(), String> {
+    if !row.is_promoted() {
+        return Ok(());
+    }
+    if row.backend != BACKEND_BRIEV {
+        return Err(format!(
+            "op '{}' claims `promote:` while its backend is '{}' — promotion means the op IS \
+             Briev code; a delegated row is retired by its own `graduation`, not promoted",
+            row.op, row.backend
+        ));
+    }
+    parse_promotion(&row.graduation).map_err(|e| format!("op '{}': {e}", row.op))?;
+    let path = root().join(&row.evidence);
+    if row.evidence.is_empty() || !path.is_file() {
+        return Err(format!(
+            "op '{}' claims `promote:` but its `evidence:` field names no readable results doc \
+             ('{}') — a promotion without committed evidence is a memory",
+            row.op, row.evidence
+        ));
+    }
+    Ok(())
 }
 
 /// Reject a backend form we do not recognise, and enforce the graduation rule
@@ -325,6 +428,105 @@ fn validate_census(rows: &[Row], recorded: (usize, usize, usize)) -> Result<(), 
     Ok(())
 }
 
+/// Read the `key=value` gate record out of a results doc.
+///
+/// The record is the fenced block that starts with `saltpetre_op=`, so the doc
+/// itself decides which lines the gate reads: editing prose cannot move a number
+/// out from under the check, and a claim cannot be restated in words the gate
+/// does not parse.
+fn gate_record(doc: &str) -> Result<Vec<(String, String)>, String> {
+    let lines: Vec<&str> = doc.lines().map(str::trim).collect();
+    let start = lines
+        .iter()
+        .position(|l| l.starts_with("saltpetre_op="))
+        .ok_or_else(|| "results doc has no `saltpetre_op=` gate record block".to_string())?;
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in &lines[start..] {
+        if *line == "```" {
+            break;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.is_empty() || value.is_empty() {
+            continue;
+        }
+        out.push((key.to_string(), value.to_string()));
+    }
+    Ok(out)
+}
+
+/// Look up one textual field of a gate record.
+fn gate_token<'a>(block: &'a [(String, String)], key: &str) -> Result<&'a str, String> {
+    block
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+        .ok_or_else(|| format!("gate record has no `{key}` figure"))
+}
+
+/// Look up one numeric field of a gate record.
+fn gate_number(block: &[(String, String)], key: &str) -> Result<f64, String> {
+    let raw = gate_token(block, key)?;
+    raw.parse::<f64>()
+        .map_err(|e| format!("gate record `{key}` = '{raw}' is not a number: {e}"))
+}
+
+/// Cross-check a promotion against its evidence doc: same op, same shape, same
+/// device, gates observed, and a measured ratio that actually satisfies the
+/// claimed bound. The ratio is recomputed from the two p50s rather than trusted
+/// from the doc's own `ratio_vs_openvino`, so the doc cannot round its own way
+/// into a tighter claim.
+fn cross_check_evidence(row: &Row, promo: &Promotion, doc: &str) -> Result<(), String> {
+    let block = gate_record(doc)?;
+    let same_shape = format!("{}", promo.geometry.replace(' ', "-"));
+    for (key, want) in [
+        ("saltpetre_op", row.op.as_str()),
+        ("geometry", same_shape.as_str()),
+        ("device", promo.device.as_str()),
+        ("BAD", "0"),
+        ("CANARY_BAD", "0"),
+        ("COMPILED_ON_VULKAN", "1"),
+    ] {
+        let got = gate_token(&block, key)?;
+        if got != want {
+            return Err(format!(
+                "{}: row '{}' claims {key}={want} but its evidence says {key}={got}",
+                row.evidence, row.op
+            ));
+        }
+    }
+    let within = gate_number(&block, "within")?;
+    if (within - promo.bound).abs() > f64::EPSILON {
+        return Err(format!(
+            "op '{}': row claims `ratio <= {:.1}` but the evidence was accepted at {within} — \
+             a bound tightened in the ledger without re-measuring is a false claim",
+            row.op, promo.bound
+        ));
+    }
+    let briev_us = gate_number(&block, "briev_gpu_p50_us")?;
+    let vendor_us = gate_number(&block, "openvino_gpu_p50_us")?;
+    if vendor_us <= 0.0 {
+        return Err(format!("op '{}': vendor p50 must be positive", row.op));
+    }
+    let measured = briev_us / vendor_us;
+    let recorded = gate_number(&block, "ratio_vs_openvino")?;
+    if (measured - recorded).abs() > 0.02 {
+        return Err(format!(
+            "{}: `ratio_vs_openvino={recorded}` does not follow from {briev_us}/{vendor_us} \
+             = {measured:.2}",
+            row.evidence
+        ));
+    }
+    if measured > promo.bound {
+        return Err(format!(
+            "op '{}': measured ratio {measured:.2}x at {} exceeds the claimed bound {:.1}x",
+            row.op, promo.geometry, promo.bound
+        ));
+    }
+    Ok(())
+}
+
 /// Whole-surface check: ledger parses, covers the dispatcher, names real impls,
 /// and keeps `briev` rows free of FFI.
 fn validate_surface(
@@ -376,6 +578,113 @@ fn delegated_ops_name_their_graduation() {
             row.backend
         );
     }
+}
+
+/// Every `promote:` row must be a well-formed, backed claim (invariant 9): a
+/// shape, a device, a competitor, the correctness tokens, and an evidence doc
+/// that exists. Mutations of each of those are rejected in the canary below.
+#[test]
+fn briev_rows_carry_promotion_specs() {
+    let rows = parse_ledger(&read(LEDGER)).expect("ledger parses");
+    let promoted: Vec<&Row> = rows.iter().filter(|r| r.is_promoted()).collect();
+    assert!(
+        !promoted.is_empty(),
+        "no `promote:` row in {LEDGER} — the first graduation (Gemm) must be recorded, \
+         otherwise promotion status lives only in a plan document"
+    );
+    for row in promoted {
+        let promo =
+            parse_promotion(&row.graduation).unwrap_or_else(|e| panic!("op '{}': {e}", row.op));
+        assert!(
+            promo.bound > 0.0,
+            "op '{}': promotion bound must be positive",
+            row.op
+        );
+        assert!(
+            !row.evidence.is_empty(),
+            "op '{}': promotion names no evidence doc",
+            row.op
+        );
+    }
+}
+
+/// The promotion numbers must still be the measured ones: the results doc is
+/// re-read and the ratio recomputed from its p50s (invariant 9).
+#[test]
+fn results_doc_has_gated_numbers() {
+    let rows = parse_ledger(&read(LEDGER)).expect("ledger parses");
+    for row in rows.iter().filter(|r| r.is_promoted()) {
+        let promo =
+            parse_promotion(&row.graduation).unwrap_or_else(|e| panic!("op '{}': {e}", row.op));
+        let doc = read(&row.evidence);
+        cross_check_evidence(row, &promo, &doc)
+            .unwrap_or_else(|e| panic!("promotion evidence mismatch: {e}"));
+    }
+}
+
+/// The promotion gate must be observed failing (canary discipline) — a gate
+/// that has never failed is a gate you do not know works.
+#[test]
+fn gate_rejects_bad_promotions() {
+    let good = "promote: 512^3 f32 @ PTL-Xe3-vulkan vs openvino f32 — ratio <= 2.0, \
+                BAD=0, CANARY_BAD=0, compiled-on-vulkan";
+    let promo = parse_promotion(good).expect("the shipped form parses");
+    assert_eq!(promo.geometry, "512^3 f32");
+    assert_eq!(promo.device, "PTL-Xe3-vulkan");
+    assert!((promo.bound - 2.0).abs() < 1e-9);
+
+    for bad in [
+        "promote: 512^3 f32 vs openvino f32 — ratio <= 2.0, BAD=0, CANARY_BAD=0, compiled-on-vulkan",
+        "promote: 512^3 f32 @ PTL vs openvino — BAD=0, CANARY_BAD=0, compiled-on-vulkan",
+        "promote: 512^3 f32 @ PTL vs openvino — ratio <= 2.0, CANARY_BAD=0, compiled-on-vulkan",
+        "promote: 512^3 f32 @ PTL vs openvino — ratio <= 2.0, BAD=0, compiled-on-vulkan",
+        "promote: 512^3 f32 @ PTL vs openvino — ratio <= 2.0, BAD=0, CANARY_BAD=0, timeout",
+    ] {
+        assert!(
+            parse_promotion(bad).is_err(),
+            "a promotion missing a shape/device/competitor/gate token must be rejected: {bad}"
+        );
+    }
+
+    // A delegated row cannot be "promoted": promotion means the op IS Briev code.
+    let delegated = Row {
+        op: "Gemm".into(),
+        backend: "ffi(cublas)".into(),
+        imp: "gemm".into(),
+        graduation: good.into(),
+        evidence: String::new(),
+    };
+    let err = validate_promotion(&delegated).expect_err("a delegated promotion must be rejected");
+    assert!(err.contains("Briev code"), "unexpected error: {err}");
+
+    // And a promotion with no committed evidence is a memory, not a claim.
+    let unbacked = Row {
+        op: "Gemm".into(),
+        backend: BACKEND_BRIEV.into(),
+        imp: "gemm".into(),
+        graduation: good.into(),
+        evidence: "benchmarks/results/does-not-exist.md".into(),
+    };
+    let err = validate_promotion(&unbacked).expect_err("missing evidence must be rejected");
+    assert!(err.contains("evidence"), "unexpected error: {err}");
+
+    // A doc whose own ratio exceeds the claimed bound must be refused, and so
+    // must a bound tightened in the ledger without re-measuring.
+    let doc = read("benchmarks/results/2026-11-22-saltpetre-gemm-graduation-baseline.md");
+    let row = Row {
+        op: "Gemm".into(),
+        backend: BACKEND_BRIEV.into(),
+        imp: "gemm".into(),
+        graduation: good.into(),
+        evidence: "benchmarks/results/2026-11-22-saltpetre-gemm-graduation-baseline.md".into(),
+    };
+    cross_check_evidence(&row, &promo, &doc).expect("the shipped evidence matches its claim");
+
+    let tighter = parse_promotion(&good.replace("ratio <= 2.0", "ratio <= 0.5"))
+        .expect("the form still parses");
+    let err = cross_check_evidence(&row, &tighter, &doc)
+        .expect_err("a bound tighter than the measurement must be refused");
+    assert!(err.contains("ratio"), "unexpected error: {err}");
 }
 
 #[test]
@@ -456,6 +765,7 @@ fn gate_rejects_bad_ledgers() {
         backend: BACKEND_BRIEV.into(),
         imp: "gemm".into(),
         graduation: GRADUATION_NONE.into(),
+        evidence: String::new(),
     }];
     let dispatched = vec!["Gemm".to_string(), "Conv".to_string()];
     let err = validate_coverage(&rows, &dispatched).expect_err("Conv must be reported missing");
@@ -468,6 +778,7 @@ fn gate_rejects_bad_ledgers() {
             backend: BACKEND_BRIEV.into(),
             imp: "gemm".into(),
             graduation: GRADUATION_NONE.into(),
+            evidence: String::new(),
         },
     ];
     let err = validate_coverage(&extra, &["Gemm".to_string()]).expect_err("Ghost is an orphan");

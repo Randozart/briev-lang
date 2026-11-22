@@ -33,16 +33,31 @@
 //   ffi(<lib>)    — delegated to a vendor OP-LEVEL lib (cublas, cudnn, onednn)
 //   model(<lib>)  — delegated to a MODEL-LEVEL runtime (openvino)
 //
-// A `briev` row uses `graduation: none;`. An `ffi(`/`model(` row with
-// `graduation: none;` is a build failure (tests/saltpetre_op_ledger.rs).
+// A `briev` row carries `graduation: none;` while the op makes no performance
+// claim. An `ffi(`/`model(` row with `graduation: none;` is a build failure
+// (tests/saltpetre_op_ledger.rs).
 //
-// GRADUATION FORM
-// ---------------
-//   graduation: <op> <shape> @ <device> vs <vendor> — <acceptance>;
+// GRADUATION FORMS
+// ----------------
+//   ffi(/model( rows:  graduation: <op> <shape> @ <device> vs <vendor> — <acceptance>;
+//   briev rows:        graduation: none;                                    (no claim)
+//                      graduation: promote: <shape> <dtype> @ <device> vs <vendor> <dtype>
+//                                  — ratio <= <N>, BAD=0, CANARY_BAD=0, compiled-on-vulkan;
+//                                  evidence: benchmarks/results/<doc>.md;
 //
-// It must name a shape, a device, a competitor, and an acceptance criterion,
-// because a number only counts with a same-geometry correctness gate (house
-// benchmark rule). "faster later" is not a graduation.
+// A delegated row must name a shape, a device, a competitor, and an acceptance
+// criterion, because a number only counts with a same-geometry correctness gate
+// (house benchmark rule). "faster later" is not a graduation.
+//
+// `promote:` (2026-11-22, plan 2026-11-22-saltpetre-gemm-graduation.md) is the
+// other direction: the op already IS Briev code and the claim is that it now
+// holds its own against the vendor on a measured shape. Promotion is what moves
+// an op out of "compat layer" status, so it is a claim with evidence, not a
+// mood — the `evidence:` doc is parsed by the gate, which recomputes the ratio
+// from the p50s recorded there and refuses the row if the claim is bigger than
+// what was measured. One gate token is deliberately spelled
+// `compiled-on-vulkan`: a device-lane number whose kernel did not compile on the
+// device is a CPU number wearing a device label.
 //
 // KEEPING THIS FILE HONEST
 // ------------------------
@@ -83,7 +98,15 @@ op: Conv; backend: briev; impl: conv2d; graduation: none;
 // (benchmarks/intel_ptl/ceiling/ceil_gemm_*.abv) already measure the target.
 // Graduating Gemm therefore needs no new compiler machinery — only the A/B.
 
-op: Gemm; backend: briev; impl: gemm; graduation: none;
+// 2026-11-22 (P3, first graduation): promoted on a same-geometry, correctness-
+// gated comparison at 512x512x512 f32 on PTL's Xe3 X7 358H iGPU. Device lane
+// 0.36 ms median (0.235-0.371 over 6 runs) vs OpenVINO 2026.3.1 f32 0.481 ms
+// p50, measured ratio 0.74x; the bound is stated as 2.0x because the two numbers
+// are not identical units (Briev reports kernel time, OpenVINO a whole
+// compiled-model call), so the tighter 0.74x is not the claim this row makes.
+// Evidence, including both caveats and what is NOT claimed:
+// benchmarks/results/2026-11-22-saltpetre-gemm-graduation-baseline.md.
+op: Gemm; backend: briev; impl: gemm; graduation: promote: 512^3 f32 @ PTL-Xe3-vulkan vs openvino f32 — ratio <= 2.0, BAD=0, CANARY_BAD=0, compiled-on-vulkan; evidence: benchmarks/results/2026-11-22-saltpetre-gemm-graduation-baseline.md;
 
 // --- pooling ---------------------------------------------------------------
 

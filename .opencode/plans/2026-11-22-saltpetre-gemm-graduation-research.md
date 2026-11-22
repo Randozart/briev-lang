@@ -68,7 +68,7 @@ separate architectural piece (P4, own plan). What P3 delivers:
 
 ## 5. Proposed steps
 
-- **M1 (repo)**: `benchmarks/intel_ptl/salt_gemm_cpu.bv` — one-Gemm-node
+- **M1 (repo)**: `tests/saltpetre/gemm_baseline.bv` — one-Gemm-node (moved out of `benchmarks/intel_ptl/` when landing: a `.bv` probe must sit under the recorded contract-gate exemption root `tests/saltpetre`, not the benchmarks tree)
   graph through saltpetre's session API, g0_gemm's exact input formula
   (same geometry, comparable sums), `std/os/time.bv` wall clock. Run locally
   → record.
