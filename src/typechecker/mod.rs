@@ -1627,6 +1627,26 @@ pub fn infer_expression(
             }
             let (recv_ty, recv_prov) = infer_expression(recv, ctx)?;
             let result_ty = resolve_reflect(&recv_ty, target, *kind, ctx)?;
+            // 2026-11-22 (wave-10): a stored header read is NON-NEGATIVE by
+            // construction (SPEC §17.1 — the [len] prefix, the element count).
+            // Recording it as a fact lets `(text^^Length) / 4 >= 0` discharge
+            // without an assertion at every call site, the same way
+            // `initializer_fact` lets a `let` carry its sign. Length/Ptr/Ready
+            // only — the folded type facts (Size/Bytes/Type/Element) are
+            // compile-time and never become runtime facts here.
+            if matches!(target.as_str(), "Length" | "Ptr" | "Ready") {
+                if let Expr::Identifier(v) = recv.as_ref() {
+                    ctx.known_facts.push(Expr::BinaryOp(
+                        crate::ast::BinaryOpKind::Ge,
+                        Box::new(Expr::Reflect(
+                            Box::new(Expr::Identifier(v.clone())),
+                            target.clone(),
+                            *kind,
+                        )),
+                        Box::new(Expr::Decimal(0)),
+                    ));
+                }
+            }
             Ok((result_ty, recv_prov))
         }
         // 2026-07-31: Method call: a.m(args) — resolves the member on the
@@ -4143,6 +4163,36 @@ fn call_site(
     }
 }
 
+/// Collect the identifiers REASSIGNED anywhere in a statement list (the
+/// assignment targets of `Assign`, recursively through guards/blocks/bodies).
+/// The fact-join needs to know which variables a guard body may have rewritten.
+fn collect_reassigned_idents(stmt: &Statement, out: &mut Vec<String>) {
+    match stmt {
+        Statement::Assign(lhs, _) => { if let Expr::Identifier(v) = lhs {
+            if !out.iter().any(|n| n == v) {
+                out.push(v.clone());
+            }
+            }
+        }
+        Statement::Guarded(_, body) => {
+            for s in body {
+                collect_reassigned_idents(s, out);
+            }
+        }
+        Statement::Block(body) | Statement::SyncBlock(body) | Statement::Defer(body) => {
+            for s in body {
+                collect_reassigned_idents(s, out);
+            }
+        }
+        Statement::Foreach { body, .. } => {
+            for s in body {
+                collect_reassigned_idents(s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn record_component_post_facts(expr: Option<&Expr>, names: &[String], ctx: &mut TypecheckContext) {
     let Some((contract, args)) = expr.and_then(|e| call_site(e, ctx)) else {
         return;
@@ -4784,6 +4834,15 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                     {
                         ctx.known_facts.push(f);
                     }
+                    // 2026-11-22 (wave-10, the fact-join fix): `v = f(...)` must
+                    // carry f's POSTCONDITION onto `v` — the same projection
+                    // `let v = f(...)` has always done. Without it, a variable
+                    // assigned a contracted call result inside a guard body
+                    // loses every fact at the join: the killer removed the old
+                    // value's facts and nothing re-established the new one, so
+                    // the code after the guard could not prove anything about
+                    // it (BUGS.md 2026-11-21, the kiosk's 41 refutations).
+                    record_call_post_facts(Some(rhs), v, ctx);
                 }
             }
             // 2026-08-09 (init kind, Phase 2): an `init` is seeded exactly once
@@ -5141,8 +5200,38 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             let established = crate::proof_engine::callgate::facts_of(cond);
             let base = ctx.known_facts.len();
             ctx.known_facts.extend(established);
+            // 2026-11-22 (wave-10, the fact-join fix): a variable REASSIGNED
+            // inside the guard body leaves the body carrying facts that hold on
+            // BOTH paths — the reassignment happened whenever the guard was
+            // true, and the pre-guard value's facts hold whenever it was false.
+            // The killer in the Assign arm removes the old value's facts at the
+            // reassignment site, so whatever SURVIVED the body walk for that
+            // variable is body-derived and join-valid. Capture it before the
+            // truncate drops it.
+            let mut join_facts: Vec<Expr> = Vec::new();
+            let mut reassigned: Vec<String> = Vec::new();
             for stmt in body {
+                collect_reassigned_idents(stmt, &mut reassigned);
                 infer_statement(stmt, ctx)?;
+            }
+            // Snapshot AFTER the walk (nested guards may have grown AND shrunk
+            // the stack; `base` may even exceed the current length). The join
+            // takes body-window facts that survived: they were derived inside
+            // the guard, so they hold on the fall-through path too.
+            let body_facts: Vec<Expr> = ctx
+                .known_facts
+                .iter()
+                .skip(base.min(ctx.known_facts.len()))
+                .cloned()
+                .collect();
+            for v in &reassigned {
+                for f in &body_facts {
+                    if crate::proof_engine::callgate::mentions(f, v)
+                        && !join_facts.iter().any(|j| j == f)
+                    {
+                        join_facts.push(f.clone());
+                    }
+                }
             }
             ctx.known_facts.truncate(base);
             // 2026-10-20 (bucket 2): when the guard body ALWAYS returns, the
@@ -5159,6 +5248,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 ctx.known_facts
                     .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
             }
+            // The join: body-derived facts about reassigned variables hold on
+            // both paths (see the capture above), so they survive the guard.
+            ctx.known_facts.extend(join_facts);
             Ok(())
         }
         Statement::Gate(cond) => {
