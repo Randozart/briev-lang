@@ -1,0 +1,54 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// nested_local_dominance — a local declared before a loop, written under a
+// guard inside that loop, and read after the loop.
+//
+// The read must see the written value on a hit, and the DECLARED value on a
+// full miss. Both halves matter: this shape used to emit the local's slot at
+// the assignment site (inside the guard), so the slot was out of dominance at
+// the read and unseeded on every path that skipped the guard.
+//
+// The grey area is a collection member body: `HashMap.get` is inlined at the
+// call site, so its `let r: V = 0 as V;` local is not part of the caller's
+// syntax tree. The fixture therefore drives the real `get` twice — once that
+// hits, once that misses — rather than only testing a hand-written loop.
+//
+// spec: 16.3
+import { HashMap } from "std/collections.bv";
+
+let m: HashMap<Int, Int> = 32;
+let done: Bool = false;
+
+test a_local_written_under_a_guard_keeps_its_declared_value_on_a_miss {
+    let r: Int = 0;
+    foreach q in 0..4 {
+        when q == 99 {
+            r = q;
+            break;
+        };
+    };
+    expect r == 0;
+};
+
+test a_local_written_under_a_guard_holds_the_written_value {
+    let r: Int = 0;
+    foreach q in 0..4 {
+        when q == 2 {
+            r = q;
+            break;
+        };
+    };
+    expect r == 2;
+};
+
+node go [done == false][done == true] {
+    when done == false {
+        println!(m.Count#());
+        m.insert((1, 7));
+        println!(m.get(1));
+        println!(m.get(99));
+        done = true;
+    };
+    term;
+};

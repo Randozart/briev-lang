@@ -1,3 +1,44 @@
+## 2026-11-23 — a collection txn/member inlined in a node body can swallow the node's output (OPEN, pre-existing)
+
+Found while shaping the #152 regression fixture. Independent of #152: it
+reproduces on the 2026-11-21 binary, before any of this batch's changes.
+
+Two observable shapes, both with a top-level `let m: HashMap<Int, Int> = 32;`:
+
+1. **Silent node.** A node whose guarded block starts with `m.insert((1, 7))`
+   and then prints prints NOTHING and exits 0:
+
+   ```briev
+   node go [done == false][done == true] {
+       when done == false {
+           m.insert((1, 7));
+           println!(m.get(1));
+           println!(m.get(99));
+           done = true;
+       };
+       term;
+   };
+   ```
+
+   The emitted `.ll` is complete and correct (both `print_int` calls, the
+   `member.exit` blocks, `store done = 1`), so the loss is at run time. Adding
+   ANY statement that consumes stdout BEFORE the insert (`println!(42)`,
+   `println!(m.Count#())`) makes the same program print `7` and `0` correctly.
+   A leading print is therefore load-bearing, which points at the stdout/region
+   flush path being skipped when the first thing a firing does is enter an
+   inlined txn.
+
+2. **Abort 232.** `m.insert((1, 7))` as the first statement, followed by
+   `endprogram 0` in the same block, exits 232 with no output; so does a local
+   `let m: HashMap<Int, Int> = 32;` inside a `[beginprogram]` node that inserts
+   and reads. Same on the 2026-11-21 binary.
+
+Not fixed here: it is a distinct defect from #152's dominance failure, and the
+fixture for #152 is written in a shape that avoids it (a `println!(m.Count#())`
+header before the insert) so the golden pins dominance, not this. Recorded
+rather than deferred silently — the next pass to touch inlined-txn entry into a
+node body should start here.
+
 ## 2026-11-23 — c_driver gates race their own temp dirs under parallel/ concurrent full gates (FIXED)
 
 The five c_driver suites (`c_driver_boundary`, `c_driver_cancel`,

@@ -352,3 +352,32 @@ fn guarded_tail_backedge_does_not_swallow_later_return() {
         "later call result was discarded: {body}"
     );
 }
+
+/// 2026-11-23 (#152): a collection member body is inlined at the call site, so
+/// a local it declares before a loop and reassigns under a guard inside that
+/// loop is invisible to the caller's entry-block reassigned-let
+/// pre-declaration. The mutation then demoted the local at the ASSIGNMENT
+/// site: the alloca and its seed store landed inside the guard while the read
+/// sat after the loop, and LLVM rejected the module ("Instruction does not
+/// dominate all uses!"). The inlined body's reassigned locals are now
+/// pre-declared where the body starts.
+#[test]
+fn an_inlined_member_local_written_under_a_guard_dominates_its_read() {
+    let source = "import { HashMap } from \"std/collections.bv\";\n\
+                  node main [beginprogram][true] {\n\
+                      let m: HashMap<Int, Int> = 0;\n\
+                      let x: Int = m.get(1);\n\
+                      endprogram x;\n\
+                  };";
+    let (items, universe) = crate::library::parse_and_check("scratch/inlined_guard.bv", source)
+        .expect("program must type-check");
+    let ir = LlvmBackend::new()
+        .with_type_universe(universe)
+        .generate(&items, None);
+    match crate::ir_verify::verify_llvm_ir(&ir, "scratch/inlined_guard.bv", "inlined_guard.ll") {
+        crate::ir_verify::IrVerify::Ok { .. } => {}
+        crate::ir_verify::IrVerify::Invalid(msg) => {
+            panic!("inlined member body's guarded reassignment must dominate its read: {msg}")
+        }
+    }
+}

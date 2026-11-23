@@ -6809,7 +6809,13 @@ impl LlvmBackend {
         // Retire when inline calls have a shared value/void return plan.
         let member_exit = format!("member.exit.{}", self.fun.gen_reg().trim_start_matches('%'));
         let saved_member_exit = self.fun.inline_member_exit.replace(member_exit.clone());
+        // 2026-11-23 (#152): the inlined body's reassigned locals are not in
+        // the caller's AST, so the entry-block pre-declaration cannot see them
+        // — declare them here, before the body's first statement.
+        let saved_reassigned_lets = self.fun.reassigned_lets.clone();
+        self.predeclare_inline_reassigned_lets(out, &body, indent);
         crate::backend::llvm::emit_stmt::emit_statement_sequence(self, out, &body, indent);
+        self.fun.reassigned_lets = saved_reassigned_lets;
         if !self.fun.terminated {
             writeln!(out, "{indent}br label %{member_exit}").ok();
         }

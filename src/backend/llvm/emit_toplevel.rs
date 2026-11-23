@@ -403,21 +403,68 @@ impl LlvmBackend {
             .collect();
         reassigned.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, ty) in &reassigned {
-            let slot = self.fun.gen_reg();
-            let slot_ty = ty
-                .as_ref()
-                .map(|t| self.llvm_type(t))
-                .unwrap_or_else(|| "i64".to_string());
-            writeln!(out, "  {} = alloca {}, align 8", slot, slot_ty).ok();
-            self.fun.let_bindings.insert(name.clone(), slot.clone());
-            self.fun.let_binding_allocas.insert(slot.clone());
-            self.fun
-                .let_binding_types
-                .insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
-            self.fun
-                .let_original_types
-                .insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
+            self.declare_reassigned_slot(out, "  ", name, ty.as_ref());
         }
+    }
+
+    /// 2026-11-23 (#152): pre-declare the reassigned locals of an INLINED
+    /// member body in the block the body starts in.
+    ///
+    /// `predeclare_reassigned_lets` reads the AST body of the function being
+    /// emitted. A collection member body (`HashMap.get`, `List.push`, …) is
+    /// inlined at the CALL site and its statements are never part of that AST,
+    /// so a local it declares and reassigns (`let r: V = 0 as V;` … `r =
+    /// vals[p];` inside a `when`) was unknown to it. The mutation then demoted
+    /// `r` at the assignment site: the `alloca` and its seed store landed
+    /// inside the guard block while the read sat after the enclosing loop, so
+    /// the slot was both out of dominance and unseeded on every path that
+    /// skipped the guard ("Instruction does not dominate all uses!").
+    ///
+    /// Declaring the slot before the inlined body's first statement seeds it
+    /// at the declaration point and dominates every read, exactly like a
+    /// function-local reassigned `let`. Names already bound (the caller's
+    /// params, a shadowed local) are left alone. Undo: drop the call in
+    /// `emit_member_body` — the lazy assignment-site demotion returns.
+    pub(super) fn predeclare_inline_reassigned_lets(
+        &mut self,
+        out: &mut String,
+        body: &[Statement],
+        indent: &str,
+    ) {
+        let found = Self::collect_reassigned_lets(body);
+        // Sorted by name: same determinism rule as the entry-block path.
+        let mut names: Vec<(String, Option<Type>)> = found.into_iter().collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, ty) in &names {
+            if self.fun.let_bindings.contains_key(name) {
+                continue;
+            }
+            self.declare_reassigned_slot(out, indent, name, ty.as_ref());
+            self.fun.reassigned_lets.insert(name.clone(), ty.clone());
+        }
+    }
+
+    /// Emit one pre-declared local slot and register it as an alloca binding.
+    fn declare_reassigned_slot(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        name: &str,
+        ty: Option<&Type>,
+    ) {
+        let slot = self.fun.gen_reg();
+        let slot_ty = ty
+            .map(|t| self.llvm_type(t))
+            .unwrap_or_else(|| "i64".to_string());
+        writeln!(out, "{}{} = alloca {}, align 8", indent, slot, slot_ty).ok();
+        self.fun.let_bindings.insert(name.to_string(), slot.clone());
+        self.fun.let_binding_allocas.insert(slot);
+        self.fun
+            .let_binding_types
+            .insert(name.to_string(), ty.cloned().unwrap_or_else(Type::int));
+        self.fun
+            .let_original_types
+            .insert(name.to_string(), ty.cloned().unwrap_or_else(Type::int));
     }
 
     /// Zero-init an aggregate slot (`ty` is an LLVM `[N x T]` / `{ ... }`
@@ -1243,7 +1290,11 @@ impl LlvmBackend {
         // 2026-11-20 (wave-6 W6-3): CLOCK_MONOTONIC ns — declare-guarded
         // like the Family-I helpers (a pure-Briev defn taking the hidden
         // %state pre-empts the C helper).
-        if !self.ctx.defn_params.contains_key("briev_clock_monotonic_ns") {
+        if !self
+            .ctx
+            .defn_params
+            .contains_key("briev_clock_monotonic_ns")
+        {
             writeln!(out, "declare i64 @briev_clock_monotonic_ns() nounwind").ok();
         }
         if !self.ctx.defn_params.contains_key("rt_chdir") {
