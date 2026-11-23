@@ -1,0 +1,53 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// struct_list_field — a struct field declared `List<T>` holds a real
+// collection, whichever literal its constructor writes: empty, populated, or
+// written in a value position (`term Box { xs: [] }`).
+//
+// This shape used to be a compile crash rather than a wrong answer. A bare
+// list literal reaching codegen is a guard, because every typed list literal
+// must construct through the collection's own ops; a struct literal's field
+// value was the one position where the declared type never reached that door,
+// so `Box { xs: [] }` — which the typechecker admits — hit the guard.
+//
+// The `test { }` blocks pin the reference interpreter's reading of the same
+// shapes; the golden below is the native run. Both are kept because they are
+// different verifications.
+//
+// spec: 8.4
+import "std/io.bv";
+
+obj Box {
+    xs: List<Int>;
+};
+
+defn empty_box() -> Box {
+    term Box { xs: [] };
+};
+
+defn full_box() -> Box {
+    term Box { xs: [4, 5, 6] };
+};
+
+test an_empty_list_field_stays_empty {
+    let b: Box = empty_box();
+    expect b.xs.Count#() == 0;
+};
+
+test a_populated_list_field_round_trips {
+    let f: Box = full_box();
+    expect f.xs.Count#() == 3;
+    expect f.xs[1] == 5;
+};
+
+node main [beginprogram][true] {
+    let b: Box = empty_box();
+    let f: Box = full_box();
+    Print#(b.xs.Count#() as String);
+    Print#("|");
+    Print#(f.xs.Count#() as String);
+    Print#("|");
+    Print#(f.xs[1] as String);
+    endprogram Print#("");
+};

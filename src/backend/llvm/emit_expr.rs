@@ -4678,6 +4678,22 @@ impl LlvmBackend {
         slot: StructSlot<'_>,
         expr: &crate::hir::expr::HirExpr,
     ) {
+        // 2026-11-23 (#156): the same declared-type contextualisation as the
+        // AST path. A HIR list literal in a field position would otherwise
+        // take the AST fallback inside `emit_hir_operand` and trip the bare
+        // `Expr::List` guard.
+        if let Some(ast) = crate::hir::to_ast::expr(expr) {
+            let field = StructField {
+                type_name: slot.type_name,
+                name: slot.name,
+                expr: &ast,
+                base_ptr: slot.base_ptr,
+            };
+            if let Some(value) = self.emit_struct_field_list_literal(out, indent, &field) {
+                self.emit_struct_field_store_value(out, indent, slot, &value);
+                return;
+            }
+        }
         // 2026-11-01: a field constructor belongs to its declared enum, never
         // an enclosing return's enum (whose tags/capacity may differ).
         let field_enum = self
@@ -4736,6 +4752,15 @@ impl LlvmBackend {
         indent: &str,
         field: &StructField<'_>,
     ) -> TypedRegister {
+        // 2026-11-23 (#156): the field's value belongs to its DECLARED type.
+        // A bare list literal in a field position (`Box { xs: [] }`) otherwise
+        // reached codegen uncontextualised and tripped the `Expr::List` guard
+        // ("a bare list literal reached codegen") — a compile crash for a
+        // shape the typechecker admits. Construct it through the collection's
+        // own ops, exactly as a `let xs: List<T> = [...]` binding does.
+        if let Some(value) = self.emit_struct_field_list_literal(out, indent, field) {
+            return value;
+        }
         // 2026-11-01: a field constructor belongs to its declared enum, never
         // an enclosing return's enum (whose tags/capacity may differ). Restore
         // the outer context afterward; retire with per-expression type plans.
@@ -4750,6 +4775,24 @@ impl LlvmBackend {
             value.ty = ty;
         }
         value
+    }
+
+    /// 2026-11-23 (#156): context a struct field's bare list literal with the
+    /// field's DECLARED type, through the same door a typed `let` uses
+    /// (`construct_local_collection`). Returns `None` for any other shape, so
+    /// every non-list field keeps its existing emission untouched.
+    fn emit_struct_field_list_literal(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        field: &StructField<'_>,
+    ) -> Option<TypedRegister> {
+        if !matches!(field.expr, Expr::List(_)) {
+            return None;
+        }
+        let declared = self.struct_field_type(field.type_name, field.name)?;
+        self.construct_local_collection(out, indent, &declared, field.expr)
+            .map(|(value, _)| value)
     }
 
     fn emit_struct_atomic_field(
