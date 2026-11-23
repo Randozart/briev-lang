@@ -226,3 +226,32 @@ mechanism, and should not be forced. Options, in increasing ambition:
   doctrine in `2026-11-15-value-summaries.md` §6. If you'd rather keep the
   doctrine absolute, phase 5 closes entirely and the remaining unproven-heavy
   work is phase 2 + 3 only.
+
+---
+
+## Addendum (2026-11-22, wave-10 hygiene): a newer measured §0 from an
+## untracked worktree copy
+
+The copy of this plan in the counsel-seed worktree carried a re-measured
+§0 (post-PR-#105, CI-bounded corpus of 49 files) that was never committed.
+Preserved verbatim below; it supersedes the stale numbers in the original
+§0 above for the date it was taken.
+
+## 0. Where the corpus stands (measured, current main)
+
+CI-bounded corpus (`lib/std/*.bv` + `.smoke/*.bv`, 49 files), after PR #105:
+
+| metric | value |
+|---|---|
+| proven | 478 |
+| unproven | **0** |
+| skipped | 7673 |
+| violated | **0** |
+
+Full `lib/std` (92 files) was measured at commit `a754b25fd` as 14 690 skipped /
+187 unproven; the plan doc reporting that (`2026-11-15-value-summaries.md`) is
+**stale on main** — PR #104 proved the two biggest unproven entries
+(`mantissa_val` 91 + `exponent_val` 91) and fixed the conformance sweep, and
+PR #105 trimmed `Load#` skips 1237 → 1001. **Re-baselining the full corpus is
+phase 1 below**, before any new work is justified off old numbers.
+

@@ -39,7 +39,12 @@ enum JsonValue {
     Null,
     BoolVal(Bool),
     IntVal(Int),
-    FloatVal(Float),
+// 2026-11-22 (issue #155): fractional JSON numbers carry binary64. A JSON
+// number is a decimal wire value, and decimal wire values need the width a
+// consumer's numeric contract names; a binary32 carrier poisons the value
+// at parse time, before any consumer chooses a precision. Integer-valued
+// input never takes this path (IntVal), so only fractions move.
+    FloatVal(Float64),
     StrVal(String),
     Array(List<JsonValue>),
     Object(List<(String, JsonValue)>)
@@ -396,7 +401,7 @@ defn parse_number(text: String, pos: Int) -> Result<ParseFrame,String> {
     let digits: Int = json_digit_end(text,begin);
     when digits == end { term json_signed_integer(text,begin,end,negative,0); };
     let literal: String = text[pos:end];
-    let value: Float = literal as Float;
+    let value: Float64 = literal as Float64;
     when !json_finite(value) { term err_frame(e_invnum()); };
     term Ok(ParseFrame { value: FloatVal(value), pos: end });
 };
@@ -405,7 +410,7 @@ defn parse_number(text: String, pos: Int) -> Result<ParseFrame,String> {
 // physical-width reflection. Exponent-all-ones represents infinity/NaN.
 // Integer classification is independent of floating reassociation/fast flags;
 // remove these masks only in favor of a stdlib classification protocol.
-defn json_finite(value: Float) -> Bool {
+defn json_finite(value: Float64) -> Bool {
     let bits: Int = (value as Data) as Int;
     let width: Int = value ^^Bytes;
     when width == 2 { term (bits & 31744) != 31744; };

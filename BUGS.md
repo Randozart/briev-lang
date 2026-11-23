@@ -1,5 +1,39 @@
 ## 2026-11-22 — a `defn` that creates, appends to and returns a `List<struct>` hands back a corrupt element store (OPEN)
 
+## 2026-11-22 — The reference interpreter has no cast-lane prelude, so `Float as String` renders differently (OPEN)
+
+`1.25 as String` prints `1.25` from codegen and `1.25000` from the reference
+interpreter (`brievc test` with SPEC §8.11 `test { }` blocks).
+
+Cause: the LLVM path injects `lib/std/cast_lanes.bv` into **every** compilation
+unit, so the graph's `float_to_str` lane resolves to the pure-Briev
+`float_format(f, 6)` (C `%g`, trailing zeros trimmed). The interpreter's
+`String`-target cast (`src/interpreter/eval.rs`, the `"String"` arm) dispatches
+`call_user_fn(..., "float_to_str", ...)` and, finding no such defn in the
+program, falls back to identity — the value then reaches a Rust formatter whose
+fixed-decimal rendering is `1.25000`.
+
+Repro:
+
+```briev
+import "std/io.bv";
+node entry [beginprogram][true] { endprogram Print#(""); };
+test inspect { let s: String = 1.25 as String; Print#(s); };  // prints [1.25000]
+```
+
+Native build of the same cast prints `1.25`. Not caused by the binary64 seam
+(issues #153/#154/#155) — it reproduces with binary32 `Float` too, and predates
+it. It surfaced while pinning the seam: the interpreter-side fixture
+`tests/tier1/float64_precision_interp.bv` deliberately compares NUMBERS, not
+rendered strings, until the interpreter gains the same lane prelude.
+
+Direction: give the interpreter the same prelude injection the backend has (or
+dispatch the lane body when the defn is absent), then add the string-equality
+case to the fixture. Do NOT paper over it by changing `float_format`'s contract
+— the `%g` rendering is the specified one (SPEC §8.2 / C `%g`).
+
+## 2026-11-21 — The wave-8 contract tightening makes the kiosk daemon uncompilable (OPEN)
+
 Found while building the P3 Gemm baseline fixture (plan
 `2026-11-22-saltpetre-gemm-graduation.md`, M1). The defect is in the shape of
 the *return*, not in the ONNX/saltpetre types it was first seen with.

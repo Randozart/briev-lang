@@ -226,6 +226,43 @@ node n [beginprogram][true] {
 }
 
 #[test]
+fn node_bare_term_is_a_checkpoint_not_a_return() {
+    // The wave-10 boundary: `endprogram`/`trap` are unconditional, so their
+    // guards refine. A bare `term;` in a node is a CONVERGENCE CHECKPOINT —
+    // it may continue — so it licenses nothing. (The same guard in a defn
+    // with a vacuous post DOES license, via `lower_bare_terms`.)
+    let src = r#"
+import "std/io.bv";
+
+defn needs(x: Int) [x >= 1][term >= 0] -> Int { term x; };
+
+node n [beginprogram][true] {
+    let y: Int = get_env_int!("N");
+    when y < 1 { term; };
+    Print#(needs(y) as String);
+    endprogram Print#("");
+};
+"#;
+    let dir = scratch("node_bare_term");
+    let source = dir.join("node_bare_term.bv");
+    fs::write(&source, src).expect("write fixture");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new(env!("CARGO_BIN_EXE_brievc"))
+        .current_dir(root)
+        .env("BRIEV_HOME", root)
+        .arg("check")
+        .arg(&source)
+        .args(["--stdlib-path", "lib", "--config-dir", "config"])
+        .output()
+        .expect("start brievc");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && stderr.contains("not provable"),
+        "a node's bare term must not license `y >= 1`:\n{stderr}"
+    );
+}
+
+#[test]
 fn config_deny_is_what_the_cli_reads() {
     // The gate's stage comes from the shipped config; if someone flips it to
     // `allow`, every test above would pass for the wrong reason. Pin the file's

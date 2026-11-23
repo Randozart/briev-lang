@@ -122,6 +122,15 @@ out defn float_to_str(f: Float) [true][term ^^Length >= 0] -> String {
     term float_format(f, 6);
 };
 
+// float64_to_str — the binary64 String door (issues #154/#155). Same %g
+// shape as float_to_str; the difference is the carrier: the binary64
+// formatter reads all 53 significand bits and the full [-1074, 971]
+// exponent range, so a value widened from the parser is rendered without a
+// second rounding.
+out defn float64_to_str(f: Float64) [true][term ^^Length >= 0] -> String {
+    term float64_format(f, 6);
+};
+
 // char_to_str — build a [len: i64][byte][NUL] buffer, then hand it through
 // the Data→String encoding door (briev_bits_to_str copies it into a fresh
 // heap String — the copy is replaced by pure-Briev Alloc#+Copy# in Family C;
@@ -442,6 +451,58 @@ defn pow10f_small(k: Int, acc: Float) [k >= 0 && k <= 10][term >= 0.0 || term < 
         term acc;
     };
     term pow10f_small(k - 1, acc * 10.0);
+};
+
+// str_to_float64 — binary64 strtod (issue #155). Same walkers as
+// str_to_float, but the scaling runs in binary64: every power of ten up to
+// 10^22 is exactly representable there, so a mantissa of up to 16 digits
+// survives the single scaling exactly and a 9-digit rendering of the result
+// is strtod-exact. Routing a binary64 target through the binary32
+// str_to_float instead rounds the value at parse time — 0.1 became
+// 0.100000001490116 and every later widening preserved the error.
+out defn str_to_float64(s: String) [true][term >= 0.0 || term < 0.0] -> Float64 {
+    let len: Int = str_len_bytes(s);
+    let i0: Int = pf_ws(s, 0, len);
+    let (sg, i1): (Int, Int) = pf_sign(s, i0, len);
+    let (m, d0, seen, i2): (Int, Int, Int, Int) = pf_num(s, i1, len, 0, 0, 0, 0);
+    when seen == 0 {
+        term 0.0;
+    };
+    let (e, i3): (Int, Int) = pf_exp(s, i2, len, 0);
+    let r: Float64 = pf_make64(m, d0 - e);
+    when sg < 0 {
+        term 0.0 - r;
+    };
+    term r;
+};
+
+// pf_make64 — M x 10^-d with ONE correctly-rounded scaling in binary64.
+defn pf_make64(m: Int, d: Int) [d >= -2100 && d <= 2100][term >= 0.0 || term < 0.0] -> Float64 {
+    let base: Float64 = m as Float64;
+    when d == 0 {
+        term base;
+    };
+    when d > 0 {
+        term base / pow10d(d);
+    };
+    term base * pow10d(0 - d);
+};
+
+// pow10d — 10^k in binary64. 10^k is exact for k <= 22 (5^22 < 2^53), so the
+// chunks carry no rounding of their own; one rounding per 22 decades sits far
+// below the 9-digit rendering resolution.
+defn pow10d(k: Int) [k >= 0 && k <= 2100][term >= 0.0 || term < 0.0] -> Float64 {
+    when k > 22 {
+        term pow10d_small(22, 1.0) * pow10d(k - 22);
+    };
+    term pow10d_small(k, 1.0);
+};
+
+defn pow10d_small(k: Int, acc: Float64) [k >= 0 && k <= 22][term >= 0.0 || term < 0.0] -> Float64 {
+    when k == 0 {
+        term acc;
+    };
+    term pow10d_small(k - 1, acc * 10.0);
 };
 
 // ── String ops (Family C) ────────────────────────────────────────────────

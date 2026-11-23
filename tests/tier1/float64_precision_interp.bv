@@ -1,0 +1,63 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// float64_precision_interp — the REFERENCE INTERPRETER's reading of the
+// binary64 seam (issues #153/#154/#155).
+//
+// A `.golden` fixture runs NATIVELY; only SPEC §8.11 `test { }` blocks reach
+// the reference interpreter. `tests/tier1/float64_precision.bv` pins the
+// native emission (the lanes, the literal widths, the cast graph). These
+// blocks pin the SEMANTICS the backend must reproduce — the interpreter is
+// the authority (Golden Rule 5), so a disagreement here is a codegen defect.
+//
+// What is pinned:
+//   * the String→Float64 door rounds once, at binary64
+//   * a Float64-typed literal keeps its decimal value
+//   * Float64 arithmetic stays binary64 through the scaling
+//   * a defn declared `-> Float64` returns its value at that width
+// spec: 8.2
+import "std/io.bv";
+
+defn scale_to_int(x: Float64, factor: Float64) -> Int {
+    term (x * factor) as Int;
+};
+
+defn wide_literal() -> Float64 {
+    term 0.1;
+};
+
+node entry [beginprogram][true] {
+    endprogram Print#("");
+};
+
+test binary64_parse_rounds_once {
+    // 0.1 parsed at binary64, scaled by the double 1e10 -> exactly 1e9.
+    // A binary32 hop yields 1000000014 or 1000000015.
+    let x: Float64 = "0.1" as Float64;
+    let f: Float64 = 10000000000.0;
+    expect scale_to_int(x, f) == 1000000000;
+};
+
+test binary64_literal_keeps_its_decimal {
+    let x: Float64 = 0.1;
+    let f: Float64 = 10000000000.0;
+    expect scale_to_int(x, f) == 1000000000;
+};
+
+test declared_width_literal_keeps_its_decimal {
+    let f: Float64 = 10000000000.0;
+    expect scale_to_int(wide_literal(), f) == 1000000000;
+};
+
+test exact_values_survive_the_round_trip {
+    let back: Float64 = ("1.25" as Float64) as String as Float64;
+    let f: Float64 = 4.0;
+    expect scale_to_int(back, f) == 5;
+};
+
+test parsing_stops_at_trailing_garbage {
+    // strtod contract: the number ends at the first non-digit.
+    let x: Float64 = "2.5xyz" as Float64;
+    let f: Float64 = 2.0;
+    expect scale_to_int(x, f) == 5;
+};

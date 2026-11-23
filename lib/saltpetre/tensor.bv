@@ -78,7 +78,10 @@ defn tensor_empty() -> Tensor {
     term Tensor { name: "", dims: dims, owns_dims: 1, n: 0, ptr: 0, arena: false };
 };
 
-defn tensor_new(n: Int) [n >= 0][true] -> Tensor {
+// 2026-11-22 (wave-10): post states the element count the caller asked for —
+// without it every tensor_set(t, i, v) downstream is unprovable (i < t.n has
+// no source).
+defn tensor_new(n: Int) [n >= 0][term.n == n] -> Tensor {
     let (addr, in_arena) = tensor_alloc(n);
     let dims: List<Int> = [];
     term Tensor { name: "", dims: dims, owns_dims: 1, n: n, ptr: addr, arena: in_arena };
@@ -88,7 +91,9 @@ defn tensor_new(n: Int) [n >= 0][true] -> Tensor {
 // must outlive the returned Tensor (elementwise views wrap the input's
 // dims; execute_env_inputs wraps cached-graph dims). Builders with a fresh
 // list use tensor_take.
-defn tensor_named(name: String, dims: List<Int>, n: Int) -> Tensor {
+// 2026-11-22 (wave-10): post states the element count the caller asked for,
+// matching tensor_named_owned/tensor_named4 (same campaign).
+defn tensor_named(name: String, dims: List<Int>, n: Int) [true][term.n == n] -> Tensor {
     let (addr, in_arena) = tensor_alloc(n);
     term Tensor { name: name, dims: dims, owns_dims: 0, n: n, ptr: addr, arena: in_arena };
 };

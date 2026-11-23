@@ -446,6 +446,74 @@ defn pow10f_small(k: Int, acc: Float) [k >= 0 && k <= 10][term >= 0.0 || term < 
     term pow10f_small(k - 1, acc * 10.0);
 };
 
+// ── binary64 doors (issues #154/#155) ────────────────────────────────────
+// The twin of the block in cast_lanes.bv: a Float64 carrier must parse and
+// format in binary64. This file is the PORTABLE compilation unit (browser /
+// wasm), so the lanes the graph emits (`str_to_float64`, `float64_to_str`)
+// must exist here too or the emitted call has no definition. `pf_num` here
+// carries an Int64 mantissa, so pf_make64 takes Int64 to avoid a narrowing
+// hop; the lane ABI (String in, Float64 out) is identical in both files.
+out defn float64_to_str(f: Float64) [true][term ^^Length >= 0] -> String {
+    term float64_format(f, 6);
+};
+
+out defn str_to_float64(s: String) [true][term >= 0.0 || term < 0.0] -> Float64 {
+    let len: Int = str_len_bytes(s);
+    let i0: Int = pf_ws(s, 0, len);
+    let (sg, i1): (Int, Int) = pf_sign(s, i0, len);
+    let (m, d0, seen, i2): (Int64, Int, Int, Int) = pf_num(s, i1, len, 0, 0, 0, 0);
+    when seen == 0 {
+        term 0.0;
+    };
+    let (e, i3): (Int, Int) = pf_exp(s, i2, len, 0);
+    let d: Int = d0 - e;
+    // 2026-11-22 (#155): the exact-power window is |d| <= 2100. Beyond it the
+    // value is already past the representable range in the direction the
+    // exponent points, so saturate to the honest IEEE result (overflow →
+    // infinity, underflow → zero) instead of demanding a proof of a bound the
+    // caller cannot supply. This is strtod's own contract for out-of-range
+    // exponents; the native twin proves the same bound from its own walker
+    // postconditions (32-bit Int arithmetic there carries the tighter facts).
+    when d > 2100 {
+        term 1.0e308 * 10.0;
+    };
+    when d < -2100 {
+        term 1.0e-308 * 1.0e-308;
+    };
+    let r: Float64 = pf_make64(m, d);
+    when sg < 0 {
+        term 0.0 - r;
+    };
+    term r;
+};
+
+// pf_make64 — M x 10^-d with ONE correctly-rounded scaling in binary64.
+defn pf_make64(m: Int64, d: Int) [d >= -2100 && d <= 2100][term >= 0.0 || term < 0.0] -> Float64 {
+    let base: Float64 = m as Float64;
+    when d == 0 {
+        term base;
+    };
+    when d > 0 {
+        term base / pow10d(d);
+    };
+    term base * pow10d(0 - d);
+};
+
+// pow10d — 10^k in binary64, 22-decimal chunks (10^22 is exact: 5^22 < 2^53).
+defn pow10d(k: Int) [k >= 0 && k <= 2100][term >= 0.0 || term < 0.0] -> Float64 {
+    when k > 22 {
+        term pow10d_small(22, 1.0) * pow10d(k - 22);
+    };
+    term pow10d_small(k, 1.0);
+};
+
+defn pow10d_small(k: Int, acc: Float64) [k >= 0 && k <= 22][term >= 0.0 || term < 0.0] -> Float64 {
+    when k == 0 {
+        term acc;
+    };
+    term pow10d_small(k - 1, acc * 10.0);
+};
+
 // ── String ops (Family C) ────────────────────────────────────────────────
 // The backend emits these for String ==, s[a:b], foreach-char, ^^Length and
 // the Data->String door. Byte-level primitives: the header is the BYTE

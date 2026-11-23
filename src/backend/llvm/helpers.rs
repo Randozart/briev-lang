@@ -3437,6 +3437,16 @@ impl LlvmBackend {
     /// bits. Handles (Ptr / struct / coll registers that are i64 by ABI)
     /// and unknown combos return the register unchanged — a visible clang
     /// error, never a silent miscompile.
+    /// The declared LLVM return type of a Briev-defined callee, spelled the
+    /// way `emit_definition` spells the `define` line (`llvm_ret_abi_type`).
+    /// `None` for symbols the frontend did not define (C-runtime helpers,
+    /// frgn imports) — those keep the legacy ABI the declare site spells.
+    pub(crate) fn defn_declared_return_ll(&self, fname: &str) -> Option<String> {
+        let tys = self.ctx.defn_return_types.get(fname)?;
+        let first = tys.first()?;
+        Some(self.llvm_ret_abi_type(first))
+    }
+
     pub(crate) fn coerce_register_value(
         &mut self,
         out: &mut String,

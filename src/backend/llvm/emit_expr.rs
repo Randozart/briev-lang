@@ -646,12 +646,16 @@ impl LlvmBackend {
                     }
                 }
                 HirLiteral::Float(f) => {
-                    let h = crate::backend::llvm::float_to_llvm_hex(*f);
-                    writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, h).ok();
-                    TypedRegister {
-                        name: v.clone(),
-                        ty: Type::float(),
-                    }
+                    // 2026-11-22 (#153): same declared-width rule as the AST
+                    // leaf (emit_float_literal_at).
+                    let width = self.fun.pending_float_width.clone();
+                    self.emit_float_literal_at(
+                        out,
+                        &v,
+                        *f,
+                        width.as_deref().unwrap_or("float"),
+                        indent,
+                    )
                 }
                 HirLiteral::Bool(b) => {
                     let val = if *b { 1 } else { 0 };
@@ -1239,6 +1243,48 @@ impl LlvmBackend {
                 out,
                 "{}{} = trunc {} {} to {}",
                 indent, v, src_ll, src.name, tgt
+            )
+            .ok();
+        } else if src_ll == target_ll {
+            // Same LLVM type — relabel, never emit a cast. `trunc i64 %x to
+            // i64` is not valid IR (2026-11-22, caught by the saltpetre
+            // corpus after the width arm below landed).
+            return TypedRegister {
+                name: src.name.clone(),
+                ty: target.clone(),
+            };
+        } else if super::fp_cast_op(&src_ll, &target_ll).is_some()
+            || matches!(
+                (
+                    super::int_width(&src_ll),
+                    super::int_width(&target_ll)
+                ),
+                (Some(from), Some(to)) if from != to
+            )
+        {
+            // 2026-11-22 (issues #153/#154/#155): a WIDTH delta is never a
+            // bitcast. `bitcast i64 %x to i32` is invalid IR — LLVM rejects
+            // the module. Use the width-correct op: fpext/fptrunc inside the
+            // float class, trunc/sext inside the integer class, and bitcast
+            // only for a genuine same-width class change (ptr↔i64).
+            let op = match super::fp_cast_op(&src_ll, &target_ll) {
+                Some(op) => op,
+                None => {
+                    let (from, to) = (
+                        super::int_width(&src_ll).unwrap_or(64),
+                        super::int_width(&target_ll).unwrap_or(64),
+                    );
+                    if to > from {
+                        "sext"
+                    } else {
+                        "trunc"
+                    }
+                }
+            };
+            writeln!(
+                out,
+                "{}{} = {} {} {} to {}",
+                indent, v, op, src_ll, src.name, target_ll
             )
             .ok();
         } else {
@@ -2160,18 +2206,15 @@ impl LlvmBackend {
             }
             Expr::TaggedLiteral(n, _) => self.emit_int(out, v, *n, indent),
             Expr::Float(f) => {
-                // 2026-07-29: Direct bitcast from i32 hex bits to float.
-                // The `add i32 0, N` + `fadd float 0.0` wrappers were removed
-                // — LLVM IR accepts i32 bit patterns directly in bitcast, and
-                // the bitcast result is already float-typed without fadd.
-                // The hex bits avoid LLVM's verifier rejecting high-precision
-                // float literals like "0.001660076642744037" as f32.
-                let h = crate::backend::llvm::float_to_llvm_hex(*f);
-                writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, h).ok();
-                TypedRegister {
-                    name: v.to_string(),
-                    ty: Type::float(),
-                }
+                // 2026-07-29: Direct bitcast from hex bits — LLVM IR accepts
+                // the integer pattern directly, and the bitcast result is
+                // already float-typed (no add/fadd wrappers). The hex bits
+                // also stop the verifier rejecting high-precision literals.
+                // 2026-11-22 (#153): the width comes from the DECLARED type
+                // when the enclosing statement knows one — see
+                // emit_float_literal_at.
+                let width = self.fun.pending_float_width.clone();
+                self.emit_float_literal_at(out, v, *f, width.as_deref().unwrap_or("float"), indent)
             }
             Expr::Bool(b) => {
                 let val = if *b { 1 } else { 0 };
@@ -10002,6 +10045,26 @@ impl LlvmBackend {
                 // fn-typed param is ptrtoint'd to i64 at defn entry, so marshaling
                 // it into a later fn-typed param must inttoptr again (the 2026-08-03
                 // host-callback ABI kept llvm_type(Function)="ptr").
+                // 2026-11-22 (issues #153/#154/#155): a FLOAT argument at a
+                // different width than the declared parameter. The two are
+                // one numeric domain (the typechecker admits a Float-category
+                // value at a Float-category parameter), so the call MUST land
+                // the declared width — `pow10d_small(22, 1.0)` passed a
+                // binary32 literal into a `Float64` slot, the callee read the
+                // f32 pattern as a double, and the resulting garbage drove a
+                // division-by-zero guard into `llvm.trap`. Same rule as the
+                // term-return and cast-step sites: fp_cast_op decides.
+                if let Some(op) = super::fp_cast_op(&reg_llvm_ty, &param_llvm_ty) {
+                    let conv = self.fun.gen_reg();
+                    writeln!(
+                        out,
+                        "{}{} = {} {} {} to {}",
+                        indent, conv, op, reg_llvm_ty, reg.name, param_llvm_ty
+                    )
+                    .ok();
+                    call_args.push(format!("{} {}", param_llvm_ty, conv));
+                    continue;
+                }
                 if param_llvm_ty == "ptr" && reg_llvm_ty == "i64" && matches!(reg.ty, Type::Ptr(_))
                 {
                     // 2026-10-21 (pointer provenance): marshal a raw Ptr
@@ -10089,6 +10152,21 @@ impl LlvmBackend {
                     .get(&reg.name)
                     .map(|w| w == "ptr")
                     .unwrap_or(false);
+                // 2026-11-22 (issues #153/#154/#155): see the defn-path arm
+                // above — the same width landing applies when the callee's
+                // parameter metadata is absent but the register's expected
+                // type is floating.
+                if let Some(op) = super::fp_cast_op(&actual_ty, &expected_ty) {
+                    let conv = self.fun.gen_reg();
+                    writeln!(
+                        out,
+                        "{}{} = {} {} {} to {}",
+                        indent, conv, op, actual_ty, reg.name, expected_ty
+                    )
+                    .ok();
+                    call_args.push(format!("{} {}", expected_ty, conv));
+                    continue;
+                }
                 if matches!(reg.ty, Type::Ptr(_)) && !reg_is_ptr {
                     // 2026-11-17 (corpus slice C): a `Ptr`-stamped argument is
                     // normally an i64 handle, and `canonical_ptr` inttoptrs it.
@@ -10444,9 +10522,16 @@ impl LlvmBackend {
         if let Some(ty) = expected {
             self.fun.expected_enum_type = Some(ty.clone());
         }
+        // 2026-11-22 (issues #153/#154/#155): this is the funnel for enum
+        // payload construction, so it is where a float payload literal learns
+        // its DECLARED width — `FloatVal(1.25)` must encode binary64 in one
+        // step, not binary32-then-widen (which stored 5.273 and broke the
+        // JSON encoder golden).
+        self.prime_float_literal_width(expected, expr);
         let value = self
             .try_emit_contextual_literal(out, expr, expected, indent)
             .unwrap_or_else(|| self.emit_expr(out, expr, indent));
+        self.fun.pending_float_width = None;
         self.fun.expected_enum_type = saved;
         value
     }
@@ -12613,6 +12698,97 @@ impl LlvmBackend {
 
     // ── Casting Graph Path Emission ──────────────────────────────────
 
+    /// 2026-11-22 (issue #153): prime the literal width for a DIRECT float
+    /// literal that a declared float type will hold. Only a literal leaf
+    /// consumes it (read-and-clear), so a compound expression can never
+    /// inherit a stale width from an enclosing annotation.
+    pub(crate) fn prime_float_literal_width(&mut self, declared: Option<&Type>, value: &Expr) {
+        let is_float_literal = match value {
+            Expr::Float(_) => true,
+            Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
+                matches!(inner.as_ref(), Expr::Float(_))
+            }
+            _ => false,
+        };
+        if !is_float_literal {
+            return;
+        }
+        let Some(ty) = declared else {
+            return;
+        };
+        let ll = self.llvm_type(ty);
+        if super::fp_width(&ll).is_some() {
+            self.fun.pending_float_width = Some(ll);
+        }
+    }
+
+    /// 2026-11-22 (issue #153): emit a float LITERAL at a declared width.
+    ///
+    /// A Briev float literal is a decimal VALUE; encoding it through
+    /// binary32 first destroys mantissa bits that no later widening can
+    /// recover (`0.1` became `0.100000001490116`, so `0.1 * 1e10` printed
+    /// 1000000014 instead of 1000000000). When the destination width is
+    /// known at the emission site — a let annotation, a declared return —
+    /// the literal must be encoded there in ONE step. `float_to_llvm_str`
+    /// is the width-aware encoder (i32/float or i64/double); `fp_width`
+    /// decides whether the requested width is a float at all.
+    pub(crate) fn emit_float_literal_at(
+        &mut self,
+        out: &mut String,
+        reg: &str,
+        f: f64,
+        width_ll: &str,
+        indent: &str,
+    ) -> TypedRegister {
+        match width_ll {
+            "double" => {
+                writeln!(
+                    out,
+                    "{}{} = bitcast i64 {} to double",
+                    indent,
+                    reg,
+                    super::float64_to_llvm_hex(f)
+                )
+                .ok();
+                TypedRegister {
+                    name: reg.to_string(),
+                    ty: Type::float64(),
+                }
+            }
+            "float" => {
+                writeln!(
+                    out,
+                    "{}{} = bitcast i32 {} to float",
+                    indent,
+                    reg,
+                    super::float_to_llvm_hex(f)
+                )
+                .ok();
+                TypedRegister {
+                    name: reg.to_string(),
+                    ty: Type::float(),
+                }
+            }
+            _ => {
+                // half/bfloat/x86_fp80/fp128 have no literal encoder here —
+                // fall back to the binary32 default and let the width lane
+                // at the consumer adapt (the previous behaviour).
+                writeln!(
+                    out,
+                    "{}{} = bitcast i32 {} to float",
+                    indent,
+                    reg,
+                    super::float_to_llvm_hex(f)
+                )
+                .ok();
+                TypedRegister {
+                    name: reg.to_string(),
+                    ty: Type::float(),
+                }
+            }
+        }
+    }
+
     /// Try to resolve a cast through the casting graph protocol path.
     /// Returns None if no path exists (caller falls back to LLVM coercion).
     pub(super) fn emit_cast_path(
@@ -13011,6 +13187,68 @@ impl LlvmBackend {
                     // be called without it — gate on defn_takes_state, not
                     // mere defn_params membership.
                     let fname: &str = fn_name;
+                    // 2026-11-22 (wave-10, issue #154): the argument must
+                    // match the CALLEE'S declared parameter width, not the
+                    // caller's register width. `x^^Length`-era floats: a
+                    // Float64 value cast to String flowed here as `double`,
+                    // but float_to_str's Briev definition declares `Float`
+                    // (float) — the callee read the f64 bits' low half as an
+                    // f32 and printed garbage. When a Briev-defined callee
+                    // declares a FLOAT parameter and the incoming register is
+                    // a different float width, adapt with fpext/fptrunc.
+                    let arg_ll_final;
+                    let arg_final;
+                    if self.ctx.defn_params.contains_key(fname) {
+                        let param_ll = self
+                            .ctx
+                            .defn_params
+                            .get(fname)
+                            .and_then(|ps| ps.first())
+                            .and_then(|t| {
+                                let graph = self.ctx.casting_graph.as_ref()?;
+                                let universe = self.ctx.type_universe.as_ref()?;
+                                Some(graph.resolve_llvm_type(universe, t, 64))
+                            })
+                            .unwrap_or_else(|| arg_ll.clone());
+                        if param_ll != arg_ll {
+                            // Width delta between two FLOATING types ->
+                            // fpext/fptrunc; equal float width, different
+                            // type (half <-> bfloat) -> fpcast; anything else
+                            // (integer callers, unknown resolution) passes
+                            // through unchanged — the callee's own ABI lane
+                            // handles it as before.
+                            let op = super::fp_cast_op(&arg_ll, &param_ll).or_else(|| {
+                                let src_w = super::fp_width(&arg_ll);
+                                if src_w.is_some() && src_w == super::fp_width(&param_ll) {
+                                    Some("fpcast")
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(op) = op {
+                                let w = self.fun.gen_reg();
+                                writeln!(
+                                    out,
+                                    "{}{} = {} {} {} to {}",
+                                    indent, w, op, arg_ll, arg, param_ll
+                                )
+                                .ok();
+                                arg_ll_final = param_ll;
+                                arg_final = w;
+                            } else {
+                                arg_ll_final = arg_ll.clone();
+                                arg_final = arg.clone();
+                            }
+                        } else {
+                            arg_ll_final = arg_ll.clone();
+                            arg_final = arg.clone();
+                        }
+                    } else {
+                        arg_ll_final = arg_ll.clone();
+                        arg_final = arg.clone();
+                    }
+                    let arg_ll = arg_ll_final;
+                    let arg = arg_final;
                     let st = if self.ctx.defn_takes_state(fname) {
                         "ptr %state, "
                     } else {
@@ -13043,12 +13281,61 @@ impl LlvmBackend {
                         };
                         writeln!(out, "{}{} = add {} 0, 0", indent, dst, zero_ll).ok();
                     } else {
+                        // 2026-11-22 (wave-10, #154): the call's RESULT type
+                        // must also match the callee's declaration. A lane
+                        // destination wider than the callee's declared return
+                        // (String -> Float64 through the f32 str_to_float)
+                        // used to emit `call double @str_to_float(...)` against
+                        // `define float @str_to_float` — a signature mismatch
+                        // that fed garbage downstream. Call at the declared
+                        // width, then adapt to the lane's destination.
+                        let decl_ll = self.defn_declared_return_ll(fname);
+                        let call_ll = decl_ll.clone().unwrap_or_else(|| dst_ll.clone());
+                        let direct = call_ll == dst_ll;
+                        let call_dst = if direct {
+                            dst.clone()
+                        } else {
+                            self.fun.gen_reg()
+                        };
                         writeln!(
                             out,
                             "{}{} = call {} @{}({}{}{} {})",
-                            indent, dst, dst_ll, fn_name, st, pl, arg_ll, arg
+                            indent, call_dst, call_ll, fn_name, st, pl, arg_ll, arg
                         )
                         .ok();
+                        if !direct {
+                            // The landing op must be legal for the pair: a
+                            // float width delta is fpext/fptrunc, an INTEGER
+                            // width delta is trunc/sext, and only a same-width
+                            // differing-class pair may bitcast. The old
+                            // `unwrap_or("bitcast")` emitted `bitcast i64 ... to
+                            // i32` (illegal IR) whenever the callee's declared
+                            // return was a wider integer than the lane target.
+                            let op = super::fp_cast_op(&call_ll, &dst_ll).or_else(|| {
+                                let (from, to) = (super::int_width(&call_ll), super::int_width(&dst_ll));
+                                match (from, to) {
+                                    (Some(f), Some(t)) if f != t => {
+                                        Some(if t > f { "sext" } else { "trunc" })
+                                    }
+                                    _ => None,
+                                }
+                            });
+                            match op {
+                                Some(op) => writeln!(
+                                    out,
+                                    "{}{} = {} {} {} to {}",
+                                    indent, dst, op, call_ll, call_dst, dst_ll
+                                )
+                                .ok(),
+                                // Same width, different class (ptr↔i64 etc.).
+                                None => writeln!(
+                                    out,
+                                    "{}{} = bitcast {} {} to {}",
+                                    indent, dst, call_ll, call_dst, dst_ll
+                                )
+                                .ok(),
+                            };
+                        }
                     }
                 }
                 crate::casting::graph::LaneKind::ExtCallDyn(fn_name) => {

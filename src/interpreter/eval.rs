@@ -227,6 +227,18 @@ pub fn eval_expr(
                     _ => Ok(v),
                 },
                 "Float" => match v {
+                    // 2026-11-22 (issues #153/#155): the String→Float door. The
+                    // interpreter kept this as IDENTITY, so `"1.25" as Float64`
+                    // stayed a String value and every comparison against a
+                    // number was false — the reference engine could not even
+                    // express the binary64 seam its codegen implements. Parse
+                    // with strtod's contract (leading whitespace and sign, then
+                    // digits/dot/exponent; the number ends at the first other
+                    // byte) at f64 precision: the interpreter's Float is
+                    // already binary64, so no narrowing happens here.
+                    Value::Bits(bytes) => Ok(Value::float(parse_float_prefix(
+                        &String::from_utf8_lossy(&bytes),
+                    ))),
                     Value::Data(bits) => Ok(Value::float(f64::from_bits(bits))),
                     Value::Atom(Atom::Bool(b)) => {
                         Ok(Value::Atom(Atom::Float(if b { 1.0 } else { 0.0 })))
@@ -2082,6 +2094,59 @@ fn print_value(value: &Value, heap: &mut VirtualHeap) -> Result<(), RuntimeError
         _ => {}
     }
     Ok(())
+}
+
+/// The longest prefix of `text` that is a decimal number, parsed as f64 —
+/// strtod's contract for the corpus surface (the same rule `str_to_float`
+/// implements in stdlib/cast_lanes.bv): skip leading whitespace, accept a sign,
+/// digits with an optional dot, an optional exponent, and stop at the first
+/// byte that cannot continue the number. No hex floats, no inf/nan literals.
+fn parse_float_prefix(text: &str) -> f64 {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+    let start_number = i;
+    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+        i += 1;
+    }
+    let mut seen_digit = false;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+        seen_digit = true;
+    }
+    if i < bytes.len() && bytes[i] == b'.' {
+        let dot = i;
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+            seen_digit = true;
+        }
+        if !seen_digit {
+            // A lone dot is not a number; drop it from the slice.
+            i = dot;
+        }
+    }
+    if !seen_digit {
+        return 0.0;
+    }
+    // Exponent: only consume it when at least one digit follows, so `1e` and
+    // `1ex` keep the mantissa instead of losing the value.
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        let mut j = i + 1;
+        if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') {
+            j += 1;
+        }
+        let digits_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > digits_start {
+            i = j;
+        }
+    }
+    text[start_number..i].parse::<f64>().unwrap_or(0.0)
 }
 
 /// Resolve a cast target type's protocol category through the casting graph

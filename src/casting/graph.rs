@@ -130,6 +130,14 @@ pub struct CastingGraph {
     /// category names (e.g., ("Int", "Float")).
     base_lanes: HashMap<String, HashMap<String, LaneKind>>,
 
+    /// 2026-11-22 (issues #153/#154/#155): variant-scoped lanes — an exact
+    /// (src_cat, src_var, dst_cat, dst_var) registration that OVERRIDES the
+    /// category route. A variant whose representation the base lane cannot
+    /// express needs its own door: a binary64 carrier parses/formats through
+    /// binary64 helpers, which the base (binary32) lane would truncate.
+    variant_lanes: HashMap<(String, String, String, String), LaneKind>,
+
+    /// Per-variant CastTo edges from proto declarations.
     /// Per-variant CastTo edges from proto declarations.
     /// Indexed by (category, variant_name).
     variant_edges: HashMap<(String, String), Vec<CastStep>>,
@@ -167,11 +175,21 @@ pub struct CastingGraph {
     variant_cross_ops: HashMap<(String, String), HashMap<String, String>>,
 }
 
+/// One variant-scoped lane endpoint pair, for [`CastingGraph::set_variant_lane`].
+/// Four strings of the same shape are a context, not four parameters.
+struct VariantLane {
+    src_cat: &'static str,
+    src_var: &'static str,
+    dst_cat: &'static str,
+    dst_var: &'static str,
+}
+
 impl CastingGraph {
     /// Create a new casting graph seeded with all base protocol lanes.
     pub fn new() -> Self {
         let mut graph = CastingGraph {
             base_lanes: HashMap::new(),
+            variant_lanes: HashMap::new(),
             variant_edges: HashMap::new(),
             variant_reverse: HashMap::new(),
             defaults: HashMap::new(),
@@ -183,6 +201,7 @@ impl CastingGraph {
         };
         graph.seed_base_lanes();
         graph.seed_defaults();
+        graph.seed_variant_lanes();
         graph.seed_protocol_llvm_types();
         // 2026-08-26 (§2.4): kernel-surface SPIR-V scalars. Deliberately NOT
         // registered: String/Blob/Char/Data — a compute kernel has no heap,
@@ -394,6 +413,19 @@ impl CastingGraph {
         self.set_llvm_type("String", "", LlvmTypeResolver::Fixed("ptr"));
         self.set_llvm_type("Blob", "", LlvmTypeResolver::Fixed("ptr"));
 
+        // 2026-11-22 (issues #153/#154/#155): the width-bearing declared
+        // types (Float16, Float32, Float64, Double) carry their NAME as the
+        // variant from type_to_protocol. Each needs a resolver row — the
+        // SAME FloatWidth resolver the base uses, which reads the `bits`
+        // fact from the universe row. Without these the lookup falls to the
+        // category default variant (IEEE754 -> Fixed("float")) and a
+        // Float64 value resolves to a 32-bit float, silently truncating.
+        // The width stays in the universe (`spec Bits: N`); the resolver
+        // consumes it — no width is hardcoded here.
+        self.set_llvm_type("Float", "Float16", LlvmTypeResolver::FloatWidth);
+        self.set_llvm_type("Float", "Float32", LlvmTypeResolver::FloatWidth);
+        self.set_llvm_type("Float", "Float64", LlvmTypeResolver::FloatWidth);
+        self.set_llvm_type("Float", "Double", LlvmTypeResolver::FloatWidth);
         // Float protocol variants (hardcoded — no disamb hack)
         self.set_llvm_type("Float", "IEEE754", LlvmTypeResolver::Fixed("float"));
         self.set_llvm_type("Float", "Half", LlvmTypeResolver::Fixed("half"));
@@ -432,12 +464,159 @@ impl CastingGraph {
             .get(&(category.to_string(), variant.to_string()))
     }
 
+    /// Seed the variant-scoped doors. 2026-11-22 (issues #153/#154/#155):
+    /// the binary64 carrier (`Float64`, `Double`) must not inherit the
+    /// binary32 String doors — parsing a decimal through `str_to_float`
+    /// rounds at the 24-bit mantissa and the error survives every later
+    /// widening (0.1 became 0.100000001490116). Each width variant that
+    /// differs from the category default registers its own door pair; the
+    /// Float protocol rule in find_path still widens any two Float variants
+    /// by fpext/fptrunc, so no other route changes.
+    fn seed_variant_lanes(&mut self) {
+        let doors = [
+            (
+                VariantLane {
+                    src_cat: "String",
+                    src_var: "",
+                    dst_cat: "Float",
+                    dst_var: "Float64",
+                },
+                LaneKind::ExtCall("str_to_float64"),
+            ),
+            (
+                VariantLane {
+                    src_cat: "String",
+                    src_var: "",
+                    dst_cat: "Float",
+                    dst_var: "Double",
+                },
+                LaneKind::ExtCall("str_to_float64"),
+            ),
+            (
+                VariantLane {
+                    src_cat: "Float",
+                    src_var: "Float64",
+                    dst_cat: "String",
+                    dst_var: "",
+                },
+                LaneKind::ExtCall("float64_to_str"),
+            ),
+            (
+                VariantLane {
+                    src_cat: "Float",
+                    src_var: "Double",
+                    dst_cat: "String",
+                    dst_var: "",
+                },
+                LaneKind::ExtCall("float64_to_str"),
+            ),
+        ];
+        for (endpoints, lane) in doors {
+            self.set_variant_lane(endpoints, lane);
+        }
+    }
+
+    /// Register a variant-scoped lane. Empty variant slots normalize to the
+    /// category default so the key matches the lookup (same normalization
+    /// `find_path` applies before it queries the map).
+    fn set_variant_lane(&mut self, endpoints: VariantLane, lane: LaneKind) {
+        let VariantLane {
+            src_cat,
+            src_var,
+            dst_cat,
+            dst_var,
+        } = endpoints;
+        let norm = |cat: &str, var: &str| -> String {
+            if var.is_empty() {
+                self.defaults.get(cat).cloned().unwrap_or_default()
+            } else {
+                var.to_string()
+            }
+        };
+        let key = (
+            src_cat.to_string(),
+            norm(src_cat, src_var),
+            dst_cat.to_string(),
+            norm(dst_cat, dst_var),
+        );
+        self.variant_lanes.insert(key, lane);
+    }
+
+    /// The variant-scoped lane for this exact endpoint pair, if registered.
+    fn get_variant_lane(
+        &self,
+        src_cat: &str,
+        src_var: &str,
+        dst_cat: &str,
+        dst_var: &str,
+    ) -> Option<&LaneKind> {
+        let norm = |cat: &str, var: &str| -> String {
+            if var.is_empty() {
+                self.defaults.get(cat).cloned().unwrap_or_default()
+            } else {
+                var.to_string()
+            }
+        };
+        self.variant_lanes.get(&(
+            src_cat.to_string(),
+            norm(src_cat, src_var),
+            dst_cat.to_string(),
+            norm(dst_cat, dst_var),
+        ))
+    }
+
     /// Insert a base lane between two protocol categories.
     fn set_lane(&mut self, src: &'static str, dst: &'static str, lane: LaneKind) {
         self.base_lanes
             .entry(src.to_string())
             .or_default()
             .insert(dst.to_string(), lane);
+    }
+
+    /// Every function symbol the graph can emit as a cast call (`ExtCall` /
+    /// `ExtCallDyn`), deduplicated and sorted.
+    ///
+    /// 2026-11-22 (issues #153/#154/#155): read-only introspection for the
+    /// lane-definition guard. The backend resolves an ExtCall lane to a
+    /// `@symbol` call and SKIPS the C declare when a Briev `defn` of that
+    /// name is present — so a lane added to only one of the two stdlib twins
+    /// (`cast_lanes.bv` native, `cast_portable.bv` browser) emits a call with
+    /// no definition and the wasm/browser build dies in the verifier. The
+    /// guard test enumerates this list against both files.
+    pub fn ext_call_lane_symbols(&self) -> Vec<String> {
+        fn collect(lane: &LaneKind, out: &mut Vec<String>) {
+            match lane {
+                LaneKind::ExtCall(n) => out.push((*n).to_string()),
+                LaneKind::ExtCallDyn(n) => out.push(n.clone()),
+                LaneKind::Chain(a, b) => {
+                    collect(a, out);
+                    collect(b, out);
+                }
+                _ => {}
+            }
+        }
+        let mut names: Vec<String> = Vec::new();
+        for row in self.base_lanes.values() {
+            for lane in row.values() {
+                collect(lane, &mut names);
+            }
+        }
+        for lane in self.variant_lanes.values() {
+            collect(lane, &mut names);
+        }
+        for steps in self.variant_edges.values() {
+            for step in steps {
+                collect(&step.lane, &mut names);
+            }
+        }
+        for steps in self.variant_reverse.values() {
+            for step in steps {
+                collect(&step.lane, &mut names);
+            }
+        }
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Get the lane from src_category to dst_category, if one exists.
@@ -662,6 +841,37 @@ impl CastingGraph {
         };
         // Fast path: both are base protocols with no variants
         if src_var.is_empty() && dst_var.is_empty() {
+            return self.find_base_path(src_cat, dst_cat);
+        }
+
+        // 2026-11-22 (issues #153/#154/#155): a variant-scoped lane is an
+        // EXACT endpoint registration — it beats every derived route. The
+        // base String→Float door is the binary32 parser; a Float64 target
+        // routed through it rounds at the 24-bit mantissa before the width
+        // lane could widen it. The variant's own door keeps the value
+        // binary64 end to end.
+        if let Some(kind) = self.get_variant_lane(src_cat, src_var, dst_cat, dst_var) {
+            return Some(vec![CastStep {
+                lane: kind.clone(),
+                src_category: src_cat.to_string(),
+                src_variant: src_var.to_string(),
+                dst_category: dst_cat.to_string(),
+                dst_variant: dst_var.to_string(),
+            }]);
+        }
+
+        // 2026-11-22 (issues #153/#154/#155): a Float-category VARIANT is a
+        // WIDTH, not a different domain. Crossing in or out of the family
+        // (`Float64 as Int`, `Int as Float64`) must use the CATEGORY lane —
+        // the semantic fptosi/sitofp conversion — never the Data-hub repr
+        // route. Without this the Binary64 variant fell through to BFS,
+        // which took Float → Data → Int (bitcast/bitcast) and produced the
+        // raw IEEE bits: `(0.1 * 1e10) as Int` printed 4741671816366391296
+        // (the double 1e9 reinterpreted) instead of 1000000000. The width
+        // delta is landed by fp_cast_op at emission, exactly as the family's
+        // own variant→variant rule below does.
+        if (src_cat == "Float" && dst_cat != "Float") || (dst_cat == "Float" && src_cat != "Float")
+        {
             return self.find_base_path(src_cat, dst_cat);
         }
 
@@ -1101,7 +1311,12 @@ impl CastingGraph {
         loop {
             for (prop, cat) in crate::type_universe::CAST_CATEGORY_PROPS {
                 if current.properties.contains_key(*prop) {
-                    return (cat.to_string(), String::new());
+                    // 2026-11-22 (#153/#154/#155): a width-bearing type
+                    // resolves to its fundamental with its NAME as the
+                    // variant — the representation differs from the category
+                    // default, so `Float64` must not inherit `Float`'s
+                    // binary32 String doors. See `category_variant`.
+                    return (cat.to_string(), category_variant(&current.name, cat));
                 }
             }
             // 2026-08-01 (B2): no Cast. property (the normalizer no longer
@@ -1345,6 +1560,12 @@ impl CastingGraph {
                 // derive the LLVM type from the type's `bits` metadata.
                 // 16-bit is half/bfloat (via disamb); 32→float, 64→double,
                 // 80→x86_fp80, 128→fp128, default→float. No type names.
+                // 2026-11-22 (#153/#154/#155): this resolver is also the row
+                // for the width-bearing NAMED variants (Float64, Double,
+                // Float32, Float16) — type_to_protocol carries the name as
+                // the variant, and the `bits` fact on the row (or inherited
+                // from the parent) decides the width. A type with no bits
+                // fact at all falls to the 32-bit default.
                 let bits = self.compute_bits(universe, ty);
                 let float_ty = match bits {
                     Some(16) => {
@@ -1401,6 +1622,23 @@ impl Default for CastingGraph {
 /// de-hashtagged fundamental join lost its category at the boundary.
 /// One helper, both callers (rule 17). Visited-set guards cycles. Undo:
 /// restore the explicit-only inline loops in the two callers.
+/// 2026-11-22 (issues #153/#154/#155): the variant a type contributes when its
+/// OWN universe row already carries the `Cast.<Category>` membership. A type
+/// that IS the category (`Float`) contributes none; a REPRESENTATION of it
+/// (`Float64`, `Double`, `Float32`) contributes its name. Without this,
+/// `Float64` resolved to `("Float", "")` and every cast took the category
+/// default — the binary32 `str_to_float` door — so a binary64 parse was
+/// rounded at parse time. `find_path` widens unregistered Float pairs with
+/// fpext/fptrunc, so the width delta is still landed. Undo: return
+/// `String::new()` unconditionally (the silent-truncation behaviour).
+fn category_variant(type_name: &str, cat: &str) -> String {
+    if type_name == cat {
+        String::new()
+    } else {
+        type_name.to_string()
+    }
+}
+
 pub fn derive_type_protocols(
     items: &[crate::ast::TopLevel],
 ) -> std::collections::HashMap<String, String> {
