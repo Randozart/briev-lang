@@ -1274,11 +1274,7 @@ impl LlvmBackend {
                         super::int_width(&src_ll).unwrap_or(64),
                         super::int_width(&target_ll).unwrap_or(64),
                     );
-                    if to > from {
-                        "sext"
-                    } else {
-                        "trunc"
-                    }
+                    if to > from { "sext" } else { "trunc" }
                 }
             };
             writeln!(
@@ -3235,10 +3231,26 @@ impl LlvmBackend {
             let hi = match end {
                 Some(e) => emit_view_expr(self, out, e, indent),
                 None => {
-                    let n = self.fun.gen_reg();
-                    writeln!(out, "{}{} = add {} 0, 0", indent, n, hw).ok();
+                    // 2026-11-23 (#160): an absent end is "through the end" —
+                    // the string's BYTE length, not 0. This mirrors the
+                    // heap-List branch below (hi absent = the length word) and
+                    // the canonical door str_len_bytes (lib/std/cast_lanes.bv),
+                    // which reads the length from the String header. Folding
+                    // to 0 made s[a:] slice to the empty string (BUGS.md #160).
+                    let len = self.fun.gen_reg();
+                    let st_len = if self.ctx.defn_takes_state("str_len_bytes") {
+                        "ptr %state, "
+                    } else {
+                        ""
+                    };
+                    writeln!(
+                        out,
+                        "{}{} = call i64 @str_len_bytes({}ptr {})",
+                        indent, len, st_len, sp
+                    )
+                    .ok();
                     TypedRegister {
-                        name: n,
+                        name: len,
                         ty: Type::int(),
                     }
                 }
@@ -13312,7 +13324,8 @@ impl LlvmBackend {
                             // i32` (illegal IR) whenever the callee's declared
                             // return was a wider integer than the lane target.
                             let op = super::fp_cast_op(&call_ll, &dst_ll).or_else(|| {
-                                let (from, to) = (super::int_width(&call_ll), super::int_width(&dst_ll));
+                                let (from, to) =
+                                    (super::int_width(&call_ll), super::int_width(&dst_ll));
                                 match (from, to) {
                                     (Some(f), Some(t)) if f != t => {
                                         Some(if t > f { "sext" } else { "trunc" })

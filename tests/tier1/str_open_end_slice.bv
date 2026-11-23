@@ -1,0 +1,49 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// str_open_end_slice — SPEC §16.5: an omitted slice bound means "the start" or
+// "through the end". On a String the end bound is the BYTE length read from the
+// header (the same door `str_len_bytes` uses), never a folded zero.
+//
+// The four forms are checked together because only the last one carries both
+// bounds: if the open-end form regressed to `hi = 0`, `s[3:]` renders as the
+// empty string and the whole line differs.
+//
+// The `test { }` blocks pin the reference interpreter's reading of the same
+// forms, so the native golden and the interpreter meaning are verified
+// separately — a `.golden` file alone is executed natively.
+//
+// spec: 16.5
+import "std/io.bv";
+
+test open_end_slice_runs_through_the_last_byte {
+    let s: String = "abcdefghij";
+    expect s[3:] == "defghij";
+};
+
+test open_start_slice_keeps_the_leading_bytes {
+    let s: String = "abcdefghij";
+    expect s[:3] == "abc";
+};
+
+test both_bounds_absent_is_the_whole_string {
+    let s: String = "abcdefghij";
+    expect s[:] == "abcdefghij";
+};
+
+test closed_slice_keeps_the_half_open_window {
+    let s: String = "abcdefghij";
+    expect s[3:7] == "defg";
+};
+
+node entry [beginprogram][true] {
+    let s: String = "abcdefghij";
+    Print#(s[:3]);
+    Print#("|");
+    Print#(s[3:]);
+    Print#("|");
+    Print#(s[:]);
+    Print#("|");
+    Print#(s[3:7]);
+    endprogram Print#("");
+};
