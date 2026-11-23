@@ -680,7 +680,11 @@ impl<'a> BodyAnalyzer<'a> {
         scope: &mut Scope,
     ) -> Option<ValueId> {
         let Statement::Let {
-            name, names, expr, ..
+            name,
+            names,
+            expr,
+            ty: declared,
+            ..
         } = statement
         else {
             return None;
@@ -701,7 +705,15 @@ impl<'a> BodyAnalyzer<'a> {
                 .get(&produced)
                 .map(|fact| fact.class)
                 .unwrap_or(DestinationClass::Unknown);
-            let ty = self.facts.get(&produced).and_then(|fact| fact.ty.clone());
+            // 2026-11-23 (#158): the binding's declared type is authoritative
+            // when the initializer's fact carries none (a param alias, a call
+            // result). An untyped binding fact made a returned local look
+            // typeless, so the stack-placement proof never saw its escape.
+            let ty = self
+                .facts
+                .get(&produced)
+                .and_then(|fact| fact.ty.clone())
+                .or_else(|| declared.clone());
             let binding = ValueId::new(
                 self.owner.clone(),
                 format!("{site}/let/{}", sanitize_path(name)),
@@ -1003,9 +1015,24 @@ impl<'a> BodyAnalyzer<'a> {
                         }
                     }
                 }
-                let collection_like = target
+                let mut collection_like = target
                     .as_deref()
                     .is_some_and(|target| matches!(target, Expr::MethodCall(..) | Expr::Index(..)));
+                // 2026-11-23 (#159): the canonical insert form NAMES the
+                // container (`xs <- v`), which is neither a method call nor an
+                // index, so the value's lifetime never escaped and a stack
+                // image of it was handed to a heap list. A primitive
+                // destination copies the value; a non-scalar (or untyped)
+                // destination keeps it.
+                if !collection_like {
+                    if let Some(Expr::Identifier(name)) = target.as_deref() {
+                        collection_like = scope
+                            .lookup(name)
+                            .and_then(|destination| self.facts.get(&destination))
+                            .map(|fact| fact.ty.as_ref().is_none_or(|ty| !is_primitive(ty)))
+                            .unwrap_or(true);
+                    }
+                }
                 if collection_like {
                     self.add_sink(
                         &value_id,

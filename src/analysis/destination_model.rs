@@ -698,6 +698,14 @@ pub struct GeneralizedDestinationOwnershipPlan {
     pub enum_callables: BTreeMap<CallableId, EnumCallablePlan>,
     pub objects: BTreeMap<String, ObjectDefinitionPlan>,
     pub object_values: BTreeMap<SemanticValueId, ObjectValuePlan>,
+    /// 2026-11-23 (#158): owner → object types that MUST NOT be stack-placed
+    /// because some value of that type escapes the owner. The aggregate over
+    /// `object_values` alone is not enough: it only sees values the ownership
+    /// walk classified `ScalarReplacedObject`, and a value bound to a
+    /// REASSIGNED local keeps its escape facts on the binding's own fact,
+    /// outside that class. The stack image then outlived the frame that owned
+    /// it (`ret i64` of a dead slot).
+    pub stack_object_vetoes: BTreeMap<String, BTreeSet<String>>,
     pub sinks: BTreeMap<DestinationId, DestinationSinkPlan>,
     pub tuples: BTreeMap<DestinationId, TupleDestinationPlan>,
     pub recursive_carriers: BTreeMap<CallableId, RecursiveCarrierPlan>,
@@ -799,6 +807,14 @@ impl GeneralizedDestinationOwnershipPlan {
                 .entry(value.object.clone())
                 .and_modify(|safe| *safe &= !value.requires_materialization)
                 .or_insert(!value.requires_materialization);
+        }
+        for (owner, vetoed) in &self.stack_object_vetoes {
+            let Some(objects) = groups.get_mut(owner) else {
+                continue;
+            };
+            for object in vetoed {
+                objects.insert(object.clone(), false);
+            }
         }
         groups
             .into_iter()
@@ -931,6 +947,7 @@ pub fn build(
     mark_enum_value_shapes(&mut plan.values, &plan.enums);
     plan.objects = build_object_definitions(items);
     plan.object_values = build_object_values(legacy, &plan.objects);
+    plan.stack_object_vetoes = build_stack_object_vetoes(legacy, &plan.objects);
     insert_object_facts(&mut plan.values, &plan.object_values);
     mark_object_value_shapes(&mut plan.values, &plan.objects);
     insert_legacy_value_facts(legacy, &mut plan.values);
@@ -1231,6 +1248,59 @@ fn object_definition(item: &TopLevel) -> Option<ObjectDefinitionPlan> {
         TopLevel::Export(export) => object_definition(export.inner.as_ref()),
         _ => None,
     }
+}
+
+/// 2026-11-23 (#158): object types that must not be stack-placed in an owner
+/// because SOME value of the type escapes it.
+///
+/// The aggregate in `stack_object_types_by_owner` is only as truthful as the
+/// set it aggregates, and `build_object_values` keeps only the values the
+/// ownership walk classified `ScalarReplacedObject`. A local that is declared,
+/// reassigned, and then returned (`let t: S = s; when c { t = S { .. }; };
+/// term t;`) carries its `Returned` escape on the binding's own fact, which is
+/// not in that class — so the type looked escape-free and the literal image was
+/// stack-placed under a handle that outlived the frame (#158, #159).
+///
+/// Shared by the AST and HIR builders through `stack_object_vetoes` below: both
+/// walk the same plan schema, so the projection supplies (owner, declared type,
+/// escapes-non-empty) and this function decides the veto.
+pub fn stack_object_vetoes<'a>(
+    objects: &BTreeMap<String, ObjectDefinitionPlan>,
+    facts: impl Iterator<Item = (&'a str, Option<&'a Type>, bool)>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut vetoes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (owner, ty, escapes) in facts {
+        if !escapes {
+            continue;
+        }
+        let Some(ty) = ty else { continue };
+        let Some(object) = object_type_name(ty) else {
+            continue;
+        };
+        if !objects.contains_key(object) {
+            continue;
+        }
+        vetoes
+            .entry(owner.to_string())
+            .or_default()
+            .insert(object.to_string());
+    }
+    vetoes
+}
+
+fn build_stack_object_vetoes(
+    legacy: &DestinationOwnershipPlan,
+    objects: &BTreeMap<String, ObjectDefinitionPlan>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    stack_object_vetoes(
+        objects,
+        legacy.callables_by_owner.values().flat_map(|facts| {
+            facts
+                .values
+                .values()
+                .map(|fact| (fact.id.owner.as_str(), fact.ty.as_ref(), !fact.escapes.is_empty()))
+        }),
+    )
 }
 
 fn build_object_values(

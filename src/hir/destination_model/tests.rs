@@ -95,7 +95,22 @@ fn dump(plan: &GeneralizedDestinationOwnershipPlan) -> BTreeMap<String, String> 
     dump_tuples(&mut out, plan);
     dump_recursive_carriers(&mut out, plan);
     dump_loop_engines(&mut out, plan);
+    dump_stack_object_vetoes(&mut out, plan);
     out
+}
+
+/// 2026-11-23 (#158): the stack-placement vetoes are part of the plan the
+/// backend consumes, so the readable diff must show them too.
+fn dump_stack_object_vetoes(
+    out: &mut BTreeMap<String, String>,
+    plan: &GeneralizedDestinationOwnershipPlan,
+) {
+    for (owner, types) in &plan.stack_object_vetoes {
+        out.insert(
+            format!("stack_veto/{owner}"),
+            types.iter().cloned().collect::<Vec<_>>().join(","),
+        );
+    }
 }
 
 fn dump_values(out: &mut BTreeMap<String, String>, plan: &GeneralizedDestinationOwnershipPlan) {

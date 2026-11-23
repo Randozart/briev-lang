@@ -1,0 +1,66 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// struct_append_survives — a struct built in a callee and appended to a list.
+//
+// The element outlives the frame that built it. When the image was
+// stack-placed, the list held the callee's dead slot and the reader got
+// addresses instead of the values (this fixture printed `a=98 b=<address>`).
+//
+// Two forms are checked side by side because only the first builds its element
+// inside the callee: `add_built` constructs `S { a: a, b: 2 }` locally and
+// appends it, `add_given` appends a struct the caller already owns. Both must
+// round-trip.
+//
+// spec: 8.4
+import "std/io.bv";
+
+obj S {
+    a: Int;
+    b: Int;
+};
+
+defn add_built(ss: List<S>, a: Int) -> List<S> {
+    let s: S = S { a: a, b: 2 };
+    ss <- s;
+    term ss;
+};
+
+defn add_given(ss: List<S>, s: S) -> List<S> {
+    ss <- s;
+    term ss;
+};
+
+test a_struct_built_in_the_callee_survives_the_append {
+    let xs: List<S> = [];
+    xs = add_built(xs, 7);
+    expect xs[0].a == 7;
+    expect xs[0].b == 2;
+};
+
+test a_struct_given_by_the_caller_survives_the_append {
+    let xs: List<S> = [];
+    let t: S = S { a: 7, b: 2 };
+    xs = add_given(xs, t);
+    expect xs[0].a == 7;
+    expect xs[0].b == 2;
+};
+
+node main [beginprogram][true] {
+    let xs: List<S> = [];
+    xs = add_built(xs, 7);
+    let s0: S = xs[0];
+    Print#(s0.a as String);
+    Print#("/");
+    Print#(s0.b as String);
+
+    let ys: List<S> = [];
+    let t: S = S { a: 9, b: 4 };
+    ys = add_given(ys, t);
+    let t0: S = ys[0];
+    Print#("|");
+    Print#(t0.a as String);
+    Print#("/");
+    Print#(t0.b as String);
+    endprogram Print#("");
+};

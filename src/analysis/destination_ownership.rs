@@ -629,6 +629,11 @@ fn analyze_callable(
             class,
             Some(name.clone()),
         );
+        // 2026-11-23 (#158): a parameter's DECLARED type is part of its fact.
+        // Without it the escape facts of a parameter (`term s;`) name no type,
+        // and the stack-placement proof below cannot connect them to the
+        // object type they bear.
+        analyzer.set_fact_type(&id, ty.clone());
         param_values.push(id.clone());
         scope.define(name, id);
     }

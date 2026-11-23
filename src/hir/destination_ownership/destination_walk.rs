@@ -484,6 +484,9 @@ pub(super) fn analyze_callable<'a>(
             class,
             Some(name.clone()),
         );
+        // 2026-11-23 (#158): mirror the AST walk — a parameter's DECLARED type
+        // is part of its fact, so escape facts resolve to an object type.
+        analyzer.set_fact_type(&id, ty.clone());
         param_values.push(id.clone());
         scope.define(name, id);
     }
@@ -1258,7 +1261,11 @@ impl<'a> BodyAnalyzer<'a> {
         scope: &mut Scope,
     ) -> Option<ValueId> {
         let HirStmtKind::Let {
-            name, names, expr, ..
+            name,
+            names,
+            expr,
+            ty: declared,
+            ..
         } = &statement.kind
         else {
             return None;
@@ -1279,7 +1286,13 @@ impl<'a> BodyAnalyzer<'a> {
                 .get(&produced)
                 .map(|fact| fact.class)
                 .unwrap_or(DestinationClass::Unknown);
-            let ty = self.facts.get(&produced).and_then(|fact| fact.ty.clone());
+            // 2026-11-23 (#158): mirror the AST walk — the binding's declared
+            // type is authoritative when the initializer's fact carries none.
+            let ty = self
+                .facts
+                .get(&produced)
+                .and_then(|fact| fact.ty.clone())
+                .or_else(|| declared.clone());
             let binding = ValueId {
                 owner: self.owner.clone(),
                 path: format!("{site}/let/{}", sanitize_path(name)),
@@ -1584,12 +1597,25 @@ impl<'a> BodyAnalyzer<'a> {
                         }
                     }
                 }
-                let collection_like = target.as_ref().is_some_and(|target| {
+                let mut collection_like = target.as_ref().is_some_and(|target| {
                     matches!(
                         target.kind,
                         HirExprKind::MethodCall { .. } | HirExprKind::Index(..)
                     )
                 });
+                // 2026-11-23 (#159): mirror the AST walk — `xs <- v` names the
+                // container directly, so the value takes on its lifetime.
+                if !collection_like {
+                    if let Some(HirExprKind::Identifier(name)) =
+                        target.as_ref().map(|target| &target.kind)
+                    {
+                        collection_like = scope
+                            .lookup(name)
+                            .and_then(|destination| self.facts.get(&destination))
+                            .map(|fact| fact.ty.as_ref().is_none_or(|ty| !is_primitive(ty)))
+                            .unwrap_or(true);
+                    }
+                }
                 if collection_like {
                     self.add_sink(
                         &value_id,

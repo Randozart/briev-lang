@@ -1,0 +1,42 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// struct_reassign_return — a struct local that is declared, REASSIGNED, and
+// then returned.
+//
+// The value's address outlives the frame that built it. When the object image
+// was stack-placed the caller read a dead slot (this fixture printed a large
+// address where `2` belongs). The placement is licensed by an escape proof:
+// "no value of this type escapes the owner". A binding that is reassigned keeps
+// its escape fact on the binding, so the proof must read the fact's TYPE — an
+// untyped binding fact made a returned struct look escape-free.
+//
+// spec: 8.4
+import "std/io.bv";
+
+obj S {
+    a: Int;
+    b: Int;
+};
+
+defn step(s: S) -> S {
+    let t: S = s;
+    when s.a > 0 {
+        t = S { a: 2, b: s.b };
+    };
+    term t;
+};
+
+test the_reassigned_value_is_the_one_that_returns {
+    expect step(S { a: 1, b: 5 }).a == 2;
+    expect step(S { a: 0, b: 5 }).a == 0;
+};
+
+node main [beginprogram][true] {
+    let acc: S = S { a: 1, b: 5 };
+    let y: S = step(acc);
+    Print#(y.a as String);
+    Print#("/");
+    Print#(y.b as String);
+    endprogram Print#("");
+};

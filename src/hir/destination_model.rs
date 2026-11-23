@@ -124,6 +124,17 @@ pub fn build(
     mark_enum_value_shapes(&mut plan.values, &plan.enums);
     plan.objects = build_object_definitions(program);
     plan.object_values = build_object_values(legacy, &plan.objects);
+    // 2026-11-23 (#158): the same escape vetoes the AST builder produces — one
+    // shared decision (`stack_object_vetoes`), so the two plans stay equal.
+    plan.stack_object_vetoes = crate::analysis::destination_model::stack_object_vetoes(
+        &plan.objects,
+        legacy.callables_by_owner.values().flat_map(|facts| {
+            facts
+                .values
+                .values()
+                .map(|fact| (fact.id.owner.as_str(), fact.ty.as_ref(), !fact.escapes.is_empty()))
+        }),
+    );
     insert_object_facts(&mut plan.values, &plan.object_values);
     mark_object_value_shapes(&mut plan.values, &plan.objects);
     insert_legacy_value_facts(legacy, &mut plan.values);

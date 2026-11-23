@@ -1,3 +1,35 @@
+## 2026-11-23 — stack-placed struct images outlive the frame that built them (#158, #159 — FIXED)
+
+Two shapes, one cause. A struct literal is either stack- or heap-placed by an
+escape proof: "every value of this object type in this callable is proven
+non-escaping". The proof aggregated only the values the ownership walk
+classified `ScalarReplacedObject`, so two escape paths were invisible:
+
+1. **#158 — a reassigned-and-returned local.** `let t: S = s; when c { t = S {..};
+   }; term t;` Print#(y.a) printed `140080196900736` (an address) instead of
+   `2`. The binding `t` keeps its `Returned` escape on its own fact, whose type
+   was unset (it was created from the initializer's fact, a param alias), so
+   the aggregate saw nothing.
+2. **#159 — a struct built in a callee and appended.** `let s: S = S {..}; ss <-
+   s;` in a defn printed `bad a=98 b=<address>` while the caller-builds-and-
+   passes variant printed `7/2`. `xs <- v` names the CONTAINER element, which
+   is neither a method call nor an index, so no `CollectionInsert` escape was
+   recorded and the value looked frame-local.
+
+Fixes (three, each general):
+- `stack_object_vetoes`: owner → object types that SOME escaping fact of that
+  type has, subtracted from the stack-eligible set. Both the AST and HIR
+  builders share one implementation, so the plans stay byte-identical.
+- escape facts now carry a type: a parameter's declared type, and a `let`
+  binding's declared type when its initializer's fact has none.
+- `xs <- v` records `CollectionInsert` when the destination is a non-scalar
+  binding (a primitive container copies its elements and needs no veto).
+
+Pinned by `tests/tier1/struct_reassign_return.bv` (`2/5`) and
+`tests/tier1/struct_append_survives.bv` (`7/2|9/4`), each with a SPEC §8.11
+`test { }` block; the tier1 corpus covers the tail-loop and collection paths
+across stdlib. Pre-fix A/B recorded in the stage-A commit message.
+
 ## 2026-11-23 — a collection txn/member inlined in a node body can swallow the node's output (OPEN, pre-existing)
 
 Found while shaping the #152 regression fixture. Independent of #152: it
