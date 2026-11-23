@@ -134,10 +134,11 @@ BRIEV_PTL_SSH="ssh <user>@<host>" BRIEV_PTL_ENV="XDG_CACHE_HOME=/tmp/briev-cache
   bash benchmarks/intel_ptl/g0.sh
 ```
 
-## 4. Three harness defects found and fixed while measuring (not compiler changes)
+## 4. Three harness defects found and fixed (not compiler changes)
 
-Both are harness-only (invariant 7 untouched: no file under `src/` and no file under
-`lib/std/`).
+All three are harness-only (invariant 7 untouched: no file under `src/` and no file
+under `lib/std/`). The first two surfaced while measuring; the third surfaced when
+CI ran the M1 gate, which is the same discipline applied one layer out.
 
 1. **The node's root filesystem was 100 % full (64 K free), so the gate aborted with
    no verdict.** The compiler's FFI object cache is
