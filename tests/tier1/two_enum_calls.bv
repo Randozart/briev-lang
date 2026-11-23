@@ -1,0 +1,67 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// two_enum_calls — two enum-returning calls bound to two locals in one body,
+// both unwrapped later, inside a TAIL-RECURSIVE defn.
+//
+// The tail recursion matters: a tail-recursive defn's hidden result slot is
+// hoisted into an extra parameter so the loop backedge can forward it. That
+// hoisted slot belongs to the SELF-call only. When every sret callee in the
+// body was collected into the same map, both lookups wrote the self-call's
+// slot: the second result overwrote the first, and both unwraps read the later
+// value (this fixture printed `BBBB/BBBB` before the fix).
+//
+// spec: 8.4
+import "std/io.bv";
+import "std/result.bv";
+
+defn lookup(pairs: List<(String, String)>, key: String) -> Result<String, String> {
+    let n: Int = pairs.Count#();
+    let hits: Int = 0;
+    let found: String = "";
+    foreach i in 0..n {
+        when pairs[i].0 == key {
+            hits = hits + 1;
+            found = pairs[i].1;
+        };
+    };
+    when hits == 0 {
+        term Err("missing");
+    };
+    term Ok(found);
+};
+
+defn field_str(ap: List<(String, String)>, key: String) -> Result<String, String> {
+    let r: Result<String, String> = lookup(ap, key);
+    when is_err(r) {
+        term Err("bad");
+    };
+    term Ok(unwrap(r));
+};
+
+defn step(i: Int, ap: List<(String, String)>, acc: String) -> String {
+    when i >= 1 {
+        term acc;
+    };
+    let a: Result<String, String> = field_str(ap, "first");
+    when is_err(a) {
+        term "e1";
+    };
+    let b: Result<String, String> = field_str(ap, "second");
+    when is_err(b) {
+        term "e2";
+    };
+    term step(i + 1, ap, unwrap(a) + "/" + unwrap(b));
+};
+
+test a_lookup_keeps_the_value_it_found {
+    let ap: List<(String, String)> = [("first", "AAAA"), ("second", "BBBB")];
+    expect unwrap(lookup(ap, "first")) == "AAAA";
+    expect unwrap(lookup(ap, "second")) == "BBBB";
+};
+
+node main [beginprogram][true] {
+    let ap: List<(String, String)> = [("first", "AAAA"), ("second", "BBBB")];
+    Print#(step(0, ap, ""));
+    endprogram Print#("");
+};

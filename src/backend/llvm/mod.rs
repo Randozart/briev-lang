@@ -3993,14 +3993,18 @@ impl LlvmBackend {
             if !self.ctx.tail_recursive.contains(&d.name) {
                 continue;
             }
+            // 2026-11-23 (#157): ONLY the self-call's destination is hoisted.
+            // The hoisted parameter is the tail loop's stable result slot, and
+            // the loop's backedge is a self-call; any OTHER sret callee in the
+            // body is an ordinary call that must write its own slot. Collecting
+            // every sret callee gave `step` an extra `%hsret1` for `member` and
+            // — because the call site consulted this map before the bound let's
+            // slot — made two `let a = field_str(..)` / `let b = field_str(..)`
+            // calls share `%hsret0`, so the second result overwrote the first.
             let mut callees: Vec<String> = Vec::new();
-            crate::ast::visit::walk_stmts(&d.body, &mut |e| {
-                if let crate::ast::Expr::Call(callee, _, _) = e {
-                    if self.ctx.defn_sret.contains(callee) && !callees.contains(callee) {
-                        callees.push(callee.clone());
-                    }
-                }
-            });
+            if self.ctx.defn_sret.contains(&d.name) {
+                callees.push(d.name.clone());
+            }
             callees.sort();
             if !callees.is_empty() {
                 self.ctx.defn_hoisted_sret.insert(d.name.clone(), callees);

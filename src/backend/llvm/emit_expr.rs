@@ -10012,19 +10012,23 @@ impl LlvmBackend {
                 call_args.push(format!("ptr {}", slot));
             }
             if takes_sret {
+                // 2026-11-23 (#157): the BOUND let's own slot wins. A
+                // tail-recursive body's hoisted `%hsret{i}` belongs to its
+                // SELF-call; using it for a different sret callee made two
+                // `let a = f(..)` / `let b = f(..)` bindings write the same
+                // slot, so the second result overwrote the first (both
+                // unwraps read the later value). The per-let slot is exact.
                 let slot = self
                     .fun
-                    .hoisted_sret_params
-                    .get(name)
-                    .cloned()
+                    .sret_call_slot
+                    .clone()
+                    .or_else(|| self.fun.hoisted_sret_params.get(name).cloned())
                     .or_else(|| {
-                        self.fun.sret_call_slot.clone().or_else(|| {
-                            if self.fun.enum_return_context {
-                                self.fun.enum_out_slot.clone()
-                            } else {
-                                None
-                            }
-                        })
+                        if self.fun.enum_return_context {
+                            self.fun.enum_out_slot.clone()
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or_else(|| {
                         let s = self.fun.next_reg_with_prefix("esrt");
