@@ -10,6 +10,8 @@
 // by Python) → Python saves+persists → Node loads (the reverse). Numeric bump
 // round-trips in-process on both sides. Toolchain-guarded.
 
+mod common;
+
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -36,6 +38,7 @@ fn python_node_cross_language_bridge() {
     }
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let base = std::env::temp_dir().join("briev_py_node_bridge");
+    let _claim = common::claim_out_dir(&base);
     let _ = std::fs::remove_dir_all(&base);
     let node_dir = base.join("node");
     let py_dir = base.join("py");

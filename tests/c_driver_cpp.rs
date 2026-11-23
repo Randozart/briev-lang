@@ -4,6 +4,8 @@
 // driver compiled with g++ exercises the boundary types + meld path.
 // Toolchain-guarded on g++.
 
+mod common;
+
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -22,6 +24,7 @@ fn cpp_roundtrip() {
     }
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let out_dir = std::env::temp_dir().join("briev_cpp_test");
+    let _claim = common::claim_out_dir(&out_dir);
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
 

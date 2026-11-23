@@ -6,6 +6,8 @@
 // boundary functions cast-free; the shim's per-category parse/build snippets
 // (config/glue.dbvl native.*) marshal natively. Toolchain-guarded.
 
+mod common;
+
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -24,6 +26,7 @@ fn python_native_extension_roundtrip() {
     }
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let out_dir = std::env::temp_dir().join("briev_python_native_test");
+    let _claim = common::claim_out_dir(&out_dir);
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
 

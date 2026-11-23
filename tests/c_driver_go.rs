@@ -6,6 +6,8 @@
 // zero-copy). Toolchain-guarded: finds `go` on PATH or the portable
 // ~/briv-tools/go/bin/go.
 
+mod common;
+
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -43,6 +45,7 @@ fn go_roundtrip() {
     };
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let base = std::env::temp_dir().join("briev_go_test");
+    let _claim = common::claim_out_dir(&base);
     let _ = std::fs::remove_dir_all(&base);
     let pkg = base.join("boundary");
     std::fs::create_dir_all(&pkg).unwrap();

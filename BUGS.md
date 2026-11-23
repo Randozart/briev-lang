@@ -1,3 +1,33 @@
+## 2026-11-23 — c_driver gates race their own temp dirs under parallel/ concurrent full gates (FIXED)
+
+The five c_driver suites (`c_driver_boundary`, `c_driver_cancel`,
+`c_driver_library`, `c_driver_node`, `c_driver_needs_state`) each build into a
+fixed dir under `std::env::temp_dir()` (`briev_<name>_test`) and
+`remove_dir_all` it at start and end. Under the project's gate runner
+(cargo-nextest, one process per test) this was only ever safe against the
+*other four* suites, because their dir names are distinct. The real hazard is
+**two concurrently-running full gates** (another agent session's gate, or a
+re-run overlapping a still-running hold): the two `c_driver_cancel` tests,
+running in two processes, both use `/tmp/briev_cancel_test`, and one's
+`remove_dir_all` deletes the other's output between writing the `.ll` and
+linking it.
+
+Symptom (gate #1 under `-j 4`, 5 FAIL / 4613):
+
+- `llc: error: .../briev_c_driver_test/pp-types.opt.ll: Could not open input file`
+- `Fatal error: can't create .../briev_cancel_test/cancel.briev_rt.o`
+
+Not a compiler regression: gate #2 on an idle machine was 4613/4613 green,
+and serial `-j1` was 5/5. Same defect class as the saltpetre GEMM baseline
+race fixed in trunk `a53db50da` (per-process `OnceLock` memoisation).
+
+Fix (this batch): `tests/common/mod.rs` provides `claim_out_dir` — a
+cross-process claim via atomic `create_dir` on a sibling `.dir-name` lock,
+released on drop, 300 s deadline (loud failure, not a hang). All 12 c_driver
+suites now hold the claim across their whole build/run/teardown window.
+Verified: `c_driver_cancel` + `c_driver_library` in parallel under nextest
+`-j 2` pass.
+
 ## 2026-11-22 — a `defn` that creates, appends to and returns a `List<struct>` hands back a corrupt element store (OPEN)
 
 ## 2026-11-22 — The reference interpreter has no cast-lane prelude, so `Float as String` renders differently (OPEN)

@@ -5,6 +5,8 @@
 // NUL-invariant data. Toolchain-guarded on a Lua built from source at
 // ~/briv-tools/lua-*/src/lua (dlopen + -Wl,-E).
 
+mod common;
+
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -48,6 +50,7 @@ fn lua_roundtrip() {
     };
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let base = std::env::temp_dir().join("briev_lua_test");
+    let _claim = common::claim_out_dir(&base);
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
 

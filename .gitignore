@@ -19,9 +19,12 @@ spec/*.html
 # the everyday-features E2E corpus; fixtures = router/page corpora) —
 # `tests/*` only matches direct children, so negating the dirs makes their
 # contents trackable again (daily_use_smoke.bv was silently untracked).
+# 2026-11-23: re-include tests/common/ — the shared module (DirClaim
+# cross-process lock) pulled in by `mod common;` from the c_driver suite.
 tests/*
 !tests/*.rs
 !tests/tier1
+!tests/common
 !tests/fixtures
 !tests/compile_fail
 !tests/directives

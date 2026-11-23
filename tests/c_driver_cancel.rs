@@ -3,6 +3,8 @@
 // the exported Briv loop polls CancelRequested#() explicitly and stops
 // early (partial result << the uncancelled full result).
 
+mod common;
+
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -21,6 +23,7 @@ fn host_cancellation_stops_briev_loop() {
     }
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let out_dir = std::env::temp_dir().join("briev_cancel_test");
+    let _claim = common::claim_out_dir(&out_dir);
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
 
