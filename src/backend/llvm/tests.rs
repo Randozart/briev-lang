@@ -15506,3 +15506,46 @@ fn frame_accessor_reads_keep_the_stored_and_folded_shapes() {
         "the retired caret spelling must never appear in emitted IR"
     );
 }
+
+/// 2026-11-24 (BUGS.md): an inline-asm syscall's operand list must carry
+/// exactly one entry per non-clobber constraint. The aarch64 `brk` arm passed
+/// three operands against two inputs, so LLVM rejected EVERY arena-using
+/// module for aarch64 ("number of input constraints does not match number of
+/// parameters") while the native arm stayed correct — one trivial fixture per
+/// triple could not see it. Asserted as a rule (counts + the number-in-register
+/// constraint) rather than as a literal string, so the invariant survives a
+/// re-spelling of the instruction.
+#[test]
+fn inline_asm_syscalls_have_one_operand_per_input_constraint() {
+    for (triple, number_reg) in [
+        ("x86_64-unknown-linux-gnu", "{rax}"),
+        ("aarch64-unknown-linux-gnu", "{x8}"),
+    ] {
+        let mut backend = LlvmBackend::new().with_target_triple(triple);
+        let mut out = String::new();
+        assert!(
+            backend.emit_brk_syscall(&mut out, "%brk", "%arg", "  "),
+            "{triple}: the Linux brk lowering must exist"
+        );
+        let rest = out.split("asm sideeffect \"").nth(1).expect("asm prefix");
+        let quoted: Vec<&str> = rest.split('"').collect();
+        let constraints = quoted.get(2).copied().expect("constraint string");
+        let operands = quoted
+            .get(3)
+            .and_then(|tail| tail.split('(').nth(1))
+            .expect("operand list");
+        let operand_count = operands
+            .trim_end_matches(|c: char| c == ')' || c.is_whitespace())
+            .split(',')
+            .count();
+        let input_count = constraints.split(',').filter(|c| c.starts_with('{')).count();
+        assert_eq!(
+            input_count, operand_count,
+            "{triple}: every input constraint needs exactly one operand: {out}"
+        );
+        assert!(
+            constraints.contains(number_reg),
+            "{triple}: the syscall number needs a register constraint: {out}"
+        );
+    }
+}

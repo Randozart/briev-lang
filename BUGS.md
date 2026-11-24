@@ -1,3 +1,47 @@
+## 2026-11-24 — aarch64: the arena `brk` syscall asm passed 3 operands for 2 input constraints, so no arena/collection program could build (FIXED)
+
+**Found by** the new cross-target IR-validity sweep (`scripts/cross_target_ir.sh`):
+compiling the tier1/tier2 corpus for `aarch64-unknown-linux-gnu` with `--llvm`
+failed for **every** arena-using program, with the compiler's own diagnostic:
+
+```
+%arb016 = call i64 asm sideeffect "svc #0", "={x0},{x8},{x0},~{memory}" (i64 12, i64 12, i64 0)
+why:  LLVM rejected the module: number of input constraints does not match number of parameters
+```
+
+**Cause.** `emit_brk_syscall`'s aarch64 arm (`src/backend/llvm/mod.rs`) emitted
+the shape `(i64 12, i64 12, i64 {arg})` — a duplicated literal syscall number —
+while its constraint string has only **two** inputs (`{x8}` = number, `{x0}` =
+the single `brk` argument). The x86_64 arm beside it passes `(i64 12, i64
+{arg})` for its two inputs, so the aarch64 arm was simply one operand long. The
+`SysCall#` arm (`intrinsics.rs`) is correct: 7 operands for 7 inputs.
+
+**Impact.** The libc-free arena primitive is on the collection/allocation path,
+so aarch64 could not compile any program that allocates through the arena
+(`arena_*`, `coll_request_arena`, `data_verify`, and every collection fixture).
+`riscv64` and `wasm32` were unaffected — the same reason the defect stayed
+invisible: the Tier-2 CI step compiled **one trivial fixture** per triple
+(`tests/fixtures/minimal.bv`), which never reaches an arena.
+
+**Fix.** The operand list now matches the constraints (`i64 12, i64 {arg}`),
+mirroring x86_64. Regression is behavioral, not literal:
+`backend::llvm::tests::inline_asm_syscalls_have_one_operand_per_input_constraint`
+asserts, for both Linux arms, that the emitted `asm sideeffect` has exactly one
+operand per non-clobber input constraint and that the syscall number has a
+register constraint (fails on the pre-fix emission). CI gained an independent
+`cross-target` native-matrix case running the self-calibrating corpus sweep:
+**a program the native triple accepts must also emit verifiable IR for the
+sibling Linux triple**, with membership decided by native success so no skip
+list can rot.
+
+**Retirement.** The `cross-target` case subsumes the one-fixture-per-triple
+half of the `targets` case; fold them once `targets` is corpus-wide.
+
+**Gate result (2026-11-24).** `bash scripts/cross_target_ir.sh
+aarch64-unknown-linux-gnu` → **100 programs checked, 0 failed** (PASS). Pre-fix,
+the same sweep failed on every arena/collection program; those pre-fix
+diagnostics are retained under
+`/tmp/opencode/codegen-bughunt/verify-aarch64/`.
 ## 2026-11-23 — `x::Ptr as Int` emits invalid IR (OPEN, pre-existing)
 
 Found while building the wave-10 IR-identity experiment: the same program fails
