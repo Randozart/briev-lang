@@ -3394,6 +3394,10 @@ impl LlvmBackend {
             }
         }
         writeln!(out).ok();
+        // 2026-11-24 (BUGS.md wasm32 width class): record the loaded register's
+        // physical width so handle consumers derive instead of assuming the
+        // target word.
+        self.fun.reg_value_ll.insert(val.clone(), llvm_ty.clone());
         // 2026-10-20 (pointer provenance): Ptr-field caching is seeded once
         // at function entry by `preload_state_ptr_fields`; a load after a
         // store is emitted fresh and not re-cached, so it cannot be reused
