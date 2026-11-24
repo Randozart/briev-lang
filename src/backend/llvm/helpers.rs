@@ -3673,7 +3673,7 @@ impl LlvmBackend {
     /// when shrinking). Handles are unsigned addresses, so this never signs.
     /// `None` when either side is not a plain `iN` — the caller keeps its
     /// existing behaviour rather than inventing a conversion.
-    fn convert_int_width(
+    pub(crate) fn convert_int_width(
         &mut self,
         out: &mut String,
         indent: &str,
