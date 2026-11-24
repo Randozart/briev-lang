@@ -17,6 +17,13 @@ const QUICK_SET: &[&str] = &[
     "fsm_smoke",
     "iter_chain_multi",
     "json_empty_object_lookup",
+    // 2026-11-24 (BUGS.md): an inlined collection member call FIRST in a node
+    // body. `HashMap.init` left its occupancy array un-zeroed, so the first
+    // probe loaded never-written storage; LLVM folded it to `undef`, and SCCP
+    // deleted the node's output at -O2+ (printed nothing, exit 0) while -O0
+    // printed 7/0. This is the representative of the "reads uninitialized
+    // allocated storage" class, which only a profile differential can see.
+    "hashmap_insert_is_first_statement",
 ];
 
 /// Fixtures known to miscompile or diverge across optimization levels. The

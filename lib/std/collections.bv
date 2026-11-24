@@ -119,6 +119,21 @@ defn fresh_int_list(items: List<Int>) -> List<Int> {
 // so `(key as Int) % cap` maps each to a distinct slot. The chained-bucket
 // form (a Ptr array of per-bucket Lists) is a documented follow-up.
 
+// 2026-11-24 (BUGS.md): allocate an occupancy array AND clear it — the single
+// owner for the init/rehash step (rule 17). `Malloc#` is uninitialized
+// (@malloc), and every probe reads `occupied[p]` before any write, so a fresh
+// capacity-`n` table MUST arrive cleared. Without this, LLVM folds the first
+// probe's load to `undef`, treats the probe branch as UB, and deletes the
+// program's observable output at -O2+ (`HashMap.init`'s missing clear: a node
+// whose first statement was an insert printed nothing and exited 0).
+defn new_occupancy(n: Int) -> Ptr<Int> {
+    let occ: Ptr<Int> = Malloc#(n * 8) as Ptr<Int>;
+    foreach j in 0..n {
+        occ[j] = 0;
+    };
+    term occ;
+};
+
 // 2026-08-17 (storage + tuple correctness, plan
 // 2026-08-17-hashmap-storage-tuple-correctness.md): HashMap's element is the
 // (K, V) PAIR — `m <- (k, v)`, `[(k1,v1),(k2,v2)]` literals, `m.get(k)` by
@@ -173,7 +188,13 @@ obj HashMap<K, V> {
         };
         keys = Malloc#(c * 8) as Ptr<K>;
         vals = Malloc#(c * 8) as Ptr<V>;
-        occupied = Malloc#(c * 8) as Ptr<Int>;
+        // 2026-11-24 (BUGS.md): `Malloc#` is uninitialized (@malloc), and every
+        // probe reads `occupied[p]` before any write. An un-zeroed array let
+        // LLVM fold the first probe's load to `undef`, treat the probe branch
+        // as UB, and delete the whole program's observable output at -O2+
+        // (silent node, exit 0). `init` must clear occupancy exactly as
+        // `rehash` always did; `new_occupancy` is the single owner of that step.
+        occupied = new_occupancy(c);
         cap = c;
         count = 0;
     };
@@ -201,10 +222,7 @@ obj HashMap<K, V> {
             let new_cap: Int = cap * 2;
             let new_keys: Ptr<K> = Malloc#(new_cap * 8) as Ptr<K>;
             let new_vals: Ptr<V> = Malloc#(new_cap * 8) as Ptr<V>;
-            let new_occ: Ptr<Int> = Malloc#(new_cap * 8) as Ptr<Int>;
-            foreach j in 0..new_cap {
-                new_occ[j] = 0;
-            };
+            let new_occ: Ptr<Int> = new_occupancy(new_cap);
             foreach i in 0..cap {
                 when occupied[i] == 1 {
                     let rk: K = keys[i];
