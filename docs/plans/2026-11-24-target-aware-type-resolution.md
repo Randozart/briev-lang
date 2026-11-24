@@ -194,6 +194,36 @@ dereference site taking its width from `int_bits` while the value is boxed. The
 codebase's dominant form is already `inttoptr i64` (13 sites), so these sites are
 the anomalies; make them use the loaded value's width, then re-measure.
 
+## Ready-to-apply patch recipe (per-site, hand-held)
+
+Apply in this order, running `cargo build --bin brievc` after EACH site (a scripted pass
+corrupts the source: the format string and its argument list are separate text positions):
+
+1. Add `narrow_handle_to_target_width` (≈20 lines) to `impl LlvmBackend` in
+   `src/backend/llvm/emit_expr.rs`, and make `convert_int_width` in `helpers.rs`
+   `pub(crate)`. Build. Expect native IR byte-identical (the helper no-ops when the
+   recorded width equals the target word or is unknown).
+2. For each site below: insert `let narrowed = self.narrow_handle_to_target_width(out, indent, &<value>);`
+   immediately BEFORE the `let hw = ...` line, and replace `<value>` in the *argument list*
+   (never in the format string) with `narrowed`. Build after every site.
+3. Then the slot rule: make `[1 x i32]` field slots consistent with the documented i64
+   rule (`vector_array_llvm_type` vs `push_field_type`), native IR identity checked first.
+4. Battery: `cross_target_ir.sh wasm32-unknown-wasi` → 0, aarch64 → 0, native corpus gate green.
+
+| format line | arg line | width token | value token |
+|---|---|---|---|
+| 1401 | 1402 | `hw` | `row_reg` |
+| 3346 | 3347 | `hw` | `handle` |
+| 3855 | 3856 | `hw` | `obj_reg.name` |
+| 5175 | 5176 | `hw` | `obj_reg.name` |
+| 5264 | 5265 | `hw` | `row_reg` |
+| 6375 | 6376 | `hw` | `row_reg` |
+| 8875 | 8876 | `hw` | `handle` |
+| 11628 | 11629 | `hw` | `ctx.scrut` |
+| 11678 | 11679 | `hw` | `ctx.scrut` |
+
+(9 candidate `inttoptr` sites; verify each is an integer→pointer conversion before editing.)
+
 ## Fix strategy (general; no per-type special cases)
 
 1. **Make the legacy resolver target-aware.** Give the resolution chain the
