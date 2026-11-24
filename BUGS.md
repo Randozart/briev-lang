@@ -1,3 +1,67 @@
+## 2026-11-24 — wasm32 cross-target state after the #161–#164 stack: 15 IR-invalid programs (OPEN; work list)
+
+Measured on the integrated tree with the gate the stack itself adds:
+
+```bash
+bash scripts/cross_target_ir.sh wasm32-unknown-wasi   # 100 checked, 15 failed
+bash scripts/cross_target_ir.sh aarch64-unknown-linux-gnu  # 100 checked,  0 failed
+```
+
+Reproducible, and the corpus is self-calibrating (native success decides
+membership), so this number cannot silently drift: it either drops or the gate
+fails. Native IR is byte-identical across the whole stack on a 12-fixture
+sample, so none of this touches the 64-bit path.
+
+**One finding worth carrying forward.** PR #163's headline (a print-family call
+must return its callee's declared width) is **inert in the integrated tree**:
+compiling the corpus for wasm32 with the pre-#163 binary and with the post-#163
+binary produces *byte-identical* output — the same 52 programs failed, the same
+failure set, and the same split of call widths:
+
+```
+call i32 @print_int   78      call i64 @print_int  295
+call i32 @print_str  121      call i64 @print_str  298
+```
+
+Those `i32` calls are emitted *before* #163, so part of that class was already
+handled elsewhere; the 295/298 `i64` sites are a path the seven patched
+`print_symbol` call sites do not own. PR #164 (handle narrowing at read) is the
+one that actually moves the number: **52 → 15**.
+
+So: the remaining 15 are a real work list, and the print-width path has a second
+emitter that nobody has found yet. Whoever takes the next slice should start
+from "which code path emits `call i64 @print_*` when `print_call_ret_ty` exists
+on all seven `print_symbol` sites" rather than re-measuring the baseline.
+
+## 2026-11-24 — wasm32 LLVM: arena handles, GEP sizes and comparisons carried the wrong width (FIXED)
+
+**Found by** `scripts/cross_target_ir.sh wasm32-unknown-wasi`. Six corpus
+fixtures (`arena_smoke`, `arena_folded_loop`, `arena_free_cast`,
+`arena_scope_reset`, `arena_scope_reset_rejected`, `clock_monotonic_smoke`)
+emitted invalid wasm32 IR. Five independent seams, each a different instance of
+"the emitter's declared width disagrees with the register's physical width":
+
+| Site | Emitted | Value |
+|---|---|---|
+| struct pointer-field store | `inttoptr i64 %val` | `%val` already a `ptr` (wasm32 cast lane), or i32 |
+| `emit_arena_alloc` | `ptrtoint … to i64`, `getelementptr i8, …, i64 %size` | target-width handle/size |
+| arena grow | `shl i64 %size, 1`, `malloc(i64 %size)` | target-width size |
+| `Alloc#` routing | `add i64 0, %handle` | target-width handle |
+| comparisons / bitwise | `icmp slt i32 %call_i64, %x` | both operands i64 (C-ABI result) |
+
+**Fix.** Producers record the width they actually emit (`reg_value_ll`) and
+consumers read it: `pointer_from_handle` passes a `ptr` through and converts at
+the recorded width; `route_arena_handle` copies `Alloc#` results at the handle
+width; `aligned_int_operands` picks the opcode width from the registers and
+widens the narrower operand; `LaneKind::PtrToInt` and the arena grow/malloc
+sites use the recorded width instead of a literal `i64`. Every changed path
+previously emitted invalid IR, so native output is provably unchanged.
+
+**Evidence.** wasm32 corpus **17 → 11** IR-invalid programs; aarch64 **0**;
+native tier1 corpus gate ok; `cargo test --lib` 4013 passed; native IR
+byte-identical on 12 fixtures (including all six). Commit on
+`fix/wasm32-read-narrowing`.
+
 ## 2026-11-24 — wasm32 LLVM: one value is resolved at two widths, so the module does not verify (OPEN)
 
 **Found by** `scripts/cross_target_ir.sh wasm32-unknown-wasi` (the corpus
