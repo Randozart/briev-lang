@@ -1,3 +1,42 @@
+## 2026-11-24 — wasm32 LLVM: one value is resolved at two widths, so the module does not verify (OPEN)
+
+**Found by** `scripts/cross_target_ir.sh wasm32-unknown-wasi` (the corpus
+sweep added this session). Of 12 sampled tier1 programs the native triple
+accepts, **5** emit invalid IR for wasm32. Three distinct sites, one class —
+the same value claimed at two widths:
+
+| Fixture | Diagnostic | The two claimants |
+|---|---|---|
+| `plain_ptr_smoke` | `'%t21' defined with type 'i32' but expected 'i64'` on `store i64 %t21, ptr @p` | the global's declarator (i64) vs the value path (i32) |
+| `ptr_crossdefn_probe` | `'%t7' defined with type 'i64' but expected 'i32'` | a defn signature vs the caller's value |
+| `slice_basics` | `inttoptr i32 %t520 to ptr` where `%t520` is i64 | the pointer-conversion site (`int_bits`) vs the producer (i64) |
+
+The 2026-11-17 wasm32 `Ptr`-parameter handle entry is a fourth instance of the
+same root ("the fix is a unit" there).
+
+**Cause.** Two resolvers disagree about the target width, and the newer,
+correct one has a fraction of the call sites:
+
+| Path | Sites | Target-aware? |
+|---|---|---|
+| `CastingGraph::resolve_llvm_type(universe, ty, int_bits)` (mandated by the Architecture Pillars; `docs/architecture/backend-type-dispatch.md`) | **18** | yes — `bits → maxbits → minbits → int_bits` |
+| `LlvmBackend::llvm_type` → `types::lower_type` → `protocol_llvm_type` (`mod.rs:1277`) | **149** | **no** — no `int_bits` parameter; literal `"i64"` fallback (`mod.rs:1320`, `types.rs:41`) |
+
+68 sites hand-apply `format!("i{}", self.ctx.int_bits)` to compensate, and two
+helpers re-special-case the flexible `Int` before delegating
+(`frgn_llvm_type` `mod.rs:1473`; `plain_global_llvm_type` `helpers.rs:2920`) —
+the "special-case one pattern" anti-pattern, one type at a time. The same 149
+sites hold the 24 `Type::Custom(…) ==` comparisons Rule 19 requires at zero.
+
+**Not fixed here** — this is a campaign, not a patch: making the legacy resolver
+target-aware (i.e. delegating to the casting graph) is a 149-site blast radius
+that must be proven by IR A/B per site, not by reading. Plan with the acceptance
+gates: [target-aware type resolution](../plans/2026-11-24-target-aware-type-resolution.md).
+Recorded rather than deferred silently: the corpus sweep is the tool, and it
+runs today as the (`aarch64`) `cross-target` CI case.
+
+Evidence: `/tmp/opencode/codegen-bughunt/wasm32-probe/`.
+
 ## 2026-11-23 — stack-placed struct images outlive the frame that built them (#158, #159 — FIXED)
 
 Two shapes, one cause. A struct literal is either stack- or heap-placed by an
