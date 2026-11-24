@@ -2843,6 +2843,15 @@ impl LlvmBackend {
                 reg.name
             )
             .ok();
+            // 2026-11-24 (BUGS.md wasm32 width class): the conversion makes
+            // this register a genuine i64 word even though the Briev type is
+            // still stamped `Ptr`. Record that width, or a later width-aware
+            // seam re-converts it as if it were the target word (on wasm32:
+            // `inttoptr i32 <i64 reg>`, rejected by the verifier). 64-bit
+            // targets emit the same ptrtoint as before.
+            self.fun
+                .reg_value_ll
+                .insert(converted.clone(), "i64".to_string());
             return converted;
         }
         if self.ctx.int_bits == 64 {
@@ -3610,9 +3619,21 @@ impl LlvmBackend {
         // decides the `inttoptr` operand type — a boxed i64 handle (state slot,
         // tier-list block) is i64 even on a 32-bit target. `int_bits` stays the
         // fallback for an unknown register, so 64-bit builds are unchanged.
-        let hw = self.value_width_or_target_width(handle);
+        //
+        // A register the cast lane stamped `ptr` IS a pointer already (the
+        // wasm32 `Int -> Ptr` lane materializes one) and re-converting it
+        // would emit `inttoptr iN <ptr>`, which the verifier rejects. Pass it
+        // through: the old arm could not have compiled on any target, so this
+        // changes no valid emission — 64-bit output stays byte-identical.
+        let hw = match self.fun.reg_value_ll.get(handle) {
+            Some(w) if w == "ptr" => return handle.to_string(),
+            _ => self.value_width_or_target_width(handle),
+        };
         let ptr = self.fun.gen_reg();
         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, handle).ok();
+        self.fun
+            .reg_value_ll
+            .insert(ptr.clone(), "ptr".to_string());
         ptr
     }
 

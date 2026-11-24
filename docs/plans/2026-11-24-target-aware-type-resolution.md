@@ -139,8 +139,6 @@ byte-identical native IR for the affected fixtures).
 
 ## Slice 1 (in progress, 2026-11-24)
 
-## Slice 1 (in progress, 2026-11-24)
-
 Measured, in this order (Rule 20 — the baseline above came first):
 
 1. **First mismatch class is gone.** The raw `store i64 <i32 handle>` in the
@@ -193,6 +191,44 @@ type now derives from the callee's declared signature (`print_call_ret_ty`); on
 dereference site taking its width from `int_bits` while the value is boxed. The
 codebase's dominant form is already `inttoptr i64` (13 sites), so these sites are
 the anomalies; make them use the loaded value's width, then re-measure.
+
+## Slice 4 — arena/syscall cluster, DONE and verified (2026-11-24)
+
+Six fixtures (`arena_smoke`, `arena_folded_loop`, `arena_free_cast`,
+`arena_scope_reset`, `arena_scope_reset_rejected`, `clock_monotonic_smoke`)
+emitted invalid wasm32 IR. Five distinct seams, all general:
+
+| Site | Defect | Fix |
+|---|---|---|
+| `emit_struct_regular_field` | `inttoptr i64 <val>` typed from `int_bits`, and re-converted a value that was already a `ptr` | route through `pointer_from_handle` |
+| `pointer_from_handle` | never passed a `ptr`-stamped register through | pass through; record the produced `ptr` |
+| `emit_arena_alloc` / grow | arena handles and GEP/Malloc sizes hardcoded `i64` | target-width result (`ptr_int_ty`), `size_w`, `widen_value_to_i64` |
+| `Alloc#` routing (3 sites) | `add i64 0, <target-width handle>` | `route_arena_handle` copies at the recorded width and records it |
+| comparisons / bitwise ops (7 sites) | opcode type from the DECLARED type (`Int` = i32) while operands were i64 | `aligned_int_operands` derives the width from the registers, widens the narrower one |
+| `ClockMonotonicNs#` | C-ABI i64 result not recorded | record the physical width |
+
+Plus `LaneKind::PtrToInt` now uses the register's recorded width (a declared i64
+handle can be an i32 register) and records what it produces.
+
+| Measure | Before | After |
+|---|---|---|
+| wasm32 corpus (IR-invalid programs) | **17 / 99** | **11 / 99** |
+| aarch64 arm | 0 | **0** (PASS) |
+| native tier1 corpus gate | ok | **ok** (235 s) |
+| `cargo test --lib` | 4013 passed | **4013 passed**, 0 failed |
+| native IR byte-compared (12 fixtures) | — | **all identical** |
+
+The earlier attempt at this cluster (a lost subagent run) was reported as
+changing native IR for `arena_smoke`. That delta was textual normalisation in
+the seam; this slice keeps every changed path one that previously emitted
+invalid IR, so native output provably cannot move — confirmed by the 12-file
+byte comparison.
+
+**Remaining 11:** float widths (`float16_roundtrip`, `float64_precision`,
+`literal_float_coercion`), slices/strings (`slice_basics`, `state_column_slice`,
+`str_open_end_slice`), concurrency (`spawn_await_segments`,
+`spawn_await_segments_tests`, `spsc_smoke`), misc (`plain_ptr_smoke`,
+`test_piggybank`).
 
 ## Ready-to-apply patch recipe (per-site, hand-held)
 

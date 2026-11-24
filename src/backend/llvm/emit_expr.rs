@@ -2896,8 +2896,6 @@ impl LlvmBackend {
         // word-sized by contract). Record it so a consumer that recovers the
         // pointer (`inttoptr`) declares i64 instead of the target word.
         self.fun.reg_value_ll.insert(handle.clone(), "i64".to_string());
-        if std::env::var_os("BRIEV_DBG_ITP").is_some() {
-        }
         TypedRegister {
             name: handle,
             ty: Type::Applied("List".into(), vec![elem_ty]),
@@ -4872,13 +4870,16 @@ impl LlvmBackend {
         if self.is_ptr_field(slot.type_name, slot.name)
             && (val.ty == Type::int() || matches!(val.ty, Type::Ptr(_)))
         {
-            let conv = self.fun.gen_reg();
-            writeln!(
-                out,
-                "{}  {} = inttoptr i64 {} to ptr",
-                indent, conv, val.name
-            )
-            .ok();
+            // 2026-11-24 (BUGS.md wasm32 width class): the slot holds a
+            // pointer, so the VALUE must become one — but the old hardcoded
+            // `inttoptr i64 <val>` both mismatched a target-width handle on
+            // wasm32 and re-converted a value that was already a pointer
+            // (`inttoptr ptr %x`). The shared seam decides from the value's
+            // recorded width and emits the identical instruction on 64-bit.
+            // The rest of this field-store block is emitted at `indent` + 2
+            // (see the GEP above); match that depth to keep native IR textual.
+            let field_indent = format!("{indent}  ");
+            let conv = self.pointer_from_handle(out, &field_indent, &val.name);
             writeln!(out, "{}  store ptr {}, ptr {}", indent, conv, ptr_reg).ok();
             return;
         }
@@ -7333,6 +7334,58 @@ impl LlvmBackend {
             }
             _ => reg.to_string(),
         }
+    }
+
+    /// Aligned layout for a two-operand integer instruction.
+    ///
+    /// 2026-11-24 (BUGS.md wasm32 width class): `icmp` requires both operands
+    /// and its declared type to agree. Comparisons were typed from the DECLARED
+    /// Briev type of the left operand (`Int` spells i32 on a 32-bit target),
+    /// while intrinsic/FFI results are physically i64 — `icmp slt i32 <i64>`.
+    /// Derive the type from the registers' recorded widths and widen a narrower
+    /// operand. Unrecorded registers keep the declared type, so 64-bit targets
+    /// emit exactly the same instruction as before.
+    fn aligned_int_operands(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        l: &TypedRegister,
+        r: &TypedRegister,
+    ) -> (String, String, String) {
+        let declared = self.llvm_type(&l.ty);
+        let width_of = |fun: &crate::backend::llvm::context::FunctionContext, reg: &TypedRegister| {
+            match fun.reg_value_ll.get(&reg.name) {
+                Some(w) if w.starts_with('i') => w.clone(),
+                _ => declared.clone(),
+            }
+        };
+        let lw = width_of(&self.fun, l);
+        let rw = width_of(&self.fun, r);
+        if lw == rw {
+            return (lw, l.name.clone(), r.name.clone());
+        }
+        let int_width = |t: &str| -> u32 { t.strip_prefix('i').and_then(|n| n.parse().ok()).unwrap_or(0) };
+        if int_width(&lw) == 0 || int_width(&rw) == 0 {
+            return (declared, l.name.clone(), r.name.clone());
+        }
+        let target = if int_width(&lw) >= int_width(&rw) {
+            lw.clone()
+        } else {
+            rw.clone()
+        };
+        let left = if lw == target {
+            l.name.clone()
+        } else {
+            self.convert_int_width(out, indent, &l.name, &lw, &target)
+                .unwrap_or_else(|| l.name.clone())
+        };
+        let right = if rw == target {
+            r.name.clone()
+        } else {
+            self.convert_int_width(out, indent, &r.name, &rw, &target)
+                .unwrap_or_else(|| r.name.clone())
+        };
+        (target, left, right)
     }
 
     /// 2026-07-31: Element count of a fixed-size vector type; 1 for scalars.
@@ -10432,6 +10485,15 @@ impl LlvmBackend {
         if ret_llvm == "ptr" && matches!(ret_type, Type::Ptr(_) | Type::PtrConst(_)) {
             let int_v = self.fun.gen_reg();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, int_v, v).ok();
+            // 2026-11-24 (BUGS.md wasm32 width class): this is a boxing
+            // boundary — the register now holds an i64 word even though its
+            // Briev type stays stamped `Ptr`. Record that width, or a later
+            // width-aware seam re-converts it as the target word and emits
+            // `inttoptr i32 <i64 reg>` on wasm32. 64-bit targets keep the
+            // same instruction and the same (i64) width they already had.
+            self.fun
+                .reg_value_ll
+                .insert(int_v.clone(), "i64".to_string());
             return TypedRegister {
                 name: int_v,
                 ty: ret_type,
@@ -11943,8 +12005,14 @@ impl LlvmBackend {
         if self.is_string_operand(&l.ty) || self.is_string_operand(&r.ty) {
             return None;
         }
-        // Get the llvm_type of the LHS operand to drive template dispatch
-        let llvm_ty = self.llvm_type(&l.ty);
+        // Get the llvm_type of the operands to drive template dispatch.
+        // 2026-11-24 (BUGS.md wasm32 width class): the template embeds the
+        // operand width, so it must describe the REGISTERS, not the declared
+        // Briev type (`Int` spells i32 on a 32-bit target while an intrinsic
+        // or C-ABI result is physically i64). The aligner widens a narrower
+        // operand and returns the matching type; unrecorded registers keep
+        // the declared spelling, i.e. 64-bit output is unchanged.
+        let (llvm_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
         // Get byte width from the universe if available
         let bytes = self
             .ctx
@@ -11966,7 +12034,7 @@ impl LlvmBackend {
         // 2026-07-20: Templates include "%v = " prefix — strip it since the
         // caller writes "{v} = {line}" (avoiding double "=").
         let bare = tmpl.replace("%v = ", "");
-        let line = bare.replace("%a", &l.name).replace("%b", &r.name);
+        let line = bare.replace("%a", &lh).replace("%b", &rh);
         if is_cmp {
             let icmp_reg = self.fun.gen_reg();
             writeln!(out, "{}{} = {}", indent, icmp_reg, line).ok();
@@ -12382,11 +12450,11 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let (cmp_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
                     writeln!(
                         out,
                         "{}{} = icmp eq {} {}, {}",
-                        indent, icmp, cmp_ty, l.name, r.name
+                        indent, icmp, cmp_ty, lh, rh
                     )
                     .ok();
                 }
@@ -12439,11 +12507,11 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let (cmp_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
                     writeln!(
                         out,
                         "{}{} = icmp ne {} {}, {}",
-                        indent, icmp, cmp_ty, l.name, r.name
+                        indent, icmp, cmp_ty, lh, rh
                     )
                     .ok();
                 }
@@ -12463,11 +12531,11 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let (cmp_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
                     writeln!(
                         out,
                         "{}{} = icmp slt {} {}, {}",
-                        indent, icmp, cmp_ty, l.name, r.name
+                        indent, icmp, cmp_ty, lh, rh
                     )
                     .ok();
                 }
@@ -12487,11 +12555,11 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let (cmp_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
                     writeln!(
                         out,
                         "{}{} = icmp sle {} {}, {}",
-                        indent, icmp, cmp_ty, l.name, r.name
+                        indent, icmp, cmp_ty, lh, rh
                     )
                     .ok();
                 }
@@ -12511,11 +12579,11 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let (cmp_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
                     writeln!(
                         out,
                         "{}{} = icmp sgt {} {}, {}",
-                        indent, icmp, cmp_ty, l.name, r.name
+                        indent, icmp, cmp_ty, lh, rh
                     )
                     .ok();
                 }
@@ -12535,11 +12603,11 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let (cmp_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
                     writeln!(
                         out,
                         "{}{} = icmp sge {} {}, {}",
-                        indent, icmp, cmp_ty, l.name, r.name
+                        indent, icmp, cmp_ty, lh, rh
                     )
                     .ok();
                 }
@@ -12602,7 +12670,7 @@ impl LlvmBackend {
                         ty: Type::string(),
                     };
                 }
-                let cmp_ty = self.llvm_type(&l.ty);
+                let (cmp_ty, lh, rh) = self.aligned_int_operands(out, indent, l, r);
                 let op = match kind {
                     crate::ast::BinaryOpKind::BitAnd => "and",
                     crate::ast::BinaryOpKind::BitOr => "or",
@@ -12611,7 +12679,7 @@ impl LlvmBackend {
                 writeln!(
                     out,
                     "{}{} = {} {} {}, {}",
-                    indent, v, op, cmp_ty, l.name, r.name
+                    indent, v, op, cmp_ty, lh, rh
                 )
                 .ok();
                 TypedRegister {
@@ -13569,15 +13637,23 @@ impl LlvmBackend {
                     // only matters where an address is re-materialized
                     // (`inttoptr` in Load#/Store#), which truncs to the target
                     // pointer width first.
-                    if cur_ll == "i64" {
+                    // 2026-11-24 (BUGS.md wasm32 width class): the DECLARED
+                    // source type can spell i64 while the register is a
+                    // target-width handle (an `Alloc#` result on wasm32), so
+                    // the recorded width decides. Native registers are i64 and
+                    // keep the exact `add i64 0` identity below.
+                    let actual = self
+                        .fun
+                        .reg_value_ll
+                        .get(&cur)
+                        .cloned()
+                        .unwrap_or_else(|| cur_ll.clone());
+                    if actual == "i64" {
                         writeln!(out, "{}{} = add i64 0, {}", indent, dst, cur).ok();
+                    } else if actual.starts_with('i') {
+                        writeln!(out, "{}{} = zext {} {} to i64", indent, dst, actual, cur).ok();
                     } else {
-                        writeln!(
-                            out,
-                            "{}{} = ptrtoint {} {} to i64",
-                            indent, dst, cur_ll, cur
-                        )
-                        .ok();
+                        writeln!(out, "{}{} = ptrtoint {} {} to i64", indent, dst, actual, cur).ok();
                     }
                     // 2026-11-12: a PtrToInt step ALWAYS yields an i64 handle,
                     // even as the last step (where the generic recorder stamps

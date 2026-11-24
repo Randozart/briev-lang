@@ -2454,8 +2454,6 @@ impl LlvmBackend {
         src: &str,
     ) {
         let int_ty = self.value_width_or_target_width(src);
-        if std::env::var_os("BRIEV_DBG_ITP").is_some() {
-        }
         writeln!(
             out,
             "{}{} = inttoptr {} {} to ptr",
@@ -2833,10 +2831,11 @@ impl LlvmBackend {
         writeln!(out, "{}br label %{}", indent, check_l).ok();
         writeln!(out, "{}{}:", indent, check_l).ok();
         let new_ptr = self.fun.next_reg_with_prefix("aanew");
+        let size_w = self.value_width_or_target_width(size_reg);
         writeln!(
             out,
-            "{}{} = getelementptr i8, ptr {}, i64 {}",
-            indent, new_ptr, cur, size_reg
+            "{}{} = getelementptr i8, ptr {}, {} {}",
+            indent, new_ptr, cur, size_w, size_reg
         )
         .ok();
         let ok_val = self.fun.next_reg_with_prefix("aaok");
@@ -2880,13 +2879,23 @@ impl LlvmBackend {
         let new_bump = self.fun.next_reg_with_prefix("aanbp");
         writeln!(
             out,
-            "{}{} = getelementptr i8, ptr {}, i64 {}",
-            indent, new_bump, phi, size_reg
+            "{}{} = getelementptr i8, ptr {}, {} {}",
+            indent, new_bump, phi, size_w, size_reg
         )
         .ok();
         store_state_ptr!(aptr_idx, "aaps2", &new_bump);
         let result = self.fun.next_reg_with_prefix("aapi");
-        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, result, phi).ok();
+        // 2026-11-24 (BUGS.md wasm32 width class): `Alloc#`'s Briev result is
+        // `Int`, whose register width is the target word — the hardcoded i64
+        // handle left a 32-bit build with an i64 value typed as Int. 64-bit
+        // targets get the same `ptrtoint ... to i64` as before.
+        let word = self.ptr_int_ty();
+        writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, result, phi, word).ok();
+        // Producers record their physical width; consumers of `Int` may spell
+        // i64 and must not assume this register is that wide.
+        self.fun
+            .reg_value_ll
+            .insert(result.clone(), word);
         result
     }
 
@@ -10775,10 +10784,13 @@ impl crate::backend::llvm::LlvmBackend {
     /// fast path rather than a cap.
     fn emit_arena_grow_partitioned(&mut self, out: &mut String, ctx: &ArenaGrow<'_>) -> String {
         let fresh = self.fun.next_reg_with_prefix("aamal");
+        // 2026-11-24 (BUGS.md wasm32 width class): `@malloc` takes an i64
+        // length; the request arrives at the target word width.
+        let size = self.widen_value_to_i64(out, ctx.indent, ctx.size_reg);
         writeln!(
             out,
             "{}{} = call ptr @malloc(i64 {})",
-            ctx.indent, fresh, ctx.size_reg
+            ctx.indent, fresh, size
         )
         .ok();
         writeln!(out, "{}br label %aaok_{}", ctx.indent, ctx.ok_l_n).ok();
@@ -10788,7 +10800,13 @@ impl crate::backend::llvm::LlvmBackend {
     /// Hosted growth: extend the break in place (zero-copy, base fixed) or, on
     /// targets without `brk` lowering, `realloc` the base and rebase the cursor.
     fn emit_arena_grow_hosted(&mut self, out: &mut String, ctx: &ArenaGrow<'_>) -> String {
-        let (indent, size_reg) = (ctx.indent, ctx.size_reg);
+        let indent = ctx.indent;
+        // 2026-11-24 (BUGS.md wasm32 width class): growth arithmetic and the
+        // %State slots are i64 words while the requested size arrives at the
+        // target word width. Widen once here; a 64-bit build already has i64
+        // and the helper returns the register untouched.
+        let size_reg = self.widen_value_to_i64(out, indent, ctx.size_reg);
+        let size_reg = size_reg.as_str();
         let (aend_idx, abase_idx) = (ctx.slots.end, ctx.slots.base);
         let cur = ctx.cur;
         let mut grow_incoming = String::new();

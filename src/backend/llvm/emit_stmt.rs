@@ -1943,27 +1943,30 @@ pub(crate) fn emit_term_value_tail(
                 .ok();
                 c
             } else if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
-                let c = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
-                c
+                // 2026-11-24 (BUGS.md wasm32 width class): the declared i64 is
+                // the ABI spelling; the register's real width may be the target
+                // word or already a pointer. The shared seam reads the recorded
+                // width, and passes a pointer through instead of re-converting.
+                backend.pointer_from_handle(out, indent, &reg.name)
             } else if val_ty == "ptr"
                 && backend.fun.fn_ret_ty == "ptr"
                 && matches!(reg.ty, Type::Ptr(_))
             {
                 // 2026-07-30: Ptr values stored as i64 internally — register
                 // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
-                let c = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
-                c
+                // 2026-11-24 (BUGS.md wasm32 width class): on a 32-bit target
+                // the cast lane may already have materialized the pointer; the
+                // shared seam converts only a genuine integer handle.
+                backend.pointer_from_handle(out, indent, &reg.name)
             } else {
                 reg.name
             }
         } else if val_ty == "ptr" && matches!(reg.ty, Type::Ptr(_)) {
             // 2026-07-30: Ptr values stored as i64 internally — register
             // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
-            let c = backend.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
-            c
+            // 2026-11-24 (BUGS.md wasm32 width class): see the branch above —
+            // pass an already-materialized pointer through.
+            backend.pointer_from_handle(out, indent, &reg.name)
         } else {
             reg.name
         };

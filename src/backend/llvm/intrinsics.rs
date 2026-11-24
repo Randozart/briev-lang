@@ -163,6 +163,14 @@ pub fn emit_intrinsic_call(
                 indent, v
             )
             .ok();
+            // 2026-11-24 (BUGS.md wasm32 width class): the C helper returns
+            // i64 while `Int` spells the target word; record the physical
+            // width so consumers (comparisons, pointer adapters) do not
+            // assume the declared spelling. 64-bit targets are i64 already.
+            backend
+                .fun
+                .reg_value_ll
+                .insert(v.to_string(), "i64".to_string());
             return BTypedRegister {
                 name: v.to_string(),
                 ty: Type::int(),
@@ -994,6 +1002,29 @@ pub(crate) fn adapt_handle_to_ptr_int(
     adapt_to_ptr_width(backend, out, reg, indent)
 }
 
+/// Route an arena handle into the `Alloc#` result register.
+///
+/// 2026-11-24 (BUGS.md wasm32 width class): `emit_arena_alloc` returns a
+/// handle at the target word width (`i32` on wasm32, `i64` on 64-bit) and the
+/// `Alloc#` destination carries that same value. The old hardcoded `add i64 0`
+/// described an i64 register a 32-bit build never produced. Copy at the
+/// handle's recorded width, and record the destination's width for consumers;
+/// a 64-bit target emits the exact same `add i64 0` as before.
+fn route_arena_handle(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    dst: &str,
+    src: &str,
+) {
+    let width = backend.value_width_or_target_width(src);
+    writeln!(out, "{}{} = add {} 0, {}", indent, dst, width, src).ok();
+    backend
+        .fun
+        .reg_value_ll
+        .insert(dst.to_string(), width);
+}
+
 pub(crate) fn adapt_to_ptr_width(
     backend: &mut LlvmBackend,
     out: &mut String,
@@ -1108,7 +1139,7 @@ fn emit_alloc(
                     }
                     AllocStrategy::Arena if !backend.fun.stateless_body => {
                         let result = backend.emit_arena_alloc(out, indent, &size);
-                        writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
+                        route_arena_handle(backend, out, indent, v, &result);
                         backend
                             .fun
                             .alloc_strategies
@@ -1180,10 +1211,10 @@ fn emit_alloc(
     // arena is addressable through `arena_slots()` even though
     // `arena_ptr_idx` is None.
     if backend.arena_slots().is_some() && !backend.fun.stateless_body {
-        // 2026-07-19: emit_arena_alloc returns the old bump pointer as i64.
+        // 2026-07-19: emit_arena_alloc returns the old bump pointer as a handle.
         // The caller receives it directly — no ptrtoint needed.
         let result = backend.emit_arena_alloc(out, indent, &size);
-        writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
+        route_arena_handle(backend, out, indent, v, &result);
         backend
             .fun
             .alloc_strategies
@@ -1234,8 +1265,8 @@ fn emit_alloc_with_strategy(
             match name.as_str() {
                 "Arena" if !backend.fun.stateless_body => {
                     let result = backend.emit_arena_alloc(out, indent, size);
-                    // 2026-07-19: emit_arena_alloc returns i64 — route to v.
-                    writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
+                    // 2026-07-19: emit_arena_alloc returns a handle — route it.
+                    route_arena_handle(backend, out, indent, v, &result);
                     backend
                         .fun
                         .alloc_strategies
@@ -1718,8 +1749,9 @@ fn emit_store(
 
 /// 2026-08-27 (plan 2026-08-27-cbv-foreign-hardware-and-mmio.md Slice C):
 /// `VolatileLoad#(p: Ptr<T>) -> T`. Briev's pointer ABI boxes addresses as
-/// i64 registers (the atomics' convention): re-materialize via
-/// `inttoptr i64 -> ptr` before the access. The DECLARED pointee drives
+/// target-word integer registers (the atomics' convention): re-materialize
+/// via the shared handle seam, which converts at the value's REAL width and
+/// passes an already-materialized pointer through. The DECLARED pointee drives
 /// result type + alignment via the casting graph; shape enforcement lives
 /// in the TYPECHECKER and a non-Ptr declaration degrades to one-word Int.
 fn emit_volatile_load(
@@ -1735,16 +1767,7 @@ fn emit_volatile_load(
         _ => Type::int(),
     };
     let llvm_ty = backend.llvm_type(&inner_ty);
-    let ptr = backend.fun.gen_reg();
-    writeln!(
-        out,
-        "{}{} = inttoptr {} {} to ptr",
-        indent,
-        ptr,
-        backend.llvm_type(&Type::int()),
-        arg.name
-    )
-    .ok();
+    let ptr = backend.pointer_from_handle(out, indent, &arg.name);
     writeln!(
         out,
         "{}{} = load volatile {}, ptr {}, align {}",
@@ -1771,16 +1794,11 @@ fn emit_volatile_store(
     indent: &str,
 ) -> BTypedRegister {
     let ptr_arg = backend.emit_expr(out, &args[0], indent);
-    let addr_ptr = backend.fun.gen_reg();
-    writeln!(
-        out,
-        "{}{} = inttoptr {} {} to ptr",
-        indent,
-        addr_ptr,
-        backend.llvm_type(&Type::int()),
-        ptr_arg.name
-    )
-    .ok();
+    // 2026-11-24 (BUGS.md wasm32 width class): the address is a handle at the
+    // target word width (and may already be a pointer after a `Ptr` cast);
+    // the shared seam handles both, and emits the same `inttoptr i64` on
+    // 64-bit targets.
+    let addr_ptr = backend.pointer_from_handle(out, indent, &ptr_arg.name);
     let mut val_reg = backend.emit_expr(out, &args[1], indent);
     let inner_ty = match &ptr_arg.ty {
         Type::Ptr(i) => *i.clone(),

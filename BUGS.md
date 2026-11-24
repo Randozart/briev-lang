@@ -1,3 +1,32 @@
+## 2026-11-24 — wasm32 LLVM: arena handles, GEP sizes and comparisons carried the wrong width (FIXED)
+
+**Found by** `scripts/cross_target_ir.sh wasm32-unknown-wasi`. Six corpus
+fixtures (`arena_smoke`, `arena_folded_loop`, `arena_free_cast`,
+`arena_scope_reset`, `arena_scope_reset_rejected`, `clock_monotonic_smoke`)
+emitted invalid wasm32 IR. Five independent seams, each a different instance of
+"the emitter's declared width disagrees with the register's physical width":
+
+| Site | Emitted | Value |
+|---|---|---|
+| struct pointer-field store | `inttoptr i64 %val` | `%val` already a `ptr` (wasm32 cast lane), or i32 |
+| `emit_arena_alloc` | `ptrtoint … to i64`, `getelementptr i8, …, i64 %size` | target-width handle/size |
+| arena grow | `shl i64 %size, 1`, `malloc(i64 %size)` | target-width size |
+| `Alloc#` routing | `add i64 0, %handle` | target-width handle |
+| comparisons / bitwise | `icmp slt i32 %call_i64, %x` | both operands i64 (C-ABI result) |
+
+**Fix.** Producers record the width they actually emit (`reg_value_ll`) and
+consumers read it: `pointer_from_handle` passes a `ptr` through and converts at
+the recorded width; `route_arena_handle` copies `Alloc#` results at the handle
+width; `aligned_int_operands` picks the opcode width from the registers and
+widens the narrower operand; `LaneKind::PtrToInt` and the arena grow/malloc
+sites use the recorded width instead of a literal `i64`. Every changed path
+previously emitted invalid IR, so native output is provably unchanged.
+
+**Evidence.** wasm32 corpus **17 → 11** IR-invalid programs; aarch64 **0**;
+native tier1 corpus gate ok; `cargo test --lib` 4013 passed; native IR
+byte-identical on 12 fixtures (including all six). Commit on
+`fix/wasm32-read-narrowing`.
+
 ## 2026-11-24 — wasm32 LLVM: one value is resolved at two widths, so the module does not verify (OPEN)
 
 **Found by** `scripts/cross_target_ir.sh wasm32-unknown-wasi` (the corpus
