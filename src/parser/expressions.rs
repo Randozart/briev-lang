@@ -10,6 +10,21 @@ use crate::ast::{BinaryOpKind, Expr, ReflectKind, SpawnStorage, Type, UnaryOpKin
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
+/// One message for every retired reflection spelling. The fix has to be inside
+/// the diagnostic, because `^^` and the pre-wave-9 dotted forms have no
+/// compatibility alias (the `#Float` → `Float` precedent, 2026-09-11).
+/// 2026-11-23 (wave-10): `^` is a dead key on German, Nordic and French layouts,
+/// so the accessor moved to `::`.
+fn retired_reflection_spelling_error() -> SyntaxError {
+    SyntaxError::InvalidStatement {
+        reason: "the frame accessor is spelled `::`: write `x::Length`, `x::Bytes`. \
+                 `^^` was retired in wave-10 (`^` is a dead key on many keyboard \
+                 layouts) and a single caret after a value is bitwise XOR (`a ^ b`)."
+            .to_string(),
+        span: crate::errors::Span::dummy(),
+    }
+}
+
 /// True when the suffix identifier is a physics unit that should produce
 /// `Expr::UnitLiteral` instead of `Expr::TaggedLiteral`. One shared suffix
 /// table serves specs and expressions (2026-09-24 component laws).
@@ -434,14 +449,16 @@ impl<'a> Parser<'a> {
                     }
                 }
             } else if self.eat(&Token::Dot) {
-                // 2026-11-21 (wave-9, one caret): the old `^^` / `^^`
-                // reflection spellings are retired. A dot followed by a caret
-                // is exactly that leftover, so name the current spelling
-                // instead of the generic member-parse error.
+                // 2026-11-23 (wave-10): a dot followed by a caret is the retired
+                // reflection spelling, so name the current form instead of the
+                // generic member-parse error. (`^^` itself is caught by its own
+                // postfix arm; this arm covers `x.^Length` / `x.^^Length`, the
+                // pre-wave-9 dotted spellings.)
                 if self.check(&Token::BitXor) || self.check(&Token::CaretCaret) {
                     return self.error_at_current(
-                        "reflection is spelled with two carets and no dot: `x^^Length`, \
-                         `x^^Bytes`. The dotted forms (`^^`, `^^`) were retired in wave-9.",
+                        "the frame accessor is spelled `::`, not `.^` / `.^^`: write \
+                         `x::Length`, `x::Bytes`. The dotted forms were retired in \
+                         wave-9, and `^^` in wave-10.",
                     );
                 }
                 // 2026-11-08 (chaining plan): cast step in a chain — `.(Type)`.
@@ -591,33 +608,11 @@ impl<'a> Parser<'a> {
                 } else {
                     expr = Expr::Field(Box::new(expr), name);
                 }
-            } else if self.eat(&Token::CaretCaret) {
-                // 2026-11-21 (wave-9, one caret): reflection has ONE spelling.
-                // `^^` reads a representation property — a stored header slot or
-                // a type-derivable fact (`x^^Length`, `x^^Bytes`); operations
-                // stay in the `#` family. The old `^^` / `^^` runtime and
-                // compile-time split is retired: runtime `Size` was already
-                // deleted (2026-08-14 §6a), and `^^Length` on a Vector emits the
-                // same fold compile-time `^^Size` does, so the tag carried no
-                // semantic. The CompileTime tag here is the unified path; the
-                // emitter's per-property table decides folding, exactly as
-                // before.
-                let name = self.expect_identifier()?;
-                expr = Expr::Reflect(Box::new(expr), name, ReflectKind::CompileTime);
-            } else if self.check(&Token::BitXor)
-                && matches!(self.peek(), Some(Token::Identifier(_)))
-            {
-                // 2026-11-21 (wave-9, one caret): the old `^^` / `^^` spellings
-                // are retired. A single caret after a value is bitwise XOR in
-                // `a ^ b`; `x ^Ident` here is a dotted-reflection leftover, so
-                // reject it with the current spelling.
-                return Err(SyntaxError::InvalidStatement {
-                    reason: "reflection is spelled with two carets: `x^^Length`, \
-                             `x^^Bytes`. The dotted forms (`^^`, `^^`) were retired \
-                             in wave-9."
-                        .to_string(),
-                    span: crate::errors::Span::dummy(),
-                });
+            } else if self.at_reflection_postfix() {
+                // 2026-11-23 (wave-10): the frame accessor and its retired
+                // spellings share ONE arm; the helper carries the rationale and
+                // the per-token decision so this loop keeps its branch count.
+                self.parse_reflection_postfix(&mut expr)?;
             } else if self.eat(&Token::LBracket) {
                 // 2026-09-28 (E3): `arr[*]` — the wildcard selector, every
                 // element of the array. `*` here is the wildcard INSIDE the
@@ -1264,6 +1259,62 @@ impl<'a> Parser<'a> {
         Ok(crate::ast::Pattern::Tuple(elems))
     }
 
+    /// True when the cursor is on any spelling that participates in frame-accessor
+    /// parsing: the live `::`, or a retired form (`^^`, or a lone caret before an
+    /// identifier) that must be rejected by name. 2026-11-23 (wave-10).
+    fn at_reflection_postfix(&self) -> bool {
+        if self.check(&Token::ColonColon) || self.check(&Token::CaretCaret) {
+            return true;
+        }
+        self.check(&Token::BitXor) && matches!(self.peek(), Some(Token::Identifier(_)))
+    }
+
+    /// Consume a frame-accessor step, or reject a retired spelling.
+    ///
+    /// `x::Prop` reads a compiler-owned representation property — a stored header
+    /// slot or a type-derivable fact (`x::Length`, `x::Bytes`); operations stay in
+    /// the `#` family. It is READ-ONLY: a property is a fact about the value's
+    /// frame, never assignable (writes go through `Store#` or the owning type's
+    /// own ops).
+    ///
+    /// `::` does not mean "path" here — names are flat, and `Enum::Variant` stays
+    /// rejected in pattern position. It means "resolved against the value's frame,
+    /// not its declared instance members", which is why it reads correctly on a
+    /// VALUE even though C++/Rust apply `::` only to types.
+    ///
+    /// The AST is unchanged from the retired `^^` spelling:
+    /// `Expr::Reflect(base, name, ReflectKind::CompileTime)`. The tag survives for
+    /// the interpreter and any pass that asks; the emitter's per-property table
+    /// decides folding, exactly as before. History: wave-9 unified reflection onto
+    /// `^^` because the dotted forms carried a runtime/compile-time split that had
+    /// already lost its semantics (runtime `.^Size` deleted 2026-08-14 §6a);
+    /// wave-10 retired the spelling for ergonomics, since `^` is a dead key on
+    /// German/Nordic/AZERTY layouts.
+    fn parse_reflection_postfix(&mut self, expr: &mut Expr) -> Result<(), SyntaxError> {
+        if !self.eat(&Token::ColonColon) {
+            // `^^` and a lone caret before an identifier are retired spellings
+            // with no alias (the `#Float` → `Float` precedent, 2026-09-11).
+            return Err(retired_reflection_spelling_error());
+        }
+        let name = self.expect_identifier()?;
+        *expr = Expr::Reflect(Box::new(expr.clone()), name, ReflectKind::CompileTime);
+        Ok(())
+    }
+
+    /// True when the cursor sits on `::` — either the single `ColonColon` token
+    /// or the legacy two-`Colon` spelling. One predicate keeps the pattern
+    /// parser reading as one branch (2026-11-23, wave-10).
+    fn at_double_colon(&self) -> bool {
+        if self.check(&Token::ColonColon) {
+            return true;
+        }
+        self.check(&Token::Colon)
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                Some(Token::Colon)
+            )
+    }
+
     pub(crate) fn parse_pattern(&mut self) -> Result<crate::ast::Pattern, SyntaxError> {
         // 2026-08-22 (spec-conformance plan Phase 4a): a parenthesized
         // pattern is a TUPLE pattern `(p1, p2, …)` — the Bool-tuple form
@@ -1281,21 +1332,23 @@ impl<'a> Parser<'a> {
             Some(Token::Identifier(name)) => {
                 let name = name.clone();
                 self.pos += 1;
-                // 2026-10-18 (fixture campaign): `::` is illegal in Briev —
+                // 2026-10-18 (fixture campaign): `::` is illegal in a PATTERN —
                 // qualified variant patterns use the dot form
-                // (`Enum.Variant(args)`). Give the honest diagnostic here
-                // instead of letting the typed-binding branch eat the first
-                // colon and parse_type choke on the second ("expected type"
-                // reported at the wrong site). No ColonColon token exists;
-                // `::` lexes as two Colons.
-                if self.check(&Token::Colon)
-                    && matches!(
-                        self.tokens.get(self.pos + 1).map(|(t, _)| t),
-                        Some(Token::Colon)
-                    )
-                {
+                // (`Enum.Variant(args)`). Give the honest diagnostic here instead
+                // of letting the typed-binding branch eat the colon and
+                // `parse_type` choke ("expected type" at the wrong site).
+                //
+                // 2026-11-23 (wave-10): `::` now lexes as ONE `ColonColon`
+                // token, and it is a legal EXPRESSION operator (the frame
+                // accessor, `x::Length`). This arm therefore has to reject the
+                // token itself as well as the legacy two-`Colon` spelling, and
+                // the message must say what `::` is so the two uses are not
+                // confused. Briev's names are still flat: there is no path.
+                if self.at_double_colon() {
                     return self.error_at_current(
-                        "'::' is not Briev syntax — qualified variant patterns use the dot form: Enum.Variant(args)",
+                        "'::' is not a pattern syntax — qualified variant patterns use the dot form: \
+                         Enum.Variant(args). Briev's names are flat, so `::` is never a path; it is \
+                         the frame accessor (`x::Length`), which is an expression, not a pattern.",
                     );
                 }
                 // 2026-08-22 (spec-conformance plan Phase 3, SPEC §8.4): a
@@ -1636,43 +1689,80 @@ mod tests {
 
     #[test]
     fn dotted_reflection_is_a_parse_error() {
-        // The old spellings are retired with no alias; the error must name the
-        // current one so the fix is in the message.
+        // The pre-wave-9 spellings are retired with no alias; the error must name
+        // the current one so the fix is in the message.
         // Built from fragments so no future mechanical sweep "fixes" the test's
         // own input.
         let dot = ".";
         let caret = "^";
-        for (dot_form, prop) in [
-            (format!("x{dot}{caret}Length").as_str(), "Length"),
-            (format!("x{dot}{caret}{caret}Bytes").as_str(), "Bytes"),
+        for dot_form in [
+            format!("x{dot}{caret}Length"),
+            format!("x{dot}{caret}{caret}Bytes"),
         ] {
-            let err = parse_expr(dot_form).expect_err(dot_form);
+            let err = parse_expr(&dot_form).expect_err(&dot_form);
             let msg = format!("{err}");
             assert!(
-                msg.contains("two carets") && msg.contains("^^"),
-                "the rejection must name the `^^` spelling for {prop}: {msg}"
+                msg.contains("::") && msg.contains("frame accessor"),
+                "the rejection must name the `::` spelling: {msg}"
             );
         }
     }
 
+    /// 2026-11-23 (wave-10, I-3): `^^` is retired with no alias, so the
+    /// diagnostic has to carry the replacement spelling.
     #[test]
-    fn double_caret_parses_every_property() {
+    fn old_caret_caret_spelling_is_rejected_naming_the_new_form() {
+        let caret = "^";
+        for src in [
+            format!("x{caret}{caret}Length"),
+            format!("wire{caret}{caret}Ready"),
+        ] {
+            let err = parse_expr(&src).expect_err(&src);
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("::") && msg.contains("x::Length"),
+                "`^^` must be rejected naming `::`: {msg}"
+            );
+        }
+    }
+
+    /// I-1: `x::Prop` produces the identical AST node the old spelling did.
+    /// Asserted on the AST, never on a formatted string, so the emission path
+    /// cannot drift with the surface.
+    #[test]
+    fn frame_accessor_parses_to_reflect_ast() {
+        let Expr::Reflect(base, name, kind) = parse_expr("x::Length").expect("x::Length") else {
+            panic!("x::Length must parse as a Reflect");
+        };
+        assert!(
+            matches!(base.as_ref(), Expr::Identifier(n) if n == "x"),
+            "base must be the receiver"
+        );
+        assert_eq!(name, "Length");
+        assert!(matches!(kind, ReflectKind::CompileTime));
+    }
+
+    #[test]
+    fn frame_accessor_parses_every_property() {
         // Every property the emitter table knows, through the one spelling.
         for src in [
-            "x^^Length",
-            "x^^Ptr",
-            "x^^Size",
-            "x^^Bytes",
-            "x^^Alignment",
-            "x^^Type",
-            "x^^Element",
-            "x^^Available",
-            "wire^^Ready",
+            "x::Length",
+            "x::Ptr",
+            "x::Size",
+            "x::Bytes",
+            "x::Alignment",
+            "x::Type",
+            "x::Element",
+            "x::Available",
+            "wire::Ready",
         ] {
             let Expr::Reflect(_, name, kind) = parse_expr(src).expect(src) else {
                 panic!("{src} must parse as a Reflect");
             };
-            assert_eq!(name, src.trim_start_matches("x^^").trim_start_matches("wire^^"));
+            assert_eq!(
+                name,
+                src.trim_start_matches("x::").trim_start_matches("wire::")
+            );
             // The unified spelling carries the unified tag; the emitter's
             // per-property table decides folding, not this tag.
             assert!(matches!(kind, ReflectKind::CompileTime));
@@ -1881,19 +1971,21 @@ mod tests {
     }
 
     #[test]
-    fn double_colon_pattern_rejected_with_dot_form_hint() {
-        // 2026-10-18: `::` is illegal in Briev. The diagnostic names the dot
-        // form instead of the old misleading cascade (the typed-binding
-        // branch ate the first colon and parse_type choked on the second:
-        // "expected type" at the wrong site).
+    fn double_colon_in_pattern_is_still_rejected() {
+        // I-5: `::` is a legal EXPRESSION operator (the frame accessor) but never
+        // a pattern. The diagnostic keeps the dot-form hint AND says what `::`
+        // actually is, so the two uses are not confused; Briev's names remain
+        // flat, so `::` is still never a path.
         let src = "match r { Result::Ok(n) => n, _ => 0 }";
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
-        let err = p.parse_expression().expect_err(":: must be rejected");
+        let err = p
+            .parse_expression()
+            .expect_err(":: must be rejected in a pattern");
         let msg = format!("{err:?}");
         assert!(
-            msg.contains("'::' is not Briev syntax"),
-            "expected the :: diagnostic, got {msg}"
+            msg.contains("not a pattern syntax") && msg.contains("frame accessor"),
+            "expected the pattern-position `::` diagnostic, got {msg}"
         );
     }
 

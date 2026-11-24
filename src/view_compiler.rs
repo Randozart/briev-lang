@@ -1450,7 +1450,7 @@ impl ViewCompiler {
         }
         // 2026-08-12 (2b3): the shim EVALUATES b-show/b-when comparisons on
         // flush (`step == 0` → `value == 0`) and b-text renders a bare field +
-        // `^^` projections. Any other expression shape is rejected at compile
+        // `::` projections. Any other expression shape is rejected at compile
         // time — a directive the shim cannot evaluate is never silently dead.
         for directive in ["b-show", "b-when"] {
             if let Some(expr) = self.extract_attr_value(tag, directive) {
@@ -1462,8 +1462,8 @@ impl ViewCompiler {
         if let Some(expr) = self.extract_attr_value(tag, "b-text") {
             if Self::compound_text_signal(&expr) {
                 return Some(format!(
-                    "`b-text` accepts only a bare field (`count`) or a `^^` projection \
-                     (`items^^Size`) — complex expressions (string concat, arithmetic, \
+                    "`b-text` accepts only a bare field (`count`) or a `::` projection \
+                     (`items::Size`) — complex expressions (string concat, arithmetic, \
                      calls) are unsupported (never silently dead DOM)"
                 ));
             }
@@ -1472,17 +1472,36 @@ impl ViewCompiler {
     }
 
     /// 2026-08-12 (2b3): whether a `b-text` value is a compound expression the
-    /// shim cannot render. A bare field / `^^` projection / quoted literal /
+    /// shim cannot render. A bare field / `::` projection / quoted literal /
     /// number contains none of the operator or whitespace markers.
+    ///
+    /// 2026-11-23 (wave-10): `:` is a compound marker because the shim cannot
+    /// render a ternary, but `::` is the frame accessor and IS renderable
+    /// (`items::Size`). A colon only counts when it is not half of a `::`, which
+    /// is what `colon_outside_frame_accessor` decides.
     fn compound_text_signal(expr: &str) -> bool {
         let e = expr.trim();
         if e.is_empty() {
             return true;
         }
-        let has_op = e.contains([
-            '=', '!', '<', '>', '+', '-', '*', '/', '(', ')', '?', ':', ',',
-        ]);
+        let has_op = e.contains(['=', '!', '<', '>', '+', '-', '*', '/', '(', ')', '?', ','])
+            || Self::colon_outside_frame_accessor(e);
         has_op || e.chars().any(|c| c.is_whitespace())
+    }
+
+    /// True when `e` contains a `:` that is NOT part of a `::` frame accessor.
+    /// Kept separate so `compound_text_signal` stays one expression (Praetor
+    /// nesting rule) and so the `::` exemption is nameable and testable.
+    fn colon_outside_frame_accessor(e: &str) -> bool {
+        let bytes = e.as_bytes();
+        bytes.iter().enumerate().any(|(i, &c)| {
+            if c != b':' {
+                return false;
+            }
+            let prev_is_colon = i > 0 && bytes[i - 1] == b':';
+            let next_is_colon = bytes.get(i + 1) == Some(&b':');
+            !(prev_is_colon || next_is_colon)
+        })
     }
 
     /// Conservative purity check for a view-binding expression: rejects
@@ -1724,7 +1743,7 @@ impl ViewCompiler {
         };
         // 2026-08-12 (2b3): a bare identifier INCLUDING dotted instance slots
         // (`p1.show`, `Counter.0.step`) is a field reference — the shim
-        // evaluates the flushed value. `^^` projections are handled elsewhere.
+        // evaluates the flushed value. `::` projections are handled elsewhere.
         if is_identifier(e) {
             return Ok(Some(e.to_string()));
         }
@@ -1877,8 +1896,8 @@ fn find_closing_quote(s: &str, quote_char: char) -> Option<usize> {
 }
 
 /// Root field of a `b-when`/`b-show` CONDITION expression. A condition is
-/// typically a comparison (`count > 0`, `items^^Size > 0`) — the root is the
-/// leading identifier token with `^^X` projections stripped. Shared by the
+/// typically a comparison (`count > 0`, `items::Size > 0`) — the root is the
+/// leading identifier token with `::X` projections stripped. Shared by the
 /// SRBV check, the web generator's handle lookup, and the frontend's
 /// view-bound-field protection (DRY).
 pub fn condition_root_signal<'a>(expr: &'a str) -> (&'a str, Vec<&'a str>) {
@@ -1886,9 +1905,9 @@ pub fn condition_root_signal<'a>(expr: &'a str) -> (&'a str, Vec<&'a str>) {
     root_signal(head)
 }
 
-/// Split a view signal into its root field name and any `^^X` reflection
-/// projection suffixes. `count` → (`count`, []); `items^^Length` →
-/// (`items`, ["Length"]); `a^^Length^^Bytes` → (`a`, ["Length", "Bytes"]).
+/// Split a view signal into its root field name and any `::X` reflection
+/// projection suffixes. `count` → (`count`, []); `items::Length` →
+/// (`items`, ["Length"]); `a::Length::Bytes` → (`a`, ["Length", "Bytes"]).
 ///
 /// 2026-08-14 (§6b.5): a view expressing an element count uses the `Count#`
 /// intrinsic — `Count#(items)` → (`items`, ["Count"]), and the web generator
@@ -1898,7 +1917,7 @@ pub fn condition_root_signal<'a>(expr: &'a str) -> (&'a str, Vec<&'a str>) {
 /// `field_handle_for_signal` (handle lookup binds the root field), by
 /// `verify_srbv` (SRBV checks the root signal exists), and by the brievc
 /// frontend (view-bound fields protect %State slots from dead-field
-/// elimination). The `^^X` suffix is a projection on top of the field's
+/// elimination). The `::X` suffix is a projection on top of the field's
 /// value, never a separate signal.
 pub fn root_signal<'a>(signal: &'a str) -> (&'a str, Vec<&'a str>) {
     let signal = signal.trim();
@@ -1915,7 +1934,7 @@ pub fn root_signal<'a>(signal: &'a str) -> (&'a str, Vec<&'a str>) {
     let mut proj: Vec<&str> = Vec::new();
     let mut head = signal;
     loop {
-        if let Some(dot) = head.rfind("^^") {
+        if let Some(dot) = head.rfind("::") {
             let suffix = &head[dot + 2..];
             if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_alphabetic() || c == '_') {
                 proj.push(suffix);
@@ -1970,7 +1989,7 @@ pub fn verify_srbv(bindings: &[Binding], program: &[ast::TopLevel]) -> Vec<Strin
     for binding in bindings {
         match &binding.directive {
             Directive::Text { signal } => {
-                // 2026-08-11: `items^^Size` binds the root field `items` —
+                // 2026-08-11: `items::Size` binds the root field `items` —
                 // the reflection suffix is a projection, not a separate signal.
                 let (root, _) = root_signal(signal);
                 if !state_vars.contains(root) && !txn_contracts.contains_key(root) {
@@ -2185,6 +2204,42 @@ mod tests {
             .iter()
             .any(|b| matches!(&b.directive, Directive::Text { .. }));
         assert!(has_text, "Should have Text directive");
+    }
+
+    /// 2026-11-23 (wave-10): the frame accessor `::` is renderable by the shim,
+    /// so `b-text` must accept it. The regression this pins is real: the sweep
+    /// that renamed `^^` to `::` in `tests/fixtures/generic_wasm_scan.rbv`
+    /// (`page^^Size` -> `page::Size`) started failing because `compound_text_signal`
+    /// treated the `:` of `::` as a compound-expression marker.
+    #[test]
+    fn b_text_accepts_a_frame_accessor_projection() {
+        assert!(
+            !ViewCompiler::compound_text_signal("items::Size"),
+            "a `::` projection is renderable and must not read as compound"
+        );
+        assert!(
+            !ViewCompiler::compound_text_signal("page::Length"),
+            "a `::` projection on a page signal must pass too"
+        );
+        assert!(
+            !ViewCompiler::compound_text_signal("count"),
+            "a bare field stays accepted"
+        );
+    }
+
+    /// The exemption is narrow: a real `:` (ternary / stray separator) is still
+    /// a compound marker, so the shim is never asked to render something it
+    /// cannot evaluate.
+    #[test]
+    fn b_text_still_rejects_a_lone_colon() {
+        assert!(
+            ViewCompiler::compound_text_signal("a ? b : c"),
+            "a ternary colon stays compound"
+        );
+        assert!(
+            ViewCompiler::compound_text_signal("a:b"),
+            "a single colon is still a compound marker"
+        );
     }
 
     #[test]

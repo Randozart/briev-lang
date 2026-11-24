@@ -1135,7 +1135,7 @@ node s [done == 0][done == 1] {
 
 /// 2026-08-14 (String unification): `foreach c in s` on a `String` operand
 /// iterates CHARs via the decode lane — the bound is the stored byte length
-/// (`^^Length` header) and each item is a decoded codepoint (Char), never a
+/// (`::Length` header) and each item is a decoded codepoint (Char), never a
 /// raw byte walk.
 #[test]
 fn test_foreach_string_emits_char_decode_lane() {
@@ -1244,7 +1244,7 @@ import { List } from "std/collections.bv";
 let xs: List<Int> = [];
 let tick: Int = 0;
 node run [tick < 1][tick == 1] {
-    let n: Int = xs ^^Length;
+    let n: Int = xs::Length;
     tick = n + 1;
     term;
 };
@@ -9477,8 +9477,8 @@ fn test_bit_to_string_encoding_door() {
     );
 }
 
-/// 2026-08-01 (B3): `x^^Length` on a String → the `Size` prop default = UTF8
-/// char count (briev_char_len); `x^^Bytes` → the `Bytes` prop default = O(1)
+/// 2026-08-01 (B3): `x::Length` on a String → the `Size` prop default = UTF8
+/// char count (briev_char_len); `x::Bytes` → the `Bytes` prop default = O(1)
 /// header read (byte length). Also verifies a String `let` used only via
 /// reflection stays live (not eliminated as a dead state field).
 #[test]
@@ -9487,8 +9487,8 @@ fn test_string_len_and_bytes_reflect() {
         let s: String = "hello";
         let tick: Int = 0;
         node report [tick < 1][tick == 1] {
-            let c: Int = s^^Length;
-            let b: Int = s^^Bytes;
+            let c: Int = s::Length;
+            let b: Int = s::Bytes;
             term;
         };
     "#;
@@ -9502,15 +9502,15 @@ fn test_string_len_and_bytes_reflect() {
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("load i64, ptr "),
-        "String ^^Length must read the stored byte header (SPEC 17.1); got:\n{ir}"
+        "String::Length must read the stored byte header (SPEC 17.1); got:\n{ir}"
     );
     assert!(
         !ir.contains("call i64 @briev_char_len(ptr "),
-        "^^Length must NOT emit the char scan (that is CharCount#); got:\n{ir}"
+        "::Length must NOT emit the char scan (that is CharCount#); got:\n{ir}"
     );
     assert!(
         ir.contains("load i64, ptr ") || ir.contains("load i64, ptr %"),
-        "String ^^Bytes must emit an O(1) header load; got:\n{ir}"
+        "String::Bytes must emit an O(1) header load; got:\n{ir}"
     );
     // The String field must stay live (not eliminated as dead — it's only
     // read via reflection). Verify the state has a String slot.
@@ -10550,7 +10550,7 @@ obj Ledger {
     items: MyList;
     op Count() -> Int { term items.Count#(); };
     op At(i: Int) -> Int { term items[i]; };
-    txn init(v: Int) [true][items^^Size == 0] {
+    txn init(v: Int) [true][items::Size == 0] {
         let e: MyList = [];
         items = e;
     };
@@ -10921,7 +10921,7 @@ node go [done == 0][done == 1] {
 /// into the inline `T[N]` array — the IR declares `%Fixed = type { [4 x i64] }`
 /// (not the scalar collapse `{ i64 }`), and the literal stores elements at
 /// data[0..N-1] with NO [len] heap-seq header. `f.data[2]` then reads element
-/// 2 (the inline GEP), and `^^Length`/`Count#`/`Capacity#` all report N.
+/// 2 (the inline GEP), and `::Length`/`Count#`/`Capacity#` all report N.
 #[test]
 fn test_coll_struct_literal_inline_array() {
     let src = r#"
@@ -10930,7 +10930,7 @@ let done: Int = 0;
 node go [done == 0][done == 1] {
     let f: Fixed = [1, 2, 3, 4];
     done = f.data[2];
-    done = f^^Length;
+    done = f::Length;
     term;
 };
 "#;
@@ -11005,7 +11005,7 @@ coll struct Fixed { data: Int[2]; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let f: Fixed = [1, 2, 3];
-    println!(f^^Length);
+    println!(f::Length);
     done = 1;
     term;
 };
@@ -11230,7 +11230,7 @@ fn test_counter_loop_guard_read_uses_phi_not_state() {
     );
 }
 
-// ── Phase 8: closure inline lowering + `^^Type` descriptor ──────────
+// ── Phase 8: closure inline lowering + `::Type` descriptor ──────────
 
 fn txn_with_body(body: Vec<Statement>) -> TopLevel {
     TopLevel::Transaction(Transaction {
@@ -11303,7 +11303,7 @@ fn test_closure_let_emits_env_and_indirect_call() {
 
 #[test]
 fn test_reflect_type_emits_category_constant() {
-    // `f^^Type` on a Float receiver folds to the Float category code (1).
+    // `f::Type` on a Float receiver folds to the Float category code (1).
     let mut backend = LlvmBackend::new();
     let txn = txn_with_body(vec![
         Statement::Let {
@@ -11322,11 +11322,11 @@ fn test_reflect_type_emits_category_constant() {
     let ir = backend.generate(&vec![txn], None);
     assert!(
         ir.contains("add i64 0, 1"),
-        "Float ^^Type must fold to category code 1; got:\n{ir}"
+        "Float::Type must fold to category code 1; got:\n{ir}"
     );
 }
 
-/// 2026-08-14 (boundary plan): `s^^Element` on a `String` operand folds to
+/// 2026-08-14 (boundary plan): `s::Element` on a `String` operand folds to
 /// the Char category code (3) — a frozen descriptor, single constant.
 #[test]
 fn test_reflect_element_on_string_folds_char_code() {
@@ -11335,7 +11335,7 @@ fn test_reflect_element_on_string_folds_char_code() {
         let done: Bool = false;
         node report [done == false][done == true] {
             done = true;
-            let e: Int = s^^Element;
+            let e: Int = s::Element;
             term;
         };
     "#;
@@ -11348,11 +11348,11 @@ fn test_reflect_element_on_string_folds_char_code() {
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("add i64 0, 3"),
-        "String ^^Element must fold to the Char category code (3); got:\n{ir}"
+        "String::Element must fold to the Char category code (3); got:\n{ir}"
     );
 }
 
-/// 2026-08-14 (boundary plan): `xs^^Element` on a `List<String>` folds to the
+/// 2026-08-14 (boundary plan): `xs::Element` on a `List<String>` folds to the
 /// String element's category code — the read-op return substituted, single
 /// source.
 #[test]
@@ -11362,7 +11362,7 @@ coll obj MyList { data: Ptr<Int>; };
 let xs: MyList = [1, 2, 3];
 let done: Int = 0;
 node report [done == 0][done == 1] {
-    let e: Int = xs^^Element;
+    let e: Int = xs::Element;
     done = e;
     term;
 };
@@ -11376,7 +11376,7 @@ node report [done == 0][done == 1] {
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("add i64 0, 0"),
-        "List<Int> ^^Element must fold to the Int category code (0); got:\n{ir}"
+        "List<Int>::Element must fold to the Int category code (0); got:\n{ir}"
     );
 }
 
@@ -11557,7 +11557,7 @@ fn test_byte_literal_emits_raw_bstr_constant() {
     let src = r#"
 node start [true][false] {
     let b: Blob = #b"\x89PNG";
-    let c: Int = b^^Length;
+    let c: Int = b::Length;
     term Print#(c);
 };
 "#;
@@ -11627,7 +11627,7 @@ fn test_state_layout_emits_real_field_rows() {
     let src = r#"
 let count: Int = 0;
 let name: String = "";
-node start [true][name ^^Length == 0] {
+node start [true][name::Length == 0] {
     term Print#(count);
 };
 "#;
@@ -15435,5 +15435,74 @@ fn a_new_function_body_does_not_inherit_register_widths() {
         backend.fun.gen_reg(),
         "%t0",
         "register names restart per body"
+    );
+}
+
+/// 2026-11-23 (wave-10, I-2): the frame accessor changed the SPELLING only, so
+/// the emitted IR must be exactly what the retired spelling produced. Pinned
+/// here as the load/fold SHAPE for every value-position property, across both a
+/// stored-slot receiver (String) and a type-fold receiver (an array).
+///
+/// The byte-for-byte proof was taken out of band against a baseline worktree
+/// built at the pre-change commit: compiling the same program with `^^` and
+/// with `::` produced identical `.ll` except one runtime guidance string that
+/// deliberately names the new spelling. This test is the in-repo guard that the
+/// emission itself never drifts again.
+#[test]
+fn frame_accessor_reads_keep_the_stored_and_folded_shapes() {
+    let src = r#"
+        let s: String = "hello";
+        let buf: Float[16];
+        let tick: Int = 0;
+        node report [tick < 1][tick == 1] {
+            let len: Int = s::Length;
+            let bytes: Int = s::Bytes;
+            let size: Int = buf::Size;
+            let elem: Int = buf::Element;
+            let align: Int = buf::Alignment;
+            let ty: Int = 1.5::Type;
+            // Consume every value: an unused `let` is dead and would be
+            // eliminated, leaving nothing to assert on.
+            Print#(len as String);
+            Print#(bytes as String);
+            Print#(size as String);
+            Print#(elem as String);
+            Print#(align as String);
+            Print#(ty as String);
+            term;
+        };
+    "#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let ir = LlvmBackend::new()
+        .with_type_universe(universe)
+        .generate(&items, None);
+
+    // The stored slots must be real loads, never a scan.
+    assert!(
+        ir.contains("load i64, ptr "),
+        "::Length / ::Bytes must read stored header slots; got:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call i64 @briev_char_len(ptr "),
+        "::Length must NOT emit the codepoint scan (that is CharCount#)"
+    );
+    // The type facts fold to constants, so the array's element count must
+    // appear as an immediate in the module.
+    // The materialization form is `add <ty> 0, <const>` (the module has no
+    // bare immediate operand to match).
+    assert!(
+        ir.contains("add i64 0, 16"),
+        "::Size on Float[16] must fold to the constant 16; got:\n{ir}"
+    );
+    // No reflection spelling reaches codegen: the emitter is AST-driven, so the
+    // surface glyph can never leak into the module. (`^` may still appear as
+    // bitwise XOR, never as a reflection marker.)
+    assert!(
+        !ir.contains("^^"),
+        "the retired caret spelling must never appear in emitted IR"
     );
 }

@@ -646,12 +646,12 @@ impl<'a> Parser<'a> {
 
         // 2026-08-09 (SPEC §19.3): the declaration-level `fallback` clause is
         // removed — fallback behavior uses ordinary typed control flow (the
-        // `optional frgn` + `^^Available` check). Rejected as staged, not
+        // `optional frgn` + `::Available` check). Rejected as staged, not
         // silently accepted.
         if self.check_identifier("fallback") {
             return self.error_at_current(
                 "`fallback` clause removed (SPEC 19.3) — use `optional frgn` + \
-                 `feature^^Available` and ordinary typed control flow instead",
+                 `feature::Available` and ordinary typed control flow instead",
             );
         }
 

@@ -768,10 +768,12 @@ impl Annotator {
             Expr::Deref(inner) => format!("*{}", self.format_expr(inner)),
             Expr::AddrOf(inner) => format!("&{}", self.format_expr(inner)),
             Expr::Field(recv, name) => format!("{}.{}", self.format_expr(recv), name),
-            // 2026-11-21 (wave-9, one caret): a single spelling for every
-            // representation property, whatever tag the AST carries.
+            // 2026-11-23 (wave-10): the frame accessor. One spelling for every
+            // representation property, whatever tag the AST carries — the AST
+            // node is unchanged from the retired `::` form, so diagnostics must
+            // render the CURRENT surface or they teach a dead spelling.
             Expr::Reflect(recv, name, _kind) => {
-                format!("{}^^{}", self.format_expr(recv), name)
+                format!("{}::{}", self.format_expr(recv), name)
             }
             Expr::MethodCall(recv, name, args, _) => {
                 let args_str: Vec<String> = args.iter().map(|a| self.format_expr(a)).collect();

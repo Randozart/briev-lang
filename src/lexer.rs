@@ -509,23 +509,44 @@ pub enum Token {
     #[token(";")]
     Semicolon,
 
-    /// `^^` — reflection access (`x^^Length`, `x^^Bytes`). One spelling for
-    /// every representation property: a stored header slot or a type-derivable
-    /// fact, never a computation (that is the `#` family's job).
+    /// `^^` — RETIRED reflection spelling (`x^^Length`). Kept in the lexer so
+    /// the parser can reject it with a message naming its replacement (`x::Length`)
+    /// instead of letting `^^` fall apart into two XOR tokens and produce an
+    /// unhelpful "expected end of statement".
     ///
-    /// 2026-11-21 (wave-9, one caret): `^^` and `^^` are retired. The dot was
-    /// supposed to make reflection look like a dotted accessor, but the corpus
-    /// writes `value ^^Length` with a space BEFORE the dot in 230 of 237 lib
-    /// sites — decoration floating between operands, not an accessor. Runtime
-    /// `^^Size` was already deleted (2026-08-14 §6a), so the runtime/compile-time
-    /// split had no surviving semantic; the tag was surface-only.
+    /// History, preserved because it explains why the token still exists:
+    /// 2026-11-21 (wave-9, one caret) unified reflection onto `^^` — the dot was
+    /// supposed to make it look like a dotted accessor, but the corpus wrote
+    /// `value ^.Length` with a space BEFORE the dot in 230 of 237 lib sites, so
+    /// the dot was decoration floating between operands, not an accessor. Runtime
+    /// `.^Size` was already deleted (2026-08-14 §6a), leaving the runtime/
+    /// compile-time split with no semantic.
     ///
-    /// The caret alone remains bitwise XOR (`a ^ b`); `^^` is a distinct
-    /// two-char token, so the two never collide: `a ^ b` lexes XOR, `x^^Length`
-    /// lexes reflection, and `a ^^ b` (spaced) is two reflection tokens — a
-    /// syntax error, as it always was.
+    /// 2026-11-23 (wave-10): `^^` is retired as a SPELLING — on German, Nordic and
+    /// French layouts `^` is a dead key, so `value^^Length` cost four key presses
+    /// to produce two characters. Reflection is now `value::Prop` (the frame
+    /// accessor). This token no longer appears in the grammar; it exists solely to
+    /// produce the migration diagnostic.
+    ///
+    /// The caret alone remains bitwise XOR (`a ^ b`); `^^` is a distinct two-char
+    /// token, so `a ^ b` lexes XOR, `a ^^ b` lexes two reflection tokens (a syntax
+    /// error, as it always was), and neither collides with the new `::`.
     #[token("^^")]
     CaretCaret,
+
+    /// `::` — the frame accessor (`x::Length`, `x::Bytes`). Reads a compiler-owned
+    /// representation property: a stored header slot or a type-derivable fact,
+    /// never a computation (that is the `#` family's job). Read-only.
+    ///
+    /// 2026-11-23 (wave-10): `::` does NOT mean "path" in Briev — names are flat
+    /// (`loader::read_u8` stays invalid, `Enum::Variant` stays rejected in pattern
+    /// position). It means "resolved against the value's frame, not against its
+    /// declared instance members", which is why it reads correctly on a VALUE even
+    /// though C++ and Rust apply `::` only to types. Matched before `:` by logos'
+    /// longest-match rule (the same rule that puts `^^` before `^` and `..=` before
+    /// `..`), so `:` , `:=` and slice-bounds colons are untouched.
+    #[token("::")]
+    ColonColon,
 
     /// := — derivation / compile-time assertion block
     #[token(":=")]
@@ -779,6 +800,7 @@ impl std::fmt::Display for Token {
             Token::Underscore => write!(f, "_"),
             Token::Semicolon => write!(f, ";"),
             Token::CaretCaret => write!(f, "^^"),
+            Token::ColonColon => write!(f, "::"),
             Token::ColonEq => write!(f, ":="),
             Token::Colon => write!(f, ":"),
             Token::LBrace => write!(f, "{{"),
@@ -1466,6 +1488,60 @@ mod consumptive_tests {
         assert!(joined.contains("TildeSlash"), "~/: {joined}");
         assert!(joined.contains("Tilde"), "bare ~: {joined}");
         assert!(!joined.contains("TildeQuestion"), "~? removed: {joined}");
+    }
+
+    /// 2026-11-23 (wave-10): `::` is the frame accessor and must lex as ONE
+    /// token, matched before `:`. If it degraded to two `Colon`s the postfix
+    /// arm could never see it, and `x::Length` would fail as a stray colon.
+    #[test]
+    fn colon_colon_lexes_as_one_token() {
+        let mut lexer = Token::lexer("x::Length");
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::ColonColon)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), None);
+    }
+
+    /// The single colon (`let x: Int`), the derivation operator `:=`, and the
+    /// slice-bound colons inside `[]` must all survive the new two-char token.
+    #[test]
+    fn colon_forms_are_unaffected_by_colon_colon() {
+        let mut lexer = Token::lexer("a: b := c[d:e]");
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::Colon)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::ColonEq)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::LBracket)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::Colon)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::RBracket)));
+        assert_eq!(lexer.next(), None);
+    }
+
+    /// Bitwise XOR keeps its single caret, including the assignment form, and
+    /// `^^` still lexes as the (now retired) two-caret token so the parser can
+    /// name the replacement.
+    #[test]
+    fn single_caret_stays_bitwise_xor() {
+        let mut lexer = Token::lexer("a ^ b");
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::BitXor)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), None);
+
+        let mut lexer = Token::lexer("a ^= b");
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::CaretEq)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), None);
+
+        let mut lexer = Token::lexer("x^^Length");
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::CaretCaret)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), None);
     }
 }
 

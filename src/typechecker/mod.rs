@@ -118,7 +118,7 @@ pub struct TypecheckContext<'a> {
     /// from the annotation. Transient — set by the Let binding, cleared after.
     expected_call_type: Option<Type>,
     /// 2026-08-09 (Phase 12, SPEC §19.3): names of `optional frgn` bindings.
-    /// `feature^^Available` (a compile-time descriptor reflect) is a Bool
+    /// `feature::Available` (a compile-time descriptor read) is a Bool
     /// only for these — non-optional frgns are always available.
     optional_frgns: std::collections::HashSet<String>,
     /// 2026-07-31: Regular operator declarations from TypeDef bodies
@@ -1092,8 +1092,7 @@ fn validate_cast_protocol_crossing(
     // `String → Data → Int` departs only String → one crossing (the
     // existing behavior, which the corpus relies on). A path like
     // `String → Data → Int → Data` would depart String AND Int → two.
-    let mut departed: std::collections::HashSet<&str> =
-        std::collections::HashSet::new();
+    let mut departed: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for step in path.iter() {
         if step.src_category == step.dst_category || step.src_category == "Data" {
             continue;
@@ -1105,7 +1104,9 @@ fn validate_cast_protocol_crossing(
             operation: format!(
                 "a single cast crosses {} protocol categories ({} → {}); \
                  chain the casts (value as A as B)",
-                departed.len(), src_ty, target_ty
+                departed.len(),
+                src_ty,
+                target_ty
             ),
             type_name: src_ty.to_string(),
         });
@@ -1601,9 +1602,9 @@ pub fn infer_expression(
                 }),
             }
         }
-        // 2026-07-31: Reflection: x^^Length / x^^Size (see resolve_reflect).
+        // 2026-07-31: the frame accessor — x::Length / x::Size (see resolve_reflect).
         Expr::Reflect(recv, target, kind) => {
-            // 2026-08-09 (Phase 12, SPEC §19.3): `feature^^Available` — a
+            // 2026-08-09 (Phase 12, SPEC §19.3): `feature::Available` — a
             // compile-time descriptor Bool for an `optional frgn`. Only an
             // optional frgn name admits it (non-optional frgns are always
             // available; the reflect on a non-frgn value is an error).
@@ -1614,28 +1615,28 @@ pub fn infer_expression(
                 };
                 if !is_optional_frgn {
                     return Err(TypeError::InvalidOperation {
-                        operation: "reflection target 'Available'".into(),
+                        operation: "frame property '::Available'".into(),
                         type_name: format!(
-                            "`^^Available` is valid only on an `optional frgn` name"
+                            "`::Available` is valid only on an `optional frgn` name"
                         ),
                     });
                 }
                 return Ok((Type::bool_(), Provenance::Unknown));
             }
-            // 2026-08-14 (boundary plan): `value^^Element` — the ELEMENT type
+            // 2026-08-14 (boundary plan): `value::Element` — the ELEMENT type
             // of an iterable receiver as a frozen descriptor (SPEC §17.2:1430-1433).
             // Compile-time only, single-source proof form: the element type IS
             // the read op's return (`op At` Tier 2 / `op Current` Tier 1) or the
             // frozen `String` → `Char` protocol fact — never a second derivation
             // that could drift. The expression type is Int (the folded category
-            // code, exactly like `^^Type`); the VALUE is folded at codegen.
+            // code, exactly like `::Type`); the VALUE is folded at codegen.
             if target == "Element" {
                 let (recv_ty, recv_prov) = infer_expression(recv, ctx)?;
                 if resolve_element_type(ctx, &recv_ty).is_none() {
                     return Err(TypeError::InvalidOperation {
-                        operation: "reflection target 'Element'".into(),
+                        operation: "frame property '::Element'".into(),
                         type_name: format!(
-                            "`^^Element` is valid only on an iterable receiver (a Tier-2/1 \
+                            "`::Element` is valid only on an iterable receiver (a Tier-2/1 \
                              collection or a String operand); `{recv_ty}` has no element type"
                         ),
                     });
@@ -1646,7 +1647,7 @@ pub fn infer_expression(
             let result_ty = resolve_reflect(&recv_ty, target, *kind, ctx)?;
             // 2026-11-22 (wave-10): a stored header read is NON-NEGATIVE by
             // construction (SPEC §17.1 — the [len] prefix, the element count).
-            // Recording it as a fact lets `(text^^Length) / 4 >= 0` discharge
+            // Recording it as a fact lets `(text::Length) / 4 >= 0` discharge
             // without an assertion at every call site, the same way
             // `initializer_fact` lets a `let` carry its sign. Length/Ptr/Ready
             // only — the folded type facts (Size/Bytes/Type/Element) are
@@ -4233,10 +4234,11 @@ fn call_site(
 /// The fact-join needs to know which variables a guard body may have rewritten.
 fn collect_reassigned_idents(stmt: &Statement, out: &mut Vec<String>) {
     match stmt {
-        Statement::Assign(lhs, _) => { if let Expr::Identifier(v) = lhs {
-            if !out.iter().any(|n| n == v) {
-                out.push(v.clone());
-            }
+        Statement::Assign(lhs, _) => {
+            if let Expr::Identifier(v) = lhs {
+                if !out.iter().any(|n| n == v) {
+                    out.push(v.clone());
+                }
             }
         }
         Statement::Guarded(_, body) => {
@@ -5674,9 +5676,7 @@ fn walk_scoped_stmts(
             | Statement::SyncBlock(inner)
             | Statement::Defer(inner)
             | Statement::Mutex(inner) => walk_scoped_stmts(inner, facts, post_vacuous, sink),
-            Statement::Foreach { body, .. } => {
-                walk_scoped_stmts(body, facts, post_vacuous, sink)
-            }
+            Statement::Foreach { body, .. } => walk_scoped_stmts(body, facts, post_vacuous, sink),
             Statement::InlineDefn(inner) => {
                 walk_scoped_stmts(&inner.body, facts, post_vacuous, sink)
             }
@@ -8921,7 +8921,7 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
             .and_then(|i| elems.get(i).cloned());
     }
     // 2026-08-23 (SPEC sync): EVENT PORT payload projection — `damage.amount`
-    // falls through to the payload type's fields. Readiness uses ^^Ready
+    // falls through to the payload type's fields. Readiness uses ::Ready
     // (reflection), not .Ready (field) — delimiter semantic consistency.
     if let Type::Applied(base, args) = receiver {
         if base == "Event" {
@@ -8956,45 +8956,54 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
     Some(slot_ty)
 }
 
-/// 2026-07-31: Reflection table (D1). `^` = runtime, `^^` = compile-time.
+/// 2026-07-31: the frame-property table (D1). One spelling, one tag.
 /// A target used with the wrong kind is an error; an unknown target is an
 /// error. `Len`/`Ptr` are runtime reads; `Size`/`Bytes`/`Alignment`/`Type`/
 /// `Element` are compile-time foldable descriptors. 2026-08-14 (Boxed Cat,
-/// tri-partite rule): runtime `^^Size` is DELETED — the element count of a
+/// tri-partite rule): runtime size is DELETED — the element count of a
 /// collection is an operation, so its home is the `Count#` intrinsic, not a
-/// reflection target (§6a/§6b of the 2026-08-14 plan). `^^Size` (compile
-/// time) keeps the vector shape.
-/// Resolve `x^^Prop` — the unified reflection surface (2026-11-21, wave-9).
+/// frame property (§6a/§6b of the 2026-08-14 plan). Compile-time `Size` keeps
+/// the vector shape.
+/// Resolve `x::Prop` — the frame accessor (retargeted 2026-11-23, wave-10).
 ///
 /// The dividing line (owner, 2026-11-21): `#` is an OPERATION — owner-written
-/// code, parameters, computed value. `^^` is a REPRESENTATION PROPERTY — a
-/// stored header slot or a type-derivable fact the compiler already knows.
-/// Never a computation.
+/// code, parameters, computed value. `::` is a FRAME PROPERTY — a stored header
+/// slot or a type-derivable fact the compiler already owns. Never a computation.
+/// Read-only: a property is a fact about the value's frame, so it is not
+/// assignable (writes go through `Store#` or the owning type's own ops).
 ///
-/// The old `^^` / `^^` runtime/compile-time split is retired. It had already
-/// stopped carrying weight: runtime `Size` was deleted (2026-08-14 §6a) because
-/// the property was compile-time-shaped, and runtime `Length` on a Vector emits
-/// the same type fold compile-time `Size` does. The `CompileTime` tag every
-/// `^^` site now carries is the unified path; the emitter's per-property table
-/// keeps its folding behavior, keyed by the property row rather than the tag.
-/// The tag survives in the AST for the interpreter and any pass that asks.
+/// The set is CLOSED and compiler-owned: nine names, every one of them bearing on
+/// a bootstrap primitive, which is the sole type-name exception Rule 15 grants.
+/// An extensible declaration surface (`frame`/`repr` in a type body) was
+/// considered and rejected in wave-10 — it would have no user. The trigger to
+/// revisit is a user-defined type that owns an ABI with hidden header slots.
+///
+/// History, kept because it explains the shape: the pre-wave-9 `^.`/`.::` split
+/// carried a runtime/compile-time distinction that had already lost its meaning
+/// (runtime `Size` deleted 2026-08-14 §6a, and runtime `Length` on a Vector emits
+/// the same type fold that compile-time `Size` does), so wave-9 unified it onto
+/// one spelling. Wave-10 changed only the GLYPH — `^` is a dead key on German,
+/// Nordic and French layouts, so `value::Length` cost four key presses — leaving
+/// this table, the AST node and the emission path untouched. Every property still
+/// carries the `CompileTime` tag; the emitter's per-property table decides
+/// folding, keyed by the property row rather than the tag.
 fn resolve_reflect(
     receiver: &Type,
     target: &str,
     _kind: ReflectKind,
     ctx: &TypecheckContext,
 ) -> Result<Type, TypeError> {
-    // Every property is admitted through the single `^^` spelling now. The
+    // Every property is admitted through the single `::` spelling. The
     // stored-vs-computed line is enforced by WHICH properties exist, exactly as
     // before: computed counts (op Count, CharCount#) and computed truths (Abs#)
-    // were never reflection targets and still are not.
+    // were never frame properties and still are not.
     match target {
         // Event port readiness — per-instance stored state (SPEC §9.5).
         "Ready" => match receiver {
             Type::Applied(base, _) if base == "Event" => Ok(Type::bool_()),
             _ => Err(TypeError::InvalidOperation {
-                operation: format!("reflection target '^^{target}'"),
-                type_name: format!("{receiver} does not support ^^Ready"),
+                operation: format!("frame property '::{target}'"),
+                type_name: format!("{receiver} does not support ::Ready"),
             }),
         },
         // STORED length — the String/Blob byte header, the Vector element
@@ -9005,19 +9014,19 @@ fn resolve_reflect(
             Type::Custom(n) if ctx.coll_types.contains(n) => Ok(Type::int()),
             Type::Applied(n, _) if ctx.coll_types.contains(n) => Ok(Type::int()),
             Type::Applied(..) => Err(TypeError::InvalidOperation {
-                operation: "reflection target 'Length'".into(),
+                operation: "frame property '::Length'".into(),
                 type_name: format!(
                     "{receiver} has no INTRINSIC length — its count is member-managed; use `op Count`"
                 ),
             }),
             Type::Custom(_) => Err(TypeError::InvalidOperation {
-                operation: "reflection target 'Length'".into(),
+                operation: "frame property '::Length'".into(),
                 type_name: format!(
                     "type {receiver} has no intrinsic (stored) length; a computed count is an intrinsic (`CharCount#`)"
                 ),
             }),
             _ => Err(TypeError::InvalidOperation {
-                operation: "reflection target 'Length'".into(),
+                operation: "frame property '::Length'".into(),
                 type_name: format!("type {receiver} has no runtime length",),
             }),
         },
@@ -9029,16 +9038,20 @@ fn resolve_reflect(
         // Frozen descriptor — the protocol category code.
         "Type" => Ok(Type::int()),
         _ => {
-            // The removed `^^Absolute` gets a targeted hint directing to `Abs#`.
+            // The removed `Absolute` gets a targeted hint directing to `Abs#`.
             let hint = if target == "Absolute" {
                 " — `Absolute` was removed; abs is a computed truth, use the `Abs#` intrinsic"
             } else {
                 ""
             };
             Err(TypeError::InvalidOperation {
-                operation: format!("reflection target '{target}'"),
+                operation: format!("frame property '::{target}'"),
+                // 2026-11-23 (wave-10, I-6): name the FULL closed set. The set is
+                // the thing a reader consults, and the previous message omitted
+                // Element, Available and Ready — three of the nine.
                 type_name: format!(
-                    "unknown reflection target — expected Length, Ptr, Size, Bytes, Alignment, or Type{hint}"
+                    "unknown frame property — expected Length, Ptr, Size, Bytes, Alignment, Type, \
+                     Element, Available, or Ready{hint}"
                 ),
             })
         }
@@ -9401,9 +9414,9 @@ fn extract_op_order(consume: bool) -> (&'static str, &'static str) {
 /// receiver, single-source proof form. `Some(ty)` only for genuine iterables:
 /// a `String` operand → `Char` (frozen protocol fact), a Tier-2/1 type → the
 /// read op's return substituted with the concrete generic args, a vector → the
-/// inner type. `None` for everything else — a non-iterable `^^Element` is a
+/// inner type. `None` for everything else — a non-iterable `::Element` is a
 /// compile error, never a silent Int. This is the SAME evidence `foreach_item_type`
-/// reads for the foreach binding, so `^^Element` and `foreach` cannot drift.
+/// reads for the foreach binding, so `::Element` and `foreach` cannot drift.
 fn resolve_element_type(ctx: &TypecheckContext, ty: &Type) -> Option<Type> {
     if ctx.operand_implements_protocol(ty, "String") {
         return Some(Type::Custom("Char".to_string()));
@@ -10676,8 +10689,8 @@ defn peek(xs: List<Int>, i: Int) -> Int {
         let _deny = DenyGate::install();
         check(
             "defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
-             defn f(s: String, len: Int) [s ^^Length <= len][term >= 0] -> Int { \
-                 let missing: Int = len - s ^^Length; \
+             defn f(s: String, len: Int) [s::Length <= len][term >= 0] -> Int { \
+                 let missing: Int = len - s::Length; \
                  term nonneg(missing); \
              };",
         )
@@ -11529,7 +11542,7 @@ node t [count < 5][count == 5] {
     fn empty_list_assignment_coerces_to_target_element_type() {
         let src = r#"
 let items: List<String> = ["A"];
-txn t [items^^Size > 0][items^^Size == 0] {
+txn t [items::Size > 0][items::Size == 0] {
     items = [];
     term;
 };
@@ -12268,14 +12281,14 @@ node probe [done == false][done == true] { done = true; term; };
 
     #[test]
     fn reflect_kind_mismatch_errors() {
-        // `Bytes` and `Size` are compile-time-only — runtime `^^Bytes`/`^^Size`
-        // are kind errors (2026-08-14 §6a: `^^Size` runtime deleted — element
+        // `Bytes` and `Size` are compile-time-only — runtime `::Bytes`/`::Size`
+        // are kind errors (2026-08-14 §6a: `::Size` runtime deleted — element
         // count is the `Count#` intrinsic).
         let src = r#"
 let x: Int = 5;
 node probe [true][true] {
-    let s: Int = x^^Bytes;
-    let n: Int = x^^Size;
+    let s: Int = x::Bytes;
+    let n: Int = x::Size;
     term;
 };
 "#;
@@ -12291,8 +12304,8 @@ node probe [true][true] {
     fn reflect_compile_time_resolves() {
         let src = r#"
 let items: Int[8];
-node probe [items^^Size > 0][true] {
-    let sz: Int = items^^Size;
+node probe [items::Size > 0][true] {
+    let sz: Int = items::Size;
     term;
 };
 "#;
@@ -12302,7 +12315,7 @@ node probe [items^^Size > 0][true] {
 
     #[test]
     fn reflect_element_on_iterable_resolves() {
-        // 2026-08-14 (boundary plan): `^^Element` is a compile-time frozen
+        // 2026-08-14 (boundary plan): `::Element` is a compile-time frozen
         // descriptor on an iterable receiver — resolves to Int (the folded
         // category code), never an error. The iterable is declared inline
         // (stdlib `List` isn't in the test universe).
@@ -12314,9 +12327,9 @@ obj Items {
 };
 let xs: Items;
 let s: String = "hi";
-node probe [xs^^Element == 0][true] {
-    let a: Int = xs^^Element;
-    let b: Int = s^^Element;
+node probe [xs::Element == 0][true] {
+    let a: Int = xs::Element;
+    let b: Int = s::Element;
     term;
 };
 "#;
@@ -12326,32 +12339,89 @@ node probe [xs^^Element == 0][true] {
 
     #[test]
     fn reflect_element_on_non_iterable_errors() {
-        // A scalar has no element type — `^^Element` is a compile error,
+        // A scalar has no element type — `::Element` is a compile error,
         // never a silent Int.
         let src = r#"
 let x: Int = 5;
 node probe [true][true] {
-    let e: Int = x^^Element;
+    let e: Int = x::Element;
     term;
 };
 "#;
         let e = check(src);
         assert!(
             e.is_err(),
-            "expected non-iterable `^^Element` to error, got: {:?}",
+            "expected non-iterable `::Element` to error, got: {:?}",
             e
         );
     }
 
+    /// 2026-11-23 (wave-10, I-6): the closed set is the thing a reader
+    /// consults, so the unknown-property error must name ALL NINE. The message
+    /// it replaced omitted Element, Available and Ready — three of the nine.
+    #[test]
+    fn unknown_frame_property_names_the_full_set() {
+        let src = r#"
+let s: String = "abc";
+node probe [true][true] {
+    let n: Int = s::Lenght;
+    term;
+};
+"#;
+        let msg = format!("{:?}", check(src));
+        for expected in [
+            "Length",
+            "Ptr",
+            "Size",
+            "Bytes",
+            "Alignment",
+            "Type",
+            "Element",
+            "Available",
+            "Ready",
+        ] {
+            assert!(
+                msg.contains(expected),
+                "the unknown-property error must name `{expected}`; got: {msg}"
+            );
+        }
+        assert!(
+            msg.contains("unknown frame property"),
+            "the error must use the frame-accessor vocabulary; got: {msg}"
+        );
+    }
+
+    /// 2026-11-23 (wave-10, I-7): every user-facing diagnostic names the
+    /// current spelling. A message that teaches a retired form is a bug: the
+    /// reader has no way to know it is historical.
+    #[test]
+    fn no_diagnostic_names_the_retired_spelling() {
+        let retired = format!("{}{}", '^', '^');
+        // A table of programs that each trip a different frame-property
+        // diagnostic: unknown name, wrong receiver, non-iterable Element.
+        let programs = [
+            "let s: String = \"abc\";\nnode p [true][true] { let n: Int = s::Lenght; term; };",
+            "let n: Int = 3;\nnode p [true][true] { let x: Int = n::Length; term; };",
+            "let n: Int = 3;\nnode p [true][true] { let x: Int = n::Element; term; };",
+        ];
+        for src in programs {
+            let msg = format!("{:?}", check(src));
+            assert!(
+                !msg.contains(&retired),
+                "a diagnostic still names the retired spelling: {msg}"
+            );
+        }
+    }
+
     #[test]
     fn absolute_reflection_removed_directs_to_abs_intrinsic() {
-        // 2026-08-14 (boundary plan, SPEC §17.3): `^^Absolute` was removed —
+        // 2026-08-14 (boundary plan, SPEC §17.3): `::Absolute` was removed —
         // abs is a computed truth, so the `Abs#` intrinsic is its home. The
         // error must direct the user to `Abs#`.
         let src = r#"
 let a: Int = -7;
 node probe [a < 0][true] {
-    let b: Int = a^^Absolute;
+    let b: Int = a::Absolute;
     term;
 };
 "#;
@@ -12361,11 +12431,11 @@ node probe [a < 0][true] {
                 let msg = format!("{:?}", errs);
                 assert!(
                     msg.contains("Abs#"),
-                    "the removed `^^Absolute` must direct to Abs#; got: {}",
+                    "the removed `::Absolute` must direct to Abs#; got: {}",
                     msg
                 );
             }
-            Ok(()) => panic!("expected `^^Absolute` to be rejected"),
+            Ok(()) => panic!("expected `::Absolute` to be rejected"),
         }
     }
 
@@ -12394,7 +12464,7 @@ node probe [true][true] {
         // The type-directed literal form stays valid.
         let src = r#"
 let xs: List<Int> = [1, 2, 3];
-node probe [xs^^Element == 0][true] {
+node probe [xs::Element == 0][true] {
     let ys: List<Int> = [4, 5];
     term;
 };
@@ -12449,7 +12519,7 @@ node probe [small < 100][true] {
         // construct through the surface they declare with.
         let src = r#"
 let buf: Int[4] = [1, 2, 3, 4];
-node probe [buf^^Element == 4][true] {
+node probe [buf::Element == 4][true] {
     term;
 };
 "#
@@ -12927,35 +12997,35 @@ node go [fired == 0][fired == 1] {
         );
     }
 
-    // ── 2026-08-09 (Phase 12, SPEC §19.3): optional-frgn ^^Available ──
+    // ── 2026-08-09 (Phase 12, SPEC §19.3): optional-frgn::Available ──
 
     #[test]
     fn optional_frgn_available_is_bool() {
-        // `feature^^Available` on an `optional frgn` is a Bool descriptor.
+        // `feature::Available` on an `optional frgn` is a Bool descriptor.
         let src = r#"
 optional frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature^^Available;
+    let avail: Bool = feature::Available;
     fired = fired + 1;
     term;
 };
 "#;
         assert!(
             check(src).is_ok(),
-            "an optional-frgn `^^Available` reflect must typecheck as Bool"
+            "an optional-frgn `::Available` reflect must typecheck as Bool"
         );
     }
 
     #[test]
     fn available_on_non_optional_frgn_is_an_error() {
-        // `^^Available` is valid only on an `optional frgn` (a non-optional
+        // `::Available` is valid only on an `optional frgn` (a non-optional
         // frgn is always available).
         let src = r#"
 frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature^^Available;
+    let avail: Bool = feature::Available;
     fired = fired + 1;
     term;
 };
@@ -12964,7 +13034,7 @@ node go [fired == 0][fired == 1] {
         assert!(
             err.iter()
                 .any(|e| format!("{}", e).contains("only on an `optional frgn`")),
-            "non-optional ^^Available must error, got {:?}",
+            "non-optional::Available must error, got {:?}",
             err
         );
     }
@@ -13453,7 +13523,7 @@ node go [done == 0][done == 1] {
     }
 
     /// 2026-08-16 (Phase 3a): a fixed `coll struct` literal construction typechecks
-    /// when the element count fits `T[N]`, iterates, and `^^Length`/`Count#`/
+    /// when the element count fits `T[N]`, iterates, and `::Length`/`Count#`/
     /// `Capacity#` all report N. An OVER-length literal is rejected (the fixed
     /// array cannot hold it — the heap-seq fallback must never fire for a coll
     /// struct).
@@ -13465,7 +13535,7 @@ let done: Int = 0;
 let total: Int = 0;
 node go [done == 0][done == 1] {
     let f: Fixed = [1, 2, 3, 4];
-    let len: Int = f^^Length;
+    let len: Int = f::Length;
     let n: Int = f.Count#();
     let cap: Int = Capacity#(f);
     let one: Int = f.data[1];
@@ -13549,7 +13619,7 @@ node go [done == 0][done == 1] {
         );
     }
 
-    /// 2026-08-15 (coll plan §3.4.6): `^^Length` on a `coll` type is stored-length
+    /// 2026-08-15 (coll plan §3.4.6): `::Length` on a `coll` type is stored-length
     /// reflection (the hidden `len` slot) — it types as Int, like `Count#`.
     #[test]
     fn coll_length_reflection_typechecks() {
@@ -13559,27 +13629,27 @@ coll obj MyList<T> { inner: Buf<T>; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let xs: MyList<Int> = [5, 6, 7];
-    let len: Int = xs^^Length;
+    let len: Int = xs::Length;
     let n: Int = xs.Count#();
     term;
 };
 "#;
         assert!(
             check(ok).is_ok(),
-            "coll ^^Length must type as Int (stored hidden len slot)"
+            "coll::Length must type as Int (stored hidden len slot)"
         );
         let non_coll = r#"
 obj Plain { data: Ptr<Int>; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let p: Plain = Plain { data: Malloc#(64) as Ptr<Int> };
-    let len: Int = p^^Length;
+    let len: Int = p::Length;
     term;
 };
 "#;
         assert!(
             check(non_coll).is_err(),
-            "non-coll obj ^^Length must error (no compiler-owned length)"
+            "non-coll obj::Length must error (no compiler-owned length)"
         );
     }
 
@@ -13622,8 +13692,8 @@ node go [done == 0][done == 1] {
 
     /// 2026-08-16 (Phase 3e, SPEC §17.1): the Data reflective floor — a value
     /// observes as raw storage via compile-time descriptor reflection
-    /// (`^^Type`/`^^Bytes`/`^^Alignment`). A `coll struct` value and a Blob
-    /// both reflect; `Blob^^Length` is the byte header.
+    /// (`::Type`/`::Bytes`/`::Alignment`). A `coll struct` value and a Blob
+    /// both reflect; `Blob::Length` is the byte header.
     #[test]
     fn data_reflective_floor_typechecks() {
         let ok = r#"
@@ -13631,11 +13701,11 @@ coll struct Fixed { data: Int[4]; };
 let done: Int = 0;
 node go [done == 0][done == 1] {
     let f: Fixed = [1, 2, 3, 4];
-    let t: Int = f^^Type;
-    let sz: Int = f^^Bytes;
-    let al: Int = f^^Alignment;
+    let t: Int = f::Type;
+    let sz: Int = f::Bytes;
+    let al: Int = f::Alignment;
     let blob: Blob = "abc" as Blob;
-    let len: Int = blob^^Length;
+    let len: Int = blob::Length;
     done = t + sz + al + len;
     term;
 };
