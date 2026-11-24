@@ -44,7 +44,7 @@ rejected with compile error (capability gate or `record_unsupported`) · **—
 | spawn | ✅ | ❌ | ❌ | ❌ | ✅ |
 | await | ✅ | ❌ | ❌ | ❌ | ✅ |
 | method calls | ✅ | ❌ | ❌ | ❌ | ✅ |
-| reflect `^^`/`^^` | ⚠️ partial | ❌ | ❌ | ❌ | ✅ |
+| reflect `::`/`::` | ⚠️ partial | ❌ | ❌ | ❌ | ✅ |
 | plugin intercept | ✅ | ❌ | ❌ | ❌ | ✅ |
 | derivation blocks | ⚠️ constant-0 stub | ❌ | ❌ | ❌ | ⚠️ stub |
 | within expr | ⚠️ deadline dropped | ❌ | ❌ | ❌ | ⚠️ |

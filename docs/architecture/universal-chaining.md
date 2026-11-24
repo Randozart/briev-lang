@@ -7,7 +7,7 @@
 ## The rule
 
 Every `.`-suffixed call — method, `#` intrinsic, `$` compile-time navigation,
-`!` plugin, `^`/`^^` reflection — obeys one rule:
+`!` plugin, `::` frame accessor — obeys one rule:
 
 > **The right-side operation applies to the left-side result.**
 
@@ -20,7 +20,7 @@ a different syntax. The receiver is preserved as the operation's input.
 | `#` | intrinsic / operation identity | `obj.Add#(x)` |
 | `$` | compile-time navigation (`eval_nav_call`) | `obj.Nav$(x)` |
 | `!` | plugin intercept (carries receiver) | `obj.serialize!(x)` |
-| `^` / `^^` | reflection (separate tokens) | `obj^^Length`, `obj^^Size` |
+| `::` | frame accessor — a compiler-owned representation property | `obj::Length`, `obj::Size` |
 
 **Priority:** member → operation/intrinsic (`#`) → plugin intercept (`!`) →
 UFCS fallback.

@@ -62,7 +62,7 @@ node notify_observers()
     [notified_value == subject_value]
 {
     let i: Int = 0;
-    [i < observers ^^Len] {
+    [i < observers::Len] {
         send_notification(observers[i], subject_value);
         i = i + 1;
     };
@@ -84,7 +84,7 @@ Separate state-changing transactions from queries:
 // Commands (state-changing)
 txn create_user(name: String, email: String) 
     [!user_exists(email)]
-    [users ^^Len == users ^^Len + 1]
+    [users::Len == users::Len + 1]
 {
     let user = User { id: next_id(), name: name, email: email };
     users = users.append(user);
@@ -96,7 +96,7 @@ txn update_user(id: Int, name: String)
     [true]
 {
     let i: Int = 0;
-    [i < users ^^Len] {
+    [i < users::Len] {
         [users[i].id == id] {
             users[i].name = name;
         };
@@ -108,7 +108,7 @@ txn update_user(id: Int, name: String)
 // Queries (read-only, no state mutation)
 defn get_user(id: Int) -> Option<User> {
     let i: Int = 0;
-    [i < users ^^Len] {
+    [i < users::Len] {
         [users[i].id == id] {
             term Some(users[i]);
         };
@@ -391,7 +391,7 @@ txn cache_put(key: String, value: String, ttl: Int)
         ttl: ttl
     };
     
-    [cache ^^Len >= cache_size] {
+    [cache::Len >= cache_size] {
         cache = evict_oldest(cache);
     };
     
@@ -484,7 +484,7 @@ defn binary_search(list: List<Int>, target: Int)
     [result >= 0] {
         [list[result] == target]    // If found, it matches
     };
-    term search_impl(list, target, 0, list ^^Len - 1);
+    term search_impl(list, target, 0, list::Len - 1);
 };
 ```
 

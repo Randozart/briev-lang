@@ -169,9 +169,9 @@ struct Todo {
 let todos: List<Todo> = [];
 let filter: String = "all";
 
-txn add_todo(text: String) [text^^Len > 0][todos^^Len == todos^^Len + 1] {
+txn add_todo(text: String) [text::Len > 0][todos::Len == todos::Len + 1] {
     let new_todo = Todo {
-        id: todos^^Len,
+        id: todos::Len,
         text: text,
         completed: false
     };
@@ -179,7 +179,7 @@ txn add_todo(text: String) [text^^Len > 0][todos^^Len == todos^^Len + 1] {
     term;
 };
 
-txn toggle_todo(id: Int) [id >= 0 && id < todos^^Len][true] {
+txn toggle_todo(id: Int) [id >= 0 && id < todos::Len][true] {
     let todo = todos[id];
     todos = todos.set(id, Todo {
         id: todo.id,
@@ -189,15 +189,15 @@ txn toggle_todo(id: Int) [id >= 0 && id < todos^^Len][true] {
     term;
 };
 
-txn remove_todo(id: Int) [id >= 0 && id < todos^^Len][todos^^Len == todos^^Len - 1] {
+txn remove_todo(id: Int) [id >= 0 && id < todos::Len][todos::Len == todos::Len - 1] {
     todos = todos.remove(id);
     term;
 };
 
-txn clear_completed [true][todos^^Len <= todos^^Len] {
+txn clear_completed [true][todos::Len <= todos::Len] {
     let filtered: List<Todo> = [];
     let i: Int = 0;
-    [i < todos^^Len] {
+    [i < todos::Len] {
         [!todos[i].completed] {
             filtered = filtered.append(todos[i]);
         };
@@ -281,8 +281,8 @@ let produced: Int = 0;
 let consumed: Int = 0;
 
 async node produce() 
-    [buffer ^^Len < buffer_size && produced < 100]
-    [produced == produced + 1 && buffer ^^Len == buffer ^^Len + 1]
+    [buffer::Len < buffer_size && produced < 100]
+    [produced == produced + 1 && buffer::Len == buffer::Len + 1]
 {
     produced = produced + 1;
     buffer = buffer.append(produced);
@@ -290,8 +290,8 @@ async node produce()
 };
 
 async node consume() 
-    [buffer ^^Len > 0]
-    [consumed == consumed + 1 && buffer ^^Len == buffer ^^Len - 1]
+    [buffer::Len > 0]
+    [consumed == consumed + 1 && buffer::Len == buffer::Len - 1]
 {
     let item = buffer[0];
     buffer = buffer.drop(1);
@@ -424,7 +424,7 @@ node check_humidity_alert
     term;
 };
 
-node clear_old_alerts [alerts^^Len > 10][alerts^^Len <= 10] {
+node clear_old_alerts [alerts::Len > 10][alerts::Len <= 10] {
     alerts = alerts.drop(1);
     term;
 };
@@ -443,7 +443,7 @@ render struct Dashboard {
             <p b-text="humidity + '%'"></p>
         </div>
         
-        <div class="alerts" b-show="alerts^^Len > 0">
+        <div class="alerts" b-show="alerts::Len > 0">
             <h2>Alerts</h2>
             <ul>
                 <li b-each:item="alerts" b-text="item"></li>

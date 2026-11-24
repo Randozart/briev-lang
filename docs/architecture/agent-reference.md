@@ -67,7 +67,7 @@ variant — never a metadata key that codegen must check.
 ### 1.1.1 Universal chaining (2026-09-16)
 
 Every `.`-suffixed call — method, `#` intrinsic, `$` compile-time navigation,
-`!` plugin, `^`/`^^` reflection — applies the right-side operation to the
+`!` plugin, `^`/`::` reflection — applies the right-side operation to the
 left-side result. The suffix is a naming convention selecting dispatch, not a
 different syntax. Priority: member → operation/intrinsic (`#`) → plugin
 intercept (`!`) → UFCS fallback. Power features: `.N>>`/`.name>>`
@@ -147,6 +147,8 @@ frgn XXH64(data_ptr: Int, len: Int, seed: Int) -> Int as frgn__xxh64 from "link/
 - `_` discard binding: `let _ = expr;` also works in tuples
   (`let (_, value) = get_pair();`).
 - Imports are flat — no `::` module paths. `loader::read_u8(x)` is invalid.
+`::` has exactly one meaning in Briev: the **frame accessor** (`x::Length`),
+resolved against the value's representation rather than its declared members.
 - `import "foo.bv"` is file-relative to the importing file; `"<foo>"` is a
   registry lookup.
 - Tuples are heap-allocated (`(1, 2)` calls `@malloc`); SROA promotes small
@@ -249,7 +251,7 @@ Iteration requires `txn` with `[pre][post]` convergence, NOT `defn` + `[guard]`
 
 ```briev
 txn iter_map<T, U>(list: List<T>, f: T -> U, result: List<U>, i: Int)
-    [i < list^^Len][i == list^^Len] -> List<U>
+    [i < list::Len][i == list::Len] -> List<U>
 {
     result = result.append(f(list[i]));
     i = i + 1;

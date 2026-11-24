@@ -129,7 +129,7 @@ This folder contains a complete Briev tutorial:
 10. **10-best-practices.md** - Best practices
 11. **11-triggers.md** - Triggers and events
 12. **12-pragmas.md** - Pragmas and directives
-13. **13-projections.md** - Metadata projections (`^^Len`, `^^Ptr`, …)
+13. **13-projections.md** - Metadata projections (`::Len`, `::Ptr`, …)
 
 ## Next Steps
 

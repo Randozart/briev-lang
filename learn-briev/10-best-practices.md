@@ -165,7 +165,7 @@ defn test_withdraw_insufficient_funds() -> Bool {
 ```briev
 defn test_empty_list() -> Bool {
     let list: List<Int> = [];
-    term list ^^Len == 0;
+    term list::Len == 0;
 };
 
 defn test_zero_division() -> Bool {
@@ -255,9 +255,9 @@ txn process() {
 
 ```briev
 txn create_user(username: String, email: String, password: String)
-    [username ^^Len >= 3 && username ^^Len <= 20]
+    [username::Len >= 3 && username::Len <= 20]
     [email.contains("@") && email.contains(".")]
-    [password ^^Len >= 8]
+    [password::Len >= 8]
     [user_created == true]
 {
     // All inputs validated by preconditions
@@ -296,7 +296,7 @@ txn check_permission(resource: String, action: String)
 defn sanitize_html(input: String) -> String {
     let mut sb = new_builder();
     let i: Int = 0;
-    [i < input ^^Len] {
+    [i < input::Len] {
         let c = input.char_at(i);
         [c == '<'] {
             sb = sb.append_str("&lt;");

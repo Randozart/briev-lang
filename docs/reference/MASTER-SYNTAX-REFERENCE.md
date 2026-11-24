@@ -523,9 +523,9 @@ Rust plugin macros (`src/plugin/`):
 
 | Form | Meaning |
 |---|---|
-| `a^^Field` | Reflection — a representation property: a stored header slot or a type-derivable fact (never a computation; operations are the `#` family). One spelling for all of them (wave-9; `.^`/`.^^` retired) |
-| `a^^Length` `a^^Ptr` `a^^Ready` | Stored/observed state reads (String byte header, handle address, event-port readiness) |
-| `a^^Size` `a^^Bytes` `a^^Type` `a^^Element` `a^^Alignment` | Type-derived facts, folded when the receiver's shape is known |
+| `a::Field` | Reflection — a representation property: a stored header slot or a type-derivable fact (never a computation; operations are the `#` family). One spelling for all of them (wave-9; `.^`/`.::` retired) |
+| `a::Length` `a::Ptr` `a::Ready` | Stored/observed state reads (String byte header, handle address, event-port readiness) |
+| `a::Size` `a::Bytes` `a::Type` `a::Element` `a::Alignment` | Type-derived facts, folded when the receiver's shape is known |
 
 ---
 

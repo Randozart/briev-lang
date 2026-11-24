@@ -1,3 +1,37 @@
+## 2026-11-23 — `x::Ptr as Int` emits invalid IR (OPEN, pre-existing)
+
+Found while building the wave-10 IR-identity experiment: the same program fails
+identically on the pre-wave-10 binary, so this predates the frame-accessor
+rename and is unrelated to it.
+
+```briev
+import "std/io.bv";
+node main [beginprogram][true] {
+    let s: String = "abcdef";
+    let p: Int = s::Ptr as Int;   // was `s^^Ptr` before wave-10
+    Print#(p as String);
+    endprogram Print#("");
+};
+```
+
+```
+error: the compiler produced invalid IR
+  why:  LLVM rejected the module: '%t8' defined with type 'ptr' but expected 'i64'
+      >  %t13 = alloca i64, align 8
+      >  store i64 %t8, ptr %t13
+```
+
+`resolve_reflect` types `::Ptr` as `Type::ptr(receiver)`, so the reflector yields a
+`ptr` SSA value; the `as Int` cast then has to materialize a `ptrtoint`, but the
+binding store uses the *destination* type (`i64`) for the store instruction
+while the operand is still the raw `ptr` — `store i64 <ptr>`. The cast adapter
+(`ensure_typed_value` / `adapt_to_i64`) is being bypassed on this path.
+
+Not load-bearing for wave-10: no corpus site casts `::Ptr` (the file that
+tripped it was a throwaway probe), which is why it has stayed latent. Fix
+direction: route the cast result through the same adapter every other
+ptr→int conversion uses, and add a tier1 fixture.
+
 ## 2026-11-23 — stack-placed struct images outlive the frame that built them (#158, #159 — FIXED)
 
 Two shapes, one cause. A struct literal is either stack- or heap-placed by an

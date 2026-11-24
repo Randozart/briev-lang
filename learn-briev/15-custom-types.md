@@ -64,12 +64,12 @@ Alongside `op`, types declare metaproperties via `prop`:
 ```briev
 type MyString: String {
     op CastTo(Bit) = my_encode(#L);
-    prop Size = my_chars(#L);     // ^^Len → character count
-    prop Bytes = my_byte_len(#L); // ^^Bytes → encoded byte length
+    prop Size = my_chars(#L);     //::Len → character count
+    prop Bytes = my_byte_len(#L); //::Bytes → encoded byte length
 };
 ```
 
-A `prop` declares a metaproperty accessible via reflection (`expr^^Name` / `expr^^Name`). The compiler
+A `prop` declares a metaproperty accessible via reflection (`expr::Name` / `expr::Name`). The compiler
 resolves it through the parent chain — `String` provides `Size` and `Bytes`,
 but a custom type can override them. Same resolution mechanism as `op`.
 
@@ -77,8 +77,8 @@ but a custom type can override them. Same resolution mechanism as `op`.
 
 | Fundamental | Metaproperties |
 |----------|---------------|
-| `Bit<N>` | `^^Bits`, `^^Alignment` |
-| `String` | `^^Len`, `^^Bytes` |
+| `Bit<N>` | `::Bits`, `::Alignment` |
+| `String` | `::Len`, `::Bytes` |
 | Any type | User-defined via `prop` |
 
 ## 3. Protocol Variants
@@ -189,7 +189,7 @@ type HashMap<K: String, V> {
 
 `K: String` checks that `K` refines the `String` fundamental's ops
 (`CastTo(String)`, `CastFrom(String)`, `Extract(Char)`, `InsertAt(Char)`,
-`Concat(String)`, `^^Len`). At instantiation, the concrete type is
+`Concat(String)`, `::Len`). At instantiation, the concrete type is
 verified against the parent.
 
 ## 8. Protocol Participation and GLUE Bridge
