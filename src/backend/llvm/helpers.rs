@@ -3282,6 +3282,15 @@ impl LlvmBackend {
                 .map(|(t, _)| t.clone())
                 .unwrap_or(crate::ast::Type::int());
             let llvm_ty = self.plain_global_llvm_type(&ty);
+            // 2026-11-24 (BUGS.md wasm32 width class): a plain slot is i64
+            // (plain_global_llvm_type) but a handle value lives at the TARGET
+            // word width in SSA — i32 on wasm32. Storing it verbatim emitted
+            // `store i64 %t21` for an i32 `%t21` and LLVM rejected the module.
+            // Box at this boundary, which is the design's rule for handles
+            // ("narrow in SSA, widened at the boxing boundary", adapt_to_i64);
+            // on a 64-bit target the widths already agree and nothing is
+            // emitted.
+            let val = self.box_handle_for_slot(out, indent, val, &ty, &llvm_ty);
             if self.plain_context_active() {
                 let slot = self.emit_plain_slot_addr(out, indent, name)?;
                 writeln!(
@@ -3385,6 +3394,10 @@ impl LlvmBackend {
             }
         }
         writeln!(out).ok();
+        // 2026-11-24 (BUGS.md wasm32 width class): record the loaded register's
+        // physical width so handle consumers derive instead of assuming the
+        // target word.
+        self.fun.reg_value_ll.insert(val.clone(), llvm_ty.clone());
         // 2026-10-20 (pointer provenance): Ptr-field caching is seeded once
         // at function entry by `preload_state_ptr_fields`; a load after a
         // store is emitted fresh and not re-cached, so it cannot be reused
@@ -3599,6 +3612,86 @@ impl LlvmBackend {
         ptr
     }
 
+    /// Box a handle-typed value for an integer slot of the given width.
+    ///
+    /// 2026-11-24 (BUGS.md wasm32 width class): a handle (Ptr / struct / object
+    /// value) lives at the TARGET word width in SSA — i32 on wasm32, i64 on a
+    /// 64-bit target — while a boxed slot is i64. The design's own rule
+    /// (`adapt_to_i64`) is to widen at the boxing boundary; this is that step
+    /// for callers that hold only a register name. The register's recorded
+    /// width wins when present (`reg_value_ll`); otherwise the target word
+    /// width is the documented SSA width for a handle. Non-handle types, and
+    /// widths that already agree, are returned untouched, so a 64-bit build
+    /// emits nothing new.
+    fn box_handle_for_slot(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        val: &str,
+        briev_ty: &Type,
+        slot_llvm_ty: &str,
+    ) -> String {
+        let handle_like = matches!(briev_ty, Type::Ptr(_) | Type::PtrConst(_) | Type::LayoutPtr(_))
+            || matches!(briev_ty, Type::Custom(n) if self.ctx.struct_types.contains_key(n) || self.ctx.obj_types.contains(n))
+            || matches!(briev_ty, Type::Applied(n, _) if self.ctx.struct_types.contains_key(n) || self.ctx.obj_types.contains(n));
+        if !handle_like {
+            return val.to_string();
+        }
+        let from = self
+            .fun
+            .reg_value_ll
+            .get(val)
+            .cloned()
+            .unwrap_or_else(|| format!("i{}", self.ctx.int_bits));
+        if from == *slot_llvm_ty {
+            return val.to_string();
+        }
+        self.convert_int_width(out, indent, val, &from, slot_llvm_ty)
+            .unwrap_or_else(|| val.to_string())
+    }
+
+    /// `box_handle_for_slot` for the plain-global publish sites, which know the
+    /// global's name but not its Briev type in scope.
+    pub(crate) fn box_plain_global_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        name: &str,
+        val: &str,
+        slot_llvm_ty: &str,
+    ) -> String {
+        let ty = self
+            .ctx
+            .plain_global_types
+            .get(name)
+            .map(|(t, _)| t.clone())
+            .unwrap_or_else(Type::int);
+        self.box_handle_for_slot(out, indent, val, &ty, slot_llvm_ty)
+    }
+
+    /// Widen or narrow an integer register to `to` (zext when growing, trunc
+    /// when shrinking). Handles are unsigned addresses, so this never signs.
+    /// `None` when either side is not a plain `iN` — the caller keeps its
+    /// existing behaviour rather than inventing a conversion.
+    pub(crate) fn convert_int_width(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        val: &str,
+        from: &str,
+        to: &str,
+    ) -> Option<String> {
+        let width = |ty: &str| -> Option<u32> { ty.strip_prefix('i')?.parse().ok() };
+        let (from_bits, to_bits) = (width(from)?, width(to)?);
+        if from_bits == to_bits {
+            return None;
+        }
+        let op = if from_bits < to_bits { "zext" } else { "trunc" };
+        let result = self.fun.gen_reg();
+        writeln!(out, "{indent}{result} = {op} {from} {val} to {to}").ok();
+        Some(result)
+    }
+
     pub(crate) fn ensure_typed_value(
         &mut self,
         out: &mut String,
@@ -3618,6 +3711,25 @@ impl LlvmBackend {
                 || matches!(bt, Type::Custom(n) if self.ctx.struct_types.contains_key(n) || self.ctx.obj_types.contains(n))
                 || matches!(bt, Type::Applied(n, _) if self.ctx.struct_types.contains_key(n) || self.ctx.obj_types.contains(n))
             {
+                // 2026-11-24 (BUGS.md wasm32 width class): this pass-through
+                // assumed a handle register is ALREADY at the slot width. A
+                // handle lives at the target word width in SSA (i32 on wasm32)
+                // while a boxed slot is i64, so the assumption holds only on
+                // 64-bit targets. On wasm32 it emitted `store i64 %t21` for an
+                // i32 `%t21` and LLVM rejected the module. Consult the RECORDED
+                // register width and convert only when it differs; an unknown
+                // width still passes through, so the ptr-typed arms below can
+                // never double-ptrtoint a handle.
+                let recorded = self.fun.reg_value_ll.get(val).cloned();
+                if let Some(from) = recorded {
+                    if from != *expected_llvm_ty {
+                        if let Some(converted) =
+                            self.convert_int_width(out, indent, val, &from, expected_llvm_ty)
+                        {
+                            return converted;
+                        }
+                    }
+                }
                 return val.to_string();
             }
         }

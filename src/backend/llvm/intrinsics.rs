@@ -4203,6 +4203,27 @@ fn emit_external_call(
 /// (`let_original_types`) for identifier args — that is what carries the
 /// `Bool`/`Char` protocol. Boxed scalar regs are already i64 and are passed
 /// directly; native regs (i8 Bool, i32 Char) are widened to the i64 ABI.
+/// The declared ABI return type of a print-family callee.
+///
+/// 2026-11-24 (BUGS.md wasm32 width class): these call sites hardcoded
+/// `call i64 @sym`, but the callee is a Briev `defn` from
+/// `lib/std/cast_lanes.bv` whose contract is `-> Int` — emitted as the TARGET
+/// word (`define i32 @print_str` on wasm32). The call therefore disagreed with
+/// its own callee, and every consumer of the result saw an i64 register typed
+/// `Int` (i32 on wasm32) and emitted an invalid `sext i32 %v to i64`. Derive the
+/// return type from the callee's declared signature; an unknown symbol keeps the
+/// previous i64 (the runtime C symbols return i64 on every target).
+fn print_call_ret_ty(backend: &LlvmBackend, sym: &str) -> String {
+    backend
+        .ctx
+        .defn_return_types
+        .get(sym)
+        .and_then(|types| types.first())
+        .map(|ty| backend.llvm_type(ty))
+        .filter(|llvm_ty| llvm_ty != "void")
+        .unwrap_or_else(|| "i64".to_string())
+}
+
 fn emit_intrinsic_print(
     backend: &mut LlvmBackend,
     out: &mut String,
@@ -4235,9 +4256,10 @@ fn emit_intrinsic_print(
             // [len][bytes] buffer; print_str takes that pointer.
             let sym = print_symbol(backend, "print_str", "frgn__print_str", "__print_str");
             let pre = defn_call_prefix(backend, &sym, out, indent);
+            let ret_ty = print_call_ret_ty(backend, &sym);
             writeln!(
                 out,
-                "{}{} = call i64 @{}({}ptr {})",
+                "{}{} = call {ret_ty} @{}({}ptr {})",
                 indent, v, sym, pre, a.name
             )
             .ok();
@@ -4247,9 +4269,10 @@ fn emit_intrinsic_print(
                 // A boxed Char param is already i64 — pass directly.
                 let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
+            let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
-                    "{}{} = call i64 @{}({}i64 {})",
+                    "{}{} = call {ret_ty} @{}({}i64 {})",
                     indent, v, sym, pre, a.name
                 )
                 .ok();
@@ -4260,9 +4283,10 @@ fn emit_intrinsic_print(
                 writeln!(out, "{}{} = zext i32 {} to i64", indent, wide, a.name).ok();
                 let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
+            let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
-                    "{}{} = call i64 @{}({}i64 {})",
+                    "{}{} = call {ret_ty} @{}({}i64 {})",
                     indent, v, sym, pre, wide
                 )
                 .ok();
@@ -4273,9 +4297,10 @@ fn emit_intrinsic_print(
                 // A boxed Bool param is already i64 0/1 — pass directly.
                 let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
+            let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
-                    "{}{} = call i64 @{}({}i64 {})",
+                    "{}{} = call {ret_ty} @{}({}i64 {})",
                     indent, v, sym, pre, a.name
                 )
                 .ok();
@@ -4286,9 +4311,10 @@ fn emit_intrinsic_print(
                 writeln!(out, "{}{} = zext i8 {} to i64", indent, wide, a.name).ok();
                 let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
+            let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
-                    "{}{} = call i64 @{}({}i64 {})",
+                    "{}{} = call {ret_ty} @{}({}i64 {})",
                     indent, v, sym, pre, wide
                 )
                 .ok();
@@ -4318,9 +4344,10 @@ fn emit_intrinsic_print(
             };
             let sym = print_symbol(backend, helper, briev_name, fallback_c);
             let pre = defn_call_prefix(backend, &sym, out, indent);
+            let ret_ty = print_call_ret_ty(backend, &sym);
             writeln!(
                 out,
-                "{}{} = call i64 @{}({}{} {})",
+                "{}{} = call {ret_ty} @{}({}{} {})",
                 indent, v, sym, pre, arg_llvm, unboxed
             )
             .ok();
@@ -4329,9 +4356,10 @@ fn emit_intrinsic_print(
             let llvm_ty = backend.llvm_type(&a.ty);
             let sym = print_symbol(backend, "print_int", "frgn__print_int", "__print_int");
             let pre = defn_call_prefix(backend, &sym, out, indent);
+            let ret_ty = print_call_ret_ty(backend, &sym);
             writeln!(
                 out,
-                "{}{} = call i64 @{}({}{} {})",
+                "{}{} = call {ret_ty} @{}({}{} {})",
                 indent, v, sym, pre, llvm_ty, a.name
             )
             .ok();

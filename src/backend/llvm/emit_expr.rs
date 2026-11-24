@@ -1394,7 +1394,7 @@ impl LlvmBackend {
                     // and pointer-sized member slots follow
                     // `ctx.int_bits`; the native i64 boxed-word form
                     // is invalid on wasm32.
-                    let hw = format!("i{}", self.ctx.int_bits);
+                    let hw = self.value_width_or_target_width(&row_reg);
                     let ptr = self.fun.gen_reg();
                     writeln!(
                         out,
@@ -3327,7 +3327,10 @@ impl LlvmBackend {
                 .get(array.identifier().unwrap_or(""))
                 .is_none();
         if list_is_heap_list {
-            let hw = format!("i{}", self.ctx.int_bits);
+            // 2026-11-24 (BUGS.md wasm32 width class): the expected width for the
+            // adaptation is the VALUE's recorded width (a boxed i64 slot load is
+            // i64; a target-width handle stays the target word).
+            let hw = self.value_width_or_target_width(&array_reg.name);
             // block ptr from the handle (List handles are target-width ints).
             let handle = self.ensure_typed_value(
                 out,
@@ -5166,7 +5169,7 @@ impl LlvmBackend {
                 let offset = self.lookup_field_offset(&obj_type, field);
                 let base = self.fun.gen_reg();
                 // 2026-08-11 (wasm32): obj handles are i{int_bits}.
-                let hw = format!("i{}", self.ctx.int_bits);
+                let hw = self.value_width_or_target_width(&obj_reg.name);
                 writeln!(
                     out,
                     "{}{} = inttoptr {} {} to ptr",
@@ -5254,7 +5257,7 @@ impl LlvmBackend {
                         // to the native i64 boxed-word ABI here, producing
                         // `inttoptr i64 <i32>` and an 8-byte load from a
                         // 4-byte wasm pointer slot.
-                        let hw = format!("i{}", self.ctx.int_bits);
+                        let hw = self.value_width_or_target_width(&row_reg);
                         let ptr = self.fun.gen_reg();
                         writeln!(
                             out,
@@ -6365,7 +6368,7 @@ impl LlvmBackend {
                         // instance handle and `Ptr<T>` members use the target
                         // pointer width; loading a 4-byte pointer as i64 was
                         // the List construction failure.
-                        let hw = format!("i{}", self.ctx.int_bits);
+                        let hw = self.value_width_or_target_width(&row_reg);
                         let ptr = self.fun.gen_reg();
                         writeln!(
                             out,
@@ -7238,6 +7241,41 @@ impl LlvmBackend {
     }
 
     /// 2026-07-31: Element count of a fixed-size vector type; 1 for scalars.
+    /// Physical width of a handle register, falling back to the target word.
+    ///
+    /// 2026-11-24 (BUGS.md wasm32 width class): an `inttoptr` requires its
+    /// declared source width to match the value exactly — an i64 box load is
+    /// not implicitly narrower. Handle producers record their width
+    /// (`reg_value_ll`); consult it, and keep the pre-existing target-word
+    /// assumption when it is unknown, so this can only fix, never invent.
+    fn value_width_or_target_width(&self, reg: &str) -> String {
+        self.fun
+            .reg_value_ll
+            .get(reg)
+            .cloned()
+            .unwrap_or_else(|| format!("i{}", self.ctx.int_bits))
+    }
+
+    /// Narrow a handle register to its native width before an `inttoptr`.
+    ///
+    /// 2026-11-24 (BUGS.md wasm32 width class): state slots are documented as
+    /// i64 (`push_field_type`), so a handle read out of a slot arrives boxed
+    /// while its native SSA form is the target word — and `inttoptr` requires
+    /// the declared source width to MATCH the value exactly (an i64 box is not
+    /// implicitly narrower). Truncate when the register was recorded wider;
+    /// leave everything else untouched, so 64-bit builds and unknown registers
+    /// keep their existing behaviour exactly.
+    fn narrow_handle_to_target_width(&mut self, out: &mut String, indent: &str, reg: &str) -> String {
+        let target = format!("i{}", self.ctx.int_bits);
+        match self.fun.reg_value_ll.get(reg).cloned() {
+            Some(width) if width != target && width.starts_with('i') && target.starts_with('i') => {
+                self.convert_int_width(out, indent, reg, &width, &target)
+                    .unwrap_or_else(|| reg.to_string())
+            }
+            _ => reg.to_string(),
+        }
+    }
+
     pub(super) fn vector_element_count(&self, ty: &Type) -> u64 {
         match ty {
             Type::Vector(_, dims) => dims
@@ -8851,7 +8889,7 @@ impl LlvmBackend {
         member_ty: &Type,
     ) -> TypedRegister {
         let base = self.fun.gen_reg();
-        let hw = format!("i{}", self.ctx.int_bits);
+        let hw = self.value_width_or_target_width(&handle);
         writeln!(
             out,
             "{}{} = inttoptr {} {} to ptr",
@@ -10967,8 +11005,13 @@ impl LlvmBackend {
                 };
                 let base = self.fun.gen_reg();
                 {
+                    // 2026-11-24 (BUGS.md wasm32 width class): `inttoptr`
+                    // requires its declared source width to match the value
+                    // exactly. A scrutinee read from an i64 box is narrowed
+                    // here; an unknown width is left as it was.
+                    let narrowed = self.narrow_handle_to_target_width(out, indent, scrut);
                     let hw = format!("i{}", self.ctx.int_bits);
-                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, scrut).ok();
+                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, narrowed).ok();
                 }
                 let slot = self.fun.gen_reg();
                 writeln!(
@@ -11363,8 +11406,13 @@ impl LlvmBackend {
                 };
                 let base = self.fun.gen_reg();
                 {
+                    // 2026-11-24 (BUGS.md wasm32 width class): `inttoptr`
+                    // requires its declared source width to match the value
+                    // exactly. A scrutinee read from an i64 box is narrowed
+                    // here; an unknown width is left as it was.
+                    let narrowed = self.narrow_handle_to_target_width(out, indent, scrut);
                     let hw = format!("i{}", self.ctx.int_bits);
-                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, scrut).ok();
+                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, narrowed).ok();
                 }
                 let slot = self.fun.gen_reg();
                 writeln!(
