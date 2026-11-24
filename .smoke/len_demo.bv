@@ -3,7 +3,7 @@ let s: String = "héllo";   // 5 chars, 6 bytes (é is 2 bytes)
 let tick: Int = 0;
 node report [tick < 1][tick == 1] {
     let chars: Int = CharCount#(s);
-    let bytes: Int = s^^Bytes;
+    let bytes: Int = s::Bytes;
     println!("chars={} bytes={}", chars, bytes);
     tick = 1;
     term;

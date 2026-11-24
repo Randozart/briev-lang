@@ -2,6 +2,6 @@ node probe [true][false] {
     let a: Int = 7;
     let f: Float = 1.5;
     let s: String = "hello";
-    let c: Int = Abs#(a) * 10 + s^^Length + f^^Type;
+    let c: Int = Abs#(a) * 10 + s::Length + f::Type;
     term Print#(c);
 };
