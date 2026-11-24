@@ -104,6 +104,40 @@ side and the produced side agree — which is the plan's step 1 in miniature.
 Failing programs, per-program diagnostics: `/tmp/opencode/codegen-bughunt/wasm32-baseline/`
 (the same list is in the sweep output).
 
+## Dominant remaining class — localized (2026-11-24)
+
+Fresh repro after slice 1 (`tests/tier1/bare_term_value_defn.bv`, wasm32):
+
+```
+%t28 = call i64 @print_str(ptr %t30)   ← the value IS i64
+%t31 = sext i32 %t28 to i64             ← the widening claims it is i32
+```
+
+25 of the 50 failures carry this exact shape (`sext iN %x to iN` as the first
+rejected instruction), with `i64 → i32` as the dominant direction (43 of 50).
+So the class is: **a widening/adaptation site takes its SOURCE width from a
+declared type instead of the value's actual width.** The value is physically
+i64 (an intrinsic/call result) while the site believes i32.
+
+This is the mirror of slice 1: there the box helper's *source* was unknown, here
+the *declared* source is wrong. Both are the campaign's single rule — **a seam
+must use the value's real width, and the producer's declared type must describe
+its physical width**.
+
+Fix direction for the next slice:
+1. Locate the emitter of that `sext i32 %v to i64` (the source width is a
+   constant `i32`, not derived from the value), and make the widening consult
+   the value's actual/declared physical width.
+2. Where the mismatch is systemic — an intrinsic whose emitted return is i64 but
+   whose Briev type maps to i32 on wasm32 — make the register's declared type
+   describe its physical width (that is the general form; patching the widening
+   alone would merely move the error to its next consumer, as slice 1 showed).
+
+Verification for any step: re-run `scripts/cross_target_ir.sh
+wasm32-unknown-wasi` and require the failure count to fall, with the aarch64 arm
+and the native corpus gate unchanged (slice 1: native IR byte-identical, native
+corpus ok).
+
 ## Slice 1 (in progress, 2026-11-24)
 
 Measured, in this order (Rule 20 — the baseline above came first):
