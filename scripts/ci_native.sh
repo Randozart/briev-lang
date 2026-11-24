@@ -21,6 +21,14 @@ case "${1:-}" in
             exit 1
         fi
         ;;
+    cross-target)
+        # 2026-11-24 (BUGS.md aarch64 brk): the `targets` case above compiles
+        # ONE trivial fixture per triple, which cannot see an emission defect
+        # that only fires on a construct the corpus exercises (arenas/syscalls).
+        # This case sweeps the whole self-calibrating corpus instead; retire it
+        # into `targets` once that case is corpus-wide.
+        bash scripts/cross_target_ir.sh aarch64-unknown-linux-gnu
+        ;;
     accel)
         bash benchmarks/accel_reactor_nonhang.sh
         ;;
@@ -31,7 +39,7 @@ case "${1:-}" in
         bash benchmarks/parity/run.sh cast_cases float_cases float_fmt_cases int_cases parse_cases string_cases
         ;;
     *)
-        echo "usage: scripts/ci_native.sh effect-shape|targets|accel|determinism|parity" >&2
+        echo "usage: scripts/ci_native.sh effect-shape|targets|cross-target|accel|determinism|parity" >&2
         exit 2
         ;;
 esac
