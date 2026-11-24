@@ -58,6 +58,52 @@ a distinct value-boundary decision): `emit_binop_from_config` (13),
 `fallback_llvm_type`, `definition_ret_abi_ty`. `fallback_llvm_type` is the one
 that must survive as a *target-aware* last resort rather than be deleted.
 
+## Baseline (measured 2026-11-24, before any change)
+
+Command, on this branch's tree with the debug compiler built from it:
+
+```
+BRIEVC=./target/debug/brievc bash scripts/cross_target_ir.sh wasm32-unknown-wasi
+→ cross-target-ir: wasm32-unknown-wasi — 99 programs checked, 50 failed
+```
+
+**50 of 99 native-accepted programs cannot emit valid IR for wasm32.** The
+`aarch64` arm of the same sweep is green (100/100): the conflict needs a 32-bit
+target to appear, which is exactly why the sibling-Linux CI case cannot see it
+and a wasm32 arm is the campaign's acceptance gate.
+
+Mismatch direction (the declared-vs-produced width pair):
+
+| Count | Direction | Reading |
+|---|---|---|
+| 43 | `i64 → i32` | a **signature/slot** expects the target width (i32); the **value** arrived as a boxed i64 |
+| 5 | `i32 → i64` | the reverse: the slot is i64, the value came through a target-aware path |
+| 2 | `ptr → i64` | a handle/pointer where a word was declared |
+
+Offending instruction (first error per program, normalised):
+
+| Count | Instruction |
+|---|---|
+| **25** | `%x = sext iN %x to iN` — a widening emitted at the wrong width |
+| 6 | `%x = call iN @g(...)` — call argument/return width |
+| 6 | `%x = inttoptr iN %x to ptr` — pointer conversion |
+| 2 each | `getelementptr`, `icmp`, `store`, `mul` |
+
+Inventory behind the dominant shape: **165 hardcoded `to i64` widenings** in the
+LLVM backend (`helpers.rs` alone has ~15 `sext`/`zext`/`ptrtoint … to i64`), the
+mechanical form of "i64 is the uniform box" against a target whose word is 32
+bits.
+
+**First slice (decided by this measurement, not by reading):** the 25
+`sext/zext … to i64` producers, since they account for the bulk of the 43
+`i64 → i32` failures. Each is a value crossing into a slot/call whose declared
+width is already available at the site; the fix is to widen to *that* width (or
+to `int_bits`, where the box genuinely is a machine word) and let the declared
+side and the produced side agree — which is the plan's step 1 in miniature.
+
+Failing programs, per-program diagnostics: `/tmp/opencode/codegen-bughunt/wasm32-baseline/`
+(the same list is in the sweep output).
+
 ## Fix strategy (general; no per-type special cases)
 
 1. **Make the legacy resolver target-aware.** Give the resolution chain the
