@@ -63,10 +63,10 @@ fn curated_defn_liveness_parity() {
         "construction",
     );
 
-    // 2026-11-04 (PR #62): runtime `^^Length` evaluates its receiver, so a
+    // 2026-11-04 (PR #62): runtime `::Length` evaluates its receiver, so a
     // call under it is live (the pre-fix AST/HIR both dropped it).
     assert_parity(
-        "defn receiver() -> String { term \"x\"; };\nnode n [true][true] { let len: Int = receiver()^^Length; Print#(len); term; };",
+        "defn receiver() -> String { term \"x\"; };\nnode n [true][true] { let len: Int = receiver()::Length; Print#(len); term; };",
         "runtime-reflect",
     );
 

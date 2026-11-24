@@ -39,14 +39,14 @@ export defn bump(delta: Int) -> Int {
 // persist — write `saved` to the file at `path` (truncate+create). `path`
 // is a CStr — its ABI value IS the NUL-terminated path pointer, so open()
 // takes it directly. `saved` is a [len][bytes][NUL] Briev String: the data
-// pointer (str_to_c) + byte count (^^Length) are the write payload.
+// pointer (str_to_c) + byte count (::Length) are the write payload.
 export defn persist(path: CStr) -> CStr {
     // Literal syscall numbers: SysCall#'s first arg is resolved either as a
     // literal or an ABSTRACT op name (Read/Write/Open/...) — a named `const`
     // like SYS_OPEN is NOT resolved (falls to 0, an open-elsewhere syscall).
     let fd: Int = SysCall#(2, path as Data as Int, 577, 420, 0, 0, 0);
     let data: Int = str_to_c(saved);
-    let n: Int = SysCall#(1, fd, data, saved ^^Length, 0, 0, 0);
+    let n: Int = SysCall#(1, fd, data, saved::Length, 0, 0, 0);
     SysCall#(3, fd, 0, 0, 0, 0, 0);
     term str_to_c(saved) as CStr;
 };

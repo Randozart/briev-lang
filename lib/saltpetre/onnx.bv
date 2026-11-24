@@ -17,7 +17,7 @@ import "std/cast_lanes.bv";
 // alias the model byte buffer: once the caller's model String dies, graph
 // names/ops/attrs would be use-after-free (region lowering used to mask it).
 defn owned_string(src: String) [true][CharCount#(term) >= 0] -> String {
-    let len: Int = src ^^Length;
+    let len: Int = src::Length;
     let p: Int = Malloc#(8 + len) as Int;
     Store#(p, len, 8);
     Copy#(p + 8, (src as Data) as Int + 8, len);
@@ -390,7 +390,7 @@ defn tensor_copy_int8(t: Tensor, bytes: String, count: Int) -> Void {
 let onnx_base: String = "";
 
 defn dir_of(path: String) -> String {
-    let n: Int = path ^^Length;
+    let n: Int = path::Length;
     let cut: Int = 0;
     foreach i in 0..n {
         when byte_at(path, i) == 47 { cut = i; };
@@ -404,7 +404,7 @@ defn parse_model_at(bytes: String, path: String) -> OnnxGraph {
 };
 
 defn external_bytes(ext: OnnxExternal) -> String {
-    when (ext.location ^^Length) == 0 { term ""; };
+    when (ext.location::Length) == 0 { term ""; };
     let path: String = concat(concat(onnx_base, "/"), ext.location);
     let file: Result<String, Int> = read_file(path);
     when is_err(file) { term ""; };
@@ -418,17 +418,17 @@ defn tensor_from_proto(name: String, dtype: Int, dims: List<Int>, raw0: String, 
     let n: Int = dims_product(dims);
     let t: Tensor = tensor_named_owned(name, dims, n);
     let raw: String = raw0;
-    when (raw ^^Length) == 0 && ext.flag == 1 { raw = external_bytes(ext); };
-    when (raw ^^Length) > 0 {
+    when (raw::Length) == 0 && ext.flag == 1 { raw = external_bytes(ext); };
+    when (raw::Length) > 0 {
         when dtype == 1 { tensor_copy_f32(t, raw, n); };
         when dtype == 3 { tensor_copy_int8(t, raw, n); };
         when dtype == 7 { tensor_copy_int(t, raw, n, 8); };
         when dtype == 6 { tensor_copy_int(t, raw, n, 4); };
     };
-    when (raw ^^Length) == 0 && (fbuf ^^Length) > 0 {
+    when (raw::Length) == 0 && (fbuf::Length) > 0 {
         tensor_copy_f32(t, fbuf, n);
     };
-    when (raw ^^Length) == 0 && (fbuf ^^Length) == 0 && (ibuf ^^Length) > 0 {
+    when (raw::Length) == 0 && (fbuf::Length) == 0 && (ibuf::Length) > 0 {
         when dtype == 7 { tensor_copy_int(t, ibuf, n, 8); };
         when dtype == 6 { tensor_copy_int(t, ibuf, n, 4); };
         when dtype == 3 { tensor_copy_int(t, ibuf, n, 4); };

@@ -124,7 +124,7 @@ defn slice_len(buffer: ByteBuf) [true] [term >= -1] -> Int {
     when buffer.len < 0 { term -1; };
     when buffer.len > buffer.cap { term -1; };
     let text: String = buf_slice_string(buffer, 0, buffer.len);
-    term text ^^Length;
+    term text::Length;
 };
 
 defn close_quiet(socket: Socket) [true] [term >= -4096] -> Int {
@@ -196,7 +196,7 @@ node entry [beginprogram][true] {
     Free#(fds as Ptr);
 
     let wire: String = "GET /health HTTP/1.1\r\nHost: x\r\n\r\n";
-    let wire_len: Int = wire ^^Length;
+    let wire_len: Int = wire::Length;
     let payload: ByteBuf = buf_new(wire_len + 1);
     foreach i in 0..wire_len {
         payload = payload.put_u8(byte_at(wire, i));
@@ -358,7 +358,7 @@ node entry [beginprogram][true] {
     // produce identical parse inputs through both reader shapes. The chunked
     // reader consumed exactly the payload (fed == buffer.len <= buffer.cap).
     let wire: String = "GET /health HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n";
-    let wire_len: Int = wire ^^Length;
+    let wire_len: Int = wire::Length;
     let bb: ByteBuf = buf_new(wire_len + 1);
     foreach i in 0..wire_len {
         bb.len = i;

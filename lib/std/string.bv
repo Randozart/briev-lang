@@ -22,13 +22,13 @@ import { int_to_char } from "std/char.bv";
 
 // ===== NATIVE DEFINITIONS =====
 
-defn bytes(s: String) [s ^^Length >= 0][true] -> List<Int> {
+defn bytes(s: String) [s::Length >= 0][true] -> List<Int> {
     let result: List<Int> = [];
     term bytes_loop(s, result, 0);
 };
 
 txn bytes_loop(s: String, result: List<Int>, i: Int)
-    [i < s ^^Length][i == s ^^Length] -> List<Int>
+    [i < s::Length][i == s::Length] -> List<Int>
 {
     result <- byte_at(s, i);
     i += 1;
@@ -89,7 +89,7 @@ defn trim_end(s: String) [true][CharCount#(term) <= CharCount#(s)] -> String {
 txn contains_loop(haystack: String, needle: String, i: Int, lim: Int)
     [i < lim][i == lim] -> Bool
 {
-  when i + needle ^^Length <= haystack ^^Length && haystack[i:i+needle ^^Length] == needle {
+  when i + needle::Length <= haystack::Length && haystack[i:i+needle::Length] == needle {
     i = lim;
     term true;
   };
@@ -98,24 +98,24 @@ txn contains_loop(haystack: String, needle: String, i: Int, lim: Int)
 };
 
 defn contains(haystack: String, needle: String) [true][term == true || term == false] -> Bool {
-  let lim: Int = haystack ^^Length;
+  let lim: Int = haystack::Length;
   when lim == 0 { term false; };
   term contains_loop(haystack, needle, 0, lim);
 };
 
 defn starts_with(s: String, prefix: String) [true][term == true || term == false] -> Bool {
-  when prefix ^^Length > s ^^Length {
+  when prefix::Length > s::Length {
     term false;
   };
-  term s[0:prefix ^^Length] == prefix;
+  term s[0:prefix::Length] == prefix;
 };
 
 defn ends_with(s: String, suffix: String) [true][term == true || term == false] -> Bool {
-  when suffix ^^Length > s ^^Length {
+  when suffix::Length > s::Length {
     term false;
   };
-  let slen = s ^^Length;
-  let suflen = suffix ^^Length;
+  let slen = s::Length;
+  let suflen = suffix::Length;
   term s[slen - suflen:slen] == suffix;
 };
 
@@ -125,7 +125,7 @@ defn ends_with(s: String, suffix: String) [true][term == true || term == false] 
 txn find_loop(s: String, needle: String, i: Int, lim: Int)
     [i < lim][i == lim] -> Int
 {
-  when i + needle ^^Length <= s ^^Length && s[i:i+needle ^^Length] == needle {
+  when i + needle::Length <= s::Length && s[i:i+needle::Length] == needle {
     lim = i;
     term i;
   };
@@ -134,7 +134,7 @@ txn find_loop(s: String, needle: String, i: Int, lim: Int)
 };
 
 defn find(s: String, needle: String) [true][term >= -1] -> Int {
-  term find_loop(s, needle, 0, s ^^Length);
+  term find_loop(s, needle, 0, s::Length);
 };
 
 // Substring operations
@@ -320,10 +320,10 @@ defn is_ws_byte(b: Int) [true][term == true || term == false] -> Bool {
 };
 
 txn is_whitespace_loop(s: String, i: Int)
-    [i < s ^^Length][i == s ^^Length] -> Bool
+    [i < s::Length][i == s::Length] -> Bool
 {
     when !is_ws_byte(byte_at(s, i)) {
-        i = s ^^Length;
+        i = s::Length;
         term false;
     };
     i += 1;
@@ -335,11 +335,11 @@ defn is_whitespace_str(s: String) [true][term == true || term == false] -> Bool 
 };
 
 txn is_alpha_loop(s: String, i: Int)
-    [i < s ^^Length][i == s ^^Length] -> Bool
+    [i < s::Length][i == s::Length] -> Bool
 {
     let b: Int = byte_at(s, i);
     when !((b >= 65 && b <= 90) || (b >= 97 && b <= 122)) {
-        i = s ^^Length;
+        i = s::Length;
         term false;
     };
     i += 1;
@@ -347,18 +347,18 @@ txn is_alpha_loop(s: String, i: Int)
 };
 
 defn is_alpha_str(s: String) [true][term == true || term == false] -> Bool {
-    when s ^^Length == 0 {
+    when s::Length == 0 {
         term false;
     };
     term is_alpha_loop(s, 0);
 };
 
 txn is_numeric_loop(s: String, i: Int)
-    [i < s ^^Length][i == s ^^Length] -> Bool
+    [i < s::Length][i == s::Length] -> Bool
 {
     let b: Int = byte_at(s, i);
     when !(b >= 48 && b <= 57) {
-        i = s ^^Length;
+        i = s::Length;
         term false;
     };
     i += 1;
@@ -366,7 +366,7 @@ txn is_numeric_loop(s: String, i: Int)
 };
 
 defn is_numeric_str(s: String) [true][term == true || term == false] -> Bool {
-    when s ^^Length == 0 {
+    when s::Length == 0 {
         term false;
     };
     term is_numeric_loop(s, 0);
@@ -403,8 +403,8 @@ txn fold_upper_copy(src: Int, dst: Int, j: Int, n: Int) [j < n][j == n] -> Void 
     term;
 };
 
-defn to_lower_str(s: String) [true][term ^^Length == s ^^Length] -> String {
-    let n: Int = s ^^Length;
+defn to_lower_str(s: String) [true][term::Length == s::Length] -> String {
+    let n: Int = s::Length;
     when n == 0 { term fresh_string(""); };
     let dstp: Int = Malloc#(n + 9) as Int;
     Store#(dstp, n, 8);
@@ -415,8 +415,8 @@ defn to_lower_str(s: String) [true][term ^^Length == s ^^Length] -> String {
     term owned;
 };
 
-defn to_upper_str(s: String) [true][term ^^Length == s ^^Length] -> String {
-    let n: Int = s ^^Length;
+defn to_upper_str(s: String) [true][term::Length == s::Length] -> String {
+    let n: Int = s::Length;
     when n == 0 { term ""; };
     let dstp: Int = Malloc#(n + 9) as Int;
     Store#(dstp, n, 8);
@@ -453,24 +453,24 @@ txn trim_end_loop(s: String, end: Int, lo: Int)
     term end;
 };
 
-defn trim_str(s: String) [true][s ^^Length >= 0] -> String {
-    let start: Int = trim_start_loop(s, 0, s ^^Length);
-    let end: Int = trim_end_loop(s, s ^^Length, start);
+defn trim_str(s: String) [true][s::Length >= 0] -> String {
+    let start: Int = trim_start_loop(s, 0, s::Length);
+    let end: Int = trim_end_loop(s, s::Length, start);
     term s[start:end];
 };
 
-defn trim_left_str(s: String) [true][s ^^Length >= 0] -> String {
-    let start: Int = trim_start_loop(s, 0, s ^^Length);
-    term s[start:s ^^Length];
+defn trim_left_str(s: String) [true][s::Length >= 0] -> String {
+    let start: Int = trim_start_loop(s, 0, s::Length);
+    term s[start:s::Length];
 };
 
-defn trim_right_str(s: String) [true][s ^^Length >= 0] -> String {
-    let end: Int = trim_end_loop(s, s ^^Length, 0);
+defn trim_right_str(s: String) [true][s::Length >= 0] -> String {
+    let end: Int = trim_end_loop(s, s::Length, 0);
     term s[0:end];
 };
 
 txn capitalize_loop(s: String, sb: StringBuilder, i: Int)
-    [i < s ^^Length][i == s ^^Length] -> String
+    [i < s::Length][i == s::Length] -> String
 {
     let b: Int = byte_at(s, i);
     when b >= 65 && b <= 90 {
@@ -483,8 +483,8 @@ txn capitalize_loop(s: String, sb: StringBuilder, i: Int)
     term sb.buffer;
 };
 
-defn capitalize(s: String) [true][s ^^Length >= 0] -> String {
-    when s ^^Length == 0 {
+defn capitalize(s: String) [true][s::Length >= 0] -> String {
+    when s::Length == 0 {
         term s;
     };
     let sb = new_builder();
@@ -499,20 +499,20 @@ defn capitalize(s: String) [true][s ^^Length >= 0] -> String {
 };
 
 txn reverse_loop(s: String, sb: StringBuilder, i: Int)
-    [i < s ^^Length][i == s ^^Length] -> String
+    [i < s::Length][i == s::Length] -> String
 {
-    let b: Int = byte_at(s, s ^^Length - 1 - i);
+    let b: Int = byte_at(s, s::Length - 1 - i);
     sb = append_char(sb, int_to_char(b));
     i += 1;
     term sb.buffer;
 };
 
-defn reverse_str(s: String) [true][s ^^Length >= 0] -> String {
+defn reverse_str(s: String) [true][s::Length >= 0] -> String {
     term reverse_loop(s, new_builder(), 0);
 };
 
 txn count_char_loop(s: String, c: String, count: Int, i: Int)
-    [i < s ^^Length][i == s ^^Length] -> Int
+    [i < s::Length][i == s::Length] -> Int
 {
     when s[i:i+1] == c {
         count += 1;
@@ -536,7 +536,7 @@ defn truncate(s: String, max_len: Int) [max_len >= 0][CharCount#(term) <= max_le
     term s[0:max_len];
 };
 
-defn truncate_with_ellipsis(s: String, max_len: Int) [max_len >= 3][s ^^Length >= 0] -> String {
+defn truncate_with_ellipsis(s: String, max_len: Int) [max_len >= 3][s::Length >= 0] -> String {
     when CharCount#(s) <= max_len {
         term s;
     };
@@ -546,7 +546,7 @@ defn truncate_with_ellipsis(s: String, max_len: Int) [max_len >= 3][s ^^Length >
     term sb.buffer;
 };
 
-defn ensure_prefix(s: String, prefix: String) [true][s ^^Length >= 0] -> String {
+defn ensure_prefix(s: String, prefix: String) [true][s::Length >= 0] -> String {
     when starts_with(s, prefix) {
         term s;
     };
@@ -556,7 +556,7 @@ defn ensure_prefix(s: String, prefix: String) [true][s ^^Length >= 0] -> String 
     term sb.buffer;
 };
 
-defn ensure_suffix(s: String, suffix: String) [true][s ^^Length >= 0] -> String {
+defn ensure_suffix(s: String, suffix: String) [true][s::Length >= 0] -> String {
     when ends_with(s, suffix) {
         term s;
     };

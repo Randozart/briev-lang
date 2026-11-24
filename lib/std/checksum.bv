@@ -118,7 +118,7 @@ defn mod11_scan_digit(sum: Int, pos: Int, width: Int, digit: Int)
 // `kernel/pii.bv::bsn_valid` and crates/privacy/src/patterns.rs::bsn_valid.
 defn bsn_mod11(s: String) [true][term == 0 || term == 1] -> Int {
     let scan: Mod11Scan = Mod11Scan { digits: 0, sum: 0, all_zero: 1 };
-    foreach i in 0..(s ^^Length) {
+    foreach i in 0..(s::Length) {
         scan = mod11_scan_byte(scan, byte_at(s, i), 9);
     };
     when scan.digits != 9 {
@@ -247,13 +247,13 @@ defn iban_pass_byte(state: IbanScan, b: Int, pass: Int) -> IbanScan {
 // `nl_iban_mod97` is the Dutch spelling with the exact-length gate.
 defn iban_mod97(s: String) [true][term == 0 || term == 1] -> Int {
     let state: IbanScan = IbanScan { chars: 0, rem: 0, first: 0, second: 0 };
-    foreach i in 0..(s ^^Length) {
+    foreach i in 0..(s::Length) {
         state = iban_pass_byte(state, byte_at(s, i), 1);
     };
     // Second pass counts the same characters again from position 0, folding
     // the first four (country + check digits) LAST — the rearrangement.
     let head: IbanScan = IbanScan { chars: 0, rem: state.rem, first: state.first, second: state.second };
-    foreach i in 0..(s ^^Length) {
+    foreach i in 0..(s::Length) {
         head = iban_pass_byte(head, byte_at(s, i), 0);
     };
     when state.chars < 5 {
@@ -276,11 +276,11 @@ defn iban_mod97(s: String) [true][term == 0 || term == 1] -> Int {
 // `kernel/pii.bv::iban_mod97` and crates/privacy/src/patterns.rs::nl_iban_mod97.
 defn nl_iban_mod97(s: String) [true][term == 0 || term == 1] -> Int {
     let state: IbanScan = IbanScan { chars: 0, rem: 0, first: 0, second: 0 };
-    foreach i in 0..(s ^^Length) {
+    foreach i in 0..(s::Length) {
         state = iban_pass_byte(state, byte_at(s, i), 1);
     };
     let head: IbanScan = IbanScan { chars: 0, rem: state.rem, first: state.first, second: state.second };
-    foreach i in 0..(s ^^Length) {
+    foreach i in 0..(s::Length) {
         head = iban_pass_byte(head, byte_at(s, i), 0);
     };
     when state.chars != 18 {
@@ -368,7 +368,7 @@ defn luhn_scan_byte(scan: LuhnScan, b: Int) -> LuhnScan {
 // ≡ 0 mod 10.
 defn luhn_valid(s: String) [true][term == 0 || term == 1] -> Int {
     let scan: LuhnScan = LuhnScan { digits: 0, sum_a: 0, sum_b: 0, all_zero: 1 };
-    foreach i in 0..(s ^^Length) {
+    foreach i in 0..(s::Length) {
         scan = luhn_scan_byte(scan, byte_at(s, i));
     };
     when scan.digits < 2 {

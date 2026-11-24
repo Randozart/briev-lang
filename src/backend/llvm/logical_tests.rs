@@ -86,8 +86,8 @@ fn logical_guards_skip_invalid_reads_and_execute_required_rhs_once() {
         };
         defn string_parameter_guard(flag: Bool, value: String) -> Int {
             let chosen: Bool = flag && { value = "newer"; true; };
-            when chosen { term value ^^Length; };
-            term value ^^Length;
+            when chosen { term value::Length; };
+            term value::Length;
         };
         let tick: Int = 0;
         node run [tick < 1][tick == 1] {

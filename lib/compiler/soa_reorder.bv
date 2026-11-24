@@ -57,12 +57,12 @@ defn field_line_at(text: String, i: Int, n: Int) -> String {
 
 // count_prefix_fields(text, prefix): how many fields share this prefix.
 defn count_prefix_fields(text: String, prefix: String) -> Int {
-    term count_pf_scan(text, 0, text ^^Length, prefix, 0);
+    term count_pf_scan(text, 0, text::Length, prefix, 0);
 };
 defn count_pf_scan(text: String, i: Int, n: Int, prefix: String, cnt: Int) -> Int {
     when i >= n { term cnt; };
     let line: String = field_line_at(text, i, n);
-    when line ^^Length > 0 && field_prefix(line) == prefix {
+    when line::Length > 0 && field_prefix(line) == prefix {
         term count_pf_scan(text, i + 1, n, prefix, cnt + 1);
     };
     term count_pf_scan(text, i + 1, n, prefix, cnt);
@@ -71,13 +71,13 @@ defn count_pf_scan(text: String, i: Int, n: Int, prefix: String, cnt: Int) -> In
 // group_safe(text, prefix): 1 iff NO field with this prefix references a
 // sibling (every member's refcnt is 0).
 defn group_safe(text: String, prefix: String) -> Int {
-    term group_safe_scan(text, 0, text ^^Length, prefix, 1);
+    term group_safe_scan(text, 0, text::Length, prefix, 1);
 };
 defn group_safe_scan(text: String, i: Int, n: Int, prefix: String, safe: Int) -> Int {
     when i >= n { term safe; };
     when safe == 0 { term 0; };
     let line: String = field_line_at(text, i, n);
-    when line ^^Length > 0 && field_prefix(line) == prefix && field_refcnt(line) != 0 { term 0; };
+    when line::Length > 0 && field_prefix(line) == prefix && field_refcnt(line) != 0 { term 0; };
     term group_safe_scan(text, i + 1, n, prefix, safe);
 };
 
@@ -93,12 +93,12 @@ defn is_safe_group(text: String, prefix: String) -> Int {
 // absent. Used to emit a safe group's members BY INDEX (the reference sorts
 // each group by index).
 defn find_field(text: String, prefix: String, index: Int) -> String {
-    term find_field_scan(text, 0, text ^^Length, prefix, index);
+    term find_field_scan(text, 0, text::Length, prefix, index);
 };
 defn find_field_scan(text: String, i: Int, n: Int, prefix: String, index: Int) -> String {
     when i >= n { term ""; };
     let line: String = field_line_at(text, i, n);
-    when line ^^Length > 0 && field_prefix(line) == prefix && field_index(line) == index {
+    when line::Length > 0 && field_prefix(line) == prefix && field_index(line) == index {
         term line;
     };
     term find_field_scan(text, i + 1, n, prefix, index);
@@ -109,7 +109,7 @@ defn find_field_scan(text: String, i: Int, n: Int, prefix: String, index: Int) -
 // buffer (used for the non-float item indices).
 defn emit_indices(buf: Ptr<Int>, pos: Int, line: String, i: Int) -> Int {
     let t: String = token_at(line, i);
-    when t ^^Length == 0 { term pos; };
+    when t::Length == 0 { term pos; };
     buf[pos] = t as Int;
     term emit_indices(buf, pos + 1, line, i + 1);
 };
@@ -123,7 +123,7 @@ defn emit_safe_groups(text: String, buf: Ptr<Int>, pos: Int) -> Int {
 };
 defn emit_groups(text: String, buf: Ptr<Int>, pos: Int, pl: String, i: Int) -> Int {
     let prefix: String = token_at(pl, i);
-    when prefix ^^Length == 0 { term pos; };
+    when prefix::Length == 0 { term pos; };
     let maxidx: Int = token_at(pl, i + 1) as Int;
     let safe: Int = is_safe_group(text, prefix);
     let pos2: Int = pos;
@@ -136,7 +136,7 @@ defn emit_groups(text: String, buf: Ptr<Int>, pos: Int, pl: String, i: Int) -> I
 defn emit_group_fields(text: String, buf: Ptr<Int>, pos: Int, prefix: String, maxidx: Int, index: Int) -> Int {
     when index > maxidx { term pos; };
     let line: String = find_field(text, prefix, index);
-    when line ^^Length > 0 {
+    when line::Length > 0 {
         buf[pos] = field_itemidx(line);
         term emit_group_fields(text, buf, pos + 1, prefix, maxidx, index + 1);
     };
@@ -146,12 +146,12 @@ defn emit_group_fields(text: String, buf: Ptr<Int>, pos: Int, prefix: String, ma
 // emit_remaining(text, buf, pos): the float fields NOT in a safe group, in
 // declaration order.
 defn emit_remaining(text: String, buf: Ptr<Int>, pos: Int) -> Int {
-    term emit_rem_scan(text, 0, text ^^Length, buf, pos);
+    term emit_rem_scan(text, 0, text::Length, buf, pos);
 };
 defn emit_rem_scan(text: String, i: Int, n: Int, buf: Ptr<Int>, pos: Int) -> Int {
     when i >= n { term pos; };
     let line: String = field_line_at(text, i, n);
-    when line ^^Length > 0 {
+    when line::Length > 0 {
         let prefix: String = field_prefix(line);
         let safe: Int = is_safe_group(text, prefix);
         when safe == 0 {

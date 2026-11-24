@@ -19,7 +19,7 @@ defn audio_f32_load(path: String)
     let f: Result<String, Int> = read_file(path);
     when is_err(f) { term Err("cannot read audio"); };
     let bytes: String = unwrap(f);
-    let samples: Int = (bytes ^^Length) / 4;
+    let samples: Int = (bytes::Length) / 4;
     let audio: Tensor = tensor_take("pcm", [samples], samples);
     foreach i in 0..samples {
         tensor_set(audio, i, f32_from_bytes(bytes, 4 * i));
@@ -53,7 +53,7 @@ defn vad_stream_probs(graph: OnnxGraph, audio_path: String, chunk_len: Int)
     let rf: Result<String, Int> = read_file(audio_path);
     when is_err(rf) { term Err("cannot read audio"); };
     let bytes: String = unwrap(rf);
-    let samples: Int = (bytes ^^Length) / 4;
+    let samples: Int = (bytes::Length) / 4;
     let chunks: Int = samples / chunk_len;
     let state: Tensor = vad_new_state();
     let probs: List<Float> = [];
@@ -102,7 +102,7 @@ defn vad_feed_probs(graph: OnnxGraph, state: Tensor, audio_path: String, chunk_l
     let rf: Result<String, Int> = read_file(audio_path);
     when is_err(rf) { term Err("cannot read audio"); };
     let bytes: String = unwrap(rf);
-    let samples: Int = (bytes ^^Length) / 4;
+    let samples: Int = (bytes::Length) / 4;
     let chunks: Int = samples / chunk_len;
     let cur: Tensor = state;
     let probs: List<Float> = [];

@@ -216,7 +216,7 @@ defn is_valid_codepoint(n: Int) [true][term == true || term == false] -> Bool {
 // 2026-08-23: char-at accessor — String indexing s[i] returns Int (byte).
 // This wraps int_to_char for readable character-level access.
 defn char_at(s: String, i: Int) [true] -> Char {
-    when i < 0 || i >= s ^^Length {
+    when i < 0 || i >= s::Length {
         term '\u{0000}';
     };
     term s[i] as Char;

@@ -89,7 +89,7 @@ pub struct BackendCapabilities {
     pub await_expr: bool,
     /// Method-call syntax (receiver.method(args)).
     pub method_calls: bool,
-    /// Reflection (`^^`/`^^`).
+    /// Reflection (`::`/`::`).
     pub reflect: bool,
     /// Plugin intercepts.
     pub plugin_intercept: bool,

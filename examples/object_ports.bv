@@ -1,7 +1,7 @@
 // object_ports — SPEC §9.5 end-to-end (Phase 7b, interpreter).
 //
 // The spec's Enemy/damage/died shape: an input port carries a Damage event,
-// the body observes `damage^^Ready` and projects `damage.amount`, and the
+// the body observes `damage::Ready` and projects `damage.amount`, and the
 // output port fires via `<-`. Wiring shares storage: `spawn Enemy(src)`
 // binds the input port to a ready Damage event; the instance is an
 // identity, so health persists across member calls.
@@ -23,7 +23,7 @@ obj Enemy(damage: Event<Damage>) -> died: Event<Int> {
     };
 
     defn take_hit() -> Int {
-        when damage^^Ready {
+        when damage::Ready {
             health = health - damage.amount;
         };
         died <- health;

@@ -21,18 +21,18 @@ defn histogram_record(histogram: Histogram, value: Int) -> Histogram {
     when value < 0 || histogram.count == I64_MAX { trap; };
     let next: Histogram = histogram;
     let bucket: Int = value / next.width;
-    when bucket < next.bins ^^Length { next.bins[bucket] = next.bins[bucket] + 1; };
-    when bucket >= next.bins ^^Length { next.overflow += 1; };
+    when bucket < next.bins::Length { next.bins[bucket] = next.bins[bucket] + 1; };
+    when bucket >= next.bins::Length { next.overflow += 1; };
     next.count += 1;
     when value > next.maximum { next.maximum = value; };
     term next;
 };
 
 defn histogram_merge(left: Histogram, right: Histogram) -> Histogram {
-    when left.width != right.width || left.bins ^^Length != right.bins ^^Length { trap; };
+    when left.width != right.width || left.bins::Length != right.bins::Length { trap; };
     when left.count > I64_MAX - right.count { trap; };
     let merged: Histogram = left;
-    foreach index in 0..merged.bins ^^Length {
+    foreach index in 0..merged.bins::Length {
         merged.bins[index] = merged.bins[index] + right.bins[index];
     };
     merged.count += right.count;
@@ -48,7 +48,7 @@ defn histogram_quantile(histogram: Histogram, permille: Int) -> Int {
     let rank: Int = (histogram.count / 1000) * permille +
         ((histogram.count % 1000) * permille + 999) / 1000;
     let cumulative: Int = 0;
-    foreach index in 0..histogram.bins ^^Length {
+    foreach index in 0..histogram.bins::Length {
         cumulative += histogram.bins[index];
         when cumulative >= rank { term (index + 1) * histogram.width - 1; };
     };

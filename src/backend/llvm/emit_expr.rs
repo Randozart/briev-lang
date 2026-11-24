@@ -2015,7 +2015,7 @@ impl LlvmBackend {
                 // with the DECLARED constant type (a String member, not
                 // a hardcoded Type::string()) so reflection/ops see the
                 // right protocol. Was load i64 typed Int, which broke
-                // `s^^Length` on an unwritten literal (const-folded to a
+                // `s::Length` on an unwritten literal (const-folded to a
                 // global).
                 writeln!(out, "{}{} = load ptr, ptr @{}", indent, v, name).ok();
                 TypedRegister {
@@ -5208,7 +5208,7 @@ impl LlvmBackend {
         // `d.amount` where d binds Event<P>. Single choke point for every
         // Field path. The read BLOCKS inside a task segment (unready → the
         // {0,2} blocked aggregate); outside a task it traps (gate with
-        // ^^Ready, SPEC §9.5).
+        //::Ready, SPEC §9.5).
         if let Some(wname) = recv.identifier() {
             let is_wire = self
                 .fun
@@ -5483,7 +5483,7 @@ impl LlvmBackend {
         })
     }
 
-    /// 2026-07-31: `x^^Meta` (runtime) / `x^^Meta` (compile-time).
+    /// 2026-07-31: `x::Meta` (runtime) / `x::Meta` (compile-time).
     /// Compile-time targets emit constants (foldable); `Ptr` reuses the
     /// address-of path; `Len` emits a constant for fixed-size vectors and a
     /// clear error for dynamic receivers (Phase-1b boundary).
@@ -6874,7 +6874,7 @@ impl LlvmBackend {
         indent: &str,
     ) -> TypedRegister {
         let _ = v;
-        // 2026-08-26 (async Phase D): `wire^^Ready` — runtime readiness of an
+        // 2026-08-26 (async Phase D): `wire::Ready` — runtime readiness of an
         // event port (SPEC §9.5). Checked BEFORE emitting the receiver: a
         // wire binding has no value of its own to evaluate.
         if target == "Ready" {
@@ -6913,7 +6913,7 @@ impl LlvmBackend {
         }
         let recv_reg = emit_view_expr(self, out, recv, indent);
         match (target, kind) {
-            // 2026-08-09 (Phase 12, SPEC §19.3): `feature^^Available` — a
+            // 2026-08-09 (Phase 12, SPEC §19.3): `feature::Available` — a
             // compile-time descriptor reflect that folds to a runtime
             // briev_symbol_available(symbol) check for an `optional frgn`. The
             // receiver is the frgn's local name; its FOREIGN symbol is what
@@ -6993,13 +6993,13 @@ impl LlvmBackend {
                 }
             }
             // 2026-08-14 (Boxed Cat, iterable-protocol §10.4, tri-partite rule):
-            // runtime `^^Size` is DELETED — the element count of a collection
+            // runtime `::Size` is DELETED — the element count of a collection
             // is an operation, so its home is the `Count#` intrinsic, not a
             // reflection target (§6a of the 2026-08-14 plan). The typechecker
-            // rejects runtime `^^Size` as a kind error, but a precondition
+            // rejects runtime `::Size` as a kind error, but a precondition
             // (elaborate_expr bypass) can still reach codegen — emit a clean
             // compile error directing to `Count#`, never the old `len`-slot
-            // heuristic and never a silent fallback. `^^Size` (compile-time,
+            // heuristic and never a silent fallback. `::Size` (compile-time,
             // above) keeps the vector shape.
             ("Size", _) => {
                 panic!(
@@ -7009,7 +7009,7 @@ impl LlvmBackend {
                 )
             }
             ("Bytes", _) => {
-                // 2026-08-01 (B3): `x^^Bytes` on a String → the `Bytes` prop
+                // 2026-08-01 (B3): `x::Bytes` on a String → the `Bytes` prop
                 // default = O(1) header read (byte length is the [0] length
                 // prefix of the [len][bytes] buffer). For non-strings, the
                 // compile-time type size.
@@ -7048,7 +7048,7 @@ impl LlvmBackend {
                 }
             }
             ("Ptr", _) => {
-                // x^^Ptr ≡ &x — reuse the address-of path.
+                // x::Ptr ≡ &x — reuse the address-of path.
                 match recv {
                     ExprView::Ast(e) => {
                         let ptr_tmp = self.fun.gen_reg();
@@ -7085,7 +7085,7 @@ impl LlvmBackend {
                         ty: Type::int(),
                     }
                 }
-                // 2026-08-12 (Iterable protocol): `x^^Length` on a String is
+                // 2026-08-12 (Iterable protocol): `x::Length` on a String is
                 // the STORED byte count — the [len] header of the
                 // [len][bytes] handle (O(1), no scan). The UTF8 CHARACTER
                 // count is the `CharCount#` intrinsic (a computed scan; SPEC
@@ -7106,7 +7106,7 @@ impl LlvmBackend {
                         ty: Type::int(),
                     }
                 }
-                // 2026-08-06 (Phase 7): `x^^Length` on a Blob — the byte length
+                // 2026-08-06 (Phase 7): `x::Length` on a Blob — the byte length
                 // is the [len] header of the [len][bytes] handle (O(1), no
                 // codepoint scan). Data values are ptr handles like Strings.
                 ty if matches!(ty, Type::Custom(n) if n == "Blob") => {
@@ -7130,7 +7130,7 @@ impl LlvmBackend {
                 // result) is typed Custom("Int")/Int here — the physical value
                 // is still the [len][bytes] pointer. Recover the semantic type
                 // from the binding (the let's declared type) and inttoptr the
-                // handle before the byte-header read. 2026-08-12: `^^Length` is
+                // handle before the byte-header read. 2026-08-12: `::Length` is
                 // the STORED byte count; `CharCount#` is the char scan.
                 other if self.is_semantic_string_ident(recv.identifier(), &recv_reg) => {
                     let p = self.string_ptr(out, indent, &recv_reg);
@@ -7149,7 +7149,7 @@ impl LlvmBackend {
                         ty: Type::int(),
                     }
                 }
-                // 2026-08-15 (coll plan §3.4.6): `x^^Length` on a `coll` type
+                // 2026-08-15 (coll plan §3.4.6): `x::Length` on a `coll` type
                 // is the compiler-owned stored length. `coll obj`: the hidden
                 // `len` slot (offset 16 of [data, cap, len]). `coll struct`
                 // (fixed T[N]): the array element count N (a compile-time
@@ -7197,11 +7197,11 @@ impl LlvmBackend {
                     recv, recv_reg.ty
                 ),
             },
-            // 2026-08-14 (boundary plan, SPEC §17.3): the `^^Absolute` codegen
+            // 2026-08-14 (boundary plan, SPEC §17.3): the `::Absolute` codegen
             // arm was REMOVED — the typechecker rejects it as an unknown
             // target (abs is the `Abs#` intrinsic). The catch-all below panics
             // if it ever reaches codegen, so no reflection emission remains.
-            // 2026-08-06 (Phase 8): `x^^Type` — a frozen descriptor = the
+            // 2026-08-06 (Phase 8): `x::Type` — a frozen descriptor = the
             // protocol category code (Int=0, Float=1, Bool=2, Char=3, Bits=4,
             // Product=5, Sum=6, Ref=7, Closure=8, Void=9), matching the
             // interpreter's reflect_type_code (rule #4 parity). A single
@@ -7215,8 +7215,8 @@ impl LlvmBackend {
                     ty: Type::int(),
                 }
             }
-            // 2026-08-14 (boundary plan): `x^^Element` — a frozen descriptor =
-            // the ELEMENT type's category code, folded exactly like `^^Type`
+            // 2026-08-14 (boundary plan): `x::Element` — a frozen descriptor =
+            // the ELEMENT type's category code, folded exactly like `::Type`
             // (the typechecker already proved iterability + derived the element
             // single-source; this only materializes the code). A constant, no
             // globals, no runtime code.
@@ -7251,7 +7251,7 @@ impl LlvmBackend {
         }
     }
 
-    /// 2026-08-06 (Phase 8): the `x^^Type` frozen-descriptor category code.
+    /// 2026-08-06 (Phase 8): the `x::Type` frozen-descriptor category code.
     /// MUST match interpreter::reflect_type_code (rule #4 parity).
     fn type_category_code(&self, ty: &Type) -> i64 {
         if self.is_string_operand(ty) || matches!(ty, Type::Bits(_)) {
@@ -7271,7 +7271,7 @@ impl LlvmBackend {
         }
     }
 
-    /// 2026-08-14 (boundary plan): the ELEMENT type of a `x^^Element` receiver,
+    /// 2026-08-14 (boundary plan): the ELEMENT type of a `x::Element` receiver,
     /// folded from the receiver's static type. Mirrors the typechecker's
     /// `resolve_element_type` (single-source proof form, rule #4 parity): a
     /// `String` operand → `Char` (frozen protocol fact), a Tier-2/1 type → the
@@ -7947,7 +7947,7 @@ impl LlvmBackend {
                         // that failed dispatch must yield the EMPTY-STRING
                         // sentinel (@str.0), never null — downstream String
                         // ops read the [len] header at offset 0, so null
-                        // dereferences at the first ^^Length/compare/print.
+                        // dereferences at the first::Length/compare/print.
                         let si = self
                             .ctx
                             .string_constants
@@ -13254,7 +13254,7 @@ impl LlvmBackend {
                     let fname: &str = fn_name;
                     // 2026-11-22 (wave-10, issue #154): the argument must
                     // match the CALLEE'S declared parameter width, not the
-                    // caller's register width. `x^^Length`-era floats: a
+                    // caller's register width. `x::Length`-era floats: a
                     // Float64 value cast to String flowed here as `double`,
                     // but float_to_str's Briev definition declares `Float`
                     // (float) — the callee read the f64 bits' low half as an

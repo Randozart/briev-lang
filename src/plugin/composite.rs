@@ -290,7 +290,7 @@ pub enum ComptimeVal {
 /// Checked arithmetic: a comptime overflow or division by zero declines
 /// the fold rather than changing semantics or panicking the compiler.
 /// `state_types` maps declared state-variable names to their static types
-/// (2026-09-22 reflection-conditions plan): `^^Size` / `^^Element` on a
+/// (2026-09-22 reflection-conditions plan): `::Size` / `::Element` on a
 /// declared array/iterable receiver fold from the type at expansion time.
 fn eval_const(
     e: &Expr,
@@ -332,7 +332,7 @@ fn eval_const(
             }
             Some(ComptimeVal::List(out))
         }
-        // 2026-09-22 (reflection-conditions plan): `^^Size` / `^^Element`
+        // 2026-09-22 (reflection-conditions plan): `::Size` / `::Element`
         // on a declared state variable fold from its static type. The
         // receiver must be a bare state-decl name; any other receiver
         // declines (fail-open). Mirrors the LLVM backend's
@@ -350,8 +350,8 @@ fn eval_const(
 }
 
 /// The folded value of a compile-time reflection target on a static type:
-/// `^^Size` → the element count of a vector (product of Anonymous dims);
-/// `^^Element` → the element category code. Mirrors the LLVM backend
+/// `::Size` → the element count of a vector (product of Anonymous dims);
+/// `::Element` → the element category code. Mirrors the LLVM backend
 /// (`vector_element_count`, `type_category_code`) — the fold and codegen
 /// must agree. Any other target/kind/receiver declines (`None`).
 fn reflect_type_value(
@@ -388,7 +388,7 @@ fn reflect_type_value(
     }
 }
 
-/// The `^^Type` / `^^Element` frozen category code. MUST match
+/// The `::Type` / `::Element` frozen category code. MUST match
 /// `emit_expr.rs::type_category_code` and the interpreter's
 /// `reflect_type_code` (rule #4 parity).
 fn type_category_code(ty: &Type) -> i64 {
@@ -1066,7 +1066,7 @@ pub fn expand_composites(items: &mut Vec<TopLevel>, pm: &PluginManager) -> Resul
         .collect();
     // 2026-09-22 (reflection-conditions plan): the declared STATIC TYPE of
     // each top-level state variable seeds the reflection fold. A composite
-    // may gate on `x^^Size` / `x^^Element` where `x` is a state decl
+    // may gate on `x::Size` / `x::Element` where `x` is a state decl
     // (`let buf: Float[4]`); the receiver's type resolves the target.
     // A receiver that is not a state name declines (fail-open).
     let state_types: HashMap<String, Type> = collect_state_types(items);
@@ -2581,7 +2581,7 @@ async node k [i < 1][i == 1] {
     }
 
     // ── 2026-09-22 (reflection-conditions plan) ────────────────────────
-    // `^^Size` / `^^Element` on a declared state variable fold from its
+    // `::Size` / `::Element` on a declared state variable fold from its
     // static type at expansion time.
 
     fn state_types_of(items: &[TopLevel]) -> HashMap<String, Type> {
@@ -2590,10 +2590,10 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn reflect_size_folds_from_state_decl() {
-        // A composite gates on `x^^Size`; the arg names a `let buf: Float[4]`.
+        // A composite gates on `x::Size`; the arg names a `let buf: Float[4]`.
         let items = parse_program(
             "let buf: Float[4]; \n\
-             $defn pick(x: Expr) { match x^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn pick(x: Expr) { match x::Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let state_types = state_types_of(&items);
@@ -2621,7 +2621,7 @@ async node k [i < 1][i == 1] {
     fn reflect_size_mismatch_splices_other_arm() {
         let items = parse_program(
             "let buf: Float[8]; \n\
-             $defn pick(x: Expr) { match x^^Size { 4 => { r = 1; }, 8 => { r = 8; }, _ => { r = 0; }, } };",
+             $defn pick(x: Expr) { match x::Size { 4 => { r = 1; }, 8 => { r = 8; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let state_types = state_types_of(&items);
@@ -2640,10 +2640,10 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn reflect_element_folds_category_code() {
-        // `^^Element` on Float[16] folds to category 1 (Float).
+        // `::Element` on Float[16] folds to category 1 (Float).
         let items = parse_program(
             "let buf: Float[16]; \n\
-             $defn kind(x: Expr) { match x^^Element { 1 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn kind(x: Expr) { match x::Element { 1 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "kind");
         let state_types = state_types_of(&items);
@@ -2667,7 +2667,7 @@ async node k [i < 1][i == 1] {
         // A receiver that is NOT a state decl declines the fold — the match
         // stays a runtime branch (fail-open).
         let items = parse_program(
-            "$defn pick(x: Expr) { match x^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+            "$defn pick(x: Expr) { match x::Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let out = expand_composite_invocation(
@@ -2683,10 +2683,10 @@ async node k [i < 1][i == 1] {
 
     #[test]
     fn reflect_string_element_is_char_category() {
-        // `^^Element` on a String state var folds to the Char category (3).
+        // `::Element` on a String state var folds to the Char category (3).
         let items = parse_program(
             "let s: String; \n\
-             $defn ch(x: Expr) { match x^^Element { 3 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn ch(x: Expr) { match x::Element { 3 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "ch");
         let state_types = state_types_of(&items);

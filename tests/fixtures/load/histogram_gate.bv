@@ -6,7 +6,7 @@ let done: Bool = false;
 node main [!done][done] {
     let first: Histogram = histogram_new(10,10);
     foreach value in 0..100 { first = histogram_record(first,value); };
-    println!("count={} overflow={} bins={}",first.count,first.overflow,first.bins ^^Length);
+    println!("count={} overflow={} bins={}",first.count,first.overflow,first.bins::Length);
     when first.count != 100 || first.overflow != 0 { endprogram 1; };
     foreach index in 0..10 { println!("bin {}={}",index,first.bins[index]); };
     println!("p50={} p99={}",histogram_quantile(first,500),histogram_quantile(first,990));

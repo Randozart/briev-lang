@@ -1179,7 +1179,7 @@ pub struct FunctionContext {
     pub terminated: bool,
     /// 2026-08-26 (async Phase D): true while emitting a `__task_*_seg<k>`
     /// body — an unready port read may suspend (returns the BLOCKED
-    /// aggregate); anywhere else it traps (top-level reads gate on ^^Ready).
+    /// aggregate); anywhere else it traps (top-level reads gate on::Ready).
     pub is_task_segment: bool,
     /// 2026-07-27: Name of the transaction/function being compiled.
     /// Used as key for CompilerContext.needs_arena lookup.

@@ -37,7 +37,7 @@ import "compiler/reader.bv";
 // depth is the recursion guard (a cycle → conservative 1, like export_abi.rs).
 defn export_needs(proj: String, name: String, depth: Int) -> Int {
     when depth > 64 { term 1; };
-    term scan_bodies(proj, 0, proj ^^Length, name, depth);
+    term scan_bodies(proj, 0, proj::Length, name, depth);
 };
 defn scan_bodies(proj: String, i: Int, n: Int, name: String, depth: Int) -> Int {
     when i >= n { term 0; };
@@ -61,7 +61,7 @@ defn body_needs(proj: String, ls: Int, n: Int, name: String, depth: Int) -> Int 
 };
 defn walk_body_tokens(line: String, idx: Int, proj: String, depth: Int) -> Int {
     let tok: String = token_at(line, idx);
-    when tok ^^Length == 0 { term 0; };
+    when tok::Length == 0 { term 0; };
     let kind: String = str_substr(tok, 0, 1);
     let nm: String = token_name(tok);
     let mine: Int = 0;
@@ -98,7 +98,7 @@ export defn needs_state_compute(proj: CStr) -> Int {
 };
 defn compute_mask(text: String, el: String, i: Int, mask: Int) -> Int {
     let name: String = token_at(el, i + 2);
-    when name ^^Length == 0 { term mask; };
+    when name::Length == 0 { term mask; };
     let needs: Int = export_needs(text, name, 0);
     let bit: Int = 1 << i;
     let m2: Int = mask;

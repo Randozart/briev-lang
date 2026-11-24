@@ -11,7 +11,7 @@ obj Ledger {
     op At(i: Int) -> Int { term items[i]; };
     op InsertAt: put(#Lh, #Rh);
     op Init: init(#Lh, #Rh);
-    txn init(v: Int) [true][items^^Size == 0] {
+    txn init(v: Int) [true][items::Size == 0] {
         let e: List<Int> = [];
         items = e;
     };

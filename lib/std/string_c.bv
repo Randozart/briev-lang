@@ -22,7 +22,7 @@
 // other Ptr register is i64-valued (Malloc# ptrtoints at emission), and the
 // two representations are indistinguishable to the cast emitters.
 defn to_c_string(s: String) -> Int {
-    let len: Int = s ^^Length;
+    let len: Int = s::Length;
     let cstr: Ptr<Bit<8>> = Malloc#(len + 1);
     Copy#(cstr, (s as Data) as Int + 8, len);
     Fill#(cstr as Int + len, 0, 1);

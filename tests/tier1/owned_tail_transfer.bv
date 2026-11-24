@@ -9,14 +9,14 @@
 import "std/io.bv";
 
 defn peel(text: String) [true][CharCount#(term) >= 0] -> String {
-    when text ^^Length == 0 { term fresh_string(text); };
-    let rest: String = text[1:text ^^Length];
+    when text::Length == 0 { term fresh_string(text); };
+    let rest: String = text[1:text::Length];
     term peel(rest);
 };
 
 node entry [beginprogram][true] {
     let result: String = peel(fresh_string("abcdef"));
-    print_int(result ^^Length);
+    print_int(result::Length);
     print_str("\n");
     endprogram 0;
 };

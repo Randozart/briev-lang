@@ -19,7 +19,7 @@
 // `>>` is ARITHMETIC, so logical shift right is emulated via mask
 // (`lshr64`/`lshr32`). XXH32 is mod 2^32 — every op is masked `& 0xFFFFFFFF`.
 // Primes above i64::MAX are written as signed i64 decimals. Hashing uses
-// the BYTE length (`str_len_bytes`), not `^^Length` (codepoints).
+// the BYTE length (`str_len_bytes`), not `::Length` (codepoints).
 //
 // Usage:
 //   import { xxh64, xxh32 } from "std/ffi/xxhash.bv";

@@ -43,8 +43,8 @@ defn str_find_from(hay: String, needle: String, from: Int)
     [from >= 0][term >= -1]
     -> Int
 {
-    let hlen: Int = hay ^^Length;
-    let nlen: Int = needle ^^Length;
+    let hlen: Int = hay::Length;
+    let nlen: Int = needle::Length;
     when from + nlen > hlen {
         term -1;
     };
@@ -77,10 +77,10 @@ defn str_match_at(hay: String, needle: String, at: Int, k: Int, len: Int)
 // str_eq_ci - case-insensitive equality of two Strings (ASCII fold). Used for
 // header-name comparison (RFC 7230: header names are case-insensitive).
 defn str_eq_ci(left: String, right: String) [true][term == true || term == false] -> Bool {
-    when left ^^Length != right ^^Length {
+    when left::Length != right::Length {
         term false;
     };
-    term str_eq_ci_at(left, right, 0, left ^^Length);
+    term str_eq_ci_at(left, right, 0, left::Length);
 };
 
 // str_eq_ci_at - compare bytes [k, len) of two equal-length Strings, folding
@@ -357,8 +357,8 @@ defn http_content_length(head: String) [true][term >= 0] -> Int {
 // byte length. A local helper so the response writers read as "append this
 // text" without each one poking the String layout (DRY over the handshake and
 // both response writers).
-defn put_str(sink: GrowBuf, text: String) [true][term.len == sink.len + text ^^Length] -> GrowBuf {
-    let count: Int = text ^^Length;
+defn put_str(sink: GrowBuf, text: String) [true][term.len == sink.len + text::Length] -> GrowBuf {
+    let count: Int = text::Length;
     let data_addr: Int = ((text as Data) as Int) + 8;
     term sink.put_bytes(data_addr, count);
 };
@@ -403,7 +403,7 @@ defn http_response(status: Int, ctype: String, body: String)
     [status >= 100 && status <= 599][term.len >= 0]
     -> GrowBuf
 {
-    let body_len: Int = body ^^Length;
+    let body_len: Int = body::Length;
     let sink: GrowBuf = grow_new(256);
     let s1: GrowBuf = put_str(sink, "HTTP/1.1 ");
     let s2: GrowBuf = put_str(s1, status as String);

@@ -377,7 +377,7 @@ import { ws_accept_key } from "std/net/http";
 
 // str_buf - a ByteBuf VIEW over a String's data bytes (no copy, no NUL).
 defn str_buf(s: String) -> ByteBuf {
-    let n: Int = s ^^Length;
+    let n: Int = s::Length;
     term ByteBuf { ptr: ((s as Data) as Int) + 8, len: n, cap: n };
 };
 
@@ -393,12 +393,12 @@ node entry [beginprogram][true] {
     // Incremental HTTP: a complete GET parses (method/path/consumed); the same
     // request truncated before the header terminator is NeedMore.
     let req: String = "GET /x HTTP/1.1\r\nHost: h\r\n\r\n";
-    let rp = http_parse_request(str_buf(req), req ^^Length);
+    let rp = http_parse_request(str_buf(req), req::Length);
     when rp.status == 1 && rp.request.method == "GET"
-        && rp.request.path == "/x" && rp.consumed == req ^^Length {
+        && rp.request.path == "/x" && rp.consumed == req::Length {
         acc = acc | 4;
     };
-    let cut: Int = (req ^^Length) - 2;
+    let cut: Int = (req::Length) - 2;
     let partial = http_parse_request(str_buf(req), cut);
     when partial.status == 0 {
         acc = acc | 8;

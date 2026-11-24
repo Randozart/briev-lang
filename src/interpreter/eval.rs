@@ -1308,7 +1308,7 @@ fn eval_field(
             })
         }
         // An EVENT PORT: any name projects the current payload's members.
-        // Readiness uses ^^Ready (reflection), not .Ready (field).
+        // Readiness uses::Ready (reflection), not .Ready (field).
         Value::EventQ(q) => {
             // 2026-08-26 (async Phase B): decide suspension BEFORE taking the
             // match borrow — block_current_task_on_slot mutates the waiters
@@ -1343,7 +1343,7 @@ fn eval_field(
                 }),
                 None => {
                     // Unready OUTSIDE a task: strict error stands — top-level
-                    // reads gate on ^^Ready (SPEC §9.5). TEMP undo: collapse
+                    // reads gate on::Ready (SPEC §9.5). TEMP undo: collapse
                     // this whole pre-check + arm to revert Phase B blocking.
                     Err(RuntimeError::TypeError {
                         expected: format!("'{}' on an event port", name),
@@ -1636,7 +1636,7 @@ fn eval_reflect(
     scope: &mut EvalScope,
 ) -> Result<Value, RuntimeError> {
     let val = eval_expr(recv, heap, scope.bindings, scope.functions)?;
-    // 2026-11-21 (wave-9, one caret): `^^` is the only surface spelling, so
+    // 2026-11-21 (wave-9, one caret): `::` is the only surface spelling, so
     // every property dispatches by NAME here, not by tag. The old tag-matched
     // arms (Length/Ptr/Ready were "runtime"; Size/Bytes/Type/Element were
     // "compile-time") carried no semantic: runtime `Size` was deleted
@@ -1651,7 +1651,7 @@ fn eval_reflect(
                 Ok(Value::Atom(Atom::Bool(slot.ready)))
             }
             other => Err(RuntimeError::TypeError {
-                expected: "an Event port for ^^Ready".into(),
+                expected: "an Event port for::Ready".into(),
                 found: describe_value(other),
             }),
         },
@@ -1668,10 +1668,10 @@ fn eval_reflect(
             }) => Ok(Value::int(fields.len() as i64)),
             _ => Ok(Value::Void),
         },
-        // 2026-08-14 (§6a.1 item 8): `^^Size` and `^^Bytes` are SPLIT —
-        // `^^Size` is the compile-time shape (a vector's element count; a
+        // 2026-08-14 (§6a.1 item 8): `::Size` and `::Bytes` are SPLIT —
+        // `::Size` is the compile-time shape (a vector's element count; a
         // Product/Sum's field count; 1 for a scalar), matching the codegen's
-        // vector_element_count; `^^Bytes` is the stored BYTE length of a
+        // vector_element_count; `::Bytes` is the stored BYTE length of a
         // Bits value. They were wrongly grouped before (Size returned byte
         // length).
         "Size" => match val {
@@ -1689,7 +1689,7 @@ fn eval_reflect(
             }) => Ok(Value::int(fields.len() as i64)),
             // 2026-10-25: scalar `Bytes` is the value width, matching codegen's
             // non-string type_size path. The strict JSON integer accumulator
-            // derives its minimum from `0 ^^Bytes`; returning Void made the
+            // derives its minimum from `0::Bytes`; returning Void made the
             // reference reject every integer parse.
             Value::Data(_) | Value::Atom(Atom::Int(_)) | Value::Atom(Atom::Float(_)) => {
                 Ok(Value::int(8))
@@ -1704,7 +1704,7 @@ fn eval_reflect(
         // 2026-08-14 (boundary plan): `Element` (compile-time) = the ELEMENT
         // type's category code of an iterable value — a `String` operand's
         // chars (`Char`), a Product's field sequence, a Range's counter
-        // (`Int`). Matches the codegen's `^^Element` fold (rule #4 parity).
+        // (`Int`). Matches the codegen's `::Element` fold (rule #4 parity).
         "Element" => Ok(Value::int(reflect_element_code(&val))),
         _ => Ok(Value::Void),
     }
@@ -1752,7 +1752,7 @@ fn reflect_type_code(v: &Value) -> i64 {
 }
 
 /// 2026-08-14 (boundary plan): the ELEMENT type's category code of an iterable
-/// value, for `x^^Element`. A `String` operand iterates `Char` (SPEC §17.2);
+/// value, for `x::Element`. A `String` operand iterates `Char` (SPEC §17.2);
 /// a Product's element is the category of its first field (the field sequence
 /// is the element sequence); a Range iterates `Int` counters. Must agree with
 /// the codegen's fold of the receiver's static element type (rule #4 parity) —
@@ -4786,8 +4786,8 @@ defn go() -> Int {
 
     #[test]
     fn test_reflect_size_vs_bytes_split() {
-        // 2026-08-14 (§6a.1 item 8): `^^Size` on a scalar is the shape (1),
-        // `^^Bytes` on a Bits value is the byte length — they were wrongly
+        // 2026-08-14 (§6a.1 item 8): `::Size` on a scalar is the shape (1),
+        // `::Bytes` on a Bits value is the byte length — they were wrongly
         // grouped before.
         let size_r = Expr::Reflect(
             Box::new(Expr::Quoted(b"abc".to_vec())),
@@ -4797,7 +4797,7 @@ defn go() -> Int {
         assert_eq!(
             eval1(&size_r).as_i64(),
             Some(1),
-            "^^Size on a scalar is its shape (1)"
+            "::Size on a scalar is its shape (1)"
         );
         let bytes_r = Expr::Reflect(
             Box::new(Expr::Quoted(b"abc".to_vec())),
@@ -4807,7 +4807,7 @@ defn go() -> Int {
         assert_eq!(
             eval1(&bytes_r).as_i64(),
             Some(3),
-            "^^Bytes on a Bits value is its byte length"
+            "::Bytes on a Bits value is its byte length"
         );
     }
 
@@ -4823,7 +4823,7 @@ defn go() -> Int {
 
     #[test]
     fn test_reflect_element_on_string_is_char_category() {
-        // 2026-08-14 (String unification): `s^^Element` on a String value is
+        // 2026-08-14 (String unification): `s::Element` on a String value is
         // the Char category code (3) — a `String` operand iterates chars.
         let r = Expr::Reflect(
             Box::new(Expr::Quoted("hi".as_bytes().to_vec())),
@@ -4850,7 +4850,7 @@ defn go() -> Int {
 
     #[test]
     fn test_reflect_absolute_is_removed() {
-        // 2026-08-14 (boundary plan, SPEC §17.3): `^^Absolute` was removed —
+        // 2026-08-14 (boundary plan, SPEC §17.3): `::Absolute` was removed —
         // abs is the `Abs#` intrinsic, not a reflection target. At the eval
         // level (no typechecker), the unhandled target returns Void.
         let r = Expr::Reflect(

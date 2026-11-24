@@ -9,7 +9,7 @@ import "std/string.bv";
 node entry [beginprogram][true] {
     let s: String = "A — B good";
     let l: String = to_lower_str(s);
-    Print#((l ^^Length == s ^^Length) as Int);
+    Print#((l::Length == s::Length) as Int);
     Print#(contains(l, "good") as Int);
     Print#(find(l, "good"));
     Print#(contains(l, "b") as Int);

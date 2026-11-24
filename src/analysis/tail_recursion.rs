@@ -321,15 +321,15 @@ mod debug_tests {
     #[test]
     fn debug_strip_lowerable() {
         let src = r#"
-defn strip_frac_zeros(frac: String) [true][term^^Length >= 0] -> String {
-    when frac^^Length == 0 {
+defn strip_frac_zeros(frac: String) [true][term::Length >= 0] -> String {
+    when frac::Length == 0 {
         term fresh_string(frac);
     };
-    let last: Int = frac[frac^^Length - 1:frac^^Length] as Int;
+    let last: Int = frac[frac::Length - 1:frac::Length] as Int;
     when last != 0 {
         term fresh_string(frac);
     };
-    let trimmed: String = frac[0:frac^^Length - 1];
+    let trimmed: String = frac[0:frac::Length - 1];
     term strip_frac_zeros(trimmed);
 };
 "#;

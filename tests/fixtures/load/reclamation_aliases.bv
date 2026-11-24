@@ -45,8 +45,8 @@ defn payload_aliases(owned: Bool) -> Bool {
     let original: Result<String,Int> = mixed_payload(owned,"static");
     let alias: String = unwrap(original);
     when is_err(original) { term false; };
-    when owned { term alias ^^Length == 5 && byte_at(alias,0) == 49; };
-    term alias ^^Length == 6 && byte_at(alias,0) == 115;
+    when owned { term alias::Length == 5 && byte_at(alias,0) == 49; };
+    term alias::Length == 6 && byte_at(alias,0) == 115;
 };
 
 defn nested_payloads() -> Bool {
@@ -77,9 +77,9 @@ defn encoded_scalars() -> Bool {
     let small: String = char_to_str(0x7ff);
     let medium: String = char_to_str(0xffff);
     let large: String = char_to_str(0x10ffff);
-    term small ^^Length == 2 && byte_at(small,1) == 191 &&
-        medium ^^Length == 3 && byte_at(medium,2) == 191 &&
-        large ^^Length == 4 && byte_at(large,0) == 244 && byte_at(large,3) == 191;
+    term small::Length == 2 && byte_at(small,1) == 191 &&
+        medium::Length == 3 && byte_at(medium,2) == 191 &&
+        large::Length == 4 && byte_at(large,0) == 244 && byte_at(large,3) == 191;
 };
 
 let done: Bool = false;

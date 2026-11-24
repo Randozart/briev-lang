@@ -1901,7 +1901,7 @@ mod tests {
 
     #[test]
     fn unready_read_outside_task_stays_strict() {
-        // Top-level reads keep the SPEC §9.5 gate: ^^Ready first, else error.
+        // Top-level reads keep the SPEC §9.5 gate:::Ready first, else error.
         let mut interp = Interpreter::new();
         interp.state.insert("wire".to_string(), unready_port());
         let err = interp

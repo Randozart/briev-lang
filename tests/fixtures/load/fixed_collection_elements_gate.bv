@@ -30,9 +30,9 @@ node main [!done][done] {
     objects[1] = ObjectValue { left: 5, right: 6 };
     when objects[0].right != 2 || objects[1].right != 6 { endprogram 6; };
     let strings: FixedSlots<String> = ["a","bc"];
-    when strings[1] ^^Length != 2 { endprogram 7; };
+    when strings[1]::Length != 2 { endprogram 7; };
     strings[1] = "xyz";
-    when strings[0] ^^Length != 1 || strings[1] ^^Length != 3 { endprogram 8; };
+    when strings[0]::Length != 1 || strings[1]::Length != 3 { endprogram 8; };
     let choices: FixedSlots<ChoiceValue> = [Selected(7),Missing()];
     when choice_number(choices[0]) != 7 || choice_number(choices[1]) != 0 { endprogram 9; };
     choices[1] = Selected(11);

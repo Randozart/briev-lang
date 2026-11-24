@@ -29,8 +29,8 @@ defn response_lower(value: Int) -> Int {
 };
 
 defn response_matches(bytes: ByteBuf, start: Int, end: Int, expected: String) -> Bool {
-    when end-start != expected ^^Length { term false; };
-    foreach index in 0..expected ^^Length {
+    when end-start != expected::Length { term false; };
+    foreach index in 0..expected::Length {
         when response_lower(get_u8(bytes,start+index)) != response_lower(expected[index]) { term false; };
     };
     term true;
@@ -39,7 +39,7 @@ defn response_matches(bytes: ByteBuf, start: Int, end: Int, expected: String) ->
 defn response_token(value: Int) -> Bool {
     when (value >= 48 && value <= 57) || (value >= 65 && value <= 90) || (value >= 97 && value <= 122) { term true; };
     let punctuation: String = "!#$%&'*+-^^_`|~";
-    foreach index in 0..punctuation ^^Length { when value == punctuation[index] { term true; }; };
+    foreach index in 0..punctuation::Length { when value == punctuation[index] { term true; }; };
     term false;
 };
 

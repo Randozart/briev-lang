@@ -86,7 +86,7 @@ fn pooled_object_replacement_survives_reactor_firings() {
         out let snapshot: Snapshot = initial_snapshot();
         out let iterations: Int = 0;
         out node step [true][false] {
-            when !snapshot.ready || snapshot.weight != 0.5 || snapshot.title ^^Length != 5 { SysCall#(60,71); };
+            when !snapshot.ready || snapshot.weight != 0.5 || snapshot.title::Length != 5 { SysCall#(60,71); };
             snapshot = advance(snapshot);
             iterations += 1;
             when snapshot.count != iterations { SysCall#(60,72); };
@@ -244,7 +244,7 @@ fn aggregate_value_arguments_marshal_handle_to_ptr() {
     let str_source = r#"
         struct Named { n: Int; label: String; };
         defn double_n(x: Named) -> Int { term x.n * 2; };
-        defn wrap(x: Named) -> Int { term double_n(x) + x.label ^^Length; };
+        defn wrap(x: Named) -> Int { term double_n(x) + x.label::Length; };
         out let res: Int = 0;
         out let t: Int = 0;
         node main [t == 0][t == 1] {

@@ -505,7 +505,7 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         // ── Value-category semantics ──────────────────────────────────
         // 2026-08-12 (Iterable protocol): the UTF8 CHAR count of a String —
         // a COMPUTED property (the scan), so it is an intrinsic, not
-        // reflection. `^^Length` is the stored byte count (SPEC §17.1).
+        // reflection. `::Length` is the stored byte count (SPEC §17.1).
         "CharCount#" => Some(Signature {
             name: "CharCount#",
             parameters: vec![("s", Type::string())],

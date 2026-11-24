@@ -94,7 +94,7 @@ pub fn execute_intrinsic(
     match name {
         "Spawn#" | "SpawnWithOutput#" => execute_shell_spawn(name, args, heap),
         // 2026-08-12 (Iterable protocol): `CharCount#(s)` — the UTF8 CHAR
-        // count of a String (a computed property, so an intrinsic; `^^Length`
+        // count of a String (a computed property, so an intrinsic; `::Length`
         // is the stored byte count).
         "CharCount#" => {
             let s = args.first().ok_or_else(|| {
@@ -1645,8 +1645,8 @@ mod tests {
 
     #[test]
     fn test_reflect_len_and_bytes() {
-        // 2026-08-12 (Iterable protocol): `x^^Length` = the STORED byte count
-        // (the [len] header), `x^^Bytes` = byte length, `CharCount#` = the
+        // 2026-08-12 (Iterable protocol): `x::Length` = the STORED byte count
+        // (the [len] header), `x::Bytes` = byte length, `CharCount#` = the
         // UTF8 char count. 'héllo' is 5 chars / 6 bytes.
         use crate::ast::Expr;
         use crate::interpreter::ReflectKind;

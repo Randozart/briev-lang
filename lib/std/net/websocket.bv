@@ -396,7 +396,7 @@ defn when_incomplete_or_protocol(e: String) -> WsMessage {
 // UNMASKED (RFC 6455 §5.1: server frames must not be masked), in the minimal
 // length form. Returns the GrowBuf the caller owns.
 defn ws_encode_text(payload: String) -> GrowBuf {
-    let plen: Int = payload ^^Length;
+    let plen: Int = payload::Length;
     let data_addr: Int = ((payload as Data) as Int) + 8;
     term ws_encode(grow_new(plen + 10), true, 1, false, 0, data_addr, plen);  // WS_OP_TEXT
 };

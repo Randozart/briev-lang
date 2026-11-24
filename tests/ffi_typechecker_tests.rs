@@ -6,7 +6,7 @@
 //! The typechecker no longer validates TOML binding files — that is the
 //! backend's responsibility. What the frontend typechecker does:
 //!   1. Registers return types so `term frgn_foo(x)` resolves correctly.
-//!   2. Tracks optional frgn names for `^^Available` reflection.
+//!   2. Tracks optional frgn names for `::Available` reflection.
 //!   3. Catches type mismatches in code that calls foreign bindings.
 
 use briev_compiler::errors::TypeError;
@@ -72,7 +72,7 @@ defn use_add(a: Int, b: Int) -> Int { term local_add(a, b); };
     assert!(check(src).is_ok(), "colon alias must resolve to briev_name");
 }
 
-// ── optional frgn + ^^Available ─────────────────────────────────────
+// ── optional frgn +::Available ─────────────────────────────────────
 
 #[test]
 fn test_optional_frgn_available_is_bool() {
@@ -80,14 +80,14 @@ fn test_optional_frgn_available_is_bool() {
 optional frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature^^Available;
+    let avail: Bool = feature::Available;
     fired = fired + 1;
     term;
 };
 "#;
     assert!(
         check(src).is_ok(),
-        "^^Available on optional frgn must resolve as Bool"
+        "::Available on optional frgn must resolve as Bool"
     );
 }
 
@@ -97,7 +97,7 @@ fn test_available_on_non_optional_frgn_is_error() {
 frgn feature(x: Int) -> Int from #System;
 let fired: Int = 0;
 node go [fired == 0][fired == 1] {
-    let avail: Bool = feature^^Available;
+    let avail: Bool = feature::Available;
     fired = fired + 1;
     term;
 };
@@ -106,7 +106,7 @@ node go [fired == 0][fired == 1] {
     assert!(
         err.iter()
             .any(|e| format!("{}", e).contains("only on an `optional frgn`")),
-        "^^Available on non-optional must error, got {:?}",
+        "::Available on non-optional must error, got {:?}",
         err
     );
 }

@@ -27,8 +27,8 @@ let tick: Int = 0;
 node run [tick < 1][tick == 1] {
     let integers: List<Int> = integer_rebind();
     let objects: List<Item> = object_rebind();
-    let valid: Bool = integers ^^Length == 2 && integers[0] == 1 && integers[1] == 2 &&
-        objects ^^Length == 2 && objects[0].id == 2 && objects[1].id == 3;
+    let valid: Bool = integers::Length == 2 && integers[0] == 1 && integers[1] == 2 &&
+        objects::Length == 2 && objects[0].id == 2 && objects[1].id == 3;
     println!("collection_rebind_and_explicit_push={}",valid);
     when !valid { endprogram 1; };
     tick = 1; endprogram;

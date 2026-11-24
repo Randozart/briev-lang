@@ -16,12 +16,12 @@ obj DecodedImage {
 };
 
 defn image_decode(bytes: String) [true][is_ok(term) || is_err(term)] -> Result<DecodedImage, String> {
-    when (bytes ^^Length) == 0 { term Err("empty image"); };
+    when (bytes::Length) == 0 { term Err("empty image"); };
     let data: Int = ((bytes as Data) as Int) + 8;
     let wbuf: Int = Malloc#(8) as Int;
     let hbuf: Int = Malloc#(8) as Int;
     let cbuf: Int = Malloc#(8) as Int;
-    let ptr: Int = stbi_load_from_memory(data, bytes ^^Length, wbuf, hbuf, cbuf, 3);
+    let ptr: Int = stbi_load_from_memory(data, bytes::Length, wbuf, hbuf, cbuf, 3);
     let wp: Ptr<Int32> = wbuf as Ptr<Int32>;
     let hp: Ptr<Int32> = hbuf as Ptr<Int32>;
     let w: Int = wp[0] as Int;

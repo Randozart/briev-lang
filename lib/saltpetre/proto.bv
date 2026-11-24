@@ -14,7 +14,7 @@ obj ProtoReader {
 };
 
 defn proto_reader(text: String) -> ProtoReader {
-    term ProtoReader { buf: text, pos: 0, len: text ^^Length };
+    term ProtoReader { buf: text, pos: 0, len: text::Length };
 };
 
 defn proto_done(r: ProtoReader) -> Bool {

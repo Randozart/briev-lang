@@ -37,7 +37,7 @@ defn new_store() -> TaskStore {
 
 defn json_escape(s: String) -> String {
     let sb: StringBuilder = new_builder();
-    let n: Int = s ^^Length;
+    let n: Int = s::Length;
     foreach i in 0..n {
         let c: Char = char_at(s, i);
         when c == '"' {
@@ -127,7 +127,7 @@ defn store_delete(store: TaskStore, id: Int) -> Int {
 
 defn task_id_from_path(path: String) -> Int {
     let prefix: String = "/api/tasks/";
-    let rest: String = path[prefix ^^Length:path ^^Length];
+    let rest: String = path[prefix::Length:path::Length];
     let slash: Int = find(rest, "/");
     when slash < 0 {
         term rest as Int;
@@ -232,15 +232,15 @@ defn handle_api(conn: Socket, request: HttpRequest, store: TaskStore)
             },
             Err(_) => "",
         };
-        when title ^^Length == 0 {
+        when title::Length == 0 {
             respond_json(conn, 400, INVALID_BODY);
             handled = 1;
         };
-        when title ^^Length > MAX_TITLE_CHARS {
+        when title::Length > MAX_TITLE_CHARS {
             respond_json(conn, 400, TITLE_TOO_LONG_BODY);
             handled = 1;
         };
-        when title ^^Length > 0 && title ^^Length <= MAX_TITLE_CHARS {
+        when title::Length > 0 && title::Length <= MAX_TITLE_CHARS {
             let task: Task = store_add(store, title);
             respond_json(conn, 200, task_json(task));
             handled = 1;
@@ -267,7 +267,7 @@ defn handle_api(conn: Socket, request: HttpRequest, store: TaskStore)
     };
 
     when handled == 0 && method == "DELETE" && starts_with(path, prefix) {
-        let rest: String = path[prefix ^^Length:path ^^Length];
+        let rest: String = path[prefix::Length:path::Length];
         when find(rest, "/") >= 0 {
             respond_json(conn, 404, NOT_FOUND_BODY);
             handled = 1;

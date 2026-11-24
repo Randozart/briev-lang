@@ -16,10 +16,10 @@ defn process_probe() -> Bool {
     let empty: String = SpawnWithOutput#("exit 0");
     when empty != "" { term false; };
     let long: String = SpawnWithOutput#("printf '%05000d' 0");
-    when long ^^Length != 5000 { term false; };
+    when long::Length != 5000 { term false; };
     when capture_byte(long, 0) != 48 || capture_byte(long, 4999) != 48 { term false; };
     let binary: String = SpawnWithOutput#("printf 'a\\000b'");
-    when binary ^^Length != 3 { term false; };
+    when binary::Length != 3 { term false; };
     term capture_byte(binary, 0) == 97 && capture_byte(binary, 1) == 0 &&
         capture_byte(binary, 2) == 98;
 };

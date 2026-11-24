@@ -605,7 +605,7 @@ defn pg_bind_values(sink: GrowBuf, params: List<String>, np: Int, i: Int)
         term sink;
     };
     let val: String = params.At#(i);
-    let vlen: Int = val ^^Length;
+    let vlen: Int = val::Length;
     let data_addr: Int = ((val as Data) as Int) + 8;
     let withval: GrowBuf = sink.put_u32_be(vlen).put_bytes(data_addr, vlen);
     term pg_bind_values(withval, params, np, i + 1);

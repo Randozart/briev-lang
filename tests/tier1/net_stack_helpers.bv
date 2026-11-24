@@ -23,9 +23,9 @@ import { print_str } from "std/io";
 
 defn str_buf(s: String) -> ByteBuf
     [true]
-    [term.len == s ^^Length && term.cap == s ^^Length]
+    [term.len == s::Length && term.cap == s::Length]
 {
-    let n: Int = s ^^Length;
+    let n: Int = s::Length;
     term ByteBuf { ptr: ((s as Data) as Int) + 8, len: n, cap: n };
 };
 
@@ -43,7 +43,7 @@ node entry [beginprogram][ok == 4] {
 
     let req: String = "GET /x HTTP/1.1\r\nHost: h\r\n\r\n";
     let rb: ByteBuf = str_buf(req);
-    let n: Int = req ^^Length;
+    let n: Int = req::Length;
     check n >= 0;
     check n <= rb.len;
     let rp = http_parse_request(rb, n);

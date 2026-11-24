@@ -226,7 +226,7 @@ fn returned_bytebuf_len_interpreter() {
 import { ByteBuf } from "std/net/bytes";
 
 defn str_buf(s: String) -> ByteBuf {
-    let n: Int = s ^^Length;
+    let n: Int = s::Length;
     term ByteBuf { ptr: ((s as Data) as Int) + 8, len: n, cap: n };
 };
 

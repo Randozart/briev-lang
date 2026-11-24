@@ -14,7 +14,7 @@ node main [!done][done] {
     let n: Int = c_strlen(s);
     // Direction 2 (C -> Briev): the copying lane through the same protocol.
     let back: String = "yo" as CStr as String;
-    Print#(n + (back ^^Length));
+    Print#(n + (back::Length));
     done = true;
     endprogram;
 };

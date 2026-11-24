@@ -39,7 +39,7 @@ defn line_end(proj: String, i: Int, n: Int) -> Int {
 // token_at(line, idx): the idx-th space-separated token (0-based); "" if the
 // line has fewer than idx+1 tokens. The projection uses single spaces.
 defn token_at(line: String, idx: Int) -> String {
-    let n: Int = line ^^Length;
+    let n: Int = line::Length;
     term token_at_scan(line, 0, n, idx, 0, 0);
 };
 defn token_at_scan(line: String, i: Int, n: Int, idx: Int, cur: Int, start: Int) -> String {
@@ -55,7 +55,7 @@ defn token_at_scan(line: String, i: Int, n: Int, idx: Int, cur: Int, start: Int)
 
 // has_token(line, name): is `name` one of the line's tokens?
 defn has_token(line: String, name: String) -> Bool {
-    term has_token_scan(line, 0, line ^^Length, name, 0);
+    term has_token_scan(line, 0, line::Length, name, 0);
 };
 defn has_token_scan(line: String, i: Int, n: Int, name: String, start: Int) -> Bool {
     when i >= n { term briev_str_substr(line, start, n) == name; };
@@ -69,7 +69,7 @@ defn has_token_scan(line: String, i: Int, n: Int, name: String, start: Int) -> B
 // ── section lookup ──────────────────────────────────────────────────────
 // in_section(proj, key, name): is `name` listed in the `key` section line?
 defn in_section(proj: String, key: String, name: String) -> Bool {
-    term scan_sections(proj, 0, proj ^^Length, key, name);
+    term scan_sections(proj, 0, proj::Length, key, name);
 };
 // 2026-09-23 (stateless-defn mechanism): the inverse — a name NOT listed in
 // the `key` section. `when not` has no syntax, so callers test this.
@@ -86,21 +86,21 @@ defn scan_sections(proj: String, i: Int, n: Int, key: String, name: String) -> B
 defn line_has_key(proj: String, ls: Int, n: Int, key: String) -> Bool {
     let le: Int = line_end(proj, ls, n);
     let line: String = briev_str_substr(proj, ls, le);
-    let klen: Int = key ^^Length;
-    when line ^^Length >= klen + 1 && briev_str_substr(line, 0, klen) == key && char_at(line, klen) == 32 { term true; };
+    let klen: Int = key::Length;
+    when line::Length >= klen + 1 && briev_str_substr(line, 0, klen) == key && char_at(line, klen) == 32 { term true; };
     term false;
 };
 defn line_has_name(proj: String, ls: Int, n: Int, key: String, name: String) -> Bool {
     let le: Int = line_end(proj, ls, n);
     let line: String = briev_str_substr(proj, ls, le);
-    let klen: Int = key ^^Length;
-    let rest: String = briev_str_substr(line, klen + 1, line ^^Length);
+    let klen: Int = key::Length;
+    let rest: String = briev_str_substr(line, klen + 1, line::Length);
     term has_token(rest, name);
 };
 
 // section_line(proj, key): the text of the `key` section line ("" if absent).
 defn section_line(proj: String, key: String) -> String {
-    term find_section(proj, 0, proj ^^Length, key);
+    term find_section(proj, 0, proj::Length, key);
 };
 defn find_section(proj: String, i: Int, n: Int, key: String) -> String {
     when i >= n { term ""; };
@@ -115,7 +115,7 @@ defn line_text(proj: String, ls: Int, n: Int) -> String {
 
 // ── token name after ':' ────────────────────────────────────────────────
 defn token_name(tok: String) -> String {
-    term tok_after_colon(tok, 0, tok ^^Length);
+    term tok_after_colon(tok, 0, tok::Length);
 };
 defn tok_after_colon(tok: String, i: Int, n: Int) -> String {
     when i >= n { term ""; };

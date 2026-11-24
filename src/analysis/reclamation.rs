@@ -1107,7 +1107,7 @@ mod tests {
             defn begin(t: T, req: String) -> Int {
                 t.key = "";
                 t.flag = 1;
-                term req^^Length;
+                term req::Length;
             };
             defn upgrade(t: T, port: Int) -> Int {
                 let key: String = enc(port);
@@ -1121,7 +1121,7 @@ mod tests {
             };
             defn poll(w: W, port: Int) -> Int {
                 start_upgrade(w, port);
-                term w.t.key^^Length;
+                term w.t.key::Length;
             };
         "#,
         );

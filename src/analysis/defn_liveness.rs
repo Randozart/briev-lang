@@ -774,13 +774,13 @@ impl<'a> Builder<'a> {
             Expr::Reflect(receiver, target, _)
                 if matches!(target.as_str(), "Length" | "Ptr" | "Ready") =>
             {
-                // Calls under `value^^Length` must be live before ownership
+                // Calls under `value::Length` must be live before ownership
                 // analysis, not discovered by the emitted-call fixpoint.
                 // Retire only with exhaustive shared dependency traversal.
                 self.walk_expr(receiver, queue);
             }
             Expr::Reflect(..) => {
-                // `^^` reflection can reach members by name — coarse keep-all
+                // `::` reflection can reach members by name — coarse keep-all
                 // (sound; refinement deferred).
                 self.keep_all = true;
             }

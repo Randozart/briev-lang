@@ -23,7 +23,7 @@ defn check_read(mode: Int) -> Bool {
     when mode == 3 { term is_err(result) && unwrap_err(result) == -21; };
     when mode == 4 { term is_err(result) && unwrap_err(result) == -20; };
     when is_err(result) { term false; };
-    let length: Int = unwrap(result) ^^Length;
+    let length: Int = unwrap(result)::Length;
     when mode == 1 { term length == 0; };
     when mode == 2 { term length == 20000; };
     term length > 0;
