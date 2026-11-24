@@ -2665,7 +2665,15 @@ impl LlvmBackend {
             indent, v, arg_reg).ok();
             true
         } else if triple.starts_with("aarch64") && triple.contains("linux") {
-            writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}},~{{memory}}\" (i64 12, i64 12, i64 {})",
+            // 2026-11-24 (cross-target sweep): the constraint list has TWO
+            // inputs ({x8} = syscall number, {x0} = the single brk argument),
+            // but this arm passed THREE operands — the old `(i64 12, i64 12,
+            // i64 {arg})` duplicate made every aarch64 arena-using program
+            // emit unverifiable IR ("number of input constraints does not
+            // match number of parameters"), so no arena/collection program
+            // could build for aarch64 at all. Mirrors the x86_64 arm above:
+            // number first (x8), then the one argument (x0).
+            writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}},~{{memory}}\" (i64 12, i64 {})",
             indent, v, arg_reg).ok();
             true
         } else {

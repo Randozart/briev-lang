@@ -153,7 +153,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        check: [effect-shape, targets, accel, determinism, parity]
+        check: [effect-shape, targets, cross-target, accel, determinism, parity]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/compiler-tools
