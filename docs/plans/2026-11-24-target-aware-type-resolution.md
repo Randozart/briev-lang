@@ -169,6 +169,31 @@ boundaries and make every producer emit it, then the box helper's choice
 becomes decidable instead of heuristic. The sweep is the oracle for every step:
 no program moved from fail to pass yet, so slice 1 is a mechanism, not a win.
 
+## Slice 2 — DONE and verified (2026-11-24)
+
+`d0d7acde4` — a print-family call must return its callee's declared width.
+
+| Measure | Before | After |
+|---|---|---|
+| wasm32 corpus (IR-invalid programs) | **50 / 99** | **25 / 99** |
+| aarch64 arm | 0 | **0** (PASS) |
+| native tier1 corpus gate (build+link+run+goldens) | ok | **ok** |
+| native IR, 11 fixtures byte-compared | — | **identical** |
+| subset of 18 fixtures | 4 passing | **10 passing** |
+
+The defect: the seven print arms emitted `call i64 @sym` while the callee is a
+Briev `defn` (`lib/std/cast_lanes.bv`, `-> Int`) emitted at the target word
+(`define i32 @print_str` on wasm32) — the call disagreed with its own callee and
+every consumer of the result emitted an invalid `sext i32 %v to i64`. The return
+type now derives from the callee's declared signature (`print_call_ret_ty`); on
+64-bit targets it equals the old literal, hence the byte-identical native IR.
+
+**Next (slice 3):** the remaining 25, whose dominant shape is
+`inttoptr i32 %x to ptr` where `%x` came from an **i64** box load — a
+dereference site taking its width from `int_bits` while the value is boxed. The
+codebase's dominant form is already `inttoptr i64` (13 sites), so these sites are
+the anomalies; make them use the loaded value's width, then re-measure.
+
 ## Fix strategy (general; no per-type special cases)
 
 1. **Make the legacy resolver target-aware.** Give the resolution chain the
