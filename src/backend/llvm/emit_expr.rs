@@ -1378,6 +1378,12 @@ impl LlvmBackend {
                 }
                 let loaded = self.fun.gen_reg();
                 writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
+                // 2026-11-24 (BUGS.md wasm32 width class): a column load's
+                // physical width is the column's element ABI (i64 for a boxed
+                // handle slot), NOT the target word. Record it so a consumer
+                // that converts this handle to a pointer (`inttoptr`) declares
+                // the width the value actually has.
+                self.fun.reg_value_ll.insert(loaded.clone(), load_ty.clone());
                 return TypedRegister {
                     name: loaded,
                     ty: row_ty,
@@ -2706,6 +2712,18 @@ impl LlvmBackend {
             Type::Vector(inner, _) => (**inner).clone(),
             _ => Type::int(),
         };
+        // 2026-11-24 (BUGS.md wasm32 width class): the clamp below is i64 (the
+        // gather contract), but a slice bound is an `Int` register — i32 on
+        // wasm32. Widen from the RECORDED width first; an already-i64 or
+        // unknown value is untouched, so 64-bit builds emit nothing new.
+        let lo = TypedRegister {
+            name: self.widen_value_to_i64(out, indent, &lo.name),
+            ty: lo.ty.clone(),
+        };
+        let hi = TypedRegister {
+            name: self.widen_value_to_i64(out, indent, &hi.name),
+            ty: hi.ty.clone(),
+        };
         // Clamp lo/hi into [0, n] and hi >= lo (mirrors the runtime gather's
         // coll_min/coll_hi_fix contract). min(x,n) = (x<n ? x : n);
         // max(a,b) = (a>b ? a : b) — icmp+select (valid LLVM IR).
@@ -2873,6 +2891,13 @@ impl LlvmBackend {
         writeln!(out, "{}store i64 {}, ptr {}", indent, len_p, d2).ok();
         let handle = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, block).ok();
+        // 2026-11-24 (BUGS.md wasm32 width class): this tier-list handle is
+        // PHYSICALLY i64 on every target (the [data,len,len] block header is
+        // word-sized by contract). Record it so a consumer that recovers the
+        // pointer (`inttoptr`) declares i64 instead of the target word.
+        self.fun.reg_value_ll.insert(handle.clone(), "i64".to_string());
+        if std::env::var_os("BRIEV_DBG_ITP").is_some() {
+        }
         TypedRegister {
             name: handle,
             ty: Type::Applied("List".into(), vec![elem_ty]),
@@ -3510,6 +3535,14 @@ impl LlvmBackend {
                     "@briev_slice_strided64"
                 };
                 let st = emit_view_expr(self, out, stride_expr, indent);
+                // 2026-11-24 (BUGS.md wasm32 width class): the gather helper's
+                // signature is i64 for every bound, but a slice bound is an
+                // `Int` register (i32 on wasm32) — widen from the recorded
+                // width, not from the declared type (which would re-widen an
+                // already-i64 value).
+                let lo64 = self.widen_value_to_i64(out, indent, &lo.name);
+                let hi64 = self.widen_value_to_i64(out, indent, &hi.name);
+                let st64 = self.widen_value_to_i64(out, indent, &st.name);
                 // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
                 let gp = if self.ctx.defn_takes_state(&helper[1..]) {
                     "ptr %state, "
@@ -3520,7 +3553,7 @@ impl LlvmBackend {
                 writeln!(
                     out,
                     "{}{} = call ptr {}({}ptr {}, i64 {}, i64 {}, i64 {}, i64 {})",
-                    indent, buf, helper, gp, data_ptr, n, lo.name, hi.name, st.name
+                    indent, buf, helper, gp, data_ptr, n, lo64, hi64, st64
                 )
                 .ok();
                 let elem_ty = match &vec_ty {
@@ -3844,12 +3877,12 @@ impl LlvmBackend {
                 // loads/stores at i64 (the boxed-handle ABI), so inttoptr
                 // at i64 when the receiver value is i64; a local Ptr handle
                 // is i{int_bits}. Match the receiver register's LLVM type.
-                let recv_llvm = self.llvm_type(&obj_reg.ty);
-                let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
-                    "i64".to_string()
-                } else {
-                    format!("i{}", self.ctx.int_bits)
-                };
+                // 2026-11-24 (BUGS.md wasm32 width class): the declared type
+                // is not enough — a `List` value produced by a tier-list
+                // builder is PHYSICALLY i64 while its type maps to the target
+                // word. The recorded width decides; the target word stays the
+                // fallback for an unknown register.
+                let hw = self.value_width_or_target_width(&obj_reg.name);
                 writeln!(
                     out,
                     "{}{} = inttoptr {} {} to ptr",
@@ -5092,6 +5125,10 @@ impl LlvmBackend {
         }
         let loaded = self.fun.gen_reg();
         writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
+        // 2026-11-24 (BUGS.md wasm32 width class): record the column load's
+        // physical width — a boxed handle slot loads as i64 on every target,
+        // so a pointer consumer must declare i64, not the target word.
+        self.fun.reg_value_ll.insert(loaded.clone(), load_ty.clone());
         Some(TypedRegister {
             name: loaded,
             ty: row_ty,
@@ -7240,7 +7277,6 @@ impl LlvmBackend {
         }
     }
 
-    /// 2026-07-31: Element count of a fixed-size vector type; 1 for scalars.
     /// Physical width of a handle register, falling back to the target word.
     ///
     /// 2026-11-24 (BUGS.md wasm32 width class): an `inttoptr` requires its
@@ -7248,12 +7284,35 @@ impl LlvmBackend {
     /// not implicitly narrower. Handle producers record their width
     /// (`reg_value_ll`); consult it, and keep the pre-existing target-word
     /// assumption when it is unknown, so this can only fix, never invent.
-    fn value_width_or_target_width(&self, reg: &str) -> String {
-        self.fun
-            .reg_value_ll
-            .get(reg)
-            .cloned()
-            .unwrap_or_else(|| format!("i{}", self.ctx.int_bits))
+    pub(super) fn value_width_or_target_width(&self, reg: &str) -> String {
+        match self.fun.reg_value_ll.get(reg) {
+            // Only a plain `iN` is a usable integer width here; a `ptr` stamp
+            // means the caller should pass the register through, not convert.
+            Some(w) if w.starts_with('i') => w.clone(),
+            _ => format!("i{}", self.ctx.int_bits),
+        }
+    }
+
+    /// Widen a register to an i64 slot/call boundary from its RECORDED width.
+    ///
+    /// 2026-11-24 (BUGS.md wasm32 width class): a C-ABI or boxed-slot boundary
+    /// declares i64 while the value's SSA width is the target word (i32 on
+    /// wasm32). `llvm_type` cannot answer this — it describes the declared
+    /// Briev type, not the register — so the recorded width decides, and an
+    /// unknown width keeps the target word (the documented SSA width of an
+    /// `Int`). A 64-bit target therefore emits nothing new.
+    pub(super) fn widen_value_to_i64(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &str,
+    ) -> String {
+        let have = self.value_width_or_target_width(reg);
+        if have == "i64" {
+            return reg.to_string();
+        }
+        self.convert_int_width(out, indent, reg, &have, "i64")
+            .unwrap_or_else(|| reg.to_string())
     }
 
     /// Narrow a handle register to its native width before an `inttoptr`.
@@ -7276,6 +7335,7 @@ impl LlvmBackend {
         }
     }
 
+    /// 2026-07-31: Element count of a fixed-size vector type; 1 for scalars.
     pub(super) fn vector_element_count(&self, ty: &Type) -> u64 {
         match ty {
             Type::Vector(_, dims) => dims
@@ -13959,7 +14019,6 @@ impl crate::backend::llvm::LlvmBackend {
         let slot = self.fun.gen_reg();
         writeln!(out, "{indent}{slot} = alloca i64, align 8").ok();
         if std::env::var("BRIEV_DBG_ALLOCA").is_ok() {
-            eprintln!("[dbg-alloca] site 416075 in src/backend/llvm/emit_expr.rs");
         }
         let r = self.fun.gen_reg();
         let slot_i = self.fun.gen_reg();

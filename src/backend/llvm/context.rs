@@ -1724,6 +1724,8 @@ impl FunctionContext {
 
     /// Clear all local variable bindings (used at function entry).
     pub fn clear_locals(&mut self) {
+        if std::env::var_os("BRIEV_DBG_ITP").is_some() {
+        }
         self.counted_txn_term_publication = false;
         self.clear_local_bindings();
         self.let_binding_types.clear();

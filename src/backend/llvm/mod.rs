@@ -2441,14 +2441,21 @@ impl LlvmBackend {
     /// Emit an inttoptr instruction with the correct pointer-width integer type.
     /// Uses int_bits (from data layout or CLI --int-bits) for the integer side.
     /// 2026-07-27: DataLayout-driven int_bits replaces pointer_llvm_type().
+    /// 2026-11-24 (BUGS.md wasm32 width class): the declaration must match the
+    /// VALUE, and a handle read from an i64 box is i64 even on a 32-bit target
+    /// — take the width from the register's recorded physical width, with the
+    /// target word as the fallback for an unknown register (so 64-bit builds
+    /// and untouched paths are byte-identical).
     pub(super) fn emit_inttoptr(
         &self,
         out: &mut String,
         indent: &str,
         dest: &dyn Display,
-        src: &dyn Display,
+        src: &str,
     ) {
-        let int_ty = format!("i{}", self.ctx.int_bits);
+        let int_ty = self.value_width_or_target_width(src);
+        if std::env::var_os("BRIEV_DBG_ITP").is_some() {
+        }
         writeln!(
             out,
             "{}{} = inttoptr {} {} to ptr",
@@ -2487,8 +2494,15 @@ impl LlvmBackend {
         if already_ptr {
             return int_reg.to_string();
         }
+        // 2026-11-24 (BUGS.md wasm32 width class): `inttoptr` declares its
+        // source width, and LLVM requires that declaration to MATCH the value.
+        // A handle read from an i64 state slot is physically i64 even when the
+        // target word is 32 bits, so take the width from the recorded value
+        // instead of the target word (`inttoptr i32 <i64>` was the dominant
+        // wasm32 failure). Unknown widths keep the previous target-word form.
+        let width = self.value_width_or_target_width(int_reg);
         let p = self.fun.gen_reg();
-        self.emit_inttoptr(out, indent, &p, &int_reg);
+        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, width, int_reg).ok();
         // Do NOT cache here: an arbitrary i64 value may be defined in a
         // conditional block, and a cached ptr would then be reused from a
         // non-dominating sibling block. Only values seeded at dominance points

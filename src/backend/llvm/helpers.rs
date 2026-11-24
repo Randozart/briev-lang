@@ -3606,8 +3606,12 @@ impl LlvmBackend {
         indent: &str,
         handle: &str,
     ) -> String {
+        // 2026-11-24 (BUGS.md wasm32 width class): the handle's PHYSICAL width
+        // decides the `inttoptr` operand type — a boxed i64 handle (state slot,
+        // tier-list block) is i64 even on a 32-bit target. `int_bits` stays the
+        // fallback for an unknown register, so 64-bit builds are unchanged.
+        let hw = self.value_width_or_target_width(handle);
         let ptr = self.fun.gen_reg();
-        let hw = format!("i{}", self.ctx.int_bits);
         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, handle).ok();
         ptr
     }

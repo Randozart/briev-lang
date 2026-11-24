@@ -295,21 +295,19 @@ impl LlvmBackend {
                 ArgsView::Ast(&[]),
                 indent,
             );
-            // 2026-08-12 (slice 4, wasm32 maze): the foreach's loop counter
-            // slot is i64; the Count result on wasm32 is i32 — widen it so the
-            // header `icmp slt i64` matches.
-            let count64 = if self.llvm_type(&count_reg.ty) != "i64" {
-                let w = self.fun.gen_reg();
-                writeln!(
-                    out,
-                    "{}{} = sext {} {} to i64",
-                    indent,
-                    w,
-                    self.llvm_type(&count_reg.ty),
-                    count_reg.name
-                )
-                .ok();
-                w
+            // 2026-08-12 (slice 4, wasm32 maze): the Count result and the
+            // foreach loop counter slot must agree. 2026-11-24 (BUGS.md
+            // wasm32 width class): this used to widen the count to a HARDCODED
+            // i64 while the counter slot is the compact target word
+            // (`slot_ty` = i{int_bits}, see `compact_counter`), so wasm32
+            // compared an i64 bound against an i32 counter (`icmp slt i32
+            // %cur, %bound` where %bound was i64). Adapt to the SLOT width,
+            // using the value's recorded physical width as the source.
+            let slot_w = self.ptr_int_ty();
+            let have = self.value_width_or_target_width(&count_reg.name);
+            let count64 = if have != slot_w {
+                self.convert_int_width(out, indent, &count_reg.name, &have, &slot_w)
+                    .unwrap_or_else(|| count_reg.name.clone())
             } else {
                 count_reg.name.clone()
             };

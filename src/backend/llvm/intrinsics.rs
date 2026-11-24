@@ -318,8 +318,16 @@ pub fn emit_intrinsic_call(
         "Environ#" => {
             let env = backend.fun.gen_reg();
             writeln!(out, "{}{} = load ptr, ptr @__briev_environ", indent, env).ok();
+            // 2026-11-24 (BUGS.md wasm32 width class): the declared result is
+            // the flexible `Int`, which is the TARGET word — so the address
+            // value must be emitted at that width too (i32 on wasm32). The old
+            // hardcoded i64 made every consumer in lib/std/env.bv treat an i64
+            // value as i32 (`%t7 defined with type 'i64' but expected 'i32'`).
+            // A pointer is addressable at the target word by definition, so on
+            // 32-bit targets the conversion is exact.
             let ptr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, env).ok();
+            let iw = backend.ptr_int_ty();
+            writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, ptr, env, iw).ok();
             return BTypedRegister {
                 name: ptr.to_string(),
                 ty: Type::int(),
@@ -334,8 +342,19 @@ pub fn emit_intrinsic_call(
         "Argc#" => {
             let n = backend.fun.gen_reg();
             writeln!(out, "{}{} = load i32, ptr @__briev_argc", indent, n).ok();
+            // 2026-11-24 (BUGS.md wasm32 width class): the declared result is
+            // `Int` = the target word; on a 32-bit target the loaded i32 IS
+            // that width (the zext would box a value the consumers then read
+            // as i32).
+            let iw = backend.ptr_int_ty();
+            if iw == "i32" {
+                return BTypedRegister {
+                    name: n.to_string(),
+                    ty: Type::int(),
+                };
+            }
             let z = backend.fun.gen_reg();
-            writeln!(out, "{}{} = zext i32 {} to i64", indent, z, n).ok();
+            writeln!(out, "{}{} = zext i32 {} to {}", indent, z, n, iw).ok();
             return BTypedRegister {
                 name: z.to_string(),
                 ty: Type::int(),
@@ -344,8 +363,11 @@ pub fn emit_intrinsic_call(
         "Args#" => {
             let argv = backend.fun.gen_reg();
             writeln!(out, "{}{} = load ptr, ptr @__briev_argv", indent, argv).ok();
+            // 2026-11-24 (BUGS.md wasm32 width class): same unit as Environ# —
+            // an address declared as `Int` must be emitted at the target word.
             let ptr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, argv).ok();
+            let iw = backend.ptr_int_ty();
+            writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, ptr, argv, iw).ok();
             return BTypedRegister {
                 name: ptr.to_string(),
                 ty: Type::int(),
