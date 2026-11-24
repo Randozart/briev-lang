@@ -103,6 +103,13 @@ Some operations cannot be expressed in Briev at all:
   intrinsics directly.
 - `Malloc#(size)` maps to `@malloc` — the ABI convention for heap allocation
   is platform-specific and baked into the compiler.
+  **`Malloc#` returns UNINITIALIZED storage** (that is `@malloc`'s meaning; the
+  compiler deliberately does not zero it). A program that reads an allocated
+  slot before writing it is undefined, and LLVM is entitled to fold that read
+  to `undef` and delete everything downstream — a real stdlib defect
+  (`HashMap.init`'s un-zeroed occupancy array) surfaced exactly that way at
+  -O2+ while `-O0` looked correct (BUGS.md 2026-11-24). Initialize before you
+  read; `Alloc#` has the same uninitialized contract.
 
 These must be intrinsics. Everything else is negotiable.
 

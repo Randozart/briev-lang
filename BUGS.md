@@ -1,3 +1,86 @@
+## 2026-11-24 — the silent-node loss is an uninitialized read of `Malloc#` storage, folded to `undef` (FIXED; root cause of the 2026-11-23 entry)
+
+**Reproduced on `main` `31456c1b5`** with the 2026-11-23 shape (a `HashMap`
+insert as the first statement of a guarded node block) and isolated:
+
+| Build profile | stdout |
+|---|---|
+| default (`clang -O3 -flto -march=x86-64-v3 -ffast-math`) | **empty**, exit 0 |
+| `--safe` (`-O0`, no LTO, no fast-math) | `7\n0\n` — correct |
+
+So the emitted IR is *semantically* right and the *optimizer* deletes the
+observable behavior. Same source, same input, different output by profile —
+the signature of UB in emitted code.
+
+**Mechanism (pinned).** `clang -flto -Wl,-plugin-opt=save-temps` stages:
+
+- `preopt`/`internalize` = 21,716 bytes; `opt` = 2,372 bytes.
+- `opt -O1` keeps 1,749 lines and every `print_int`; `opt -O2` collapses the
+  module to 32 lines.
+- Unfiltered `-print-after-all` shows the single decisive step:
+  `SCCPPass on main` → **12 lines**. Immediately before it, `main`'s own
+  conditions are already `br i1 undef, ...` (offsets 8/16/24/… of three
+  256-byte allocations = a 32-entry `HashMap` key/value/index table).
+- `__briev_region_malloc` (`silent.ll`) is `malloc` + `__briev_region_adopt`
+  with **no zeroing**, so a scan of a never-written entry slot loads
+  uninitialized storage. LLVM folds that load to `undef`; `br i1 undef` is UB;
+  SCCP marks the continuation unreachable and deletes it — including every
+  `print_int`/`put_char`/`stdout_flush`. The linked `main` becomes 8
+  instructions (`nm` has no `print_int`; `strace` shows zero `write` calls).
+- The emitted `.ll` itself contains no `undef` constant (3 hits are the
+  `noundef` parameter attribute), so the poison is born in optimization from
+  an emitted read of uninitialized region memory.
+
+**Why statement order matters.** A leading stdout-consuming statement makes the
+identical insert/get sequence correct, so the emission of the inlined member
+path — not the program's meaning — decides whether the uninitialized read
+exists on the executed path.
+
+**Fix direction (not applied here).** The compiler must not emit reads of
+region storage the program has not written on that path: bound the entry probe
+by the initialized length/occupancy, or seed the slot before the probe. If a
+zero-filled region is the intended semantics, emit the initialization
+explicitly so it cannot fold to `undef`. A `-O0` vs `-O3` stdout differential
+on the same source is the cheapest regression gate; the 2026-11-23 fixture
+(`7\n0\n`) is the behavioral test.
+
+**FIXED 2026-11-24 — in `lib/std/collections.bv`, not in codegen.** The
+emitted IR was *faithful*: `Malloc#` is pinned to `@malloc`
+(`docs/architecture/intrinsics-vs-stdlib.md`), i.e. uninitialized storage, and
+it is an intrinsic whose behavior IS its contract. The defect was the
+**program**: `HashMap.init` allocated `occupied` with `Malloc#` and never
+cleared it, while its own rehash path has always cleared the replacement array
+(`new_occ[j] = 0`). Every probe (`insert`/`get`/`contains`/`remove`/scans'
+`occupied[p] == …`) therefore read never-written storage on a fresh map.
+
+Zeroing in the allocator was rejected: it would silently strengthen
+`Malloc#`'s declared semantics (Rule 1/Rule 3 — disclose, never quietly change
+an intrinsic) and add a memset to every allocation (Rule 2 — the default is
+already the efficient one for the declared contract). Instead:
+
+1. A free `defn new_occupancy(n) -> Ptr<Int>` (same file) allocates *and*
+   clears the table — the single owner of that step (rule 17). `init` uses it,
+   and the rehash path now uses it too, replacing its hand-rolled clear loop.
+2. `tests/tier1/hashmap_insert_is_first_statement.bv` + `.golden` (`7\n0\n`)
+   pins the observable behavior of the exact 2026-11-23 shape.
+3. `tests/opt_level_parity.rs` `QUICK_SET` gains that fixture, so the existing
+   PR-time `-O0/-O2/-O3` differential covers this class instead of leaving it to
+   the nightly full matrix. The nightly `full-opt-matrix` job covers it as well.
+
+Verified: the 2026-11-23 shape prints `7\n0\n` at the default
+`-O3 -flto` profile (it printed nothing before), `--safe` (`-O0`) agrees, and
+the `-O0/-O2/-O3` differential passes for the new fixture.
+
+**Residual, recorded not deferred:** the reference interpreter's virtual heap
+zero-fills (`VirtualHeap`), so the same UB program *appears* correct under
+`brievc test` — which is exactly why this class hid. Two follow-ups belong to
+other owners: (a) whether the interpreter heap should expose uninitialized
+memory to match `Malloc#`'s contract (an interpreter-semantics decision), and
+(b) whether any *other* stdlib site allocates a table it later probes without
+clearing it — the corpus-wide `OPT_MATRIX_FULL=1` differential is the search.
+
+Evidence: `/tmp/opencode/codegen-bughunt/c4/` (`silent.bv`, `control.bv`,
+`safe/`, `lto/dumps_full.txt`, `lto/opt{1,2}.ll`).
 ## 2026-11-24 — aarch64: the arena `brk` syscall asm passed 3 operands for 2 input constraints, so no arena/collection program could build (FIXED)
 
 **Found by** the new cross-target IR-validity sweep (`scripts/cross_target_ir.sh`):
@@ -108,7 +191,13 @@ Pinned by `tests/tier1/struct_reassign_return.bv` (`2/5`) and
 `test { }` block; the tier1 corpus covers the tail-loop and collection paths
 across stdlib. Pre-fix A/B recorded in the stage-A commit message.
 
-## 2026-11-23 — a collection txn/member inlined in a node body can swallow the node's output (OPEN, pre-existing)
+## 2026-11-23 — a collection txn/member inlined in a node body can swallow the node's output (FIXED 2026-11-24)
+
+> Root-caused and fixed by the 2026-11-24 entry above: the loss was an
+> uninitialized read of `Malloc#` storage (`HashMap.init` never cleared
+> `occupied`), folded to `undef`, after which SCCP deleted the node's observable
+> continuation. The reproduction below is kept as the shape that found it; it is
+> no longer a separate defect.
 
 Found while shaping the #152 regression fixture. Independent of #152: it
 reproduces on the 2026-11-21 binary, before any of this batch's changes.
