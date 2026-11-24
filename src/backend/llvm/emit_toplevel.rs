@@ -4595,10 +4595,14 @@ impl LlvmBackend {
                 } else {
                     reg
                 };
+                // 2026-11-24 (BUGS.md wasm32 width class): box a handle at this
+                // publish boundary rather than storing the SSA width verbatim.
+                let published =
+                    self.box_plain_global_value(out, indent, name, &reg.name, &llvm_ty);
                 writeln!(
                     out,
                     "{}store {} {}, ptr @{}, align 8",
-                    indent, llvm_ty, reg.name, name
+                    indent, llvm_ty, published, name
                 )
                 .ok();
             } else {
@@ -4657,10 +4661,13 @@ impl LlvmBackend {
                 }
                 let reg = self.emit_expr(out, value, indent);
                 let llvm_ty = self.plain_global_llvm_type(&ty);
+                // 2026-11-24 (BUGS.md wasm32 width class): a handle initializer
+                // is target-width in SSA — box it for the i64 slot.
+                let stored = self.box_plain_global_value(out, indent, name, &reg.name, &llvm_ty);
                 writeln!(
                     out,
                     "{}store {} {}, ptr @{}, align 8",
-                    indent, llvm_ty, reg.name, name
+                    indent, llvm_ty, stored, name
                 )
                 .ok();
             }
@@ -4807,10 +4814,13 @@ impl LlvmBackend {
             }
         }
         if !last.is_empty() {
+            // 2026-11-24 (BUGS.md wasm32 width class): the body's result may be
+            // a target-width handle; box it for the i64 slot.
+            let published = self.box_plain_global_value(out, indent, name, &last, &llvm_ty);
             writeln!(
                 out,
                 "{}store {} {}, ptr @{}, align 8",
-                indent, llvm_ty, last, name
+                indent, llvm_ty, published, name
             )
             .ok();
         }

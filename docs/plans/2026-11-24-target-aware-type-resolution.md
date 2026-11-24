@@ -104,6 +104,36 @@ side and the produced side agree — which is the plan's step 1 in miniature.
 Failing programs, per-program diagnostics: `/tmp/opencode/codegen-bughunt/wasm32-baseline/`
 (the same list is in the sweep output).
 
+## Slice 1 (in progress, 2026-11-24)
+
+Measured, in this order (Rule 20 — the baseline above came first):
+
+1. **First mismatch class is gone.** The raw `store i64 <i32 handle>` in the
+   plain-global publish path is fixed: `emit_state_store_i64`'s plain branch,
+   the plain-init publish, and the body-result publish now box a handle at the
+   boundary through one helper (`box_handle_for_slot`, plus
+   `convert_int_width`), using the documented rule "a handle is target-width in
+   SSA, boxed at the slot". On a 64-bit target the widths already agree, so
+   nothing new is emitted there.
+2. **The error moved to the next class**: `%t0 = inttoptr i32 %t1 to ptr`
+   stored into an i64 slot (a genuine `ptr` value where the box wants an
+   integer). So the mismatch has (at least) two faces: a target-width *integer*
+   handle (fixed: `zext`) and a genuine `ptr` (needs `ptrtoint`).
+3. **Why the helper cannot yet decide.** `reg_value_ll` records widths for only
+   ~6 registers, so the box helper must fall back to the target word width —
+   and that is wrong for a value that is a genuine `ptr`. The blame is upstream
+   of the box: `Malloc#(8) as Ptr<Int>` and `0 as Ptr<Int>` reach the store as
+   **i32** in one place and **ptr** in another, i.e. the handle *producers* are
+   not normalized. This is the same unit the 2026-11-17 entry describes ("the
+   handle's width, `reg_llvm_ty`/`reg_value_ll`, and BOTH consumers must
+   agree").
+
+**Next slice:** normalize the handle producers — pick ONE SSA form for a handle
+(either `ptr`, or its target-width integer) at the cast/`Malloc#`/call
+boundaries and make every producer emit it, then the box helper's choice
+becomes decidable instead of heuristic. The sweep is the oracle for every step:
+no program moved from fail to pass yet, so slice 1 is a mechanism, not a win.
+
 ## Fix strategy (general; no per-type special cases)
 
 1. **Make the legacy resolver target-aware.** Give the resolution chain the
