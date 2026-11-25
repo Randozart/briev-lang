@@ -97,3 +97,51 @@ internals; integration tests do not).
 | after A | | | inert, must be identical |
 | after B | | | |
 | after C | | | |
+
+## 7. Outcome (measured 2026-11-25)
+
+| point | wasm32 invalid | native IR | note |
+|---|---|---|---|
+| baseline `451e0f7a3` | 26 | — | before this plan |
+| **W** `c7495fd52` | **23** | identical | Environ#/Argc#/Args# emit Int at Int's width |
+| **A** `e089c3d87` | 23 | identical | `WidthChannel` + epoch — inert, as required |
+| **B** (this commit) | **22** | identical | `inttoptr_word` ptr-identity + `ClockMonotonicNs#` narrowing |
+
+So 26 → 22, with the epoch infrastructure in place and no regression at any step.
+
+### What stage B learned, and why C is NOT done
+
+Stage B's premise was "make producers record, then switch readers". The first pass
+found the class is bigger than the plan assumed, in a specific way worth writing
+down: **the backend emits `inttoptr … to ptr` at 71 sites**, and only the two helpers
+(`inttoptr_word`, `pointer_from_handle`) record the result. Any other site produces a
+pointer the channel does not know about, so the next `inttoptr_word` over it falls
+back to `i64` and emits `inttoptr i64 %t0` where `%t0` is a ptr — the
+arena_smoke / plain_ptr_smoke / spsc_smoke class.
+
+Two ways to close it, in order of preference:
+
+1. **Harvest the facts from the emission** (recommended). `src/ir_verify.rs` already
+   answers "what type is `%x` defined as" (`defined_register`) — the same parser that
+   verifies the module can populate the channel. The IR is the single source of truth
+   about what was emitted, so the recorder should not be 71 hand-written calls at all;
+   it should be one pass over the body that cannot forget. Needs a body-boundary hook
+   that has the emitted text (the current `begin_function` does not receive `out`).
+2. Route all 71 sites through one `emit_inttoptr(...)` helper. Mechanical, but it is
+   the same discipline this plan exists to replace.
+
+**C stays unlanded on purpose.** Switching readers to `value_width_in_current_epoch`
+before every producer records turns today's wrong-but-plausible answers into missing
+answers, and the earlier measurement (`unicode_search_smoke`) shows that is worse.
+The invariant is already pinned by
+`a_previous_epoch_record_is_invisible_to_a_current_epoch_read`, which asserts the
+migration reader still sees the stale fact — that test is the switch's precondition.
+
+### Files that still need the treatment
+
+`arena_smoke`, `plain_ptr_smoke`, `spsc_smoke`, `arena_scope_reset`,
+`arena_scope_reset_rejected` (all one class: unrecorded `inttoptr` results), plus the
+`load`/`cast` width programs (`hashmap_*`, `literal_float_coercion`, `float64_precision`,
+`test_piggybank`, `arena_folded_loop`, `arena_free_cast`, `state_column_slice`,
+`str_open_end_slice`, `slice_basics`, `float16_roundtrip`, `nested_local_dominance`,
+`test_pooled_member_foreach`, `ptr_crossdefn_probe`, `spawn_await_segments*`).

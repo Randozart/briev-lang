@@ -3652,12 +3652,24 @@ impl LlvmBackend {
         operand: &str,
     ) {
         let width = match self.fun.value_width(operand) {
-            // A `ptr` record cannot be an `inttoptr` source; fall back rather than
-            // emit `inttoptr ptr`, which is the wave-11-S2 / #164 trap.
+            // A `ptr` record means the operand is ALREADY a pointer, so there is
+            // nothing to convert: `inttoptr i64 %t0` over `%t0 = inttoptr ... to ptr`
+            // was the arena_smoke/spsc_smoke invalid IR. The identity has to be
+            // emitted rather than skipped because the caller consumes `dst`.
+            Some(w) if w == "ptr" => {
+                writeln!(out, "{indent}{dst} = bitcast ptr {operand} to ptr").ok();
+                self.fun.record_value_width(dst.to_string(), "ptr");
+                return;
+            }
+            // A non-integer, non-pointer record (a float image) cannot be an
+            // `inttoptr` source; fall back rather than emit malformed IR.
             Some(w) if w.starts_with('i') => w.to_string(),
             _ => FunctionContext::handle_int_ty().to_string(),
         };
         writeln!(out, "{indent}{dst} = inttoptr {width} {operand} to ptr").ok();
+        // The result is a pointer by construction; saying so is what stops the next
+        // consumer from re-boxing it (stage B: a producer records what it emitted).
+        self.fun.record_value_width(dst.to_string(), "ptr");
     }
 
     pub(crate) fn pointer_from_handle(

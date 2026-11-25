@@ -157,14 +157,21 @@ pub fn emit_intrinsic_call(
             // time source; the syscall-table route stays in the stdlib's
             // os/time lane. Declare-guarded in emit_toplevel (a pure-Briev
             // defn taking the hidden %state pre-empts the C helper).
+            //
+            // 2026-11-25 (stage B): the C helper returns i64 — a FIXED ABI, so the
+            // call keeps saying i64 — but the result is declared `Int`, and on a
+            // 32-bit target that is i32. Without the narrowing, the value reached
+            // `icmp slt i32 %t21, %t20` as an i64 register (clock_monotonic_smoke).
+            let raw = backend.fun.gen_reg();
             writeln!(
                 out,
                 "{}{} = call i64 @briev_clock_monotonic_ns()",
-                indent, v
+                indent, raw
             )
             .ok();
+            let narrowed = narrow_int_result(backend, out, &raw, indent);
             return BTypedRegister {
-                name: v.to_string(),
+                name: narrowed,
                 ty: Type::int(),
             };
         }
