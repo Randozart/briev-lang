@@ -33,6 +33,7 @@
 #     well inside the gate budget.
 #
 # Usage: bash scripts/cross_target_ir.sh [triple...]
+#        bash scripts/cross_target_ir.sh --classify <logfile>
 #   default: aarch64-unknown-linux-gnu — the same Linux/ABI class as the native
 #   triple. Pass wasm32-unknown-wasi explicitly to check the web target.
 #   JOBS=<n> overrides the parallelism (default: nproc).
@@ -92,6 +93,17 @@ fi
 # share a basename cannot overwrite each other's logs.
 slug() { printf '%s' "$1" | sed 's|/|_|g; s|\.|_|g'; }
 
+classify_failure() {
+    local log="$1"
+    if grep -qE 'rejected the module|LLVM rejected' "$log" 2>/dev/null; then
+        printf 'FAIL\n'
+    elif grep -qE 'walked the live program|try-mode miss|no endprogram' "$log" 2>/dev/null; then
+        printf 'REFUSED\n'
+    else
+        printf 'FAIL\n'
+    fi
+}
+
 # One program: native acceptance decides membership, then the sibling triple must
 # produce verifiable IR. Writes PASS / SKIP / FAIL to a per-program result file so
 # the parallel fan-out needs no shared counter.
@@ -110,14 +122,19 @@ run_one() {
         printf 'PASS\n' >"$OUT/$name.result"
         return 0
     fi
-    # 2026-11-25: a REFUSAL is not the same failure as invalid IR, and conflating
-    # them overstated the wasm32 debt by more than half (27 claimed, 12 real). The
-    # compiler refuses a program when it cannot prove termination for that target
-    # ("walked the live program ... no endprogram, halt, or trap is reachable") or
-    # when a device-strategy probe misses. That is a policy decision carrying its
-    # own diagnostic, not an emission defect: the module is not written at all, so
-    # it is never claimed to be valid. Invalid IR is what this gate exists to find.
-    if grep -qE 'walked the live program|try-mode miss|no endprogram' "$log"; then
+    # 2026-11-25 (S1): DEBT FIRST. A refusal and invalid IR are different failures,
+    # but the order of these two tests is what decides whether the number is true.
+    # The previous version tested the refusal markers FIRST, and
+    # "walked the live program ... no endprogram, halt, or trap is reachable" is a
+    # WARNING the compiler prints before it goes on to emit: 15 programs were
+    # therefore reported as "refused (not IR debt)" while every one of their logs
+    # contained `rejected the module`. That halved the debt on paper (27 -> 12).
+    #
+    # So: a module the compiler declared invalid is debt, full stop. A refusal is
+    # only a refusal when there is no invalid module to speak of. And anything not
+    # recognised is DEBT — a gate may under-count by being strict, never by being
+    # charitable with an unexplained failure.
+    if [ "$(classify_failure "$log")" = "REFUSED" ]; then
         printf 'REFUSED\n' >"$OUT/$name.result"
     else
         printf 'FAIL\n' >"$OUT/$name.result"
@@ -127,7 +144,20 @@ run_one() {
 }
 export -f run_one
 export -f slug
+export -f classify_failure
 export BRIEVC OUT
+
+# `--classify <log>`: apply the failure rule to ONE log and print FAIL / REFUSED.
+# Exists so the rule can be tested without a four-minute sweep — the ordering bug
+# this mode was added for was invisible until every log was inspected by hand.
+if [ "${1:-}" = "--classify" ]; then
+    if [ -z "${2:-}" ]; then
+        echo "usage: $0 --classify <logfile>" >&2
+        exit 2
+    fi
+    classify_failure "$2"
+    exit 0
+fi
 
 # Declared baseline for one triple (0 when the file does not mention it).
 # Takes the value AFTER `=` only: stripping non-digits from the whole line would

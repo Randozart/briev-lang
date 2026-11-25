@@ -128,6 +128,68 @@ fn measured_failures(triple: &str) -> u64 {
     failed
 }
 
+/// Classify one synthetic compiler log through the sweep's own rule.
+fn classify(log_body: &str) -> String {
+    let path = std::env::temp_dir().join(format!(
+        "briev-classify-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&path, log_body).expect("write synthetic log");
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/cross_target_ir.sh"))
+        .arg("--classify")
+        .arg(&path)
+        .output()
+        .expect("run the classifier");
+    std::fs::remove_file(&path).ok();
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// A log carrying BOTH a liveness warning and an invalid-module error is DEBT.
+///
+/// This is the bug that put 12 in the baseline when the truth was 27. The compiler
+/// prints `walked the live program ... no endprogram, halt, or trap is reachable` as
+/// a WARNING and then emits anyway; a classifier that tests the refusal markers
+/// first reads that warning as a refusal and stops counting a failure that is real.
+#[test]
+fn a_failure_with_both_markers_is_debt_not_refusal() {
+    let log = concat!(
+        "warning: no path ends this program\n",
+        "  why:  walked the live program (reactive txns, entry nodes); no endprogram\n",
+        "error: the compiler produced invalid IR for '/tmp/x.ll'\n",
+        "  why:  Briev's emitted-module check rejected the module: line 4504\n",
+    );
+    assert_eq!(
+        classify(log),
+        "FAIL",
+        "an invalid module is debt even when the log also carries the liveness warning"
+    );
+}
+
+/// A log with only a refusal marker is a refusal — the program was not emitted, so
+/// no invalid module is claimed.
+#[test]
+fn a_pure_refusal_is_not_counted_as_debt() {
+    let log = "  why:  walked the live program (reactive txns); no endprogram, halt, or trap\n";
+    assert_eq!(classify(log), "REFUSED");
+}
+
+/// An unrecognised failure is counted, never excused: a gate may under-count by
+/// being strict, never by being charitable with something it cannot explain.
+#[test]
+fn the_classifier_never_excuses_an_unrecognised_failure() {
+    let log = "something the classifier has never seen\n";
+    assert_eq!(
+        classify(log),
+        "FAIL",
+        "an unexplained failure must be counted, or an unexpected crash becomes free"
+    );
+}
+
 /// Every shipped triple has a declared entry, and each is a plain count.
 ///
 /// An absent triple means an implicit baseline of 0 in the script — fine for

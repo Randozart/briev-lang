@@ -16,22 +16,34 @@
 #     * `.bv`  (compiler feature corpus), 100 programs: the debt below.
 #
 #   The count is INVALID IR only. A program the compiler REFUSES for the target
-#   (it cannot prove the program terminates there — "walked the live program ... no
-#   endprogram, halt, or trap is reachable" — or a device-strategy probe misses)
-#   is reported separately and is NOT counted here: nothing is emitted, so no
-#   invalid module is claimed. On 2026-11-25 that distinction was worth more than
-#   half the number: 27 was reported before it, and 15 of those were refusals.
+#   (it cannot prove the program terminates there and emits nothing) is reported
+#   separately and is not counted here.
 #
-#   Cause of the 12, measured: 103 hardcoded `inttoptr i64` sites in
-#   src/backend/llvm/ against 65 places that already ask `ctx.int_bits`; a
-#   representation channel keyed by register name that outlives the namespace
-#   keying it (14 counter restarts, 1 clear); and recorders that stamp a value's
-#   CANONICAL width instead of the width it was emitted at. Plan P2 drives this to
-#   0 by making the value answer for its own representation.
+#   2026-11-25 (S1) — CORRECTION: this file briefly said 12, with 15 "refused".
+#   That was wrong, and wrong in the optimistic direction. The sweep tested the
+#   refusal markers FIRST, and "walked the live program ... no endprogram, halt, or
+#   trap is reachable" is a WARNING printed before the compiler emits anyway. All 15
+#   of those logs contained `rejected the module`: they are debt, not refusals. The
+#   rule is now debt-first and anything unrecognised counts as debt, so a gate can
+#   under-count only by being strict, never by being charitable with a failure it
+#   does not recognise.
+#
+#   27 = four emitter families, measured by the offending instruction in the emitted
+#   module (each cross-checked against `llc`):
+#     A. inttoptr source width                       9 programs
+#     B. call-argument width                        10 programs
+#     C. arithmetic / comparison width               6 programs
+#     D. store width                                  2 programs
+#   Plan: docs/plans/2026-11-25-wasm32-debt-27-to-zero.md
+#
+#   Background: 103 hardcoded `inttoptr i64` sites in src/backend/llvm/ against 65
+#   places that already ask `ctx.int_bits`; a representation channel keyed by
+#   register name; and recorders that stamp a value's CANONICAL width instead of the
+#   width it was emitted at.
 #
 # Do NOT raise a number to make CI green. A regression is a regression: fix the
 # emission, or record the bug in BUGS.md and say why the baseline must move.
 
 [baseline]
 "aarch64-unknown-linux-gnu" = 0
-"wasm32-unknown-wasi" = 12
+"wasm32-unknown-wasi" = 27
