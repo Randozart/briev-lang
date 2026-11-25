@@ -305,3 +305,31 @@ fn walk(root: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+/// I-9: the sweep must refuse to report success for a corpus it cannot see.
+///
+/// A gate that inspects nothing used to read as green: `0 checked, 0 failed,
+/// matches baseline 0`. That is how fifteen invalid modules were recorded as
+/// "refused" for a whole wave. The guard is a shell-side floor
+/// (`CROSS_TARGET_MIN_PROGRAMS`, verified by hand: 129 checked against a floor of
+/// 200 exits 1), and this test pins that the guard exists and is not skipped,
+/// because invoking the real sweep costs minutes and does not belong in a fast gate.
+#[test]
+fn the_sweep_refuses_a_corpus_it_cannot_see() {
+    let script = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/cross_target_ir.sh"),
+    )
+    .expect("the cross-target sweep must be in the tree");
+    assert!(
+        script.contains("CROSS_TARGET_MIN_PROGRAMS"),
+        "the sweep lost its positive floor; a sweep that examines nothing would pass again"
+    );
+    assert!(
+        script.contains("GATE FLOOR BREACHED"),
+        "the floor must be reported as a failure, not a quiet note"
+    );
+    assert!(
+        script.contains("no corpus programs found"),
+        "an empty corpus must exit non-zero before any baseline comparison"
+    );
+}

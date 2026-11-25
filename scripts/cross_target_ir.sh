@@ -193,6 +193,18 @@ for triple in "${TRIPLES[@]}"; do
     fi
 
     declared="$(baseline_for "$triple")"
+    # 2026-11-25 (Golden Rule 26's working-rules bullet): a gate that inspects nothing
+    # must FAIL. Without this, a broken glob, a moved corpus, or a toolchain that
+    # silently stops emitting `.ll` reads as "0 checked, 0 failed — green", which is
+    # exactly how the 15-invalid-modules-as-"refused" reading survived a whole wave.
+    # The floor is the smallest corpus this run is allowed to consider meaningful.
+    if [ "$checked" -lt "${CROSS_TARGET_MIN_PROGRAMS:-100}" ]; then
+        echo "cross-target-ir: $triple — GATE FLOOR BREACHED: only $checked programs inspected" >&2
+        echo "  A sweep that examines nothing is not a pass. Expected at least" >&2
+        echo "  ${CROSS_TARGET_MIN_PROGRAMS:-100}; check the corpus glob, the artifact dir, and BRIEVC." >&2
+        fail_total=$((fail_total + 1))
+        continue
+    fi
     if [ "$failed" -gt "$declared" ]; then
         echo "cross-target-ir: $triple — $checked programs checked, $failed failed$refused_note (declared baseline $declared)" >&2
         echo "  NEW OR REGRESSED failures:" >&2
