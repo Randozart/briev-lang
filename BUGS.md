@@ -1,3 +1,37 @@
+## 2026-11-25 — wasm32 cross-target: 27 IR-invalid programs, and the instrument that finds them (OPEN; work list)
+
+State after wave-11 S0-S2 (`main` before this wave: 52):
+
+```bash
+bash scripts/cross_target_ir.sh wasm32-unknown-linux-gnu   # n/a; use wasm32-unknown-wasi
+bash scripts/cross_target_ir.sh wasm32-unknown-wasi    # 100 checked, 27 failed
+bash scripts/cross_target_ir.sh aarch64-unknown-linux-gnu  # 100 checked,  0 failed
+```
+
+Remaining classes, measured: 7 from hardcoded `inttoptr i64` emission sites, 6
+call-argument width mismatches (`call i32 @briev_getenv_int_impl(i32 …)` against a
+`ptr` parameter), and a tail of arithmetic widths (`mul i32`, `icmp slt i32`,
+`call ptr @int_to_str(i32 …)`).
+
+There are **103 hardcoded `inttoptr i64` sites** and **320 hardcoded `i64`
+emissions** in the backend. Patching only the ones the corpus reaches is the shape
+of fix that produced three instances of this bug, so the tail belongs to wave-11
+S3 — give `TypedRegister` its LLVM type and derive the literal.
+
+**The instrument that now finds them.** `src/ir_verify.rs` gained
+`mistyped_operands`: any `store`/`load`/`getelementptr`/`inttoptr` whose declared
+operand type contradicts the register's own definition is rejected at compile
+time, with the offending line and both definitions named. It reports **zero** on
+the whole tier1 corpus and 74 tier2/example programs, and it caught a regression
+introduced inside this very wave on the first program it saw
+(`store ptr %t11` where `%t11 = trunc i64 %t10 to i32` — the PR #164 shape,
+reintroduced by selecting `inttoptr`'s width from a name-keyed record).
+
+That is the standing lesson: a record keyed by register NAME cannot say which form
+a register holds, because names are reused across bodies and across `--split`
+modules. Issue #119 and PR #164 are the same bug twice; this check is the first
+mechanical defence against a third.
+
 ## 2026-11-24 — wasm32 cross-target state after the #161–#164 stack: 15 IR-invalid programs (OPEN; work list)
 
 Measured on the integrated tree with the gate the stack itself adds:
