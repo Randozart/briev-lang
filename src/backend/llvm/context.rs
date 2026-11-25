@@ -1610,6 +1610,18 @@ impl FunctionContext {
         self.drop_counter_scoped_records();
     }
 
+    /// Declare that `name` came from the counter, for a site that mints with
+    /// `format!` plus a manual increment instead of `next_reg`.
+    ///
+    /// 2026-11-25 (S6): a handful of loop-engine sites build `%t{n}` and label names by
+    /// hand. They do not reset anything, so they never orphaned the channel — but they
+    /// were invisible to the provenance set, so a record they produced would outlive a
+    /// counter restart. Naming the fact here keeps one rule ("the counter's names are
+    /// dropped with it") true everywhere, without renumbering the IR those sites emit.
+    pub fn note_counter_scoped(&mut self, name: impl Into<String>) {
+        self.counter_scoped_regs.insert(name.into());
+    }
+
     /// Drop the representation of every name the counter minted, and only those.
     ///
     /// 2026-11-25 (S2/S5): a counter restart means those names now denote DIFFERENT

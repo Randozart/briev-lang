@@ -2680,6 +2680,23 @@ impl LlvmBackend {
         let param_ll = self.llvm_type(param_ty);
         let param_is_float = param_ll == "float" || param_ll == "double";
         if !param_is_float {
+            // 2026-11-25 (S3) — ATTEMPTED, MEASURED, REVERTED. Integer parameters ask
+            // the same question this float arm answers, and ten of the wasm32 debt
+            // programs are exactly that (`call i32 @briev_getenv_int_impl(i32 %t5)`
+            // where `%t5` is i64). Two variants were tried and neither is shippable:
+            //
+            //  * converting every integer argument (zext and trunc) broke four more
+            //    programs: the extra register changed which defns the liveness pass
+            //    emits (`@put_bytes` / `@put_u8` lost their definition);
+            //  * narrowing only, by the argument's DECLARED width, left
+            //    `net_stack_helpers` red — `%ac3` is declared `Int` but emitted i64
+            //    and reaches a call site that does not pass through here at all.
+            //
+            // So the missing piece is not this arm: it is a call-argument path that
+            // every call site shares, and records that describe the emitted width.
+            // Until then, converting here is a guess, and a guess at an ABI boundary
+            // is worse than the known defect. Tracked in
+            // docs/plans/2026-11-25-wasm32-debt-27-to-zero.md.
             return None;
         }
         let src_ll = self.llvm_type(&reg.ty);
