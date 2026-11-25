@@ -1,3 +1,46 @@
+## 2026-11-25 — Verification nightly is RED on the AST path, and has been since 2026-11-23 (OPEN; pre-existing, not from this wave)
+
+`Verification nightly` → job `AST opt-out suite (BRIEV_HIR_EMIT=0)` fails on:
+
+    tests/saltpetre_gemm_baseline.rs:111
+      salt_gemm_cpu_baseline_is_plausible ... FAILED
+      salt_gemm_cpu_runs_and_checks ... FAILED
+
+**Provenance, checked rather than assumed:**
+
+| commit | date | nightly |
+|---|---|---|
+| `037a54f21` | 2026-11-22 | success (last green) |
+| `96f940883` | 2026-11-23 | failure |
+| `31456c1b5` | 2026-11-24 | failure — **same two tests, same line** |
+| `b0a2c53ab` | 2026-11-25 | failure — same two tests, same line |
+
+So this predates the wasm32 supported-target wave (`1cd202299`…`b0a2c53ab`) by two
+nightlies, and PR CI stays green because the AST path is nightly-only.
+
+**Not reproduced locally** at `b0a2c53ab`:
+
+    BRIEV_HIR_EMIT=0 brievc run tests/saltpetre/gemm_baseline.bv \
+        --stdlib-path lib --config-dir config --out /tmp/gemm_ast
+    # wrote /tmp/gemm_ast/gemm_baseline
+    # SALT_GEMM_BAD=0
+    # SALT_GEMM_SUM=131033.188
+    # SALT_GEMM_CPU_US=268193
+
+Exit 0, `BAD=0`. That leaves two candidates and they need the CI log's captured
+stdout to separate: the fixture exits non-zero in the CI environment (line 111 is
+`assert!(out.status.success(), "fixture failed:\n{text}")`, so the panic text *is*
+the fixture output), or the plausibility bound in the first test trips on a slower
+runner. The failure message in the run log was not captured in full — the next
+person should read `gh run view <id> --log-failed` for the fixture text rather than
+guess.
+
+**Why it is recorded and not fixed here:** this wave touched the LLVM backend, the
+IR verifier and the cross-target gate. The AST opt-out path (`BRIEV_HIR_EMIT=0`) is
+a one-release escape hatch scheduled for removal, and the failing fixture is the
+Saltpetre GEMM baseline — a separate workstream with its own gate. Fixing it blind,
+in an environment where it does not reproduce, would be guessing at a number.
+
 ## 2026-11-25 — wasm32 IR debt: 12, not 27 — measured, gated, and ratcheted (P0-P3 landed; 12 open)
 
 The debt was overstated by more than half because the gate counted the wrong
