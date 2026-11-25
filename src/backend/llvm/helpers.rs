@@ -2180,15 +2180,23 @@ impl LlvmBackend {
             "Shr" => ("lshr", false),
             _ => return None,
         };
+        // 2026-11-25 (P2b): the width comes from the OPERANDS, not from a
+        // literal. `i64` here was wrong the moment a target's word is 32 bits:
+        // `clock_monotonic_smoke` compared two i64 runtime results and the
+        // comparison declared `i64` (fine) — but `arena`/`slice` paths produce
+        // i32 registers that this same line declared i64, which LLVM rejects as
+        // "defined as i32 but this instruction uses it as i64".
+        let w = self.operand_width(src);
         if is_cmp {
             let cmp = self.fun.next_reg_with_prefix("pcmp");
             writeln!(
                 out,
-                "{}{} = {} i64 {}, {}",
-                indent, cmp, op, src.name, rhs.name
+                "{}{} = {} {} {}, {}",
+                indent, cmp, op, w, src.name, rhs.name
             )
             .ok();
-            writeln!(out, "{}{} = zext i1 {} to i64", indent, v, cmp).ok();
+            writeln!(out, "{}{} = zext i1 {} to {}", indent, v, cmp, w).ok();
+            self.fun.record_value_width(v.to_string(), &w);
             Some(TypedRegister {
                 name: v.to_string(),
                 ty: Type::int(),
@@ -2196,10 +2204,11 @@ impl LlvmBackend {
         } else {
             writeln!(
                 out,
-                "{}{} = {} i64 {}, {}",
-                indent, v, op, src.name, rhs.name
+                "{}{} = {} {} {}, {}",
+                indent, v, op, w, src.name, rhs.name
             )
             .ok();
+            self.fun.record_value_width(v.to_string(), &w);
             Some(TypedRegister {
                 name: v.to_string(),
                 ty: Type::int(),
@@ -3687,6 +3696,25 @@ impl LlvmBackend {
     /// when shrinking). Handles are unsigned addresses, so this never signs.
     /// `None` when either side is not a plain `iN` — the caller keeps its
     /// existing behaviour rather than inventing a conversion.
+    /// The LLVM width of an operand that is already in a register.
+    ///
+    /// Asked in this order, and never guessed:
+    ///   1. what the register was RECORDED as (the channel knows when a value's
+    ///      physical form differs from its Briev type — a boxed handle, a runtime
+    ///      call's fixed-width result);
+    ///   2. otherwise what the Briev type resolves to for this target.
+    ///
+    /// A literal is not an option. `i64` written where a value happens to be the
+    /// target word is the single most common defect in this backend (103
+    /// `inttoptr i64` sites against 65 places that already ask `ctx.int_bits`),
+    /// and it is invisible on x86-64 because there the guess is right.
+    pub(crate) fn operand_width(&self, reg: &TypedRegister) -> String {
+        if let Some(recorded) = self.fun.value_width(&reg.name) {
+            return recorded.to_string();
+        }
+        self.llvm_type(&reg.ty)
+    }
+
     pub(crate) fn convert_int_width(
         &mut self,
         out: &mut String,

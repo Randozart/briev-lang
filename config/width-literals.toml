@@ -1,0 +1,58 @@
+# ===----------------------------------------------------------------------=== #
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+# ===----------------------------------------------------------------------=== #
+# Declared per-file budgets for hardcoded `i64` in the LLVM backend — the literal
+# that means "I guessed the target word width".
+#
+# RULE: a count may only DECREASE. `cargo test --test width_literal_ratchet` fails
+# when a file's count goes UP (naming the file and the delta, so the failure lands
+# on the change that caused it) and also when it goes DOWN without this file being
+# updated (a stale record is a lie, and people plan against it).
+#
+# Why a budget and not a ban: a large share of these occurrences are LEGITIMATE.
+# The C runtime's ABI is fixed-width on every triple (`long long` is 64 bits even
+# where the pointer is 32) and `Bit<64>` values are genuinely 64-bit. A blanket ban
+# cannot tell those from `store i64 %v` where `%v` IS the target word; a counted
+# budget can, because it only asks whether the situation got worse.
+#
+# Only `i64` is counted. `i32` is deliberately excluded: it is frequently the
+# correct width for a genuine 32-bit value (a Char, a `Bit<32>` field), so counting
+# it would add noise without measuring the thing that breaks 32-bit targets.
+#
+# Excluded from the count, and why:
+#   * comment lines — a rationale naming `i64` is documentation, not emission;
+#   * `#[cfg(test)]` files (`tests.rs`, `*_tests.rs`, `crash_regressions.rs`) —
+#     they assert emitted text, so they must contain what they assert;
+#   * lines calling a runtime symbol (`briev_`, `__briev`) — fixed-width C ABI;
+#   * lines mentioning `double`/`f64` — an IEEE image is 64 bits by definition.
+#
+# Measured 2026-11-25 at main e2b0a2c9b (P0-P2a landed, before P2b's remaining
+# slice). The wasm32 IR debt at that commit is 12 invalid programs of 114; the
+# larger counts here are the tail that no corpus program has reached yet.
+#
+# To lower a number: remove the literal (ask `operand_width`, `ctx.int_bits`, or
+# the casting graph), then set the measured value. Never raise one.
+
+[files]
+"builder.rs" = 14
+"coll_scaffold.rs" = 7
+"collection_assignment.rs" = 10
+"context.rs" = 8
+"dispatch.rs" = 16
+"emit_expr.rs" = 463
+"emit_hir_stmt.rs" = 5
+"emit_stmt.rs" = 92
+"emit_toplevel.rs" = 281
+"helpers.rs" = 130
+"intrinsics.rs" = 188
+"kernel.rs" = 15
+"loop_engine/counter.rs" = 84
+"loop_engine/mod.rs" = 22
+"loop_engine/ssa.rs" = 37
+"mod.rs" = 172
+"normalizer.rs" = 1
+"reclamation.rs" = 19
+"strategy.rs" = 4
+"tuple_values.rs" = 4
+"types.rs" = 2
+"value_lowering.rs" = 8
