@@ -3606,9 +3606,21 @@ impl LlvmBackend {
         indent: &str,
         handle: &str,
     ) -> String {
+        // 2026-11-25 (wave-11 S2, revised): the source width of `inttoptr` must
+        // match the operand exactly, but a NAME-keyed record cannot be trusted to
+        // say which form this particular register holds — names are reused across
+        // bodies and across `--split` modules, and a stale `ptr` entry is exactly
+        // issue #119. An attempt to select the width from the record here
+        // reintroduced that bug (`store ptr %t11` where
+        // `%t11 = trunc i64 %t10 to i32`, caught by `mistyped_operands` on
+        // `generic_wasm_scan.rbv`), so the record is deliberately NOT consulted:
+        // a handle's SSA form is the target word by documented convention, and
+        // making the WIDTH type-directed is S3's job — where the value carries its
+        // own LLVM type instead of being looked up by name.
         let ptr = self.fun.gen_reg();
         let hw = format!("i{}", self.ctx.int_bits);
         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, handle).ok();
+        self.fun.record_value_width(ptr.clone(), "ptr");
         ptr
     }
 

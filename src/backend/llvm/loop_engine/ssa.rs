@@ -130,6 +130,13 @@ impl LlvmBackend {
         divisor: i64,
         cases: &[(i64, &str)],
     ) {
+        // 2026-11-25 (wave-11): `@main` is a NEW function, so its register
+        // namespace restarts here — and the recorded widths must restart with it.
+        // Without this, a `%t11` recorded as `ptr` by a previous function's load
+        // is applied to main's own `%t11`, and a narrowed word is then trusted as
+        // a pointer (`store ptr %t11` where `%t11 = trunc i64 %t10 to i32`).
+        // Same rule as issue #119, at the function boundary that was missed.
+        self.fun.reset_register_names();
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
