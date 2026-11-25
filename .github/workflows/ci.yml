@@ -172,6 +172,7 @@ jobs:
           name: ci-native-${{ matrix.check }}-${{ github.run_attempt }}
           path: |
             target/ci-evidence/
+            target/cross-target-ir/
             benchmarks/parity/_out/
             /tmp/tier2-aarch64/
             /tmp/tier2-riscv64/

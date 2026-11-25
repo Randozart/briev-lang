@@ -1,3 +1,49 @@
+## 2026-11-25 — wasm32 is a SHIPPED target with the weakest gate in the project (P0 CLOSED; P1-P3 open)
+
+**Owner decision:** wasm32 is the ship target for the web build — `.rbv` compiles
+to wasm32. It is not an inspection extra.
+
+Measured before P0:
+
+| surface | programs | wasm32 |
+|---|---|---|
+| `.rbv` (the shipped web path) | 29 | **29 pass** — latent, not active |
+| `.bv` tier1+tier2 (feature corpus) | 100 | **73 pass / 27 fail** |
+
+**The governance defect (the reason the 27 existed):**
+
+1. `scripts/cross_target_ir.sh:47` swept only `tests/tier1/*.bv tests/tier2/*.bv`.
+   **No `.rbv` program was in any cross-target sweep**, so the product's own
+   surface had never been IR-verified against its own target by a broad gate.
+2. wasm32 was absent from PR CI; `verification-nightly.yml:11` listed "wasm32
+   cross-backend corpus gate" under *"harnesses not yet written"*.
+3. The script header declared wasm32 "intentionally not the default gate" — a
+   reasonable assumption while wasm32 was aspirational, a misleading one once it
+   shipped.
+
+Coverage instead was `wasm32_parity.rs` (2 fixtures), `rbv_list_each_wasm.rs`,
+`rbv_obj_init_wasm32.rs`, `tuple_values_wasm.mjs`. (`tests/test_wasm.rs` is a stub
+for the retired old-WASM backend, not coverage.)
+
+**Closed by P0 (this commit):** the sweep now includes every `.rbv` program, runs
+in parallel, enforces a declared per-triple baseline
+(`config/cross-target-baseline.toml`: aarch64 0, wasm32 27) that may only
+decrease, and runs for both shipped triples in PR CI. Corpus: 129 programs
+(100 `.bv` + 29 `.rbv`), sweep ≈4 min for both triples.
+
+**Second finding, recorded because it nearly produced a false green:** two
+concurrent sweeps sharing `target/cross-target-ir` delete each other's per-program
+result files and therefore **under-report** failures — observed 97 checked / 8
+failed instead of 129 / 27, with no error. A gate that can under-count is worse
+than a slow one, so the script now claims the artifact directory (`.claim` +
+liveness check) and refuses to share it.
+
+**Still open (P1-P3):** the 27, and their cause — 103 hardcoded `inttoptr i64`
+sites against 65 places that already ask `ctx.int_bits`, plus a representation
+channel keyed by register name that outlives the namespace keying it (14 counter
+restarts, 1 clear). Plan:
+`.opencode/plans/2026-11-25-wasm32-supported-target-gate-and-width-refactor.md`.
+
 ## 2026-11-25 — wasm32 cross-target: 27 IR-invalid programs, and the instrument that finds them (OPEN; work list)
 
 State after wave-11 S0-S2 (`main` before this wave: 52):

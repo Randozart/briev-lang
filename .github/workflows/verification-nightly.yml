@@ -8,8 +8,13 @@ name: Verification nightly
 # Queued for later nightly expansion (harnesses not yet written):
 #   - interpreter-over-corpus differential (the generated-transition harness
 #     from PR #80 covers generated families only)
-#   - wasm32 cross-backend corpus gate
-# Both are tracked in docs/plans/2026-11-09-compiler-verification-program.md.
+# Both tracked in docs/plans/2026-11-09-compiler-verification-program.md.
+#
+# 2026-11-25: this list used to include "wasm32 cross-backend corpus gate". It is
+# NOT nightly work and it is no longer queued — wasm32 is the shipped web target,
+# so its corpus gate runs in PR CI (`scripts/ci_native.sh cross-target`, which now
+# sweeps every `.rbv` program too). A supported target that is only checked
+# nightly is a target whose regressions land during the day.
 
 on:
   schedule:

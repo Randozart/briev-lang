@@ -1,0 +1,28 @@
+# ===----------------------------------------------------------------------=== #
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+# ===----------------------------------------------------------------------=== #
+# Declared cross-target invalid-IR baselines for `scripts/cross_target_ir.sh`.
+#
+# RULE: a count may only DECREASE. This file is the honest record of how much
+# debt is left, and `cargo test --test cross_target_baseline` fails when reality
+# is BETTER than the record, so the number cannot quietly drift out of date.
+#
+# A triple absent from this table has an implicit baseline of 0.
+#
+# 2026-11-25 (wasm32 supported-target plan, P0) — why wasm32 is not 0 yet:
+#   wasm32 is a SHIPPED target (the `.rbv` web build), so the corpus now includes
+#   every `*.rbv` program, and this count covers both surfaces:
+#     * `.rbv` (the web path), 29 programs: 0 failures. Latent, not active.
+#     * `.bv`  (compiler feature corpus), 100 programs: 27 failures, all in
+#       arena/collection paths, boxed string handles and runtime-bound intrinsics.
+#   Cause, measured: 103 hardcoded `inttoptr i64` sites in src/backend/llvm/ plus
+#   a representation channel keyed by register name that outlives the namespace it
+#   is keyed by (14 counter restarts, 1 clear). Plan P2 drives this to 0 by
+#   replacing the literals with a derivation that asks the value for its type.
+#
+# Do NOT raise a number to make CI green. A regression is a regression: fix the
+# emission, or record the bug in BUGS.md and say why the baseline must move.
+
+[baseline]
+"aarch64-unknown-linux-gnu" = 0
+"wasm32-unknown-wasi" = 27

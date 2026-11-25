@@ -27,7 +27,22 @@ case "${1:-}" in
         # that only fires on a construct the corpus exercises (arenas/syscalls).
         # This case sweeps the whole self-calibrating corpus instead; retire it
         # into `targets` once that case is corpus-wide.
-        bash scripts/cross_target_ir.sh aarch64-unknown-linux-gnu
+        #
+        # 2026-11-25 (wasm32 supported-target plan P0): wasm32 is a SHIPPED
+        # target — the web build of a `.rbv` program — so it is gated here, not
+        # inspected by hand. The sweep now also covers every `.rbv` program,
+        # which it did not before, so the web path is IR-verified against its own
+        # target on every PR. BRIEV_CROSS_TARGET_CHECK=1 additionally makes the
+        # baseline test assert that config/cross-target-baseline.toml matches
+        # reality, so a fixed bug forces the recorded number down.
+        bash scripts/cross_target_ir.sh aarch64-unknown-linux-gnu wasm32-unknown-wasi
+        # The cheap half of the ratchet (record integrity: every shipped triple
+        # declared, no silent raise, the web path still in the corpus). The
+        # expensive half — measured count must EQUAL the record — is already
+        # enforced by the script above, which fails on a stale baseline, so this
+        # deliberately does NOT set BRIEV_CROSS_TARGET_CHECK (that would sweep
+        # twice for the same answer).
+        cargo test --release --test cross_target_baseline
         ;;
     accel)
         bash benchmarks/accel_reactor_nonhang.sh
