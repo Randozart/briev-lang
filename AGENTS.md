@@ -182,6 +182,31 @@ Patches are unacceptable. There is no "go fast and break things."
     cleanup; 176 restored guards are compiler-elided; restored source produced
     structurally identical IR; confidence = high.
 
+26. **EMISSION FACTS TRAVEL WITH THE VALUE (2026-11-25)**: A fact about what
+    was *emitted* — a register's width, its LLVM type, whether it is a hoisted
+    sret — belongs to that value, never to a name-keyed map in a struct that
+    outlives the body which minted the name. `FunctionContext` already carries
+    more than a dozen such maps (`reg_type_cache`, `reg_float_cache`,
+    `ssa_old_int_regs`, `phi_field_regs`, `let_bindings`, ...); each one's
+    correctness rests on resets maintained by hand, and most have no reset at
+    all. The failure always has the same shape: the map says `i32`, the
+    emission says `i64`, and every reader of the map is silently wrong. Prefer a
+    fresh per-function arena of `RegInfo { name, llvm_ty, briev_ty }` —
+    **lifetime by construction, not by discipline**. Adding provenance to a map
+    (a set of names to drain at each reset) is the tell that the map, not the
+    site, is the defect. Corollary: when a bug class is unclear, build the
+    instrument that names the offender (IR verifier, width ratchet, log
+    classifier) before touching a single site. Lesson record: cue = 27 invalid
+    wasm32 modules, three waves of site-by-site wiring (52 → 27 → 26); lesson =
+    the sites are symptoms of facts keyed by name, so the fix is the value
+    carrying its own fact; evidence = every failure in the wave was a
+    record/emission disagreement (`%t115` recorded i32, emitted i64; `%ac3`
+    recorded i32, emitted i64), the width channel has 11 writers against 12
+    readers, a blanket `int_bits` fallback regressed 72 programs while a
+    record-first read regressed 0, and a per-name provenance set had to be
+    invented purely to give a map a lifetime; confidence = high (measured twice,
+    in both directions).
+
 ## Performance Recovery Protocol
 
 When a benchmark is at/above parity but a mechanism made it faster before:
@@ -318,6 +343,14 @@ contracts.
 
 ## Working Rules
 
+- **Gates assert a positive floor (2026-11-25)**: a gate that reports success by
+  inspecting nothing is worse than no gate — it launders risk into a green tick.
+  Every sweep asserts a minimum count of programs/tests/diagnostics and fails at
+  zero or below its declared floor; every classifier ships a test that feeds it
+  the ambiguous input. Two false passes were found in three days:
+  `cross_target_ir.sh` counted 15 invalid modules as "refused" (the real debt
+  was 27, not 12), and `praetor validate --target <file>` exits 0 having
+  analysed nothing.
 - **License (2026-09-16)**: the compiler is Apache-2.0 **with the LLVM
   exceptions** (`LICENSE`, `NOTICE`). New source files get the LLVM-style
   boxed header (`SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception`).
