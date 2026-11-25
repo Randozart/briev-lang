@@ -1012,6 +1012,86 @@ fn defined_register(line: &str) -> Option<(String, String)> {
     instruction_result_type(body).map(|ty| (format!("%{name}"), ty))
 }
 
+/// Incremental harvest of DEFINED-WIDTH FACTS from partially emitted IR.
+///
+/// 2026-11-25 (Golden Rule 26, stage B'): the backend emits `inttoptr … to ptr`
+/// at ~71 sites and only two helpers recorded what they produced, so the width
+/// channel was blind to most of its own emission. Recording each site by hand is
+/// the discipline that failed twice (issue #119, then #163/#164); the emitted
+/// TEXT is the one record that cannot forget, because it IS the emission.
+///
+/// This runs the same line parser `mistyped_operands` uses, but as a producer:
+/// lines are fed in as they are written, so a reader that asks mid-body sees
+/// every definition already emitted — which is exactly the ordering LLVM text
+/// guarantees (definitions precede uses within a function).
+///
+/// State: `harvested` tracks how many BYTES of body text have been consumed, and
+/// `inside_body` is false between functions. Feeding the same text twice is free;
+/// appending to `out` and re-harvesting costs only the new suffix. A `define`
+/// line ends the previous function's harvest window (register names are only
+/// meaningful inside one function — the epoch is stamped by the caller's
+/// `WidthChannel`, so the caller decides what survives a body boundary).
+#[derive(Default, Debug, Clone)]
+pub struct HarvestState {
+    /// Bytes of text already parsed. Points at a `define`/body boundary.
+    harvested: usize,
+    /// True while inside a function body (after a `define`, before the closing `}`).
+    inside_body: bool,
+}
+
+impl HarvestState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Parse the not-yet-seen suffix of `text` and apply `f` to each defined
+    /// register. Lines must not be split across calls: call this after a
+    /// `writeln!` completes a line (the emitters' text is line-oriented).
+    pub fn harvest_new(&mut self, text: &str, mut f: impl FnMut(Option<&str>, &str)) {
+        // Nothing new (or the text shrank — a fresh buffer): re-sync cheaply.
+        if text.len() < self.harvested {
+            self.harvested = 0;
+        }
+        // Only COMPLETE lines are parsed: a partial trailing line (the caller
+        // mid-`writeln!`) must not be read half-written, so the window ends at
+        // the last newline. Parsing the suffix separately keeps the deferral
+        // exact — the partial line is harvested once, when it is finished.
+        let new = &text[self.harvested..];
+        let complete = match new.rfind('\n') {
+            Some(pos) => &new[..=pos],
+            None => "",
+        };
+        for line in complete.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("define ") {
+                self.inside_body = true;
+                // A new function's names are NEW values: everything recorded for
+                // the previous function is a claim about registers that no longer
+                // exist under those names. The caller drops its facts on None.
+                // (Measured leak: `decode_cont`'s `%t46 = inttoptr … to ptr`
+                // crossed a define and typed `decode_width`'s `%t46 = sub i64`,
+                // so a call argument went out as `ptr` against an i64 parameter.)
+                f(None, "");
+                continue;
+            }
+            if trimmed == "}" {
+                self.inside_body = false;
+                continue;
+            }
+            if self.inside_body {
+                // `defined_register` expects the line WITHOUT leading whitespace
+                // (`strip_prefix('%')`) — the same contract `mistyped_operands`
+                // keeps by trimming first. Passing the raw indented line silently
+                // harvested nothing.
+                if let Some((reg, ty)) = defined_register(line.trim_start()) {
+                    f(Some(&reg), &ty);
+                }
+            }
+        }
+        self.harvested += complete.len();
+    }
+}
+
 /// Strip the qualifier words that may precede a type: memory ordering on a
 /// store/load, and the fast-math flags on an FP instruction (`fadd fast float`).
 /// Skipping them is what keeps the type parser from reading `fast` as a type.
@@ -1349,7 +1429,10 @@ mod mistyped_operand_tests {
         let ir = "define i32 @f() {\nentry:\n  %t0 = trunc i64 1 to i32\n  %t1 = call i32 @g(i64 %t0)\n  ret i32 %t1\n}\n";
         let msg = super::mistyped_operands(ir).expect("must be rejected");
         assert!(msg.contains("%t0"), "message must name the register: {msg}");
-        assert!(msg.contains("i64"), "message must name the declared type: {msg}");
+        assert!(
+            msg.contains("i64"),
+            "message must name the declared type: {msg}"
+        );
     }
 
     /// A call argument that agrees with its definition is accepted — including
@@ -1385,5 +1468,130 @@ mod mistyped_operand_tests {
     fn well_typed_arithmetic_is_accepted() {
         let ir = "define i32 @f() {\nentry:\n  %t0 = add i32 1, 2\n  %t1 = icmp slt i32 %t0, 3\n  %t2 = select i1 %t1, i32 %t0, i32 0\n  ret i32 %t2\n}\n";
         assert_eq!(super::mistyped_operands(ir), None);
+    }
+}
+
+#[cfg(test)]
+mod harvest_tests {
+    use super::*;
+
+    /// I-1: a harvested fact equals the type in the emitted text.
+    #[test]
+    fn harvest_reads_the_emitted_text_not_a_claim() {
+        let ir =
+            "define i32 @a() {\n  %t0 = inttoptr i32 %t1 to ptr\n  %t1 = load i64, ptr %t9\n}\n";
+        let mut st = HarvestState::new();
+        let mut got: Vec<(String, String)> = Vec::new();
+        st.harvest_new(ir, |r, t| {
+            if let Some(r) = r {
+                got.push((r.to_string(), t.to_string()))
+            }
+        });
+        assert_eq!(
+            got,
+            vec![
+                ("%t0".to_string(), "ptr".to_string()),
+                ("%t1".to_string(), "i64".to_string()),
+            ]
+        );
+    }
+
+    /// I-2: a `define` boundary closes the previous function's harvest window.
+    #[test]
+    fn harvest_resets_at_a_new_function() {
+        let ir = "define i32 @a() {\n  %t0 = add i32 1, 2\n}\ndefine i32 @b() {\n  %t1 = add i32 3, 4\n}\n";
+        let mut st = HarvestState::new();
+        let mut got: Vec<(String, String)> = Vec::new();
+        st.harvest_new(ir, |r, t| {
+            if let Some(r) = r {
+                got.push((r.to_string(), t.to_string()))
+            }
+        });
+        // Both registers ARE harvested (they live in different functions, but the
+        // channel's epoch — not the harvester — is what scopes a name). What the
+        // boundary guarantees is that globals/top-level lines between functions
+        // are never parsed as definitions.
+        assert!(got.contains(&("%t0".to_string(), "i32".to_string())));
+        assert!(got.contains(&("%t1".to_string(), "i32".to_string())));
+    }
+
+    /// I-3: harvest is incremental — a second call parses only the new suffix.
+    #[test]
+    fn harvest_is_incremental_and_does_not_rescan() {
+        let mut st = HarvestState::new();
+        let mut count = 0usize;
+        let mut count_defs = 0usize;
+        st.harvest_new("define i32 @a() {\n%t0 = add i32 1, 2\n", |r, _| {
+            if r.is_some() {
+                count += 1
+            } else {
+                count_defs += 1
+            }
+        });
+        assert_eq!(count, 1);
+        assert_eq!(count_defs, 1, "the define itself signalled one boundary");
+        // Feed the SAME text again: nothing new is parsed, nothing double-counted.
+        st.harvest_new("define i32 @a() {\n%t0 = add i32 1, 2\n", |r, _| {
+            if r.is_some() {
+                count += 1
+            } else {
+                count_defs += 1
+            }
+        });
+        assert_eq!(count, 1, "re-harvesting unchanged text must be a no-op");
+        assert_eq!(count_defs, 1);
+        // Append: only the new definition is parsed.
+        st.harvest_new(
+            "define i32 @a() {\n%t0 = add i32 1, 2\n%t1 = load i64, ptr %t0\n",
+            |r, _| {
+                if r.is_some() {
+                    count += 1
+                } else {
+                    count_defs += 1
+                }
+            },
+        );
+        assert_eq!(count, 2, "appended suffix is the only thing parsed");
+        assert_eq!(count_defs, 1, "the same define is not re-signalled");
+    }
+
+    /// Top-level and declaration lines between functions are not misparsed.
+    #[test]
+    fn harvest_ignores_lines_outside_function_bodies() {
+        let ir = "@g = global i64 5\ndeclare i32 @f(i32)\ndefine i32 @a() {\n  %t0 = call i32 @f(i32 1)\n}\n";
+        let mut st = HarvestState::new();
+        let mut got: Vec<(String, String)> = Vec::new();
+        st.harvest_new(ir, |r, t| {
+            if let Some(r) = r {
+                got.push((r.to_string(), t.to_string()))
+            }
+        });
+        assert_eq!(got.len(), 1, "only the in-body definition counts");
+        assert_eq!(got[0].0, "%t0");
+    }
+
+    /// A partial trailing line is re-parsed once complete (never half-parsed).
+    #[test]
+    fn a_partial_line_is_deferred_until_complete() {
+        let mut st = HarvestState::new();
+        let mut got: Vec<(String, String)> = Vec::new();
+        st.harvest_new(
+            "define i32 @a() {\n  %t0 = add i32 1,",
+            |r, t| {
+                if let Some(r) = r {
+                    got.push((r.to_string(), t.to_string()))
+                }
+            },
+        );
+        assert!(got.is_empty(), "no complete line, nothing harvested");
+        st.harvest_new(
+            "define i32 @a() {\n  %t0 = add i32 1, 2\n",
+            |r, t| {
+                if let Some(r) = r {
+                    got.push((r.to_string(), t.to_string()))
+                }
+            },
+        );
+        assert_eq!(got.len(), 1, "the completed line is parsed exactly once");
     }
 }

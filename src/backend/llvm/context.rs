@@ -1141,6 +1141,37 @@ impl WidthChannel {
         out.sort_by(|a, b| a.0.cmp(b.0));
         out
     }
+
+    /// Harvest defined-width facts from the emitted text, stamped with THIS epoch.
+    ///
+    /// 2026-11-25 (stage B'): the emitted text is the one recorder that cannot
+    /// forget — it IS the emission. Harvesting on read (the helper calls this
+    /// right before choosing a width) means every definition already written to
+    /// `out` is visible, which is exactly the set LLVM text guarantees precedes
+    /// any use. `state` carries the parse position across calls so re-harvesting
+    /// a grown buffer costs only its suffix.
+    pub fn harvest_new_definitions(
+        &mut self,
+        text: &str,
+        state: &mut crate::ir_verify::HarvestState,
+    ) {
+        let epoch = self.epoch;
+        state.harvest_new(text, |reg, ty| match reg {
+            // A define crossed: names from the previous function are gone. Keep
+            // only this function's facts — a fact about another body's `%t46`
+            // typed a call argument here (measured, accel_lane_report).
+            None => self.facts.clear(),
+            Some(reg) => {
+                self.facts.insert(
+                    reg.to_string(),
+                    WidthFact {
+                        epoch,
+                        llvm_ty: ty.to_string(),
+                    },
+                );
+            }
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1157,6 +1188,10 @@ pub struct FunctionContext {
     pub current_loop_engine: Option<crate::analysis::destination_model::LoopEnginePlan>,
     pub txn_counter: usize,
     pub within_counter: usize,
+    /// Where the emitted-text harvester stopped. Lives on the body state because
+    /// it positions INTO this body's output only; a fresh body re-harvests from
+    /// zero of ITS text (the buffers are per-function too, so the offsets line up).
+    pub(crate) harvest_state: crate::ir_verify::HarvestState,
     /// Arena bump counter for unique per-allocation register names
     pub arena_counter: usize,
     /// Names minted from `txn_counter`, i.e. meaningful only inside the body that
@@ -1956,6 +1991,7 @@ impl FunctionContext {
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
             value_llvm_ty: WidthChannel::default(),
+            harvest_state: crate::ir_verify::HarvestState::new(),
             counter_scoped_regs: std::collections::HashSet::new(),
             fat_ptrs: HashMap::new(),
             canonical_ptrs: HashMap::new(),

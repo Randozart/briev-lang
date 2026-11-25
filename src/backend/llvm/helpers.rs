@@ -3651,6 +3651,15 @@ impl LlvmBackend {
         dst: &str,
         operand: &str,
     ) {
+        // 2026-11-25 (stage B'): harvest the emitted text BEFORE choosing a width.
+        // The record channel was blind to the ~71 sites that emit `inttoptr … to ptr`
+        // outside the two helpers, so a re-box over one of their results fell back to
+        // `i64` and produced `inttoptr i64 %t0` where `%t0` is a ptr. The text is the
+        // record that cannot forget; definitions precede uses in LLVM output, so
+        // everything this helper can possibly reference is already in `out`.
+        self.fun
+            .value_llvm_ty
+            .harvest_new_definitions(out, &mut self.fun.harvest_state);
         let width = match self.fun.value_width(operand) {
             // A `ptr` record means the operand is ALREADY a pointer, so there is
             // nothing to convert: `inttoptr i64 %t0` over `%t0 = inttoptr ... to ptr`
