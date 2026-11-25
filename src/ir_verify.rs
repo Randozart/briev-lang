@@ -74,7 +74,9 @@ pub fn verify_llvm_ir(ir: &str, source_label: &str, artifact_hint: &str) -> IrVe
     match verdict {
         None => IrVerify::Ok { ran: false },
         Some(None) => IrVerify::Ok { ran: true },
-        Some(Some(stderr)) => IrVerify::Invalid(render("LLVM", &stderr, ir, source_label, artifact_hint)),
+        Some(Some(stderr)) => {
+            IrVerify::Invalid(render("LLVM", &stderr, ir, source_label, artifact_hint))
+        }
     }
 }
 
@@ -376,10 +378,15 @@ fn compare_arguments(
 /// `double` and `half` are floating-class; aggregates, vectors and `void` are
 /// their own class and must match exactly.
 fn class_of(type_head: &str) -> &'static str {
-    if type_head == "ptr" || (type_head.starts_with('i') && type_head[1..].chars().all(|c| c.is_ascii_digit())) {
+    if type_head == "ptr"
+        || (type_head.starts_with('i') && type_head[1..].chars().all(|c| c.is_ascii_digit()))
+    {
         return "integer";
     }
-    if matches!(type_head, "float" | "double" | "half" | "fp128" | "x86_fp80" | "bfloat") {
+    if matches!(
+        type_head,
+        "float" | "double" | "half" | "fp128" | "x86_fp80" | "bfloat"
+    ) {
         return "floating";
     }
     "aggregate"
@@ -960,8 +967,19 @@ fn instruction_result_type(body: &str) -> Option<String> {
     // pointer spelling reads (`bitcast … to ptr`).
     if matches!(
         opcode,
-        "zext" | "trunc" | "sext" | "fptrunc" | "fpext" | "fptosi" | "fptoui" | "sitofp"
-            | "uitofp" | "ptrtoint" | "inttoptr" | "bitcast" | "addrspacecast"
+        "zext"
+            | "trunc"
+            | "sext"
+            | "fptrunc"
+            | "fpext"
+            | "fptosi"
+            | "fptoui"
+            | "sitofp"
+            | "uitofp"
+            | "ptrtoint"
+            | "inttoptr"
+            | "bitcast"
+            | "addrspacecast"
     ) {
         let (_, tail) = body.split_once(" to ")?;
         return take_type(tail).map(|(ty, _)| ty);
@@ -1009,9 +1027,28 @@ fn skip_qualifiers(mut text: &str) -> &str {
         }
         if !matches!(
             word,
-            "volatile" | "atomic" | "unordered" | "monotonic" | "acquire" | "release" | "acq_rel"
-                | "seq_cst" | "fast" | "nnan" | "ninf" | "nsz" | "arcp" | "contract" | "afn"
-                | "reassoc" | "nneg" | "exact" | "nsw" | "nuw" | "inbounds" | "nusw"
+            "volatile"
+                | "atomic"
+                | "unordered"
+                | "monotonic"
+                | "acquire"
+                | "release"
+                | "acq_rel"
+                | "seq_cst"
+                | "fast"
+                | "nnan"
+                | "ninf"
+                | "nsz"
+                | "arcp"
+                | "contract"
+                | "afn"
+                | "reassoc"
+                | "nneg"
+                | "exact"
+                | "nsw"
+                | "nuw"
+                | "inbounds"
+                | "nusw"
         ) {
             return text;
         }
@@ -1053,7 +1090,129 @@ fn check_operand_line(
         let reg = register_operand(operand.strip_prefix("ptr ")?.trim_start())?;
         return type_mismatch(line_no, trimmed, reg, "ptr", defined);
     }
+    // 2026-11-25 (P2a): calls and arithmetic, because the wasm32 debt lives
+    // there too — 6 of the measured 27 failures were call-argument width
+    // mismatches this function could not see, so the gate counted them without
+    // ever naming a line. `call i32 @briev_getenv_int_impl(i32 …)` against a
+    // `ptr` parameter or a `i64` argument to an `i32` parameter is exactly the
+    // class the [B] section of BUGS.md describes.
+    if let Some(rest) = instr.strip_prefix("call ") {
+        return check_call_arguments(line_no, trimmed, rest, defined);
+    }
+    for opcode in BINARY_INT_OPS {
+        let Some(rest) = instr.strip_prefix(opcode) else {
+            continue;
+        };
+        let (declared, tail) = take_type(skip_qualifiers(rest))?;
+        return check_typed_operand_pair(line_no, trimmed, &declared, tail, defined);
+    }
+    // `icmp <pred> <ty> %a, %b` — the predicate comes before the type.
+    if let Some(rest) = instr.strip_prefix("icmp ") {
+        let after_pred = rest.split_whitespace().nth(1).map(|_| {
+            let mut it = rest.splitn(2, char::is_whitespace);
+            it.next();
+            it.next().unwrap_or("")
+        })?;
+        let (declared, tail) = take_type(skip_qualifiers(after_pred))?;
+        return check_typed_operand_pair(line_no, trimmed, &declared, tail, defined);
+    }
     None
+}
+
+/// Integer binary opcodes whose two operands are printed `<op> <ty> %a, %b`.
+const BINARY_INT_OPS: [&str; 13] = [
+    "add ", "sub ", "mul ", "udiv ", "sdiv ", "urem ", "srem ", "shl ", "lshr ", "ashr ", "and ",
+    "or ", "xor ",
+];
+
+/// Check both operands of a `<ty> %a, %b` instruction against their definitions.
+///
+/// Both are declared with the SAME type in valid IR, so a register whose own
+/// definition disagrees is either a wrong operand or a wrong declared width — and
+/// either one is invalid IR that the target's assembler only notices when the
+/// widths happen to collide.
+fn check_typed_operand_pair(
+    line_no: usize,
+    line: &str,
+    declared: &str,
+    operands: &str,
+    defined: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let (lhs, rhs) = operands.split_once(',').unwrap_or((operands, ""));
+    for operand in [lhs, rhs] {
+        let Some(reg) = register_operand(operand.trim()) else {
+            continue;
+        };
+        if let Some(msg) = type_mismatch(line_no, line, reg, declared, defined) {
+            return Some(msg);
+        }
+    }
+    None
+}
+
+/// Check every argument of a `call` against the register that defines it.
+///
+/// Arguments are printed `<ty> %reg` (or `<ty> <constant>`), so each one carries
+/// its own declared type and can be checked without knowing the callee.
+fn check_call_arguments(
+    line_no: usize,
+    line: &str,
+    rest: &str,
+    defined: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let open = rest.find('(')?;
+    let close = matching_paren(&rest[open..])? + open;
+    let args = &rest[open + 1..close];
+    for arg in split_top_level_commas(args) {
+        let Some((declared, tail)) = take_type(skip_qualifiers(arg)) else {
+            continue;
+        };
+        let Some(reg) = register_operand(tail.trim()) else {
+            continue;
+        };
+        if let Some(msg) = type_mismatch(line_no, line, reg, &declared, defined) {
+            return Some(msg);
+        }
+    }
+    None
+}
+
+/// Offset of the `)` matching the `(` at index 0 of `text`.
+fn matching_paren(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split on commas that are not inside brackets, so `{ i64, i8 }` stays whole.
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[start..]);
+    out
 }
 
 /// One register's declared-vs-defined type disagreement, rendered for the author.
@@ -1179,5 +1338,52 @@ mod mistyped_operand_tests {
             "}\n"
         );
         assert_eq!(mistyped_operands(ir), None);
+    }
+
+    /// A call argument whose declared type contradicts the register's own
+    /// definition. Six of the measured wasm32 failures were this shape
+    /// (`call i32 @briev_getenv_int_impl(i32 …)` fed an i64 register), and before
+    /// this the gate could count them but never name a line.
+    #[test]
+    fn mistyped_operands_sees_call_argument_mismatches() {
+        let ir = "define i32 @f() {\nentry:\n  %t0 = trunc i64 1 to i32\n  %t1 = call i32 @g(i64 %t0)\n  ret i32 %t1\n}\n";
+        let msg = super::mistyped_operands(ir).expect("must be rejected");
+        assert!(msg.contains("%t0"), "message must name the register: {msg}");
+        assert!(msg.contains("i64"), "message must name the declared type: {msg}");
+    }
+
+    /// A call argument that agrees with its definition is accepted — including
+    /// `ptr` arguments and constant arguments, which name no register.
+    #[test]
+    fn a_well_typed_call_is_accepted() {
+        let ir = "define i32 @f(ptr %p) {\nentry:\n  %t0 = trunc i64 1 to i32\n  %t1 = call i32 @g(ptr %p, i32 %t0, i32 7)\n  ret i32 %t1\n}\n";
+        assert_eq!(super::mistyped_operands(ir), None);
+    }
+
+    /// Arithmetic operands carry one declared type for both sides, so a register
+    /// defined at another width is invalid IR the assembler only rejects when the
+    /// widths happen to collide.
+    #[test]
+    fn mistyped_operands_sees_arithmetic_mismatches() {
+        let ir = "define i32 @f() {\nentry:\n  %t0 = zext i8 1 to i32\n  %t1 = add i64 %t0, 8\n  ret i32 %t1\n}\n";
+        let msg = super::mistyped_operands(ir).expect("must be rejected");
+        assert!(msg.contains("%t0"), "message must name the register: {msg}");
+    }
+
+    /// `icmp` puts its predicate before the type, which is a trap for a scanner
+    /// that assumes `<op> <ty>`.
+    #[test]
+    fn mistyped_operands_reads_the_icmp_predicate() {
+        let ir = "define i1 @f() {\nentry:\n  %t0 = zext i8 1 to i32\n  %t1 = icmp slt i64 %t0, 3\n  ret i1 %t1\n}\n";
+        let msg = super::mistyped_operands(ir).expect("must be rejected");
+        assert!(msg.contains("%t0"), "message must name the register: {msg}");
+    }
+
+    /// A well-typed arithmetic body is accepted, so the new checks do not fire on
+    /// healthy IR.
+    #[test]
+    fn well_typed_arithmetic_is_accepted() {
+        let ir = "define i32 @f() {\nentry:\n  %t0 = add i32 1, 2\n  %t1 = icmp slt i32 %t0, 3\n  %t2 = select i1 %t1, i32 %t0, i32 0\n  ret i32 %t2\n}\n";
+        assert_eq!(super::mistyped_operands(ir), None);
     }
 }

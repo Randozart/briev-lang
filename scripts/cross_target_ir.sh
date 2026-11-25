@@ -104,9 +104,21 @@ run_one() {
         printf 'SKIP\n' >"$OUT/$name.result"
         return 0
     fi
+    local log="$OUT/$name.$triple.log"
     if "$BRIEVC" build "$src" --llvm --triple "$triple" --out "$OUT/$triple/$name" \
-            >"$OUT/$name.$triple.log" 2>&1; then
+            >"$log" 2>&1; then
         printf 'PASS\n' >"$OUT/$name.result"
+        return 0
+    fi
+    # 2026-11-25: a REFUSAL is not the same failure as invalid IR, and conflating
+    # them overstated the wasm32 debt by more than half (27 claimed, 12 real). The
+    # compiler refuses a program when it cannot prove termination for that target
+    # ("walked the live program ... no endprogram, halt, or trap is reachable") or
+    # when a device-strategy probe misses. That is a policy decision carrying its
+    # own diagnostic, not an emission defect: the module is not written at all, so
+    # it is never claimed to be valid. Invalid IR is what this gate exists to find.
+    if grep -qE 'walked the live program|try-mode miss|no endprogram' "$log"; then
+        printf 'REFUSED\n' >"$OUT/$name.result"
     else
         printf 'FAIL\n' >"$OUT/$name.result"
         printf '%s\n' "$src" >"$OUT/$name.failed-src"
@@ -136,17 +148,23 @@ for triple in "${TRIPLES[@]}"; do
 
     checked=0
     failed=0
+    refused=0
     for f in "$OUT"/*.result; do
         [ -f "$f" ] || continue
         case "$(cat "$f")" in
             PASS) checked=$((checked + 1)) ;;
             FAIL) checked=$((checked + 1)); failed=$((failed + 1)) ;;
+            REFUSED) refused=$((refused + 1)) ;;
         esac
     done
+    refused_note=""
+    if [ "$refused" -gt 0 ]; then
+        refused_note=", $refused refused (not IR debt)"
+    fi
 
     declared="$(baseline_for "$triple")"
     if [ "$failed" -gt "$declared" ]; then
-        echo "cross-target-ir: $triple — $checked programs checked, $failed failed (declared baseline $declared)" >&2
+        echo "cross-target-ir: $triple — $checked programs checked, $failed failed$refused_note (declared baseline $declared)" >&2
         echo "  NEW OR REGRESSED failures:" >&2
         for f in "$OUT"/*.failed-src; do
             [ -f "$f" ] || continue
@@ -157,12 +175,12 @@ for triple in "${TRIPLES[@]}"; do
         done
         fail_total=$((fail_total + failed - declared))
     elif [ "$failed" -lt "$declared" ]; then
-        echo "cross-target-ir: $triple — $checked checked, $failed failed: BETTER than the declared baseline $declared."
+        echo "cross-target-ir: $triple — $checked checked, $failed failed$refused_note: BETTER than the declared baseline $declared."
         echo "  Lower the baseline (this is the ratchet, and the record must stay true):" >&2
         echo "    $BASELINE: \"$triple\" = $failed" >&2
         stale_any=1
     else
-        echo "cross-target-ir: $triple — $checked programs checked, $failed failed (matches declared baseline $declared)"
+        echo "cross-target-ir: $triple — $checked programs checked, $failed failed$refused_note (matches declared baseline $declared)"
     fi
 done
 
