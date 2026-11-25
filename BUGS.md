@@ -1,3 +1,27 @@
+## 2026-11-25 — CORRECTION: the wasm32 IR debt was never 12. It is 27 (classifier bug, fixed in S1)
+
+**The entry below this one claimed 12 debt + 15 refusals. That was wrong.** The sweep
+tested the refusal markers first, and `walked the live program ... no endprogram, halt,
+or trap is reachable` is a WARNING printed before the compiler emits anyway. All 15
+logs classified as "refused" contained `rejected the module` — every one was debt.
+Confirmed with `llc` on the emitted modules, not by argument.
+
+The rule is now debt-first, and an unrecognised failure counts as debt (a gate may
+under-count by being strict, never by being charitable). Baseline back to 27. The
+breakdown that S2-S4 work through, by offending instruction:
+
+| family | instruction | programs |
+|---|---|---|
+| A | `inttoptr i64` / `inttoptr i32` source width | 9 |
+| B | call-argument width (`briev_getenv_int_impl`, `int_to_str`, `briev_str_substr`, `briev_slice_strided64`) | 10 |
+| C | `shl i64`, `mul i32`, `icmp slt i32` | 6 |
+| D | `store i64` | 2 |
+
+Plan: `docs/plans/2026-11-25-wasm32-debt-27-to-zero.md`. The original entry is kept
+below unedited — the record is the record, and the mistake is part of it.
+
+---
+
 ## 2026-11-25 — Verification nightly is RED on the AST path, and has been since 2026-11-23 (OPEN; pre-existing, not from this wave)
 
 `Verification nightly` → job `AST opt-out suite (BRIEV_HIR_EMIT=0)` fails on:
