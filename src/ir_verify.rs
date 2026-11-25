@@ -56,6 +56,13 @@ pub fn verify_llvm_ir(ir: &str, source_label: &str, artifact_hint: &str) -> IrVe
     if let Some(msg) = mismatched_call_signatures(ir) {
         return IrVerify::Invalid(render(OWN_CHECK, &msg, ir, source_label, artifact_hint));
     }
+    // The companion check for operand typing: a declared operand type that
+    // contradicts the register's own definition is invalid IR on every target,
+    // and on a target where the widths coincide it is a silently mistyped value
+    // (issue #119; PR #164's `store ptr <i32>`). See `mistyped_operands`.
+    if let Some(msg) = mistyped_operands(ir) {
+        return IrVerify::Invalid(render(OWN_CHECK, &msg, ir, source_label, artifact_hint));
+    }
     // A per-run temp file: the verifier wants a path, and the module is the
     // thing under test, so it must be the exact bytes we are about to ship.
     let named = temp_path();
@@ -847,5 +854,330 @@ mod tests {
         assert!(excerpt_around(text, 1).contains('a'));
         assert!(excerpt_around(text, 99).is_empty());
         assert!(excerpt_around(text, 0).is_empty());
+    }
+}
+
+// ── operand typing ─────────────────────────────────────────────────────
+//
+// 2026-11-24 (wave-11, S0): the third check LLVM performs that we want first.
+// A textual emitter states the LLVM type of every operand inline, so a claimed
+// type that contradicts the register's own definition is a defect *visible in
+// the text* — and it is the shape of three bugs this codebase has shipped:
+// issue #119 (`getelementptr i64, ptr %t61` from a stale name-keyed width map),
+// PR #164 (`store ptr %t11` where `%t11 = trunc … to i32`), and the whole
+// wasm32 width class behind them.
+//
+// Deliberately narrow, so it has zero false positives:
+//   * only instructions whose type words carry NO aliasing convention are
+//     checked — `store`, `load`, `getelementptr`, and the conversions. Call
+//     arguments are excluded on purpose: `ptr`-vs-`i64` at a call boundary is a
+//     documented convention (`mismatched_call_signatures` explains why), while a
+//     `store ptr <i32>` is simply invalid.
+//   * a register whose definition we cannot classify is SKIPPED, never guessed.
+//   * constants (`42`, `null`, `undef`, `@global`, `{ … }`) are skipped.
+
+/// Report the first instruction whose declared operand type contradicts the
+/// operand register's own definition.
+///
+/// Scoped PER FUNCTION: `%t9` is redefined in every body of a module (register
+/// names restart per function), so a module-wide table would compare one body's
+/// definition against another's use. That is the same lesson as issue #119 —
+/// a name is only meaningful within one body — applied to this check itself.
+fn mistyped_operands(ir: &str) -> Option<String> {
+    let mut defined: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut saw_a_body = false;
+    for (index, line) in ir.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("define ") {
+            defined.clear();
+            saw_a_body = true;
+            continue;
+        }
+        if trimmed == "}" {
+            defined.clear();
+            continue;
+        }
+        if let Some(msg) = check_operand_line(index + 1, line, &defined) {
+            return Some(msg);
+        }
+        if let Some((reg, ty)) = defined_register(trimmed) {
+            defined.insert(reg, ty);
+        }
+    }
+    saw_a_body.then_some(()).and(None)
+}
+
+/// The value type of a single register operand, if `operand` is one.
+fn register_operand(operand: &str) -> Option<&str> {
+    let name = operand.trim_start_matches(',');
+    if !name.starts_with('%') {
+        return None;
+    }
+    let end = name
+        .find(|c: char| !(c.is_alphanumeric() || c == '%' || c == '_' || c == '.' || c == '-'))
+        .unwrap_or(name.len());
+    Some(&name[..end])
+}
+
+/// Scan one type token starting at the front of `text`.
+///
+/// Handles the scalar spellings and the bracketed aggregates (`<{ i64, [6 x i8] }>`,
+/// `{ i64, ptr }`, `[10 x i64]`) by balancing. Returns the type and the rest.
+fn take_type(text: &str) -> Option<(String, &str)> {
+    let text = text.trim_start();
+    let first = text.chars().next()?;
+    if matches!(first, '<' | '{' | '[') {
+        let mut depth = 0usize;
+        for (i, c) in text.char_indices() {
+            match c {
+                '<' | '{' | '[' => depth += 1,
+                '>' | '}' | ']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some((text[..=i].to_string(), &text[i + 1..]));
+                    }
+                }
+                _ => {}
+            }
+        }
+        return None;
+    }
+    let end = text
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .unwrap_or(text.len());
+    if end == 0 {
+        return None;
+    }
+    Some((text[..end].to_string(), &text[end..]))
+}
+
+/// The result type of an instruction body (everything after `=`), or `None` when
+/// the opcode is not one this check can classify with certainty.
+fn instruction_result_type(body: &str) -> Option<String> {
+    let body = body.trim_start();
+    let opcode = body.split_whitespace().next()?;
+    // Conversions name their result after `to`, which is also how the opaque
+    // pointer spelling reads (`bitcast … to ptr`).
+    if matches!(
+        opcode,
+        "zext" | "trunc" | "sext" | "fptrunc" | "fpext" | "fptosi" | "fptoui" | "sitofp"
+            | "uitofp" | "ptrtoint" | "inttoptr" | "bitcast" | "addrspacecast"
+    ) {
+        let (_, tail) = body.split_once(" to ")?;
+        return take_type(tail).map(|(ty, _)| ty);
+    }
+    let after_opcode = skip_qualifiers(&body[opcode.len().min(body.len())..]);
+    match opcode {
+        // `select <condty> %c, <ty> %a, <ty> %b` returns the VALUE type, which is
+        // the one after the first comma — not the condition's `i1`.
+        "select" => {
+            let (_, tail) = after_opcode.split_once(',')?;
+            take_type(tail).map(|(ty, _)| ty)
+        }
+        // The element type of a vector needs the vector's shape; skip rather than
+        // guess (a skipped register is never a false positive).
+        "extractelement" | "shufflevector" => None,
+        "alloca" => Some("ptr".to_string()),
+        "getelementptr" => Some("ptr".to_string()),
+        "icmp" | "fcmp" => Some("i1".to_string()),
+        "extractvalue" => None,
+        "call" | "callbr" => take_type(after_opcode).map(|(ty, _)| ty),
+        _ => take_type(after_opcode).map(|(ty, _)| ty),
+    }
+}
+
+/// The register a line defines and its result type, if the line defines one.
+fn defined_register(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix('%')?;
+    let (name, after) = rest.split_once(|c: char| c.is_whitespace())?;
+    let body = after.trim_start().strip_prefix('=')?;
+    instruction_result_type(body).map(|ty| (format!("%{name}"), ty))
+}
+
+/// Strip the qualifier words that may precede a type: memory ordering on a
+/// store/load, and the fast-math flags on an FP instruction (`fadd fast float`).
+/// Skipping them is what keeps the type parser from reading `fast` as a type.
+fn skip_qualifiers(mut text: &str) -> &str {
+    loop {
+        // Trim FIRST: slicing `word.len()` off a string that still has a leading
+        // space eats the word's first letter (`" fast float"[4..]` = `"t float"`,
+        // which then parses as the type `t`).
+        text = text.trim_start();
+        let word = text.split_whitespace().next().unwrap_or("");
+        if word.is_empty() {
+            return text;
+        }
+        if !matches!(
+            word,
+            "volatile" | "atomic" | "unordered" | "monotonic" | "acquire" | "release" | "acq_rel"
+                | "seq_cst" | "fast" | "nnan" | "ninf" | "nsz" | "arcp" | "contract" | "afn"
+                | "reassoc" | "nneg" | "exact" | "nsw" | "nuw" | "inbounds" | "nusw"
+        ) {
+            return text;
+        }
+        text = &text[word.len()..];
+    }
+}
+
+/// Compare one line's declared operand types with the definition table.
+fn check_operand_line(
+    line_no: usize,
+    line: &str,
+    defined: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let trimmed = line.trim_start();
+    // Most instructions are `%res = <opcode> …`; only `store` has no result.
+    let instr = match trimmed.find(" = ") {
+        Some(i) => &trimmed[i + 3..],
+        None => trimmed,
+    };
+    if let Some(rest) = instr.strip_prefix("store ") {
+        let (declared, tail) = take_type(skip_qualifiers(rest))?;
+        let (operand, _) = tail.trim_start().split_once(',').unwrap_or((tail, ""));
+        let reg = register_operand(operand.trim())?;
+        return type_mismatch(line_no, trimmed, reg, &declared, defined);
+    }
+    if let Some(rest) = instr.strip_prefix("inttoptr ") {
+        let (declared, tail) = take_type(rest)?;
+        let reg = register_operand(tail.trim_start())?;
+        return type_mismatch(line_no, trimmed, reg, &declared, defined);
+    }
+    // `load <ty>, ptr %p` and `getelementptr <ty>, ptr %p, …` both take a POINTER
+    // operand, whatever the element type says.
+    for opcode in ["load ", "getelementptr "] {
+        let Some(rest) = instr.strip_prefix(opcode) else {
+            continue;
+        };
+        let (_, tail) = take_type(skip_qualifiers(rest))?;
+        let operand = tail.trim_start().trim_start_matches(',').trim_start();
+        let reg = register_operand(operand.strip_prefix("ptr ")?.trim_start())?;
+        return type_mismatch(line_no, trimmed, reg, "ptr", defined);
+    }
+    None
+}
+
+/// One register's declared-vs-defined type disagreement, rendered for the author.
+fn type_mismatch(
+    line_no: usize,
+    line: &str,
+    reg: &str,
+    declared: &str,
+    defined: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let actual = defined.get(reg)?;
+    if actual == declared {
+        return None;
+    }
+    Some(format!(
+        "line {line_no}: `{reg}` is defined as `{actual}` but this instruction uses it as \
+         `{declared}`\n  the instruction is in: {line}\n  why:  a textual emitter states every \
+         operand's type inline, so a declared type that contradicts the register's own \
+         definition cannot be assembled — LLVM would reject the module (or, on a target where \
+         the widths happen to agree, silently accept a mistyped value)\n  note: this is a \
+         compiler defect, not a mistake in your program"
+    ))
+}
+
+#[cfg(test)]
+mod mistyped_operand_tests {
+    use super::mistyped_operands;
+
+    /// The PR #164 shape: a handle narrowed to the target word, then stored as a
+    /// pointer. This is the regression the check exists to catch, and it is
+    /// invisible on 64-bit hosts where the narrowing never happens.
+    #[test]
+    fn detects_a_narrowed_handle_stored_as_a_pointer() {
+        let ir = "define void @f() {\nentry:\n  %t10 = ptrtoint ptr %x to i64\n  %t11 = trunc i64 %t10 to i32\n  store ptr %t11, ptr %slot\n  ret void\n}\n";
+        let msg = mistyped_operands(ir).expect("the store must be rejected");
+        assert!(msg.contains("%t11"), "{msg}");
+        assert!(msg.contains("defined as `i32`"), "{msg}");
+        assert!(msg.contains("uses it as `ptr`"), "{msg}");
+    }
+
+    /// The issue #119 shape: a stale width record produced
+    /// `getelementptr i64, ptr %t61`. A GEP operand must be a pointer.
+    #[test]
+    fn detects_a_non_pointer_gep_operand() {
+        let ir = "define void @f() {\nentry:\n  %t61 = add i64 0, 1\n  %g = getelementptr i64, ptr %t61, i64 0\n  ret void\n}\n";
+        let msg = mistyped_operands(ir).expect("the GEP must be rejected");
+        assert!(msg.contains("%t61"), "{msg}");
+    }
+
+    /// `inttoptr` declares its source width and LLVM requires an exact match.
+    #[test]
+    fn detects_an_inttoptr_width_mismatch() {
+        let ir = "define void @f() {\nentry:\n  %a = trunc i64 %x to i32\n  %p = inttoptr i64 %a to ptr\n  ret void\n}\n";
+        let msg = mistyped_operands(ir).expect("the inttoptr must be rejected");
+        assert!(msg.contains("%a"), "{msg}");
+    }
+
+    /// A well-typed module passes. `ptr`-vs-`i64` at a CALL boundary is a
+    /// documented convention and must not be flagged (the call check owns that
+    /// question and deliberately allows it).
+    #[test]
+    fn accepts_a_clean_module() {
+        let ir = concat!(
+            "define void @f(i32 %argc, ptr %argv) {\n",
+            "entry:\n",
+            "  %h = call ptr @malloc(i64 8)\n",
+            "  %v = ptrtoint ptr %h to i64\n",
+            "  store i64 %v, ptr %slot\n",
+            "  %p = inttoptr i64 %v to ptr\n",
+            "  %r = call i64 @g(ptr %p, i64 %v)\n",
+            "  %cond = icmp ne i64 %r, 0\n",
+            "  br i1 %cond, label %a, label %b\n",
+            "a:\n",
+            "  ret void\n",
+            "b:\n",
+            "  ret void\n",
+            "}\n"
+        );
+        assert_eq!(mistyped_operands(ir), None);
+    }
+
+    /// Register names restart per function, so a module-wide table compares one
+    /// body's definition against another's use. This is the #119 lesson applied
+    /// to the check itself — it was a real false positive before scoping.
+    #[test]
+    fn scopes_the_definition_table_per_function() {
+        let ir = concat!(
+            "define void @f() {\n",
+            "entry:\n",
+            "  %t9 = icmp ne i8 %a, 0\n",
+            "  br i1 %t9, label %x, label %y\n",
+            "x:\n",
+            "  ret void\n",
+            "y:\n",
+            "  ret void\n",
+            "}\n",
+            "define void @g() {\n",
+            "entry:\n",
+            "  %t9 = add i64 %b, 1\n",
+            "  store i64 %t9, ptr %slot\n",
+            "  ret void\n",
+            "}\n"
+        );
+        assert_eq!(
+            mistyped_operands(ir),
+            None,
+            "a name reused in the next body is a different value, not a mistype"
+        );
+    }
+
+    /// An instruction this check cannot classify is skipped, never guessed.
+    #[test]
+    fn skips_registers_it_cannot_classify() {
+        // `extractvalue`'s result type needs the aggregate's field list, which this
+        // check does not model — so the register is skipped rather than guessed.
+        let ir = concat!(
+            "define void @f() {\n",
+            "entry:\n",
+            "  %agg = call { i64 } @mk()\n",
+            "  %odd = extractvalue { i64 } %agg, 0\n",
+            "  store i64 %odd, ptr %slot\n",
+            "  ret void\n",
+            "}\n"
+        );
+        assert_eq!(mistyped_operands(ir), None);
     }
 }
