@@ -22,7 +22,36 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 2026-11-25: the nightly needs the same prebuilt release compiler the PR
+  # gate uses (the saltpetre fixtures spawn `target/release/brievc` and refuse
+  # a debug binary by design). Same job shape as ci.yml's `compiler` — one
+  # build, one artifact, and every consumer fetches it.
+  compiler:
+    name: Release compiler build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      artifact: ${{ steps.bundle.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/compiler-tools
+        with:
+          cache-key: release
+      - name: Build release compiler
+        run: cargo build --release --bin brievc 2>&1 | tee target/ci-evidence/build.log
+      - name: Package same-revision compiler and runtime archives
+        id: bundle
+        run: |
+          bash scripts/ci_compiler_artifact.sh pack
+          echo "artifact=ci-compiler-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.artifact }}
+          path: target/ci-compiler.tar.gz
+          if-no-files-found: error
+
   ast-optout-suite:
+    needs: compiler
     name: AST opt-out suite (BRIEV_HIR_EMIT=0)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -38,6 +67,20 @@ jobs:
       #     artifacts (the 2026-11-15 red, `backend::ptx::tensor::r16_dump::*`);
       #   * nextest pinned inline instead of the shared pin.
       # One action, one list: whatever the next job needs, this job gets too.
+      - uses: ./.github/actions/compiler-tools
+        with:
+          nextest: "true"
+      # 2026-11-25: the saltpetre fixtures (tests/saltpetre_gemm_baseline.rs:97)
+      # spawn `target/release/brievc` — a timing probe that refuses the debug
+      # binary by design. Without this step the job never had the binary and
+      # failed with `Os { code: 2, NotFound }` from the day the fixtures landed
+      # (2026-11-22/23), through no fault of the compiler. The PR gate runs the
+      # same suite green only because IT unpacks the shared artifact; the
+      # nightly — the one channel meant to catch what PR gates miss — was the
+      # one that could not. Fetch the same prebuilt compiler the PR gate uses.
+      - uses: ./.github/actions/use-ci-compiler
+        with:
+          artifact: ${{ needs.compiler.outputs.artifact }}
       - uses: ./.github/actions/compiler-tools
         with:
           native: "true"

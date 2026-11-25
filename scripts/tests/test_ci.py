@@ -143,3 +143,22 @@ class CompilerArtifactControls(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+    def test_nightly_ast_job_has_the_compiler_before_tests(self):
+        """The AST opt-out suite spawns target/release/brievc (the saltpetre
+        timing probes refuse a debug binary), so the job must depend on a
+        compiler build and unpack its artifact before running nextest. The
+        nightly went structurally red for two days (2026-11-23..25) with
+        `Os { code: 2, NotFound }` because nothing produced that file —
+        visible only after the run, invisible to every gate. This pin keeps
+        the ordering in the file itself."""
+        wf = (SCRIPTS.parent / ".github/workflows/verification-nightly.yml").read_text()
+        self.assertIn("compiler:", wf, "the nightly lost its compiler build job")
+        self.assertIn("needs: compiler", wf, "ast-optout-suite must depend on the compiler job")
+        self.assertIn("use-ci-compiler", wf, "the job must unpack the artifact before tests")
+        # Order matters: the unpack step must appear before the nextest step.
+        self.assertLess(
+            wf.index("use-ci-compiler"),
+            wf.index("cargo nextest run --all"),
+            "the compiler artifact must be restored before nextest runs",
+        )
