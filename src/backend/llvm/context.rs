@@ -1038,9 +1038,120 @@ pub struct TailOwnedSlot {
     pub exit_transfers: bool,
 }
 
+/// A recorded width, stamped with the body that recorded it.
+///
+/// 2026-11-25 (Golden Rule 26): register names restart at every body boundary
+/// (`begin_function` zeroes `txn_counter`), so a NAME does not identify a value
+/// across bodies. The epoch is what does: a fact carries the body that produced it,
+/// so a reader can tell a fact about *this* `%t7` from a fact about the previous
+/// body's `%t7` instead of trusting insertion order.
+///
+/// Without it, the only way to keep the channel honest was to clear it in every
+/// reset path — discipline at five call sites, two of which were forgotten (issue
+/// #119, then #163/#164). Adding the provenance set `counter_scoped_regs` in S2 was
+/// the tell: the map needed a lifetime, so give the fact one instead of giving the
+/// map a rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WidthFact {
+    /// The epoch of the body that produced the record.
+    pub epoch: u64,
+    /// The LLVM type the defining instruction actually emitted.
+    pub llvm_ty: String,
+}
+
+/// The representation channel: what LLVM type each register was emitted as, and
+/// WHICH BODY said so.
+///
+/// It is a type rather than a bare `HashMap` so the epoch cannot be forgotten. Every
+/// `insert` stamps the channel's current epoch and every `get` still answers the old
+/// question, which is why this replaced `HashMap<String, String>` without touching an
+/// emission site: the invariant moved into the container instead of into the habits
+/// of ~40 call sites.
+///
+/// Reads default to "any epoch" during the migration (`get`); `get_current` is the
+/// question a reader actually wants, and stage C switches callers to it.
+#[derive(Clone, Debug, Default)]
+pub struct WidthChannel {
+    facts: HashMap<String, WidthFact>,
+    epoch: u64,
+}
+
+impl WidthChannel {
+    /// Record that `reg` was emitted as `llvm_ty`, in the current epoch.
+    ///
+    /// Same signature as `HashMap::insert`, so a caller that used the map directly
+    /// keeps compiling — and can no longer record an unstamped fact.
+    pub fn insert(&mut self, reg: String, llvm_ty: String) -> Option<String> {
+        let epoch = self.epoch;
+        self.facts
+            .insert(reg, WidthFact { epoch, llvm_ty })
+            .map(|old| old.llvm_ty)
+    }
+
+    /// The recorded type for `reg`, from any epoch.
+    ///
+    /// During the migration this is what emitters ask; a producer that does not record
+    /// keeps the behaviour it had before the epoch existed.
+    pub fn get(&self, reg: &str) -> Option<&String> {
+        self.facts.get(reg).map(|f| &f.llvm_ty)
+    }
+
+    /// The recorded type for `reg` if THIS epoch recorded it — the honest question.
+    pub fn get_current(&self, reg: &str) -> Option<&String> {
+        self.facts
+            .get(reg)
+            .filter(|f| f.epoch == self.epoch)
+            .map(|f| &f.llvm_ty)
+    }
+
+    /// The full fact, epoch included.
+    pub fn fact(&self, reg: &str) -> Option<&WidthFact> {
+        self.facts.get(reg)
+    }
+
+    /// The current epoch. Bumped only when register names restart.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Start a new epoch: facts recorded from now on belong to a new body.
+    fn start_epoch(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    pub fn clear(&mut self) {
+        self.facts.clear();
+    }
+
+    pub fn remove(&mut self, reg: &str) -> Option<String> {
+        self.facts.remove(reg).map(|f| f.llvm_ty)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.facts.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.facts.len()
+    }
+
+    /// Deterministic iteration (sorted by register) for tests and any IR-affecting walk.
+    pub fn iter_sorted(&self) -> Vec<(&String, &WidthFact)> {
+        let mut out: Vec<(&String, &WidthFact)> = self.facts.iter().collect();
+        out.sort_by(|a, b| a.0.cmp(b.0));
+        out
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionContext {
-    // SSA register counters — NEVER rewound (prevents %t{N} collisions)
+    // SSA register counters. `txn_counter` is rewound to 0 by every body boundary
+    // (`begin_function`, `reset_register_names`, `restart_register_names`), so the
+    // names `%t0`, `%t1`, … are REUSED by every body and identify nothing on their
+    // own. What keeps facts about a name honest is `body_epoch`, which only ever
+    // moves forward. (Until 2026-11-25 this comment claimed the counters were never
+    // rewound, which is the opposite of what the code does — a stale comment about
+    // the very fact the width channel depends on.)
     /// D6: the active bounded-loop destination plan. All phi/state decisions
     /// query this instead of a propagated name set.
     pub current_loop_engine: Option<crate::analysis::destination_model::LoopEnginePlan>,
@@ -1530,16 +1641,16 @@ pub struct FunctionContext {
     ///   handle materialization) consult this map instead of guessing from the
     ///   stamped type.
     ///
-    /// SOUNDNESS RULE (issue #119): a register name is only meaningful within one
-    /// body, so this map MUST be cleared wherever register names restart —
-    /// otherwise `%t61 = ptr` from the previous body is applied to the next one's
-    /// `%t61` and a handle passes through unconverted. It is therefore cleared in
-    /// both `reset_register_names` and `clear_locals`.
+    /// SOUNDNESS RULE (issue #119, restated 2026-11-25): a register name is only
+    /// meaningful within one body. Where a reset path clears this map, the clear is
+    /// now belt to the epoch's braces — `WidthFact::epoch` makes a stale entry
+    /// *detectable*, and `value_width_in_current_epoch` makes it *ignored*. Clearing
+    /// alone is the discipline that failed at five call sites in a row.
     ///
     /// Do not read it to answer "is this value a pointer?" — ask the Briev type.
     /// A `"ptr"` entry here means "this *form* was emitted as a pointer", not
     /// "this value is pointer-like". See `pointer_from_handle`.
-    pub value_llvm_ty: HashMap<String, String>,
+    pub value_llvm_ty: WidthChannel,
 
     // 2026-07-18: Fat pointer provenance — base, offset, remaining registers.
     // Keyed by the fat pointer register name. Populated by emit_expr when
@@ -1591,6 +1702,7 @@ impl FunctionContext {
     /// Pinned by `no_path_resets_the_namespace_without_the_channel`.
     pub fn reset_register_names(&mut self) {
         self.txn_counter = 0;
+        self.begin_epoch();
         self.value_llvm_ty.clear();
     }
 
@@ -1607,6 +1719,7 @@ impl FunctionContext {
     /// Neither reset touches the representation channel — see `begin_function`.
     pub fn restart_register_names(&mut self) {
         self.txn_counter = 0;
+        self.begin_epoch();
         self.drop_counter_scoped_records();
     }
 
@@ -1646,6 +1759,7 @@ impl FunctionContext {
     pub fn begin_function(&mut self) {
         self.txn_counter = 0;
         self.within_counter = 0;
+        self.begin_epoch();
         self.drop_counter_scoped_records();
         // The channel is deliberately NOT cleared here, and the reason is
         // measured rather than stylistic: the channel is written in places that
@@ -1669,13 +1783,44 @@ impl FunctionContext {
 
     /// Record the LLVM type a register was emitted as. The single writer for
     /// the width channel — call this instead of touching `value_llvm_ty`.
+    ///
+    /// The record is stamped with the current `body_epoch`, so it states *which*
+    /// body emitted this width rather than implying "this is true of every `%t7`".
     pub fn record_value_width(&mut self, reg: impl Into<String>, llvm_ty: impl Into<String>) {
         self.value_llvm_ty.insert(reg.into(), llvm_ty.into());
     }
 
-    /// The recorded LLVM type of a register, if it was recorded.
+    /// Start a new body epoch. Called ONLY by the paths that restart register
+    /// names, because those are the paths that make a name mean something else.
+    ///
+    /// Pinned by `only_register_name_restarts_start_an_epoch`.
+    fn begin_epoch(&mut self) {
+        self.value_llvm_ty.start_epoch();
+    }
+
+    /// The recorded width fact for `reg`, whatever body produced it.
+    pub fn value_width_fact(&self, reg: &str) -> Option<&WidthFact> {
+        self.value_llvm_ty.fact(reg)
+    }
+
+    /// The recorded width for `reg`, whatever body produced it.
+    ///
+    /// Migration default: this is still what emitters ask, so a producer that does
+    /// not record keeps behaving exactly as it did before the epoch existed (it sees
+    /// the previous body's record, which is often — accidentally — the right width).
+    /// Stage C switches the readers to `value_width_in_current_epoch`; the two are
+    /// therefore the same function today, and keeping them apart makes the flip one
+    /// edit instead of a hunt.
     pub fn value_width(&self, reg: &str) -> Option<&str> {
         self.value_llvm_ty.get(reg).map(String::as_str)
+    }
+
+    /// The recorded width for `reg`, but only if THIS body recorded it.
+    ///
+    /// This is the question a reader actually wants answered: "what did the
+    /// instruction that defines this register, in the body I am emitting, emit?"
+    pub fn value_width_in_current_epoch(&self, reg: &str) -> Option<&str> {
+        self.value_llvm_ty.get_current(reg).map(String::as_str)
     }
 
     /// The width the backend has always used for a handle whose own width is
@@ -1810,7 +1955,7 @@ impl FunctionContext {
             chimera_map: HashMap::new(),
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
-            value_llvm_ty: HashMap::new(),
+            value_llvm_ty: WidthChannel::default(),
             counter_scoped_regs: std::collections::HashSet::new(),
             fat_ptrs: HashMap::new(),
             canonical_ptrs: HashMap::new(),

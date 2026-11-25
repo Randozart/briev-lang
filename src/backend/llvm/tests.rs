@@ -15680,3 +15680,71 @@ fn begin_function_documents_why_it_does_not_clear_the_channel() {
          it is the only record of two measured wasm32 failures"
     );
 }
+
+// ── The epoch: an emission fact belongs to the body that produced it ──────────
+// Golden Rule 26. Register names restart at every body boundary, so a name does
+// not identify a value across bodies — the record's epoch does. These three tests
+// pin the properties the channel now relies on instead of "remember to clear".
+
+/// I-1: a recorded width carries the epoch of the body that recorded it.
+#[test]
+fn a_record_carries_the_epoch_of_its_body() {
+    let mut fun = FunctionContext::new();
+    fun.begin_function();
+    let first = fun.value_llvm_ty.epoch();
+    fun.record_value_width("%t1".to_string(), "i64".to_string());
+    assert_eq!(
+        fun.value_width_fact("%t1").map(|f| f.epoch),
+        Some(first),
+        "a fact recorded in body {first} must be stamped with body {first}"
+    );
+}
+
+/// I-2/I-3: only the register-name restarts start an epoch, and it never regresses.
+#[test]
+fn only_register_name_restarts_start_an_epoch() {
+    let mut fun = FunctionContext::new();
+    let start = fun.value_llvm_ty.epoch();
+    fun.record_value_width("%t1".to_string(), "i64".to_string());
+    assert_eq!(
+        fun.value_llvm_ty.epoch(),
+        start,
+        "recording a fact must not start an epoch — facts are what an epoch dates"
+    );
+    fun.begin_function();
+    let after_body = fun.value_llvm_ty.epoch();
+    assert!(after_body > start, "a new body must be a new epoch");
+    fun.reset_register_names();
+    let after_reset = fun.value_llvm_ty.epoch();
+    assert!(after_reset > after_body, "a namespace reset must be a new epoch");
+    fun.restart_register_names();
+    assert!(
+        fun.value_llvm_ty.epoch() > after_reset,
+        "a namespace restart must be a new epoch"
+    );
+}
+
+/// I-4: a previous-epoch record is invisible to a current-epoch read.
+#[test]
+fn a_previous_epoch_record_is_invisible_to_a_current_epoch_read() {
+    let mut fun = FunctionContext::new();
+    fun.begin_function();
+    fun.record_value_width("%t7".to_string(), "ptr".to_string());
+    fun.begin_function();
+    // A new body reuses the NAME `%t7` for a different value that no producer has
+    // described yet. The old record is not a fact about this value.
+    fun.record_value_width("%t7".to_string(), "i64".to_string());
+    assert_eq!(fun.value_width_in_current_epoch("%t7"), Some("i64"));
+    fun.begin_function();
+    assert_eq!(
+        fun.value_width_in_current_epoch("%t7"),
+        None,
+        "the new body has not described its own %t7, so there is nothing true to say"
+    );
+    assert_eq!(
+        fun.value_width("%t7"),
+        Some("i64"),
+        "the migration reader still sees the previous body's fact, which is why \
+         switching readers (stage C) has to follow making producers record (stage B)"
+    );
+}
