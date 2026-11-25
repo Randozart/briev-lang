@@ -1975,7 +1975,7 @@ impl LlvmBackend {
                 if enum_handle && field_llvm_ty == "i64" && self.ctx.int_bits < 64 {
                     let tr = self.fun.gen_reg();
                     writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr, loaded).ok();
-                    self.fun.reg_llvm_ty.insert(tr.clone(), "i32".to_string());
+                    self.fun.record_value_width(tr.clone(), "i32".to_string());
                     TypedRegister {
                         name: tr,
                         ty: briev_ty,
@@ -1983,7 +1983,7 @@ impl LlvmBackend {
                 } else {
                     if enum_handle {
                         self.fun
-                            .reg_llvm_ty
+                            .value_llvm_ty
                             .insert(loaded.clone(), field_llvm_ty.clone());
                     }
                     TypedRegister {
@@ -2045,7 +2045,7 @@ impl LlvmBackend {
                 // step and trusting it regressed three tier1 fixtures).
                 if llvm_ty == "ptr" {
                     self.fun
-                        .reg_value_ll
+                        .value_llvm_ty
                         .insert(v.to_string(), "ptr".to_string());
                 }
                 TypedRegister {
@@ -2079,7 +2079,7 @@ impl LlvmBackend {
                 // the i64 handle domain, so every consumer that trusts the stamp
                 // treats this pointer as an i64 (`store i64 %t0` into a slot).
                 self.fun
-                    .reg_value_ll
+                    .value_llvm_ty
                     .insert(v.to_string(), "ptr".to_string());
                 TypedRegister {
                     name: v.to_string(),
@@ -4113,7 +4113,7 @@ impl LlvmBackend {
                 // 2026-11-14 (#96): generic T can retain an i64
                 // language carrier while this slot is i32 on wasm.
                 // Forward the emitted width to subsequent stores.
-                self.fun.reg_llvm_ty.insert(v.to_string(), slot_ty.clone());
+                self.fun.record_value_width(v.to_string(), slot_ty.clone());
             }
         } else if self.is_string_operand(&obj_reg.ty) {
             // 2026-10-05 (json.bv): String indexing `s[i]` — the
@@ -4628,7 +4628,7 @@ impl LlvmBackend {
         // llvm_type is `ptr`). Record the emitted SSA type so an outbound call
         // converts the handle back to ptr instead of forwarding an i64 operand
         // where the callee signature declares `ptr` (BUGS.md).
-        self.fun.reg_llvm_ty.insert(result.clone(), hw.clone());
+        self.fun.record_value_width(result.clone(), hw.clone());
         // 2026-07-24: Record the alloca pointer so &let_var on a struct-typed
         // binding retrieves the stack address, not the ptrtoint value.
         self.fun
@@ -7250,7 +7250,7 @@ impl LlvmBackend {
     /// assumption when it is unknown, so this can only fix, never invent.
     fn value_width_or_target_width(&self, reg: &str) -> String {
         self.fun
-            .reg_value_ll
+            .value_llvm_ty
             .get(reg)
             .cloned()
             .unwrap_or_else(|| format!("i{}", self.ctx.int_bits))
@@ -7267,7 +7267,7 @@ impl LlvmBackend {
     /// keep their existing behaviour exactly.
     fn narrow_handle_to_target_width(&mut self, out: &mut String, indent: &str, reg: &str) -> String {
         let target = format!("i{}", self.ctx.int_bits);
-        match self.fun.reg_value_ll.get(reg).cloned() {
+        match self.fun.value_llvm_ty.get(reg).cloned() {
             Some(width) if width != target && width.starts_with('i') && target.starts_with('i') => {
                 self.convert_int_width(out, indent, reg, &width, &target)
                     .unwrap_or_else(|| reg.to_string())
@@ -10097,9 +10097,9 @@ impl LlvmBackend {
                 if carrier_replace.contains(&i) {
                     continue;
                 }
-                let reg_llvm_ty = self
+                let value_llvm_ty = self
                     .fun
-                    .reg_llvm_ty
+                    .value_llvm_ty
                     .get(&reg.name)
                     .cloned()
                     .unwrap_or_else(|| self.llvm_type(&reg.ty));
@@ -10120,7 +10120,7 @@ impl LlvmBackend {
                     let dst = param_tys
                         .get(i)
                         .map(|pt| self.llvm_type(pt))
-                        .unwrap_or_else(|| reg_llvm_ty.to_string());
+                        .unwrap_or_else(|| value_llvm_ty.to_string());
                     if dst != "i64" && dst.starts_with('i') {
                         let conv = self.fun.gen_reg();
                         writeln!(
@@ -10139,7 +10139,7 @@ impl LlvmBackend {
                 let param_llvm_ty = param_tys
                     .get(i)
                     .map(|pt| self.llvm_type(pt))
-                    .unwrap_or_else(|| reg_llvm_ty.to_string());
+                    .unwrap_or_else(|| value_llvm_ty.to_string());
                 // 2026-07-30: Ptr values are stored as i64 internally (ptrtoint at
                 // function entry). Convert back to LLVM ptr when the function expects
                 // ptr but the register's Briev type is Ptr (meaning it's an i64 handle).
@@ -10157,18 +10157,18 @@ impl LlvmBackend {
                 // f32 pattern as a double, and the resulting garbage drove a
                 // division-by-zero guard into `llvm.trap`. Same rule as the
                 // term-return and cast-step sites: fp_cast_op decides.
-                if let Some(op) = super::fp_cast_op(&reg_llvm_ty, &param_llvm_ty) {
+                if let Some(op) = super::fp_cast_op(&value_llvm_ty, &param_llvm_ty) {
                     let conv = self.fun.gen_reg();
                     writeln!(
                         out,
                         "{}{} = {} {} {} to {}",
-                        indent, conv, op, reg_llvm_ty, reg.name, param_llvm_ty
+                        indent, conv, op, value_llvm_ty, reg.name, param_llvm_ty
                     )
                     .ok();
                     call_args.push(format!("{} {}", param_llvm_ty, conv));
                     continue;
                 }
-                if param_llvm_ty == "ptr" && reg_llvm_ty == "i64" && matches!(reg.ty, Type::Ptr(_))
+                if param_llvm_ty == "ptr" && value_llvm_ty == "i64" && matches!(reg.ty, Type::Ptr(_))
                 {
                     // 2026-10-21 (pointer provenance): marshal a raw Ptr
                     // argument through the SAME canonical ptr used by its
@@ -10178,19 +10178,19 @@ impl LlvmBackend {
                     let conv = self.canonical_ptr(out, indent, &reg.name);
                     call_args.push(format!("ptr {}", conv));
                 } else if param_llvm_ty == "ptr"
-                    && (reg_llvm_ty == "i64"
+                    && (value_llvm_ty == "i64"
                         || matches!(reg.ty, Type::Ptr(_))
                         || matches!(reg.ty, Type::Function(_, _)))
                 {
                     let conv = self.fun.gen_reg();
                     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, conv, reg.name).ok();
                     call_args.push(format!("ptr {}", conv));
-                } else if param_llvm_ty == "i64" && reg_llvm_ty == "ptr" {
+                } else if param_llvm_ty == "i64" && value_llvm_ty == "ptr" {
                     let conv = self.fun.gen_reg();
                     writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, conv, reg.name).ok();
                     call_args.push(format!("i64 {}", conv));
                 } else {
-                    call_args.push(format!("{} {}", reg_llvm_ty, reg.name));
+                    call_args.push(format!("{} {}", value_llvm_ty, reg.name));
                 }
             }
         } else {
@@ -10240,7 +10240,7 @@ impl LlvmBackend {
                 }
                 let actual_ty = self
                     .fun
-                    .reg_llvm_ty
+                    .value_llvm_ty
                     .get(&reg.name)
                     .cloned()
                     .unwrap_or_else(|| self.llvm_type(&reg.ty));
@@ -10251,7 +10251,7 @@ impl LlvmBackend {
                     .unwrap_or_else(|| actual_ty.clone());
                 let reg_is_ptr = self
                     .fun
-                    .reg_value_ll
+                    .value_llvm_ty
                     .get(&reg.name)
                     .map(|w| w == "ptr")
                     .unwrap_or(false);
@@ -13050,7 +13050,7 @@ impl LlvmBackend {
                 if matches!(first.lane, LaneKind::Bitcast | LaneKind::PtrToInt) {
                     let have = self
                         .fun
-                        .reg_value_ll
+                        .value_llvm_ty
                         .get(&src.name)
                         .cloned()
                         .unwrap_or_else(|| self.ptr_int_ty());
@@ -13074,7 +13074,7 @@ impl LlvmBackend {
                         )
                         .ok();
                         self.fun
-                            .reg_value_ll
+                            .value_llvm_ty
                             .insert(v.to_string(), target_ll.clone());
                         return Some(TypedRegister {
                             name: v.to_string(),
@@ -13091,7 +13091,7 @@ impl LlvmBackend {
         let src_ll = self.llvm_type(&src.ty);
         if matches!(target, Type::Ptr(_)) && src_ll == "i64" {
             self.fun
-                .reg_value_ll
+                .value_llvm_ty
                 .insert(src.name.clone(), "i64".to_string());
             return Some(TypedRegister {
                 name: src.name.clone(),
@@ -13134,7 +13134,7 @@ impl LlvmBackend {
             // Cast lanes stamp Briev target types on values whose LLVM width
             // differs (e.g. i64 handles stamped Ptr); width adapters must not
             // guess from the stamped type.
-            self.fun.reg_value_ll.insert(dst.clone(), dst_ll.clone());
+            self.fun.record_value_width(dst.clone(), dst_ll.clone());
             match &step.lane {
                 crate::casting::graph::LaneKind::Bitcast
                     if (cur_ll.as_str(), dst_ll.as_str()) == ("double", "i64") =>
@@ -13523,7 +13523,7 @@ impl LlvmBackend {
                     // even as the last step (where the generic recorder stamps
                     // the Briev target's ptr type). Width adapters need the
                     // actual width, not the stamped one.
-                    self.fun.reg_value_ll.insert(dst.clone(), "i64".to_string());
+                    self.fun.record_value_width(dst.clone(), "i64".to_string());
                 }
                 crate::casting::graph::LaneKind::IntToPtr => {
                     // 2026-08-28: identity when the register is already a

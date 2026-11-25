@@ -3828,7 +3828,7 @@ pub(crate) fn emit_assign_statement(
                     // graph type; retire with uniformly typed LLVM values.
                     let actual = backend
                         .fun
-                        .reg_llvm_ty
+                        .value_llvm_ty
                         .get(&val.name)
                         .cloned()
                         .unwrap_or_else(|| backend.llvm_type(&val.ty));

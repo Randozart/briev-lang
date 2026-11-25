@@ -1457,9 +1457,6 @@ pub struct FunctionContext {
     // Without this, let bindings (e.g. `let f0: Float = b0 * input;`) would
     // return Type::int() because f0 is not in field_index_map.
     pub last_val_types: HashMap<String, Type>,
-    /// 2026-10-27: actual LLVM register widths for values whose Briev type
-    /// maps to a fallback width (notably enum/Result state loads).
-    pub reg_llvm_ty: HashMap<String, String>,
 
     /// 2026-08-06 (Phase 8): closures bound by `let` in this function. A call
     /// to a closure name INLINES the body with the params bound to the arg
@@ -1512,12 +1509,30 @@ pub struct FunctionContext {
     // Keyed by the underlying SSA register (%t{N}) or alloca name.
     // Propagated through let-bindings in emit_statement.
     pub alloc_strategies: HashMap<String, AllocStrategy>,
-    /// 2026-11-12: ACTUAL LLVM register width for cast-step results. Cast
-    /// lanes stamp the Briev target type on registers whose value width
-    /// differs (the "value is i64, type says Ptr" invariant), so width
-    /// adapters (Free#'s handle materialization) consult this map instead of
-    /// guessing from the stamped type. Recorded by emit_cast_steps.
-    pub reg_value_ll: HashMap<String, String>,
+    /// The LLVM type each register was actually emitted as, keyed by SSA name.
+    ///
+    /// This is the ONE width channel (2026-11-25, wave-11 S1). It holds two
+    /// facts that used to live in separate maps three weeks apart, which is how
+    /// they came to disagree:
+    ///
+    /// - 2026-10-27 (`reg_llvm_ty`): widths for values whose Briev type maps to a
+    ///   fallback width — notably enum/Result state loads.
+    /// - 2026-11-12 (`reg_value_ll`): widths for cast-step results. Cast lanes
+    ///   stamp the Briev target type on registers whose value width differs (the
+    ///   "value is i64, type says Ptr" invariant), so width adapters (`Free#`'s
+    ///   handle materialization) consult this map instead of guessing from the
+    ///   stamped type.
+    ///
+    /// SOUNDNESS RULE (issue #119): a register name is only meaningful within one
+    /// body, so this map MUST be cleared wherever register names restart —
+    /// otherwise `%t61 = ptr` from the previous body is applied to the next one's
+    /// `%t61` and a handle passes through unconverted. It is therefore cleared in
+    /// both `reset_register_names` and `clear_locals`.
+    ///
+    /// Do not read it to answer "is this value a pointer?" — ask the Briev type.
+    /// A `"ptr"` entry here means "this *form* was emitted as a pointer", not
+    /// "this value is pointer-like". See `pointer_from_handle`.
+    pub value_llvm_ty: HashMap<String, String>,
 
     // 2026-07-18: Fat pointer provenance — base, offset, remaining registers.
     // Keyed by the fat pointer register name. Populated by emit_expr when
@@ -1550,7 +1565,7 @@ impl FunctionContext {
     /// Start a new SSA register namespace for a function body.
     ///
     /// 2026-11-17 (issue #119): `gen_reg()` derives `%t{n}` from `txn_counter`,
-    /// so every map keyed by register NAME must reset with it. `reg_value_ll`
+    /// so every map keyed by register NAME must reset with it. `value_llvm_ty`
     /// did not, and that leak was a false claim about width: `iter_chain_loop`
     /// (`lib/std/iterator.bv`) starts again at `%t0` while the map still held
     /// `%t61 = ptr` from the previous body — so `canonical_ptr` passed an i64
@@ -1560,7 +1575,18 @@ impl FunctionContext {
     /// only meaningful within one body, so the width channel resets with it.
     pub fn reset_register_names(&mut self) {
         self.txn_counter = 0;
-        self.reg_value_ll.clear();
+        self.value_llvm_ty.clear();
+    }
+
+    /// Record the LLVM type a register was emitted as. The single writer for
+    /// the width channel — call this instead of touching `value_llvm_ty`.
+    pub fn record_value_width(&mut self, reg: impl Into<String>, llvm_ty: impl Into<String>) {
+        self.value_llvm_ty.insert(reg.into(), llvm_ty.into());
+    }
+
+    /// The recorded LLVM type of a register, if it was recorded.
+    pub fn value_width(&self, reg: &str) -> Option<&str> {
+        self.value_llvm_ty.get(reg).map(String::as_str)
     }
 
     pub fn gen_reg(&mut self) -> String {
@@ -1673,7 +1699,6 @@ impl FunctionContext {
             volatile_locals: std::collections::HashSet::new(),
             member_result: None,
             last_val_types: HashMap::new(),
-            reg_llvm_ty: HashMap::new(),
             closure_lets: HashMap::new(),
             rotation_fields: HashSet::new(),
             active_vector_groups: Vec::new(),
@@ -1684,7 +1709,7 @@ impl FunctionContext {
             chimera_map: HashMap::new(),
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
-            reg_value_ll: HashMap::new(),
+            value_llvm_ty: HashMap::new(),
             fat_ptrs: HashMap::new(),
             canonical_ptrs: HashMap::new(),
             state_ptr_cache: HashMap::new(),
@@ -1729,7 +1754,7 @@ impl FunctionContext {
         self.let_binding_types.clear();
         self.let_original_types.clear();
         self.boxed_scalar_regs.clear();
-        self.reg_value_ll.clear();
+        self.value_llvm_ty.clear();
         self.task_handle_regs.clear();
         self.task_handle_names.clear();
         self.is_task_segment = false;
@@ -1773,7 +1798,7 @@ impl FunctionContext {
         // here isolates the passes.
         self.last_val_temps.clear();
         self.last_val_types.clear();
-        self.reg_llvm_ty.clear();
+        self.value_llvm_ty.clear();
         // 2026-10-20 (pointer provenance): canonical conversions are keyed by
         // per-function SSA names and state-field cache entries; they must not
         // leak across an emission pass or function.
@@ -1903,7 +1928,14 @@ impl FunctionGuard {
         let txn_ct = fun.txn_counter;
         let arena_ct = fun.arena_counter;
         let within_ct = fun.within_counter;
+        // 2026-11-25 (wave-11 S1): the width channel is monotonic for the same
+        // reason the counters are — register names only ever move FORWARD in this
+        // function, so a record written inside the inlined body stays accurate and
+        // discarding it (which `*fun = self.saved` did) would silently downgrade a
+        // known width to "derive from the type" on the way out.
+        let widths = std::mem::take(&mut fun.value_llvm_ty);
         *fun = self.saved;
+        fun.value_llvm_ty = widths;
         fun.txn_counter = txn_ct;
         fun.arena_counter = arena_ct;
         fun.within_counter = within_ct;

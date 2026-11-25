@@ -2480,7 +2480,7 @@ impl LlvmBackend {
         // Briev type, which is `Ptr` for both shapes.
         let already_ptr = self
             .fun
-            .reg_value_ll
+            .value_llvm_ty
             .get(int_reg)
             .map(|w| w == "ptr")
             .unwrap_or(false);

@@ -15422,11 +15422,11 @@ fn a_new_function_body_does_not_inherit_register_widths() {
         LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     backend
         .fun
-        .reg_value_ll
+        .value_llvm_ty
         .insert("%t61".to_string(), "ptr".to_string());
     backend.fun.reset_register_names();
     assert!(
-        backend.fun.reg_value_ll.is_empty(),
+        backend.fun.value_llvm_ty.is_empty(),
         "a stale width record would be applied to the NEXT body's %t61"
     );
     // The two are one invariant: names restart, so the records keyed by them must
@@ -15548,4 +15548,50 @@ fn inline_asm_syscalls_have_one_operand_per_input_constraint() {
             "{triple}: the syscall number needs a register constraint: {out}"
         );
     }
+}
+
+/// 2026-11-25 (wave-11 S1, I-2): there is exactly ONE width channel and exactly
+/// one writer for it. Before this, `reg_llvm_ty` (2026-10-27) and `reg_value_ll`
+/// (2026-11-12) recorded the same fact under two names, three weeks apart, which
+/// is how they came to disagree — and a value's physical width disagreeing with
+/// its recorded width is the class behind issue #119 and PR #164's regression.
+///
+/// Asserted over the SOURCE, because the invariant is "no new channel appears",
+/// which a behavioural test cannot see.
+#[test]
+fn there_is_one_width_channel_with_one_writer() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/llvm");
+    let mut sources = String::new();
+    for entry in std::fs::read_dir(&root).expect("read backend dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        sources.push_str(&std::fs::read_to_string(&path).expect("read source"));
+    }
+    // Built from fragments so this test does not match its own literals (the
+    // same trick the wave-9 spelling tests use).
+    let retired_names = [
+        format!("reg_{}", "llvm_ty"),
+        format!("reg_{}", "value_ll"),
+    ];
+    for retired in retired_names {
+        let live = sources
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(retired.as_str()))
+            .count();
+        assert_eq!(
+            live, 0,
+            "`{retired}` is retired; the one channel is `value_llvm_ty` (wave-11 S1)"
+        );
+    }
+    // Fragment-built for the same reason: this assertion's own text would
+    // otherwise be the second match.
+    let direct_write_needle = format!("value_llvm_ty{}insert(", ".");
+    let direct_writes = sources.matches(direct_write_needle.as_str()).count();
+    assert_eq!(
+        direct_writes, 1,
+        "the only `.insert(` on the width channel lives in `record_value_width`"
+    );
 }

@@ -999,7 +999,7 @@ pub(crate) fn adapt_to_ptr_width(
         //   3. Unmapped `Custom` protocol value (String/Data materialized by
         //      an identifier load) or a recorded ptr — an ACTUAL pointer
         //      register: ptrtoint to width.
-        let recorded = backend.fun.reg_value_ll.get(&reg.name).cloned();
+        let recorded = backend.fun.value_llvm_ty.get(&reg.name).cloned();
         if recorded.as_deref() == Some("i64") {
             if ity == "i64" {
                 return reg.name.clone();

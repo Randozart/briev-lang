@@ -2831,7 +2831,7 @@ impl LlvmBackend {
         // (`store i64 %t0, ptr %ip_0`). The recorded width decides.
         if self
             .fun
-            .reg_value_ll
+            .value_llvm_ty
             .get(&reg.name)
             .map(|w| w == "ptr")
             .unwrap_or(false)
@@ -3397,7 +3397,7 @@ impl LlvmBackend {
         // 2026-11-24 (BUGS.md wasm32 width class): record the loaded register's
         // physical width so handle consumers derive instead of assuming the
         // target word.
-        self.fun.reg_value_ll.insert(val.clone(), llvm_ty.clone());
+        self.fun.record_value_width(val.clone(), llvm_ty.clone());
         // 2026-10-20 (pointer provenance): Ptr-field caching is seeded once
         // at function entry by `preload_state_ptr_fields`; a load after a
         // store is emitted fresh and not re-cached, so it cannot be reused
@@ -3639,7 +3639,7 @@ impl LlvmBackend {
         }
         let from = self
             .fun
-            .reg_value_ll
+            .value_llvm_ty
             .get(val)
             .cloned()
             .unwrap_or_else(|| format!("i{}", self.ctx.int_bits));
@@ -3720,7 +3720,7 @@ impl LlvmBackend {
                 // register width and convert only when it differs; an unknown
                 // width still passes through, so the ptr-typed arms below can
                 // never double-ptrtoint a handle.
-                let recorded = self.fun.reg_value_ll.get(val).cloned();
+                let recorded = self.fun.value_llvm_ty.get(val).cloned();
                 if let Some(from) = recorded {
                     if from != *expected_llvm_ty {
                         if let Some(converted) =

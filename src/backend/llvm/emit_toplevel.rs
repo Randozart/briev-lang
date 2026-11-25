@@ -4253,7 +4253,7 @@ impl LlvmBackend {
                 // or the store writes `ptr` into an i64 slot.
                 let val_ty = self
                     .fun
-                    .reg_value_ll
+                    .value_llvm_ty
                     .get(&val_reg.name)
                     .cloned()
                     .unwrap_or_else(|| self.llvm_type(&val_reg.ty));
@@ -5324,11 +5324,11 @@ impl LlvmBackend {
                 // `ptr` operand — invalid IR (`%ac0` defined i64, expected ptr;
                 // BUGS.md). Downstream call sites read reg_llvm_ty to choose the
                 // ptr/i64 conversion, so this must match the emitted value.
-                self.fun.reg_llvm_ty.insert(conv.clone(), "i64".to_string());
+                self.fun.record_value_width(conv.clone(), "i64".to_string());
                 // 2026-11-14 (#96): ABI pointer parameters use i64 handles
                 // even on wasm32; cast-width adaptation needs the emitted type.
                 self.fun
-                    .reg_value_ll
+                    .value_llvm_ty
                     .insert(conv.clone(), "i64".to_string());
                 // 2026-10-20 (pointer provenance): the raw ABI pointer is
                 // already the canonical ptr for this argument; keep it instead
@@ -8327,8 +8327,8 @@ impl LlvmBackend {
                 // 2026-11-13 (aggregate-arg ABI): the handle is a real i64 SSA
                 // value — record it so outbound call marshalling converts it
                 // back to ptr instead of forwarding an i64 as a ptr operand.
-                self.fun.reg_llvm_ty.insert(ac.clone(), "i64".to_string());
-                self.fun.reg_value_ll.insert(ac.clone(), "i64".to_string());
+                self.fun.record_value_width(ac.clone(), "i64".to_string());
+                self.fun.record_value_width(ac.clone(), "i64".to_string());
                 conv = ac;
             } else if param_llvm_ty == "i64" {
                 conv = raw;
