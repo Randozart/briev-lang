@@ -1,3 +1,45 @@
+## 2026-11-25 — wasm32 IR debt: 12, not 27 — measured, gated, and ratcheted (P0-P3 landed; 12 open)
+
+The debt was overstated by more than half because the gate counted the wrong
+thing. Corrected measurement at `f63ef64c2`, over 129 programs (100 `.bv` fixtures
++ 29 `.rbv` web-path programs):
+
+| | count |
+|---|---|
+| checked | 114 |
+| **invalid IR** (the debt) | **12** |
+| refused for the target (policy, with a diagnostic) | 15 |
+| `.rbv` web path (the shipped surface) | **29 / 29 clean** |
+
+A **refusal** is not a defect: the compiler will not emit a module it cannot prove
+terminates for that target ("walked the live program … no endprogram, halt, or trap
+is reachable"), so no invalid module is ever claimed. Conflating the two inflated a
+number people plan against. The gate now reports them on separate lines, and the
+15 are their own open question about wasm32's termination surface — not width bugs.
+
+**The 12, classified:** eight are a word-width register used where a 32-bit width
+was declared ("`%t8` is defined as `i64` but this instruction uses it as `i32`" —
+`store i64 %t8` where `%t8` IS the wasm32 word), two are a `ptr` register used as
+`i64` (`arena_smoke`, `plain_ptr_smoke`), two the inverse (`float16_roundtrip`,
+`state_column_slice`). Each needs its own emitter site diagnosed; they are not one
+bug, and patching them by shape is how this class got three lives.
+
+**What now prevents the class from regrowing:**
+
+* `scripts/cross_target_ir.sh` covers the web path, runs in PR CI for both shipped
+  triples, and enforces a declared baseline that may only decrease
+  (`config/cross-target-baseline.toml`: wasm32 12, aarch64 0).
+* `tests/width_literal_ratchet.rs` + `config/width-literals.toml`: a per-file
+  budget for hardcoded `i64`, failing on an increase (naming the file and delta) and
+  on a stale record. Only `i64` counts — `i32` is frequently correct — and lines
+  calling `briev_*` are excluded because that ABI is fixed-width on every triple.
+* `mistyped_operands` now covers call arguments, integer arithmetic and `icmp`
+  (whose predicate sits before the type).
+
+**Process note, recorded because it cost time:** a bisect that compared against a
+stale `--out` directory reported a difference that did not exist, and the channel
+clearing it "implicated" was fine. Compare two FRESH directories.
+
 ## 2026-11-25 — wasm32 is a SHIPPED target with the weakest gate in the project (P0 CLOSED; P1-P3 open)
 
 **Owner decision:** wasm32 is the ship target for the web build — `.rbv` compiles
