@@ -319,7 +319,20 @@ pub fn emit_intrinsic_call(
             let env = backend.fun.gen_reg();
             writeln!(out, "{}{} = load ptr, ptr @__briev_environ", indent, env).ok();
             let ptr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, env).ok();
+            // 2026-11-25 (stage W): the result is declared `Int`, so it must be
+            // emitted at Int's width. It was hardcoded `i64`, which is invisible on
+            // x86-64 and wrong on wasm32 — the value then reached
+            // `call i32 @briev_getenv_int_impl(i32 %t1, i32 %t7)` with `%t7` an i64
+            // register, and the emitted-module check rejected the program. Ask the
+            // target once (`int_width`) instead of writing the width down.
+            let int_ll = int_width(backend);
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr {} to {}",
+                indent, ptr, env, int_ll
+            )
+            .ok();
+            backend.fun.record_value_width(ptr.clone(), int_ll);
             return BTypedRegister {
                 name: ptr.to_string(),
                 ty: Type::int(),
@@ -334,8 +347,19 @@ pub fn emit_intrinsic_call(
         "Argc#" => {
             let n = backend.fun.gen_reg();
             writeln!(out, "{}{} = load i32, ptr @__briev_argc", indent, n).ok();
+            // 2026-11-25 (stage W): same rule as Environ#/Args# — `Argc#` is
+            // declared `Int`. Widening to a literal i64 is only correct where Int
+            // IS i64; on a 32-bit target the loaded i32 already is the result.
+            let int_ll = int_width(backend);
+            if int_ll == "i32" {
+                return BTypedRegister {
+                    name: n.to_string(),
+                    ty: Type::int(),
+                };
+            }
             let z = backend.fun.gen_reg();
-            writeln!(out, "{}{} = zext i32 {} to i64", indent, z, n).ok();
+            writeln!(out, "{}{} = zext i32 {} to {}", indent, z, n, int_ll).ok();
+            backend.fun.record_value_width(z.clone(), int_ll);
             return BTypedRegister {
                 name: z.to_string(),
                 ty: Type::int(),
@@ -345,7 +369,14 @@ pub fn emit_intrinsic_call(
             let argv = backend.fun.gen_reg();
             writeln!(out, "{}{} = load ptr, ptr @__briev_argv", indent, argv).ok();
             let ptr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, argv).ok();
+            let int_ll = int_width(backend);
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr {} to {}",
+                indent, ptr, argv, int_ll
+            )
+            .ok();
+            backend.fun.record_value_width(ptr.clone(), int_ll);
             return BTypedRegister {
                 name: ptr.to_string(),
                 ty: Type::int(),
@@ -838,8 +869,17 @@ fn emit_arg_i64(backend: &mut LlvmBackend, out: &mut String, arg: &Expr, indent:
 /// i64 value feeding `icmp slt i32` is invalid IR. x86_64 (int_bits=64) emits
 /// `trunc i64 to i64`, folded to a no-op by LLVM. NOT for pointer/address
 /// results (Malloc/Alloc/custom alloc) — those stay i64.
+/// The LLVM spelling of `Int` for the active target (`i32` on wasm32, else `i64`).
+///
+/// 2026-11-25: three intrinsic arms (Environ#, Argc#, Args#) each wrote the literal
+/// `i64` where they meant "an Int". A literal width is invisible on x86-64 and wrong
+/// on every 32-bit target, so the question is asked once, here.
+fn int_width(backend: &LlvmBackend) -> String {
+    format!("i{}", backend.ctx.int_bits)
+}
+
 fn narrow_int_result(backend: &mut LlvmBackend, out: &mut String, v: &str, indent: &str) -> String {
-    let width = format!("i{}", backend.ctx.int_bits);
+    let width = int_width(backend);
     if width == "i64" {
         return v.to_string();
     }
@@ -4278,7 +4318,7 @@ fn emit_intrinsic_print(
                 // A boxed Char param is already i64 — pass directly.
                 let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-            let ret_ty = print_call_ret_ty(backend, &sym);
+                let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
                     "{}{} = call {ret_ty} @{}({}i64 {})",
@@ -4292,7 +4332,7 @@ fn emit_intrinsic_print(
                 writeln!(out, "{}{} = zext i32 {} to i64", indent, wide, a.name).ok();
                 let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-            let ret_ty = print_call_ret_ty(backend, &sym);
+                let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
                     "{}{} = call {ret_ty} @{}({}i64 {})",
@@ -4306,7 +4346,7 @@ fn emit_intrinsic_print(
                 // A boxed Bool param is already i64 0/1 — pass directly.
                 let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-            let ret_ty = print_call_ret_ty(backend, &sym);
+                let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
                     "{}{} = call {ret_ty} @{}({}i64 {})",
@@ -4320,7 +4360,7 @@ fn emit_intrinsic_print(
                 writeln!(out, "{}{} = zext i8 {} to i64", indent, wide, a.name).ok();
                 let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-            let ret_ty = print_call_ret_ty(backend, &sym);
+                let ret_ty = print_call_ret_ty(backend, &sym);
                 writeln!(
                     out,
                     "{}{} = call {ret_ty} @{}({}i64 {})",
