@@ -743,6 +743,12 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         }),
         // 2026-11-20 (wave-6 W6-3): CLOCK_MONOTONIC nanoseconds. Domain
         // spelled [0, i64::MAX] — an honest wrap bound at ~292y uptime.
+        //
+        // 2026-11-25 (P2b): the return stays `Int` — `Bit<64>` is not assignable
+        // to `Int`, and the value IS an Int to every program that uses it. The
+        // wasm32 mismatch this note used to describe (`icmp slt i32` over two i64
+        // registers) is fixed where it belongs: the comparison asks the OPERANDS
+        // for their width instead of re-deriving it from the Briev type.
         "ClockMonotonicNs#" => Some(Signature {
             name: "ClockMonotonicNs#",
             parameters: vec![],
