@@ -5979,8 +5979,7 @@ impl LlvmBackend {
             }
         }
         // Init
-        self.fun.txn_counter = 0;
-        self.fun.within_counter = 0;
+        self.fun.begin_function();
         self.emit_init_state(&mut out);
         self.emit_persistent_cell_ticks(&mut out);
         writeln!(out).ok();
@@ -6639,8 +6638,7 @@ impl LlvmBackend {
                     self.warnings
                         .push("info: program dispatched via direct SSA loop".into());
                     let boot = self.bootstrap_txn_of(items);
-                    self.fun.txn_counter = 0;
-                    self.fun.within_counter = 0;
+                    self.fun.begin_function();
                     self.emit_ssa_main(&mut out, &txns, has_wake_triggers, boot);
                 } else if !txns.is_empty() {
                     // reactor loop fallback — only reached for async dispatch or MMIO
@@ -6666,8 +6664,7 @@ impl LlvmBackend {
                     if has_wake_triggers {
                         writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
                     }
-                    self.fun.txn_counter = 0;
-                    self.fun.within_counter = 0;
+                    self.fun.begin_function();
                     // 2026-10-17 (readiness gate 1): async nodes' watchdog specs
                     // for the phase gate (emit_async_phase needs &mut self, so
                     // the contracts ride in ctx).
@@ -6691,8 +6688,7 @@ impl LlvmBackend {
                     // body at the head, dispatch loop parks in wfi (vectored-
                     // only frontier — the trap wakes the core).
                     let boot = self.bootstrap_txn_of(items);
-                    self.fun.txn_counter = 0;
-                    self.fun.within_counter = 0;
+                    self.fun.begin_function();
                     self.warnings.push(
                     "info: pure-kernel program — reactor parks in wfi; all transitions are machine-serviced".into(),
                 );
@@ -6710,8 +6706,7 @@ impl LlvmBackend {
                     writeln!(out, "}}").ok();
                     writeln!(out).ok();
                     // Main
-                    self.fun.txn_counter = 0;
-                    self.fun.within_counter = 0;
+                    self.fun.begin_function();
                     if !self.ctx.no_main {
                         self.emit_main(&mut out, false);
                     }

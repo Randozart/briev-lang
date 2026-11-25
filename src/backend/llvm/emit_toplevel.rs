@@ -5397,7 +5397,7 @@ impl LlvmBackend {
                 self.fun.let_binding_types.insert(n.clone(), t.clone());
             }
         }
-        self.fun.txn_counter = 0;
+        self.fun.restart_register_names();
         self.fun.terminated = false;
         // 2026-06-26: in_callable_txn must be true so Statement::Term in the
         // defn body emits a ret instruction (emit_stmt.rs line 78). Without
@@ -8754,7 +8754,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.txn_counter = 0;
+        self.fun.restart_register_names();
         self.fun.clear_locals();
         // 2026-06-27: Clear ssa_old int/float regs so identifier lookups fall
         // through to GEP+load from %state. Without this, stale entries from a
@@ -8820,7 +8820,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.txn_counter = 0;
+        self.fun.restart_register_names();
         self.fun.clear_locals();
         // 2026-06-27: Clear ssa_old int/float regs so identifier lookups fall
         // through to GEP+load from %state (same rationale as emit_pre_function).
@@ -8956,7 +8956,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.txn_counter = 0;
+        self.fun.restart_register_names();
         self.fun.clear_local_bindings();
         self.fun.let_binding_types.clear();
         self.fun.let_original_types.clear();
@@ -8986,7 +8986,7 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "  entry:").ok();
-        self.fun.txn_counter = 0;
+        self.fun.restart_register_names();
         self.fun.clear_local_bindings();
         self.fun.let_binding_types.clear();
         self.fun.let_original_types.clear();

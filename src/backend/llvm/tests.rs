@@ -15595,3 +15595,88 @@ fn there_is_one_width_channel_with_one_writer() {
         "the only `.insert(` on the width channel lives in `record_value_width`"
     );
 }
+
+/// The register namespace is restarted through a named method, never by writing
+/// the counter.
+///
+/// Eleven sites used to zero `txn_counter` inline. Fourteen restarts and one
+/// channel clear is how issue #119, #163, #164 and the wave-11 S2 regression all
+/// happened: a name-keyed map can only be as sound as its agreement with the
+/// namespace that names it, and an inline `= 0` is invisible to every reader of
+/// the code that owns the invariant.
+///
+/// Asserted over the SOURCE, because the invariant is "no new reset path
+/// appears", which no behavioural test can see.
+#[test]
+fn no_path_resets_the_register_namespace_inline() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/llvm");
+    let mut offenders = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(root)];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read backend dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read source");
+            for (n, line) in text.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") || !code.contains("txn_counter") {
+                    continue;
+                }
+                // Only RESETS are the subject here. `+= 1` bumps outside
+                // `FunctionContext` are a separate (larger) cleanup: they are
+                // legitimate minting, and they do not orphan the channel.
+                let is_reset = code.contains("txn_counter = 0")
+                    || code.contains("txn_counter=0");
+                if !is_reset {
+                    continue;
+                }
+                let allowed = path.ends_with("context.rs") || path.ends_with("tests.rs");
+                if !allowed {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the register counter is only written inside `FunctionContext` \
+         (`begin_function`, `restart_register_names`, `reset_register_names`, and the \
+         minters). Reset it through one of those — an inline write restarts the \
+         namespace without the representation channel:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// Clearing the channel at a namespace restart is DELIBERATELY not done yet, and
+/// this test records why so nobody "fixes" it into a regression.
+///
+/// Two facts make the naive clear wrong today:
+///  * `%ac{i}` names are position-derived (`format!("%ac{}", i)` in
+///    `emit_toplevel.rs`), not counter-derived — so they are re-minted
+///    identically in every body and their recorded width stays true. Clearing all
+///    of it produced `'%ac0' defined with type 'i64' but expected 'i32'` on
+///    wasm32 (`rbv_list_each_wasm`).
+///  * several writers stamp a value's CANONICAL width rather than the width it was
+///    emitted at (`emit_expr.rs:13137` derives from the cast step's category).
+///    While that is true a stale entry is sometimes the only entry matching the
+///    real register, so dropping it makes wasm32 worse
+///    (`unicode_search_smoke`).
+///
+/// P2 makes records describe their emission; that is the precondition for the
+/// clear. This test only pins the current, documented state.
+#[test]
+fn begin_function_documents_why_it_does_not_clear_the_channel() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/llvm/context.rs");
+    let text = std::fs::read_to_string(path).expect("read context.rs");
+    assert!(
+        text.contains("The channel is deliberately NOT cleared here"),
+        "the reasoning for not clearing the channel in `begin_function` was removed; \
+         it is the only record of two measured wasm32 failures"
+    );
+}

@@ -3643,8 +3643,10 @@ impl LlvmBackend {
         briev_ty: &Type,
         slot_llvm_ty: &str,
     ) -> String {
-        let handle_like = matches!(briev_ty, Type::Ptr(_) | Type::PtrConst(_) | Type::LayoutPtr(_))
-            || matches!(briev_ty, Type::Custom(n) if self.ctx.struct_types.contains_key(n) || self.ctx.obj_types.contains(n))
+        let handle_like = matches!(
+            briev_ty,
+            Type::Ptr(_) | Type::PtrConst(_) | Type::LayoutPtr(_)
+        ) || matches!(briev_ty, Type::Custom(n) if self.ctx.struct_types.contains_key(n) || self.ctx.obj_types.contains(n))
             || matches!(briev_ty, Type::Applied(n, _) if self.ctx.struct_types.contains_key(n) || self.ctx.obj_types.contains(n));
         if !handle_like {
             return val.to_string();

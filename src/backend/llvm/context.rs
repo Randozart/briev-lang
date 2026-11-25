@@ -1573,9 +1573,63 @@ impl FunctionContext {
     /// `getelementptr i64, ptr %t61`, invalid IR (`c_driver_node`:
     /// `'%t61' defined with type 'i64' but expected 'ptr'`). A register name is
     /// only meaningful within one body, so the width channel resets with it.
+    ///
+    /// 2026-11-25 (wasm32 supported-target plan, P1): the 2026-11-17 fix above
+    /// was applied to ONE of the reset paths. Eleven other sites zeroed
+    /// `txn_counter` inline, and each of them orphaned the width channel — which
+    /// is how the same bug came back as #163, #164, and again inside wave-11 S2
+    /// (`store ptr %t11` where `%t11 = trunc i64 %t10 to i32`). A namespace
+    /// restart and a channel restart are one event, so there is now one
+    /// function that performs it and no site may zero the counter directly.
+    /// Pinned by `no_path_resets_the_namespace_without_the_channel`.
     pub fn reset_register_names(&mut self) {
         self.txn_counter = 0;
         self.value_llvm_ty.clear();
+    }
+
+    /// Restart the register NAMES without ending the body.
+    ///
+    /// 2026-11-25 (P1): five emitters outline a body into the same buffer and
+    /// restart `txn_counter` there while deliberately keeping `within_counter` —
+    /// the `within` block numbering continues across them. Collapsing those into
+    /// `begin_function` was not semantics-preserving: renumbering `within` moved
+    /// register names, and `unicode_search_smoke` promptly emitted a `trunc i64`
+    /// of a 32-bit register on wasm32. So the narrow reset exists, is named, and
+    /// is the one to reach for unless the body genuinely ended.
+    ///
+    /// Neither reset touches the representation channel — see `begin_function`.
+    pub fn restart_register_names(&mut self) {
+        self.txn_counter = 0;
+    }
+
+    /// Begin a new function body: the namespace restarts here.
+    ///
+    /// This is the ONLY place `txn_counter` may be zeroed. Three pieces of
+    /// per-function naming state move together — the register counter, the
+    /// `within` block counter, and the recorded representation of every register
+    /// — because a name is only meaningful inside one body. Splitting them is
+    /// exactly the bug this method exists to make unwritable.
+    pub fn begin_function(&mut self) {
+        self.txn_counter = 0;
+        self.within_counter = 0;
+        // The channel is deliberately NOT cleared here, and the reason is
+        // measured rather than stylistic: the channel is written in places that
+        // stamp a value's CANONICAL width instead of the width it was emitted at
+        // (`emit_expr.rs:13137` derives `dst_ll` from the cast step's category,
+        // so an `Int` step stamps `i64` over an `zext i8 -> i32`; `:13526` stamps
+        // `i64` after a `ptrtoint`). While that is true, stale entries are not
+        // only noise — they are sometimes the only entry that happens to match
+        // the real register, and dropping them makes wasm32 worse, not better
+        // (`unicode_search_smoke`: `%t32 = trunc i64 %t31 to i32` where
+        // `%t31 = zext i8 %t22 to i32`).
+        //
+        // So the order is fixed: make every defining instruction record what it
+        // emitted (P2's job), and only then may this method drop the entries its
+        // counter minted. Registering WHICH names are counter-derived will come
+        // with that change, because the discrimination cannot be made from the
+        // name alone (`%ac{i}` is position-derived, `%t{n}` and `%tb{n}` are
+        // counter-derived) and a populated-but-unread provenance set would be a
+        // stub.
     }
 
     /// Record the LLVM type a register was emitted as. The single writer for
@@ -1826,8 +1880,7 @@ impl FunctionContext {
 
     /// Reset function state for a new function (keeps txn_counter if needed).
     pub fn reset(&mut self) {
-        self.txn_counter = 0;
-        self.within_counter = 0;
+        self.begin_function();
         self.clear_locals();
         self.terminated = false;
         self.returns_i64 = false;

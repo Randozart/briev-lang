@@ -498,8 +498,7 @@ multi-node SSA loop can honor the gate.",
         if has_wake_triggers {
             writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
         }
-        self.fun.txn_counter = 0;
-        self.fun.within_counter = 0;
+        self.fun.begin_function();
         if !self.ctx.no_main {
             self.emit_main(out, has_wake_triggers);
         }
