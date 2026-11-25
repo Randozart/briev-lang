@@ -179,7 +179,7 @@ pub fn emit_intrinsic_call(
                     indent, cwd_i
                 )
                 .ok();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cstr, cwd_i).ok();
+                backend.inttoptr_word(out, indent, &cstr, &cwd_i);
             } else {
                 writeln!(out, "{}{} = call ptr @__briev_getcwd()", indent, cstr).ok();
             }
@@ -424,7 +424,7 @@ pub fn emit_intrinsic_call(
         "Cast#" => return emit_intrinsic_cast(backend, out, v, args, indent),
         "Ptr#" => {
             let a = backend.emit_expr(out, &args[0], indent);
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, a.name).ok();
+            backend.inttoptr_word(out, indent, &v, &a.name);
             return BTypedRegister {
                 name: v.to_string(),
                 ty: Type::ptr(Type::int()),
@@ -913,6 +913,12 @@ fn emit_malloc(
         let width = backend.ptr_int_ty();
         writeln!(out, "{indent}{v}_p = inttoptr i64 {address} to ptr").ok();
         writeln!(out, "{indent}{v} = ptrtoint ptr {v}_p to {width}").ok();
+        // 2026-11-25 (S2): record what was emitted. This handle IS the target word
+        // (i32 on wasm32), and every consumer that only has a NAME — the inttoptr
+        // sites, above all — needs to know that or it guesses `i64` and emits
+        // `inttoptr i64 %t1` over an i32 register (nine invalid programs in the
+        // 2026-11-25 cross-target sweep, all rooted at an unrecorded malloc handle).
+        backend.fun.record_value_width(v.to_string(), &width);
         backend
             .fun
             .alloc_strategies
@@ -1411,6 +1417,9 @@ fn emit_malloc_inline(
     )
     .ok();
     writeln!(out, "{}{} = ptrtoint ptr %{}_p to {}", indent, v, name, ity).ok();
+    // 2026-11-25 (S2): the handle's own width, recorded where it is produced — see
+    // the arena branch above for why this record is load-bearing.
+    backend.fun.record_value_width(v.to_string(), &ity);
     backend
         .fun
         .alloc_strategies
@@ -1958,7 +1967,7 @@ fn emit_capacity(
     let p = backend.fun.gen_reg();
     let gep = backend.fun.gen_reg();
     let load = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, h).ok();
+    backend.inttoptr_word(out, indent, &p, &h);
     writeln!(
         out,
         "{}{} = getelementptr i8, ptr {}, i64 8",
@@ -2442,7 +2451,7 @@ fn emit_call_ptr(
     let cb_fp = backend.fun.gen_reg();
     writeln!(out, "{}{} = load i64, ptr {}", indent, cb_fp, cb_slot).ok();
     let cb_fn = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cb_fn, cb_fp).ok();
+    backend.inttoptr_word(out, indent, &cb_fn, &cb_fp);
     let mut full_args: Vec<String> = vec![format!("ptr {}", cb_slot)];
     full_args.extend(call_args);
     writeln!(
@@ -2481,7 +2490,7 @@ fn emit_len(
     }
     // Fallback: load length from string/list header slot 0.
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, arg_reg).ok();
+    backend.inttoptr_word(out, indent, &ptr, &arg_reg);
     writeln!(out, "{}{} = load i64, ptr {}", indent, v, ptr).ok();
     BTypedRegister {
         name: v.to_string(),
@@ -3005,7 +3014,7 @@ fn emit_atomic_load(
     let ord = ordering_arg(args, 1).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     writeln!(
         out,
         "{}{} = load atomic i64, ptr {} {}, align 8",
@@ -3028,7 +3037,7 @@ fn emit_atomic_store(
     let ord = ordering_arg(args, 2).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let val = emit_arg(backend, out, &args[1], indent);
     // 2026-07-15: LLVM 18 syntax: no comma before ordering, align required
     writeln!(
@@ -3055,7 +3064,7 @@ fn emit_atomic_cas(
     let fail_ord = ordering_arg(args, 4).unwrap_or(succ_ord);
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let exp = emit_arg(backend, out, &args[1], indent);
     let des = emit_arg(backend, out, &args[2], indent);
     let cx = backend.fun.gen_reg();
@@ -3088,7 +3097,7 @@ fn emit_atomic_xchg(
     let ord = ordering_arg(args, 2).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let val = emit_arg(backend, out, &args[1], indent);
     writeln!(
         out,
@@ -3257,7 +3266,7 @@ fn emit_atomic_rmw(
     let ord = ordering_arg(args, 2).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let val = emit_arg(backend, out, &args[1], indent);
     writeln!(
         out,
@@ -3300,7 +3309,7 @@ fn emit_atomic_load_n(
         _ => ("i64", 8),
     };
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let raw = backend.fun.gen_reg();
     writeln!(
         out,
@@ -3343,7 +3352,7 @@ fn emit_atomic_store_n(
         _ => ("i64", 8),
     };
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let val_wide = emit_arg(backend, out, &args[1], indent);
     let val = backend.fun.gen_reg();
     writeln!(
@@ -3834,7 +3843,7 @@ fn simd_ptr_arg(
 ) -> (String, Type) {
     let reg = backend.emit_expr(out, arg, indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, reg.name).ok();
+    backend.inttoptr_word(out, indent, &ptr, &reg.name);
     (ptr, reg.ty.clone())
 }
 

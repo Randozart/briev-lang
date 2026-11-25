@@ -2755,7 +2755,7 @@ impl LlvmBackend {
                 let _vi = self.fun.next_reg_with_prefix(concat!($pfx, "i"));
                 writeln!(out, "{}{} = load i64, ptr {}", indent, _vi, _gep).ok();
                 let _vp = self.fun.next_reg_with_prefix(concat!($pfx, "p"));
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, _vp, _vi).ok();
+                self.inttoptr_word(out, indent, &_vp, &_vi);
                 _vp
             }};
         }
@@ -10859,7 +10859,7 @@ impl crate::backend::llvm::LlvmBackend {
             let nc_i = self.fun.next_reg_with_prefix("aanc");
             writeln!(out, "{}{} = add i64 {}, {}", indent, nc_i, nb_i, off).ok();
             let nc = self.fun.next_reg_with_prefix("aancp");
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, nc, nc_i).ok();
+            self.inttoptr_word(out, indent, &nc, &nc_i);
             grow_incoming = nc;
         }
         grow_incoming

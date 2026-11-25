@@ -1194,10 +1194,10 @@ impl LlvmBackend {
             // 2026-07-26: Only inttoptr when the source is an integer.
             // If source is already a pointer, ptr→i64→ptr to assign v.
             if src_ll != "ptr" {
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, src.name).ok();
+                self.inttoptr_word(out, indent, &v, &src.name);
             } else {
                 writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, src.name).ok();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, v).ok();
+                self.inttoptr_word(out, indent, &v, &v);
             }
         } else if target_ll == "i64" && matches!(src.ty, Type::Ptr(_)) {
             // 2026-07-30: Ptr values stored as i64 internally (ptrtoint
@@ -1228,7 +1228,7 @@ impl LlvmBackend {
             }
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, src.name).ok();
         } else if target_ll == "ptr" && src_ll == "i64" {
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, src.name).ok();
+            self.inttoptr_word(out, indent, &v, &src.name);
         } else if let Some(n) = crate::type_universe::bits_width(target) {
             // 2026-08-13 (pack): no-graph fallback for `as Bits<N>` —
             // same truncation contract as the casting-graph path.
@@ -1318,7 +1318,7 @@ impl LlvmBackend {
         // typechecker rejects pin assignment).
         if let Some(&addr) = self.ctx.trg_addresses.get(name.as_str()) {
             let p = self.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, addr).ok();
+            self.inttoptr_word(out, indent, &p, &addr.to_string());
             let r = self.fun.gen_reg();
             writeln!(
                 out,
@@ -1652,7 +1652,7 @@ impl LlvmBackend {
                 // String param was re-widened (`sext i32`) on store.
                 if self.is_string_operand(&ty) || self.is_blob_operand(&ty) {
                     let p = self.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, loaded).ok();
+                    self.inttoptr_word(out, indent, &p, &loaded);
                     TypedRegister { name: p, ty }
                 } else if self.is_protocol_member(&ty, "Char") {
                     let t = self.fun.gen_reg();
@@ -1749,7 +1749,7 @@ impl LlvmBackend {
                     // (ptrtoint) work correctly. The round-trip is
                     // folded by LLVM's optimizer.
                     let t = self.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, t, reg).ok();
+                    self.inttoptr_word(out, indent, &t, &reg);
                     TypedRegister {
                         name: t,
                         ty: orig_ty,
@@ -1766,7 +1766,7 @@ impl LlvmBackend {
                     // EXCLUDED: a row id is not a heap pointer (mirrors
                     // the get_local fallback restriction).
                     let t = self.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, t, reg).ok();
+                    self.inttoptr_word(out, indent, &t, &reg);
                     TypedRegister {
                         name: t,
                         ty: orig_ty,
@@ -1957,7 +1957,7 @@ impl LlvmBackend {
                 // representation (Blob protocol) — its state slots
                 // must inttoptr the same way.
                 let str_p = self.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, str_p, loaded).ok();
+                self.inttoptr_word(out, indent, &str_p, &loaded);
                 TypedRegister {
                     name: str_p,
                     ty: briev_ty,
@@ -3022,7 +3022,7 @@ impl LlvmBackend {
             let len = self.fun.gen_reg();
             writeln!(out, "{}{} = load i64, ptr {}", indent, len, len_p).ok();
             let data_p = self.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, data_p, data).ok();
+            self.inttoptr_word(out, indent, &data_p, &data);
             let buf = self.fun.gen_reg();
             writeln!(
                 out,
@@ -4026,7 +4026,7 @@ impl LlvmBackend {
                 let raw = self.fun.gen_reg();
                 writeln!(out, "{}{} = load i64, ptr {}", indent, raw, gep).ok();
                 let box_p = self.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, box_p, raw).ok();
+                self.inttoptr_word(out, indent, &box_p, &raw);
                 let fat_p = self.fun.gen_reg();
                 writeln!(out, "{}{} = call ptr @malloc(i64 24)", indent, fat_p).ok();
                 // payload = box slot 1 → fat slot 0 (the concrete handle).
@@ -6393,11 +6393,14 @@ impl LlvmBackend {
         // 2026-08-07 (object instance pools): a DEPENDENT column is a heap
         // buffer — the slot holds the malloc'd buffer address. Load it, then
         // GEP the row inside the buffer (element = the member's llvm type).
-        if let Some(elem_ty) = self.ctx.heap_columns.get(&idx) {
+        // Cloned before the call: `inttoptr_word` borrows `self` mutably, so the map
+        // borrow must end first (the sibling site in emit_stmt.rs already cloned).
+        let heap_elem_ty = self.ctx.heap_columns.get(&idx).cloned();
+        if let Some(elem_ty) = heap_elem_ty {
             let addr = self.fun.gen_reg();
             writeln!(out, "{}{} = load i64, ptr {}", indent, addr, base).ok();
             let buf = self.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, buf, addr).ok();
+            self.inttoptr_word(out, indent, &buf, &addr.to_string());
             let row = self.fun.gen_reg();
             writeln!(
                 out,
@@ -7265,7 +7268,12 @@ impl LlvmBackend {
     /// implicitly narrower). Truncate when the register was recorded wider;
     /// leave everything else untouched, so 64-bit builds and unknown registers
     /// keep their existing behaviour exactly.
-    fn narrow_handle_to_target_width(&mut self, out: &mut String, indent: &str, reg: &str) -> String {
+    fn narrow_handle_to_target_width(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &str,
+    ) -> String {
         let target = format!("i{}", self.ctx.int_bits);
         match self.fun.value_llvm_ty.get(reg).cloned() {
             Some(width) if width != target && width.starts_with('i') && target.starts_with('i') => {
@@ -8631,7 +8639,7 @@ impl LlvmBackend {
         .ok();
         writeln!(out, "{}{} = ptrtoint ptr {}_p to i64", indent, alloc, alloc).ok();
         let env_p = self.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, alloc).ok();
+        self.inttoptr_word(out, indent, &env_p, &alloc);
         let fn_reg = self.fun.gen_reg();
         writeln!(
             out,
@@ -8913,7 +8921,7 @@ impl LlvmBackend {
         // `inttoptr i64 <ptr>` and double-inttoptr'd field access.
         let name = if self.is_string_operand(member_ty) || self.is_blob_operand(member_ty) {
             let c = self.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, raw).ok();
+            self.inttoptr_word(out, indent, &c, &raw);
             c
         } else if llvm_ty == "double" {
             let c = self.fun.gen_reg();
@@ -8963,7 +8971,7 @@ impl LlvmBackend {
             .position(|m| m == member_ty)
             .unwrap_or(usize::MAX);
         let base = self.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base, handle).ok();
+        self.inttoptr_word(out, indent, &base, &handle);
         let slot = self.fun.gen_reg();
         writeln!(
             out,
@@ -9078,7 +9086,7 @@ impl LlvmBackend {
             .unwrap_or_else(|| panic!("inline object payload without a concrete object type"));
         let handle = self.adapt_to_i64(out, indent, &value);
         let source = self.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, source, handle).ok();
+        self.inttoptr_word(out, indent, &source, &handle);
         let bytes = self.struct_type_size(object_name);
         assert!(
             bytes > 0 && bytes <= object.payload_words as u64 * 8,
@@ -9168,7 +9176,7 @@ impl LlvmBackend {
         };
         let handle = self.adapt_to_i64(out, indent, &value);
         let source = self.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, source, handle).ok();
+        self.inttoptr_word(out, indent, &source, &handle);
         self.emit_word_image_copy(
             out,
             indent,
@@ -9698,7 +9706,7 @@ impl LlvmBackend {
             let value = self.adapt_to_i64(out, indent, reg);
             if let Some((hidden, words)) = carrier_slots.get(&index).cloned() {
                 let src = self.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, src, value).ok();
+                self.inttoptr_word(out, indent, &src, &value);
                 self.emit_word_image_copy(
                     out,
                     indent,
@@ -10018,7 +10026,7 @@ impl LlvmBackend {
                     .map(|ty| self.enum_image_words(Some(ty)))
                     .unwrap_or(2);
                 let src = self.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, src, arg.name).ok();
+                self.inttoptr_word(out, indent, &src, &arg.name);
                 self.emit_word_image_copy(
                     out,
                     indent,
@@ -10168,7 +10176,9 @@ impl LlvmBackend {
                     call_args.push(format!("{} {}", param_llvm_ty, conv));
                     continue;
                 }
-                if param_llvm_ty == "ptr" && value_llvm_ty == "i64" && matches!(reg.ty, Type::Ptr(_))
+                if param_llvm_ty == "ptr"
+                    && value_llvm_ty == "i64"
+                    && matches!(reg.ty, Type::Ptr(_))
                 {
                     // 2026-10-21 (pointer provenance): marshal a raw Ptr
                     // argument through the SAME canonical ptr used by its
@@ -10183,7 +10193,7 @@ impl LlvmBackend {
                         || matches!(reg.ty, Type::Function(_, _)))
                 {
                     let conv = self.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, conv, reg.name).ok();
+                    self.inttoptr_word(out, indent, &conv, &reg.name);
                     call_args.push(format!("ptr {}", conv));
                 } else if param_llvm_ty == "i64" && value_llvm_ty == "ptr" {
                     let conv = self.fun.gen_reg();
@@ -10311,7 +10321,7 @@ impl LlvmBackend {
                     // 'ptr'") and made forwarding/recursing through a callback
                     // impossible.
                     let conv = self.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, conv, reg.name).ok();
+                    self.inttoptr_word(out, indent, &conv, &reg.name);
                     call_args.push(format!("ptr {}", conv));
                 } else {
                     call_args.push(format!("{} {}", actual_ty, reg.name));
@@ -10423,11 +10433,11 @@ impl LlvmBackend {
             self.resolve_name_register(name)
         };
         let env_p = self.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, env_val).ok();
+        self.inttoptr_word(out, indent, &env_p, &env_val);
         let fp = self.fun.gen_reg();
         writeln!(out, "{}{} = load i64, ptr {}", indent, fp, env_p).ok();
         let fp_p = self.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fp_p, fp).ok();
+        self.inttoptr_word(out, indent, &fp_p, &fp);
         // 2026-11-17 (class C2): the closure ABI boxes every argument to i64, so
         // every argument must actually BE an i64. Annotating the raw register
         // (`format!("i64 {}", r.name)`) lied whenever the value was a pointer —
@@ -11011,7 +11021,12 @@ impl LlvmBackend {
                     // here; an unknown width is left as it was.
                     let narrowed = self.narrow_handle_to_target_width(out, indent, scrut);
                     let hw = format!("i{}", self.ctx.int_bits);
-                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, narrowed).ok();
+                    writeln!(
+                        out,
+                        "{}{} = inttoptr {} {} to ptr",
+                        indent, base, hw, narrowed
+                    )
+                    .ok();
                 }
                 let slot = self.fun.gen_reg();
                 writeln!(
@@ -11346,7 +11361,7 @@ impl LlvmBackend {
                         };
                         let et = elems.get(j).cloned().unwrap_or(Type::int());
                         let tbase = self.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, tbase, raw).ok();
+                        self.inttoptr_word(out, indent, &tbase, &raw);
                         let eslot = self.fun.gen_reg();
                         writeln!(
                             out,
@@ -11412,7 +11427,12 @@ impl LlvmBackend {
                     // here; an unknown width is left as it was.
                     let narrowed = self.narrow_handle_to_target_width(out, indent, scrut);
                     let hw = format!("i{}", self.ctx.int_bits);
-                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, narrowed).ok();
+                    writeln!(
+                        out,
+                        "{}{} = inttoptr {} {} to ptr",
+                        indent, base, hw, narrowed
+                    )
+                    .ok();
                 }
                 let slot = self.fun.gen_reg();
                 writeln!(
@@ -11729,7 +11749,7 @@ impl LlvmBackend {
             };
             let et = elems.get(j).cloned().unwrap_or(Type::int());
             let tbase = self.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, tbase, raw).ok();
+            self.inttoptr_word(out, indent, &tbase, &raw);
             let eslot = self.fun.gen_reg();
             writeln!(
                 out,

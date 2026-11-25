@@ -26,6 +26,13 @@
 #   * lines calling a runtime symbol (`briev_`, `__briev`) — fixed-width C ABI;
 #   * lines mentioning `double`/`f64` — an IEEE image is 64 bits by definition.
 #
+# 2026-11-25 (S2): ONE intended increase, and it is reviewed. `inttoptr_word` needs a
+# fallback for a handle whose width was never recorded; the fallback is the documented
+# boxed-handle default `i64`, and it now lives in `FunctionContext::handle_int_ty`
+# (context.rs +1) instead of at an emission site. This is the only place a raise is
+# allowed and it is written down here so the next reader does not have to guess
+# whether it was an accident.
+#
 # Measured 2026-11-25 at main e2b0a2c9b (P0-P2a landed, before P2b's remaining
 # slice). The wasm32 IR debt at that commit is 12 invalid programs of 114; the
 # larger counts here are the tail that no corpus program has reached yet.
@@ -37,19 +44,19 @@
 "builder.rs" = 14
 "coll_scaffold.rs" = 7
 "collection_assignment.rs" = 10
-"context.rs" = 8
+"context.rs" = 9
 "dispatch.rs" = 16
-"emit_expr.rs" = 463
+"emit_expr.rs" = 439
 "emit_hir_stmt.rs" = 5
-"emit_stmt.rs" = 92
+"emit_stmt.rs" = 82
 "emit_toplevel.rs" = 281
 "helpers.rs" = 130
-"intrinsics.rs" = 188
+"intrinsics.rs" = 175
 "kernel.rs" = 15
 "loop_engine/counter.rs" = 84
 "loop_engine/mod.rs" = 22
 "loop_engine/ssa.rs" = 37
-"mod.rs" = 172
+"mod.rs" = 170
 "normalizer.rs" = 1
 "reclamation.rs" = 19
 "strategy.rs" = 4

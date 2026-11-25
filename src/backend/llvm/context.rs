@@ -1048,6 +1048,13 @@ pub struct FunctionContext {
     pub within_counter: usize,
     /// Arena bump counter for unique per-allocation register names
     pub arena_counter: usize,
+    /// Names minted from `txn_counter`, i.e. meaningful only inside the body that
+    /// minted them. The representation channel is keyed by NAME, so it can only be as
+    /// sound as its agreement with this set: a name that the counter re-mints denotes
+    /// a different value, and any record still attached to it is a false claim about
+    /// width. Position-derived names (`%ac{i}` arena slots) are NOT in this set —
+    /// they are re-minted identically in every body, so their record stays true.
+    pub counter_scoped_regs: std::collections::HashSet<String>,
 
     // Local variable bindings (let x = ...)
     pub let_bindings: HashMap<String, String>,
@@ -1600,6 +1607,21 @@ impl FunctionContext {
     /// Neither reset touches the representation channel — see `begin_function`.
     pub fn restart_register_names(&mut self) {
         self.txn_counter = 0;
+        self.drop_counter_scoped_records();
+    }
+
+    /// Drop the representation of every name the counter minted, and only those.
+    ///
+    /// 2026-11-25 (S2/S5): a counter restart means those names now denote DIFFERENT
+    /// values in the next body, so a record left behind is a false claim — and the
+    /// `inttoptr` width now asks the record, which made the stale entries observable
+    /// as `inttoptr i32 %t115` over an `i64` load. Position-derived names (`%ac{i}`)
+    /// survive: they are re-minted identically, so dropping theirs was measured to be
+    /// a downgrade, not a cleanup (`'%ac0' defined as i64 but expected i32`).
+    fn drop_counter_scoped_records(&mut self) {
+        for reg in self.counter_scoped_regs.drain() {
+            self.value_llvm_ty.remove(&reg);
+        }
     }
 
     /// Begin a new function body: the namespace restarts here.
@@ -1612,6 +1634,7 @@ impl FunctionContext {
     pub fn begin_function(&mut self) {
         self.txn_counter = 0;
         self.within_counter = 0;
+        self.drop_counter_scoped_records();
         // The channel is deliberately NOT cleared here, and the reason is
         // measured rather than stylistic: the channel is written in places that
         // stamp a value's CANONICAL width instead of the width it was emitted at
@@ -1641,6 +1664,18 @@ impl FunctionContext {
     /// The recorded LLVM type of a register, if it was recorded.
     pub fn value_width(&self, reg: &str) -> Option<&str> {
         self.value_llvm_ty.get(reg).map(String::as_str)
+    }
+
+    /// The width the backend has always used for a handle whose own width is
+    /// UNKNOWN — `i64`, on every triple.
+    ///
+    /// This is a historical convention, not a target fact: boxed handles are i64 in
+    /// the documented representation (2026-10-06), even where the pointer is 32 bits.
+    /// It lives here rather than at an emission site so there is exactly one place to
+    /// change if the representation ever becomes target-parametric, and so emitters
+    /// ask a question instead of writing a literal.
+    pub fn handle_int_ty() -> &'static str {
+        "i64"
     }
 
     pub fn gen_reg(&mut self) -> String {
@@ -1764,6 +1799,7 @@ impl FunctionContext {
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
             value_llvm_ty: HashMap::new(),
+            counter_scoped_regs: std::collections::HashSet::new(),
             fat_ptrs: HashMap::new(),
             canonical_ptrs: HashMap::new(),
             state_ptr_cache: HashMap::new(),
@@ -1776,6 +1812,7 @@ impl FunctionContext {
     pub fn next_reg(&mut self) -> String {
         let r = format!("%t{}", self.txn_counter);
         self.txn_counter += 1;
+        self.counter_scoped_regs.insert(r.clone());
         r
     }
 
@@ -1783,6 +1820,7 @@ impl FunctionContext {
     pub fn next_label(&mut self, prefix: &str) -> String {
         let l = format!("{}_{}", prefix, self.txn_counter);
         self.txn_counter += 1;
+        self.counter_scoped_regs.insert(l.clone());
         l
     }
 
@@ -1791,6 +1829,7 @@ impl FunctionContext {
     pub fn next_reg_with_prefix(&mut self, prefix: &str) -> String {
         let r = format!("%{}{}", prefix, self.txn_counter);
         self.txn_counter += 1;
+        self.counter_scoped_regs.insert(r.clone());
         r
     }
 

@@ -1636,7 +1636,7 @@ fn emit_state_store_self_slot(
         let addr = backend.fun.gen_reg();
         writeln!(out, "{}{} = load i64, ptr {}", indent, addr, base).ok();
         let buf = backend.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, buf, addr).ok();
+        backend.inttoptr_word(out, indent, &buf, &addr.to_string());
         let row = backend.fun.gen_reg();
         writeln!(
             out,
@@ -1833,7 +1833,7 @@ pub(crate) fn emit_term_value_tail(
                 c
             } else if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
                 let c = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+                backend.inttoptr_word(out, indent, &c, &reg.name);
                 c
             } else if val_ty == "ptr" && backend.fun.fn_ret_ty == "i64" {
                 let c = backend.fun.gen_reg();
@@ -1946,7 +1946,7 @@ pub(crate) fn emit_term_value_tail(
                 c
             } else if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
                 let c = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+                backend.inttoptr_word(out, indent, &c, &reg.name);
                 c
             } else if val_ty == "ptr"
                 && backend.fun.fn_ret_ty == "ptr"
@@ -1955,7 +1955,7 @@ pub(crate) fn emit_term_value_tail(
                 // 2026-07-30: Ptr values stored as i64 internally — register
                 // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
                 let c = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+                backend.inttoptr_word(out, indent, &c, &reg.name);
                 c
             } else {
                 reg.name
@@ -1964,7 +1964,7 @@ pub(crate) fn emit_term_value_tail(
             // 2026-07-30: Ptr values stored as i64 internally — register
             // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
             let c = backend.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+            backend.inttoptr_word(out, indent, &c, &reg.name);
             c
         } else {
             reg.name
@@ -2377,7 +2377,7 @@ pub(crate) fn emit_foreach_statement(
                 && at.ty == Type::int()
             {
                 let p = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, at.name).ok();
+                backend.inttoptr_word(out, indent, &p, &at.name);
                 at.name = p;
             }
             at.name
@@ -2415,7 +2415,7 @@ pub(crate) fn emit_foreach_statement(
                 && item.ty == Type::int()
             {
                 let p = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, item.name).ok();
+                backend.inttoptr_word(out, indent, &p, &item.name);
                 item.name = p;
             }
             item.name
@@ -2494,7 +2494,7 @@ pub(crate) fn emit_foreach_statement(
             // register matches its element type.
             if backend.is_string_operand(element_ty) || backend.is_blob_operand(element_ty) {
                 let p = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, elem).ok();
+                backend.inttoptr_word(out, indent, &p, &elem);
                 p
             } else {
                 elem
@@ -3207,7 +3207,7 @@ pub(crate) fn emit_assign_statement(
                         let addr = backend.fun.gen_reg();
                         writeln!(out, "{}{} = load i64, ptr {}", indent, addr, base).ok();
                         let buf = backend.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, buf, addr).ok();
+                        backend.inttoptr_word(out, indent, &buf, &addr.to_string());
                         let row = backend.fun.gen_reg();
                         writeln!(
                             out,
@@ -3585,7 +3585,7 @@ pub(crate) fn emit_assign_statement(
             // 2026-07-14: Handle MMIO and regular state field assignments
             } else if let Some(&addr) = backend.ctx.mmio_fields.get(name) {
                 let ptr = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+                backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
                 // 2026-07-14: volatile store type must match val.ty — hardcoded i64 breaks MMIO bools
                 let store_ty = backend.llvm_type(&val.ty);
                 writeln!(

@@ -3609,6 +3609,40 @@ impl LlvmBackend {
     }
 
     /// Emit an inttoptr from a pointer-sized handle.
+    /// Emit `inttoptr`, taking the source width from the register's RECORD.
+    ///
+    /// `inttoptr` requires its source width to match the operand exactly, and the
+    /// backend hardcodes `i64` at ~40 sites. That is invisible on x86-64 — where the
+    /// word IS 64 — and produced nine of the twenty-seven invalid programs in the
+    /// 2026-11-25 cross-target sweep. Measured shape (`new_occupancy`):
+    ///
+    ///     %t1_p = call ptr @malloc(i64 %t5)
+    ///     %t1   = ptrtoint ptr %t1_p to i32     ; the handle lives at the WORD
+    ///     ...
+    ///     %t23  = inttoptr i64 %t1 to ptr       ; but %t1 is i32
+    ///
+    /// The fallback is deliberately `i64` and NOT `ctx.int_bits`: a blanket "always
+    /// the target word" was tried first and broke 72 more programs, because plenty of
+    /// operands really are i64 and carry no record (`%ac{i}` conversion slots are the
+    /// clear case: `inttoptr i32 %ac0` is as invalid as the bug it replaced). So this
+    /// changes the emission ONLY where the backend already knows the operand's width,
+    /// and leaves every other site byte-for-byte as it was.
+    pub(crate) fn inttoptr_word(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        dst: &str,
+        operand: &str,
+    ) {
+        let width = match self.fun.value_width(operand) {
+            // A `ptr` record cannot be an `inttoptr` source; fall back rather than
+            // emit `inttoptr ptr`, which is the wave-11-S2 / #164 trap.
+            Some(w) if w.starts_with('i') => w.to_string(),
+            _ => FunctionContext::handle_int_ty().to_string(),
+        };
+        writeln!(out, "{indent}{dst} = inttoptr {width} {operand} to ptr").ok();
+    }
+
     pub(crate) fn pointer_from_handle(
         &mut self,
         out: &mut String,
