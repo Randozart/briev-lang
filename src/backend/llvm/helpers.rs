@@ -3608,7 +3608,8 @@ impl LlvmBackend {
             // and the integer↔half pairs. Missing before, so a Float16 return
             // or binding kept a `float` register and emitted `ret half
             // <floatreg>` (invalid IR). Value-semantic: fpext widens, fptrunc
-            // narrows, sitofp/fptosi convert to/from integer.
+            // narrows, sitofp/fptosi convert to/from an integer of any width
+            // (the width comes from the operand, never a guessed literal).
             ("half", "float") | ("half", "double") => writeln!(
                 out,
                 "{}{} = fpext {} {} to {}",
@@ -3621,13 +3622,13 @@ impl LlvmBackend {
                 indent, r, have_ll, val.name, want_ll
             )
             .is_ok(),
-            ("i64", "half") | ("i32", "half") => writeln!(
+            (_, "half") if have_ll.starts_with('i') => writeln!(
                 out,
                 "{}{} = sitofp {} {} to half",
                 indent, r, have_ll, val.name
             )
             .is_ok(),
-            ("half", "i64") | ("half", "i32") => writeln!(
+            ("half", _) if want_ll.starts_with('i') => writeln!(
                 out,
                 "{}{} = fptosi half {} to {}",
                 indent, r, val.name, want_ll
@@ -3944,20 +3945,22 @@ impl LlvmBackend {
                 .ok();
                 r
             }
-            // Integer ↔ half storage adaptation, mirroring the float↔i64 arms:
-            // keep the 16-bit image in the low word.
-            ("i64", "half") => {
+            // Integer ↔ half storage adaptation, mirroring the integer↔float
+            // arms: keep the 16-bit image in the low word. The integer width
+            // comes from the operand (`actual_ty_clone` / `expected_llvm_ty`),
+            // never a guessed literal.
+            (_, "half") if actual_ty.starts_with('i') => {
                 let tr = self.fun.gen_reg();
-                writeln!(out, "{indent}{tr} = trunc i64 {val} to i16").ok();
+                writeln!(out, "{indent}{tr} = trunc {actual_ty_clone} {val} to i16").ok();
                 let r = self.fun.gen_reg();
                 writeln!(out, "{indent}{r} = bitcast i16 {tr} to half").ok();
                 r
             }
-            ("half", "i64") => {
+            ("half", _) if expected_llvm_ty.starts_with('i') => {
                 let bits = self.fun.gen_reg();
                 writeln!(out, "{indent}{bits} = bitcast half {val} to i16").ok();
                 let r = self.fun.gen_reg();
-                writeln!(out, "{indent}{r} = zext i16 {bits} to i64").ok();
+                writeln!(out, "{indent}{r} = zext i16 {bits} to {expected_llvm_ty}").ok();
                 r
             }
             ("i8", "i64") => {

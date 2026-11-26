@@ -512,12 +512,16 @@ pub(crate) fn float_to_llvm_str(f: f64, llvm_ty: &str) -> String {
 /// floating constant — `@x = global double 0` / `@x = constant float 0` are
 /// invalid IR that clang/opt reject (BUGS.md 2026-11-06, `let f: Float = 0;`
 /// and its `const`/plain-global siblings). Integer slots keep the plain
-/// decimal form. `n` may be negative; the caller supplies the sign.
-pub(crate) fn int_literal_as_llvm_const(n: i64, llvm_ty: &str) -> String {
+/// decimal form. The value is generic over integer literal widths; negative
+/// values are supplied by the caller.
+pub(crate) fn int_literal_as_llvm_const(n: impl std::fmt::Display, llvm_ty: &str) -> String {
+    let decimal = n.to_string();
     if is_float_llvm_type(llvm_ty) {
-        float_to_llvm_str(n as f64, llvm_ty)
+        // `decimal` is always a valid integer's text; a float slot needs the
+        // numeric value rendered in the slot's own form (`float_to_llvm_str`).
+        float_to_llvm_str(decimal.parse::<f64>().unwrap_or_default(), llvm_ty)
     } else {
-        n.to_string()
+        decimal
     }
 }
 
