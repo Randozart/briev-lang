@@ -33,6 +33,10 @@
 # allowed and it is written down here so the next reader does not have to guess
 # whether it was an accident.
 #
+# 2026-11-25 (stage C, second pass): emit_toplevel 281 -> 287 — the six
+# new i64 spellings are the harvest-era marshal arm and the record calls in
+# the ExtCall/finish_user_call fixes (each records or converts a width the
+# old code guessed). Reviewed, intentional.
 # Measured 2026-11-25 at main e2b0a2c9b (P0-P2a landed, before P2b's remaining
 # slice). The wasm32 IR debt at that commit is 12 invalid programs of 114; the
 # larger counts here are the tail that no corpus program has reached yet.
@@ -49,7 +53,7 @@
 "emit_expr.rs" = 438
 "emit_hir_stmt.rs" = 5
 "emit_stmt.rs" = 82
-"emit_toplevel.rs" = 281
+"emit_toplevel.rs" = 287
 "helpers.rs" = 130
 "intrinsics.rs" = 172
 "kernel.rs" = 15

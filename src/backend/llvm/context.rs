@@ -1082,7 +1082,9 @@ impl WidthChannel {
     /// Same signature as `HashMap::insert`, so a caller that used the map directly
     /// keeps compiling — and can no longer record an unstamped fact.
     pub fn insert(&mut self, reg: String, llvm_ty: String) -> Option<String> {
-        if std::env::var_os("BRIEV_DBG_INS").is_some() && reg.starts_with("%ac") {
+        if std::env::var_os("BRIEV_DBG_INS").is_some()
+            && (reg.starts_with("%ac") || (reg == "%t8" && llvm_ty == "i32"))
+        {
             let at = std::panic::Location::caller();
             eprintln!(
                 "[ins-ac] {reg} = {llvm_ty} <- {}:{} epoch={}",
@@ -1090,6 +1092,17 @@ impl WidthChannel {
                 at.line(),
                 self.epoch
             );
+            if reg == "%ac0" {
+                let bt = std::backtrace::Backtrace::force_capture();
+                let frames: Vec<String> = bt
+                    .to_string()
+                    .lines()
+                    .filter(|l| l.contains("briev_compiler"))
+                    .take(4)
+                    .map(|l| l.trim().to_string())
+                    .collect();
+                eprintln!("[ac0-bt] {}", frames.join(" | "));
+            }
         }
         let epoch = self.epoch;
         self.facts
@@ -1168,15 +1181,19 @@ impl WidthChannel {
         state.harvest_new(text, |reg, ty| match reg {
             // A define crossed: names from the previous function are gone. Keep
             // only this function's facts — a fact about another body's `%t46`
-            // typed a call argument here (measured, accel_lane_report).
-            None => self.facts.clear(),
+            // typed a call argument here (measured, accel_lane_report). The
+            // epoch advances with the define, so EVERY function boundary is
+            // honoured even where no begin_function runs (plain defns share
+            // one emission epoch; bit_string_roundtrip_wasm's widen_bits
+            // poisoned main's `%t8` otherwise).
+            None => {
+                self.epoch = self.epoch.wrapping_add(1);
+                self.facts.clear();
+            }
             Some(reg) => {
                 self.facts.insert(
                     reg.to_string(),
-                    WidthFact {
-                        epoch,
-                        llvm_ty: ty.to_string(),
-                    },
+                    WidthFact { epoch: self.epoch, llvm_ty: ty.to_string() },
                 );
             }
         });

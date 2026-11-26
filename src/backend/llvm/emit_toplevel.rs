@@ -5338,9 +5338,6 @@ impl LlvmBackend {
             if param_llvm_ty == "ptr" {
                 let conv = format!("%ac{}", i);
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", conv, raw).ok();
-                if std::env::var_os("BRIEV_DBG_SITE").is_some() {
-                    eprintln!("[acdef] {} in {}", conv, n);
-                }
                 // 2026-11-13 (aggregate-arg ABI): `%ac{i}` is a genuine i64 SSA
                 // value. Record it, or a later outbound call marshalling sees
                 // the register typed by its Briev type (a struct/aggregate
@@ -8348,9 +8345,6 @@ impl LlvmBackend {
             if param_llvm_ty == "ptr" {
                 let ac = format!("%ac{}", i);
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", ac, raw).ok();
-                if std::env::var_os("BRIEV_DBG_SITE").is_some() {
-                    eprintln!("[actxn] {} in {}", ac, n);
-                }
                 // 2026-11-13 (aggregate-arg ABI): the handle is a real i64 SSA
                 // value — record it so outbound call marshalling converts it
                 // back to ptr instead of forwarding an i64 as a ptr operand.
