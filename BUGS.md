@@ -3070,7 +3070,7 @@ install Valgrind. Found independently by the memory campaign (`MEM_FAMILY=1`,
 12/12 cases across 3 seeds). Full report:
 `docs/reports/2026-11-09-memory-defect-campaign.md`.
 
-## Short-circuit division executes on the excluded edge — OPEN 2026-11-09
+## Short-circuit division executes on the excluded edge — FIXED 2026-11-26
 
 Deterministic transition family 5 shrank `e != 0 && s / e > 0` to `s=0,e=0`.
 Interpreter returns 0; native O0 and O3 both raise SIGFPE. Emitted `sdiv` is
@@ -3079,6 +3079,27 @@ binary arithmetic as side-effect-free and therefore safe to evaluate eagerly;
 purity does not prove speculation cannot trap. Fix needs general speculation
 safety, not removal of the source guard. Reproducer:
 `tests/fixtures/simulation/short_circuit_division.json`.
+
+**Resolution (2026-11-26):** the `&&`/`||` register fast path is selected by
+`view_is_side_effect_free` (→ `expr_is_side_effect_free` / its HIR twin). It
+answered true for every binary op whose operands were pure, so a `Div`/`Mod`
+RHS — pure but *trapping* — took the eager path and the `sdiv` was emitted
+before the branch. The predicate is now "safe to evaluate speculatively": the
+ops that are UB/poison for some operands (`Div`/`Mod` divide by zero,
+`Shl`/`Shr` shift by ≥ the bit width) answer false and route the operand
+through the lazy CFG (the same safe path every other impure RHS already uses).
+This is the general speculation-safety fix, not a source-guard removal; the
+guard still emits, the arithmetic just no longer runs on the excluded edge.
+Verified: the repro now prints `0` (was SIGFPE, then briefly corrupted output
+`\0`+garbage once the trap was optimised away); `&&`/`||` over `Div`/`Mod` and
+`Shl`/`Shr` with both excluded and taken operands produce the interpreter's
+values. Regressions:
+`backend::llvm::logical_tests::division_rhs_is_short_circuited_not_speculated`
+(asserts the lazy `logical.rhs.` edge for a `Div`/`Shl` RHS and the register
+fast path for an `Add` RHS) and `tests/short_circuit_division.rs` (+ fixture
+`tests/fixtures/load/short_circuit_division_guard.bv`, `0 1 1 1 0 1 0 1 0 1` at
+O0/O3, AST and HIR).
+**Status:** FIXED 2026-11-26.
 
 ## List rebinding mutates the original only in native execution — OPEN 2026-11-09
 

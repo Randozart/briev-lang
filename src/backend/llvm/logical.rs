@@ -3,7 +3,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::{LlvmBackend, TypedRegister};
-use crate::ast::{Expr, Statement, Type};
+use crate::ast::{BinaryOpKind, Expr, Statement, Type};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -125,14 +125,17 @@ impl LlvmBackend {
 
     /// HIR twin of `expr_is_side_effect_free`. Conservative: any kind not
     /// listed answers false (the CFG form is always safe); true only where
-    /// the AST match above answers true for the `to_ast` image.
+    /// the AST match above answers true for the `to_ast` image. `Div`/`Mod`/
+    /// `Shl`/`Shr` are excluded for the same speculation-safety reason.
     fn hir_is_side_effect_free(expr: &crate::hir::expr::HirExpr) -> bool {
         use crate::hir::expr::{HirExprKind as K, HirLiteral as L};
         match &expr.kind {
             K::Literal(L::BeginProgram) => false,
             K::Literal(_) | K::Identifier(_) | K::UnitLiteral { .. } => true,
-            K::Binary { left, right, .. } => {
-                Self::hir_is_side_effect_free(left) && Self::hir_is_side_effect_free(right)
+            K::Binary { op, left, right } => {
+                !Self::binop_can_trap(*op)
+                    && Self::hir_is_side_effect_free(left)
+                    && Self::hir_is_side_effect_free(right)
             }
             K::Unary { inner, .. }
             | K::Cast { inner, .. }
@@ -355,9 +358,17 @@ impl LlvmBackend {
         }
     }
 
-    /// Conservative syntactic purity: no call, memory access, control flow,
-    /// consumption, or plugin boundary. A false answer merely uses the safe
-    /// short-circuit CFG; it never changes semantics.
+    /// Conservative "safe to evaluate speculatively": no call, memory access,
+    /// control flow, consumption, plugin boundary, OR trapping/UB arithmetic. A
+    /// false answer merely uses the safe short-circuit CFG; it never changes
+    /// semantics.
+    ///
+    /// 2026-11-26: purity is NOT speculation safety. The `&&`/`||` register
+    /// fast path evaluates the RHS eagerly before the branch, so an operand
+    /// that is UB for some inputs runs even when the left side would have
+    /// short-circuited it (`e != 0 && s / e > 0` divides by zero; `e < 64 &&
+    /// (s << e) > 0` shifts by >= the width). BUGS.md 2026-11-09. Excluding
+    /// those ops routes the operand through the lazy CFG.
     fn expr_is_side_effect_free(expr: &Expr) -> bool {
         match expr {
             // `beginprogram` participates in reactor bootstrap edge state;
@@ -373,7 +384,12 @@ impl LlvmBackend {
             | Expr::Float(_)
             | Expr::Identifier(_)
             | Expr::UnitLiteral { .. } => true,
-            Expr::BinaryOp(_, left, right) | Expr::Within(left, right) => {
+            Expr::BinaryOp(kind, left, right) => {
+                !Self::binop_can_trap(*kind)
+                    && Self::expr_is_side_effect_free(left)
+                    && Self::expr_is_side_effect_free(right)
+            }
+            Expr::Within(left, right) => {
                 Self::expr_is_side_effect_free(left) && Self::expr_is_side_effect_free(right)
             }
             Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Field(inner, _) => {
@@ -381,6 +397,18 @@ impl LlvmBackend {
             }
             _ => false,
         }
+    }
+
+    /// True for the binary ops that are UB/poison for some operand values, so
+    /// they are unsafe to evaluate speculatively (eagerly, on a path the
+    /// guard may not take). `Div`/`Mod` divide by zero; `Shl`/`Shr` shift by
+    /// >= the bit width. Wrapping `Add`/`Sub`/`Mul`, the bitwise ops, and
+    /// comparisons are total.
+    fn binop_can_trap(kind: BinaryOpKind) -> bool {
+        matches!(
+            kind,
+            BinaryOpKind::Div | BinaryOpKind::Mod | BinaryOpKind::Shl | BinaryOpKind::Shr
+        )
     }
 
     fn logical_rhs(
