@@ -2668,7 +2668,7 @@ before the strategy call (Bool/Char/Float; Int is already i64). Regression:
 
 **Status.** Fixed 2026-11-10.
 
-## Collection-growth buffers beneath a resize barrier leaked — REOPENED 2026-11-11
+## Collection-growth buffers beneath a resize barrier leaked — FIXED 2026-11-11
 
 **Correction:** PR #90 was withdrawn after the authenticated server exposed a
 double free. The earlier catalogue gate was insufficient. Nested incoming
@@ -2704,6 +2704,21 @@ closed ownership). Files: `analysis/reclamation.rs`,
 **Verification:** captured catalogue 1/4/16 → 0 definitely/indirectly/possibly
 lost bytes, peak live heap flat at 37,164,092 B; only the 65,536-byte stdout
 buffer remains reachable. Native alias fixtures Valgrind-clean at O0/O3/LTO.
+
+**Status 2026-11-26 — reopen resolved.** The withdrawn candidate was repaired
+and landed the same day: `f63e7c56e` (own collection-growth buffers across
+resize barriers) and `327e18871` (preserve nested incoming storage provenance),
+both ancestors of `main`. Re-verified at the current tip: the reduced repro
+`tests/fixtures/load/reclamation_incoming_storage.bv` is Valgrind-clean at
+`-O0` and `-O3 -flto -march=native` (0 errors, 0 definitely/indirectly lost
+bytes, prints `incoming_storage_ok`), and the standing regressions
+`reclamation_runtime::nested_incoming_storage_survives_the_publishing_call`,
+`reclamation_runtime::native_aliases_borrowed_payloads_and_nested_returns_are_memory_safe`,
+and `publish_reclamation::published_storage_into_a_local_receiver_is_reclaimed`
+all pass. The `REOPENED` header was stale (the fix's own text was already in
+this entry below); corrected to FIXED. The plan's remaining acceptance step is
+the full authenticated-server journey, which is an application-side gate, not
+an open compiler defect.
 
 ## Main CI: scalar loads falsely escaped their source allocation — FIXED 2026-11-11
 
