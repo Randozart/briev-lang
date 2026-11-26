@@ -2478,10 +2478,10 @@ impl LlvmBackend {
         // from the two channels the emitters already maintain — `reg_value_ll`
         // (cast lanes) and `reg_llvm_ty` (loads) — never guessed from the stamped
         // Briev type, which is `Ptr` for both shapes.
-        // 2026-11-25 (stage C): epoch-scoped like every reader.
         let already_ptr = self
             .fun
-            .value_width(int_reg)
+            .value_llvm_ty
+            .get(int_reg)
             .map(|w| w == "ptr")
             .unwrap_or(false);
         if already_ptr {

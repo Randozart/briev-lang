@@ -55,11 +55,7 @@ fn frgn_call_line(is_void: bool, dst: &str, ret_llvm: &str, symbol: &str, args: 
     if is_void {
         format!("call void @{}({})", symbol, args)
     } else {
-        let line = format!("{} = call {} @{}({})", dst, ret_llvm, symbol, args);
-        if symbol == "preserve" {
-            eprintln!("[frgn-preserve] {}", line.trim());
-        }
-        line
+        format!("{} = call {} @{}({})", dst, ret_llvm, symbol, args)
     }
 }
 
@@ -4843,29 +4839,11 @@ impl LlvmBackend {
         if self.is_ptr_field(slot.type_name, slot.name)
             && (val.ty == Type::int() || matches!(val.ty, Type::Ptr(_)))
         {
-            // 2026-11-25 (stage B'): the field wants a POINTER; the value may
-            // already be one. The harvested record is the truth about what the
-            // producing instruction emitted (`Alloc#` yields a handle — i32 on
-            // wasm32 — but `inttoptr` producers yield a real ptr). Re-boxing an
-            // actual pointer produced `inttoptr i64 %t0` where `%t0` is a ptr
-            // (arena_smoke's `Arena { base, … }` construction). So: harvest, ask,
-            // convert only when there is something to convert.
-            self.fun
-                .value_llvm_ty
-                .harvest_new_definitions(out, &mut self.fun.harvest_state);
-            let have = self.fun.value_width(&val.name).map(str::to_string);
-            if have.as_deref() == Some("ptr") {
-                writeln!(out, "{}  store ptr {}, ptr {}", indent, val.name, ptr_reg).ok();
-                return;
-            }
             let conv = self.fun.gen_reg();
-            let src_w = have
-                .filter(|w| w.starts_with('i'))
-                .unwrap_or_else(|| "i64".to_string());
             writeln!(
                 out,
-                "{}  {} = inttoptr {} {} to ptr",
-                indent, conv, src_w, val.name
+                "{}  {} = inttoptr i64 {} to ptr",
+                indent, conv, val.name
             )
             .ok();
             writeln!(out, "{}  store ptr {}, ptr {}", indent, conv, ptr_reg).ok();
@@ -7297,8 +7275,7 @@ impl LlvmBackend {
         reg: &str,
     ) -> String {
         let target = format!("i{}", self.ctx.int_bits);
-        // 2026-11-25 (stage C): epoch-scoped, like every reader.
-        match self.fun.value_width(reg).map(str::to_string) {
+        match self.fun.value_llvm_ty.get(reg).cloned() {
             Some(width) if width != target && width.starts_with('i') && target.starts_with('i') => {
                 self.convert_int_width(out, indent, reg, &width, &target)
                     .unwrap_or_else(|| reg.to_string())
@@ -8404,9 +8381,6 @@ impl LlvmBackend {
                     .and_then(|types| types.get(index))
                     .cloned()
                     .unwrap_or_else(|| self.llvm_type(param_ty));
-                if sig.name == "preserve" {
-                    eprintln!("[dfrgn] {} param={} arg={}", sig.name, param_llvm, arg.name);
-                }
                 let coerced = self.coerce_to_param_type(out, arg, &param_llvm, indent);
                 format!("{} {}", param_llvm, coerced.name)
             })
@@ -9963,15 +9937,6 @@ impl LlvmBackend {
         arg_regs: &[TypedRegister],
         indent: &str,
     ) -> TypedRegister {
-        // 2026-11-25 (stage C): harvest before the arg loop decides widths.
-        // The prologue lines of THIS body (%ac0 = ptrtoint …) are already in
-        // `out`; without this harvest the channel knows nothing about them in
-        // bodies that never call inttoptr_word early — measured:
-        // aggregate_value_arguments_marshal_handle_to_ptr forwarded `ptr %ac0`
-        // over an i64 register because the record was absent.
-        self.fun
-            .value_llvm_ty
-            .harvest_new_definitions(out, &mut self.fun.harvest_state);
         let name = callee;
         if self.fun.tail_loop_fn.as_deref() == Some(name) && self.fun.tail_loop_header.is_some() {
             if let Some(reg) = self.try_emit_tail_loop_backedge(out, name, arg_regs, indent) {
@@ -10140,36 +10105,12 @@ impl LlvmBackend {
                 if carrier_replace.contains(&i) {
                     continue;
                 }
-                if std::env::var_os("BRIEV_DBG_PRESERVE").is_some() {
-                    eprintln!(
-                        "[preserve-arg] reg={} epoch={} rec={:?} fallback={}",
-                        reg.name,
-                        self.fun.value_llvm_ty.epoch(),
-                        self.fun.value_width(&reg.name),
-                        self.llvm_type(&reg.ty)
-                    );
-                }
-                // 2026-11-25 (stage C): the epoch reader. The raw map handed a
-                // previous body's fact to this call — init_state's `%t8 = i32`
-                // answering for @main's `%t8 = bitcast … to ptr` (measured:
-                // bit_string_roundtrip_wasm emitted a String argument as i32
-                // against a ptr parameter).
-                let mut value_llvm_ty = self
+                let value_llvm_ty = self
                     .fun
-                    .value_width(&reg.name)
-                    .map(str::to_string)
+                    .value_llvm_ty
+                    .get(&reg.name)
+                    .cloned()
                     .unwrap_or_else(|| self.llvm_type(&reg.ty));
-                // 2026-11-25 (stage B'): a harvested `ptr` describes the FORM of
-                // an intermediate (a GEP result, an alloca address). The call ABI
-                // asks whether the VALUE is a pointer — the documented
-                // distinction ("a ptr entry here means this form was emitted as
-                // a pointer, not that the value is pointer-like"). A
-                // pointer-VALUED arg carries Type::Ptr and keeps "ptr" here.
-                if value_llvm_ty == "ptr"
-                    && !matches!(reg.ty, Type::Ptr(_) | Type::PtrConst(_))
-                {
-                    value_llvm_ty = crate::backend::llvm::context::FunctionContext::handle_int_ty().to_string();
-                }
                 // A boxed Bool/Char parameter is an i64 SSA register, but the
                 // callee's native ABI parameter is i8/i32 on wasm32. Unbox at
                 // the call boundary instead of forwarding the i64 register.
@@ -10244,12 +10185,7 @@ impl LlvmBackend {
                     // index/deref accesses. A fresh inttoptr per call gave two
                     // sibling defns independent provenance, so LTO could hoist
                     // a load across the store on clang 18.
-                    eprintln!("[XX-canonical] {} -> {}", reg.name, {
-                        let w = self.fun.value_width(&reg.name);
-                        format!("{:?}", w)
-                    });
                     let conv = self.canonical_ptr(out, indent, &reg.name);
-                    eprintln!("[XX-canonical-ret] {}", conv);
                     call_args.push(format!("ptr {}", conv));
                 } else if param_llvm_ty == "ptr"
                     && (value_llvm_ty == "i64"
@@ -10312,11 +10248,11 @@ impl LlvmBackend {
                         continue;
                     }
                 }
-                // 2026-11-25 (stage C): epoch reader (same leak as above).
                 let actual_ty = self
                     .fun
-                    .value_width(&reg.name)
-                    .map(str::to_string)
+                    .value_llvm_ty
+                    .get(&reg.name)
+                    .cloned()
                     .unwrap_or_else(|| self.llvm_type(&reg.ty));
                 let expected_ty = defn_param_tys
                     .as_ref()
@@ -10325,17 +10261,10 @@ impl LlvmBackend {
                     .unwrap_or_else(|| actual_ty.clone());
                 let reg_is_ptr = self
                     .fun
-                    .value_width(&reg.name)
+                    .value_llvm_ty
+                    .get(&reg.name)
                     .map(|w| w == "ptr")
                     .unwrap_or(false);
-                eprintln!(
-                    "[nd] {} reg={} actual={} expected={} rec={:?}",
-                    i,
-                    reg.name,
-                    actual_ty,
-                    expected_ty,
-                    self.fun.value_width(&reg.name)
-                );
                 // 2026-11-22 (issues #153/#154/#155): see the defn-path arm
                 // above — the same width landing applies when the callee's
                 // parameter metadata is absent but the register's expected
@@ -10444,33 +10373,15 @@ impl LlvmBackend {
             call_args.join(", ")
         )
         .ok();
-        if std::env::var_os("BRIEV_DBG_INS").is_some() && symbol == "double_n" {
-            eprintln!(
-                "[fuc-line] args={:?} epoch={} ac0={:?} in_defn_params={}",
-                call_args,
-                self.fun.value_llvm_ty.epoch(),
-                self.fun.value_width("%ac0"),
-                self.ctx.defn_params.contains_key(name)
-            );
-        }
         // 2026-10-20 (Arena fixture / Ptr ABI): a Ptr-returning defn uses the
         // ptr ABI (llvm_ret_abi_type), while every Briev consumer treats Ptr
-        // as an integer handle. Recover the handle once at the call boundary —
-        // the same convention as Ptr params (ptr → handle at entry / handle →
-        // ptr at calls). Without this, a `term arena_alloc(...)` in a
-        // Ptr-returning helper emitted `inttoptr i64 <ptr>`, invalid IR.
-        //
-        // 2026-11-25 (stage B'): the handle lives at the TARGET WORD width
-        // (i32 on wasm32) — that is what every other Ptr producer emits and
-        // what the harvested record now states for them. Hardcoding i64 made
-        // `%t42 = ptrtoint … to i64` reach `sub i32 %t42, %t39` as an i64
-        // register on wasm32 (arena_smoke). Ask the target once; record what
-        // was emitted.
+        // as an i64 handle. Recover the i64 once at the call boundary — the
+        // same convention as Ptr params (ptr → i64 at entry / i64 → ptr at
+        // calls). Without this, a `term arena_alloc(...)` in a Ptr-returning
+        // helper emitted `inttoptr i64 <ptr>`, invalid IR.
         if ret_llvm == "ptr" && matches!(ret_type, Type::Ptr(_) | Type::PtrConst(_)) {
-            let hw = format!("i{}", self.ctx.int_bits);
             let int_v = self.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, int_v, v, hw).ok();
-            self.fun.record_value_width(int_v.clone(), hw);
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, int_v, v).ok();
             return TypedRegister {
                 name: int_v,
                 ty: ret_type,

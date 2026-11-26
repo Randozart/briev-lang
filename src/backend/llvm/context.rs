@@ -1082,28 +1082,6 @@ impl WidthChannel {
     /// Same signature as `HashMap::insert`, so a caller that used the map directly
     /// keeps compiling — and can no longer record an unstamped fact.
     pub fn insert(&mut self, reg: String, llvm_ty: String) -> Option<String> {
-        if std::env::var_os("BRIEV_DBG_INS").is_some()
-            && (reg.starts_with("%ac") || (reg == "%t8" && llvm_ty == "i32"))
-        {
-            let at = std::panic::Location::caller();
-            eprintln!(
-                "[ins-ac] {reg} = {llvm_ty} <- {}:{} epoch={}",
-                at.file(),
-                at.line(),
-                self.epoch
-            );
-            if reg == "%ac0" {
-                let bt = std::backtrace::Backtrace::force_capture();
-                let frames: Vec<String> = bt
-                    .to_string()
-                    .lines()
-                    .filter(|l| l.contains("briev_compiler"))
-                    .take(4)
-                    .map(|l| l.trim().to_string())
-                    .collect();
-                eprintln!("[ac0-bt] {}", frames.join(" | "));
-            }
-        }
         let epoch = self.epoch;
         self.facts
             .insert(reg, WidthFact { epoch, llvm_ty })
@@ -1163,41 +1141,6 @@ impl WidthChannel {
         out.sort_by(|a, b| a.0.cmp(b.0));
         out
     }
-
-    /// Harvest defined-width facts from the emitted text, stamped with THIS epoch.
-    ///
-    /// 2026-11-25 (stage B'): the emitted text is the one recorder that cannot
-    /// forget — it IS the emission. Harvesting on read (the helper calls this
-    /// right before choosing a width) means every definition already written to
-    /// `out` is visible, which is exactly the set LLVM text guarantees precedes
-    /// any use. `state` carries the parse position across calls so re-harvesting
-    /// a grown buffer costs only its suffix.
-    pub fn harvest_new_definitions(
-        &mut self,
-        text: &str,
-        state: &mut crate::ir_verify::HarvestState,
-    ) {
-        let epoch = self.epoch;
-        state.harvest_new(text, |reg, ty| match reg {
-            // A define crossed: names from the previous function are gone. Keep
-            // only this function's facts — a fact about another body's `%t46`
-            // typed a call argument here (measured, accel_lane_report). The
-            // epoch advances with the define, so EVERY function boundary is
-            // honoured even where no begin_function runs (plain defns share
-            // one emission epoch; bit_string_roundtrip_wasm's widen_bits
-            // poisoned main's `%t8` otherwise).
-            None => {
-                self.epoch = self.epoch.wrapping_add(1);
-                self.facts.clear();
-            }
-            Some(reg) => {
-                self.facts.insert(
-                    reg.to_string(),
-                    WidthFact { epoch: self.epoch, llvm_ty: ty.to_string() },
-                );
-            }
-        });
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1214,17 +1157,15 @@ pub struct FunctionContext {
     pub current_loop_engine: Option<crate::analysis::destination_model::LoopEnginePlan>,
     pub txn_counter: usize,
     pub within_counter: usize,
-    /// Where the emitted-text harvester stopped. Lives on the body state because
-    /// it positions INTO this body's output only; a fresh body re-harvests from
-    /// zero of ITS text (the buffers are per-function too, so the offsets line up).
-    pub(crate) harvest_state: crate::ir_verify::HarvestState,
     /// Arena bump counter for unique per-allocation register names
     pub arena_counter: usize,
-    /// (2026-11-25, stage C) The per-name provenance set that used to live here
-    /// (`counter_scoped_regs`) is GONE: the harvest drops facts at every `define`,
-    /// and every counter restart starts an epoch, so a fact in the channel is
-    /// either this body's or invisible. Provenance was scaffolding for the
-    /// migration; the epoch replaced it.
+    /// Names minted from `txn_counter`, i.e. meaningful only inside the body that
+    /// minted them. The representation channel is keyed by NAME, so it can only be as
+    /// sound as its agreement with this set: a name that the counter re-mints denotes
+    /// a different value, and any record still attached to it is a false claim about
+    /// width. Position-derived names (`%ac{i}` arena slots) are NOT in this set —
+    /// they are re-minted identically in every body, so their record stays true.
+    pub counter_scoped_regs: std::collections::HashSet<String>,
 
     // Local variable bindings (let x = ...)
     pub let_bindings: HashMap<String, String>,
@@ -1779,44 +1720,105 @@ impl FunctionContext {
     pub fn restart_register_names(&mut self) {
         self.txn_counter = 0;
         self.begin_epoch();
+        self.drop_counter_scoped_records();
     }
 
-    /// Start a new body epoch. Called ONLY by the paths that restart register
-    /// names, because those are the paths that make a name mean something else.
-    fn begin_epoch(&mut self) {
-        self.value_llvm_ty.start_epoch();
+    /// Declare that `name` came from the counter, for a site that mints with
+    /// `format!` plus a manual increment instead of `next_reg`.
+    ///
+    /// 2026-11-25 (S6): a handful of loop-engine sites build `%t{n}` and label names by
+    /// hand. They do not reset anything, so they never orphaned the channel — but they
+    /// were invisible to the provenance set, so a record they produced would outlive a
+    /// counter restart. Naming the fact here keeps one rule ("the counter's names are
+    /// dropped with it") true everywhere, without renumbering the IR those sites emit.
+    pub fn note_counter_scoped(&mut self, name: impl Into<String>) {
+        self.counter_scoped_regs.insert(name.into());
     }
 
-    /// Reset function state for a body boundary: the register counter, the
-    /// `within` counter, and the body epoch move together.
+    /// Drop the representation of every name the counter minted, and only those.
+    ///
+    /// 2026-11-25 (S2/S5): a counter restart means those names now denote DIFFERENT
+    /// values in the next body, so a record left behind is a false claim — and the
+    /// `inttoptr` width now asks the record, which made the stale entries observable
+    /// as `inttoptr i32 %t115` over an `i64` load. Position-derived names (`%ac{i}`)
+    /// survive: they are re-minted identically, so dropping theirs was measured to be
+    /// a downgrade, not a cleanup (`'%ac0' defined as i64 but expected i32`).
+    fn drop_counter_scoped_records(&mut self) {
+        for reg in self.counter_scoped_regs.drain() {
+            self.value_llvm_ty.remove(&reg);
+        }
+    }
+
+    /// Begin a new function body: the namespace restarts here.
+    ///
+    /// This is the ONLY place `txn_counter` may be zeroed. Three pieces of
+    /// per-function naming state move together — the register counter, the
+    /// `within` block counter, and the recorded representation of every register
+    /// — because a name is only meaningful inside one body. Splitting them is
+    /// exactly the bug this method exists to make unwritable.
     pub fn begin_function(&mut self) {
         self.txn_counter = 0;
         self.within_counter = 0;
         self.begin_epoch();
+        self.drop_counter_scoped_records();
+        // The channel is deliberately NOT cleared here, and the reason is
+        // measured rather than stylistic: the channel is written in places that
+        // stamp a value's CANONICAL width instead of the width it was emitted at
+        // (`emit_expr.rs:13137` derives `dst_ll` from the cast step's category,
+        // so an `Int` step stamps `i64` over an `zext i8 -> i32`; `:13526` stamps
+        // `i64` after a `ptrtoint`). While that is true, stale entries are not
+        // only noise — they are sometimes the only entry that happens to match
+        // the real register, and dropping them makes wasm32 worse, not better
+        // (`unicode_search_smoke`: `%t32 = trunc i64 %t31 to i32` where
+        // `%t31 = zext i8 %t22 to i32`).
+        //
+        // So the order is fixed: make every defining instruction record what it
+        // emitted (P2's job), and only then may this method drop the entries its
+        // counter minted. Registering WHICH names are counter-derived will come
+        // with that change, because the discrimination cannot be made from the
+        // name alone (`%ac{i}` is position-derived, `%t{n}` and `%tb{n}` are
+        // counter-derived) and a populated-but-unread provenance set would be a
+        // stub.
     }
 
     /// Record the LLVM type a register was emitted as. The single writer for
     /// the width channel — call this instead of touching `value_llvm_ty`.
+    ///
+    /// The record is stamped with the current `body_epoch`, so it states *which*
+    /// body emitted this width rather than implying "this is true of every `%t7`".
     pub fn record_value_width(&mut self, reg: impl Into<String>, llvm_ty: impl Into<String>) {
         self.value_llvm_ty.insert(reg.into(), llvm_ty.into());
     }
 
-    /// The recorded width for `reg`, current epoch only.
+    /// Start a new body epoch. Called ONLY by the paths that restart register
+    /// names, because those are the paths that make a name mean something else.
     ///
-    /// 2026-11-25 (stage C): the flip. The harvest drops facts at every `define`,
-    /// every counter restart starts an epoch — so a fact in the channel is either
-    /// this body's or does not exist. The migration-era distinction between the
-    /// two readers is gone.
-    pub fn value_width(&self, reg: &str) -> Option<&str> {
-        self.value_llvm_ty.get_current(reg).map(String::as_str)
-    }
-    /// The full fact (width + epoch) for , for tests and diagnostics.
-    pub fn value_width_fact(&self, reg: &str) -> Option<crate::backend::llvm::context::WidthFact> {
-        self.value_llvm_ty.fact(reg).cloned()
+    /// Pinned by `only_register_name_restarts_start_an_epoch`.
+    fn begin_epoch(&mut self) {
+        self.value_llvm_ty.start_epoch();
     }
 
-    /// The recorded width for `reg`, if THIS body recorded it. Same answer as
-    /// `value_width` since stage C; kept as the self-documenting name.
+    /// The recorded width fact for `reg`, whatever body produced it.
+    pub fn value_width_fact(&self, reg: &str) -> Option<&WidthFact> {
+        self.value_llvm_ty.fact(reg)
+    }
+
+    /// The recorded width for `reg`, whatever body produced it.
+    ///
+    /// Migration default: this is still what emitters ask, so a producer that does
+    /// not record keeps behaving exactly as it did before the epoch existed (it sees
+    /// the previous body's record, which is often — accidentally — the right width).
+    /// Stage C switches the readers to `value_width_in_current_epoch`; the two are
+    /// therefore the same function today, and keeping them apart makes the flip one
+    /// edit instead of a hunt.
+    pub fn value_width(&self, reg: &str) -> Option<&str> {
+        self.value_llvm_ty.get(reg).map(String::as_str)
+    }
+
+    /// The recorded width for `reg`, but only if THIS body recorded it.
+    ///
+    /// This is the question a reader actually wants answered: "what did the
+    /// instruction that defines this register, in the body I am emitting, emit?"
     pub fn value_width_in_current_epoch(&self, reg: &str) -> Option<&str> {
         self.value_llvm_ty.get_current(reg).map(String::as_str)
     }
@@ -1954,7 +1956,7 @@ impl FunctionContext {
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
             value_llvm_ty: WidthChannel::default(),
-            harvest_state: crate::ir_verify::HarvestState::new(),
+            counter_scoped_regs: std::collections::HashSet::new(),
             fat_ptrs: HashMap::new(),
             canonical_ptrs: HashMap::new(),
             state_ptr_cache: HashMap::new(),
@@ -1967,6 +1969,7 @@ impl FunctionContext {
     pub fn next_reg(&mut self) -> String {
         let r = format!("%t{}", self.txn_counter);
         self.txn_counter += 1;
+        self.counter_scoped_regs.insert(r.clone());
         r
     }
 
@@ -1974,6 +1977,7 @@ impl FunctionContext {
     pub fn next_label(&mut self, prefix: &str) -> String {
         let l = format!("{}_{}", prefix, self.txn_counter);
         self.txn_counter += 1;
+        self.counter_scoped_regs.insert(l.clone());
         l
     }
 
@@ -1982,6 +1986,7 @@ impl FunctionContext {
     pub fn next_reg_with_prefix(&mut self, prefix: &str) -> String {
         let r = format!("%{}{}", prefix, self.txn_counter);
         self.txn_counter += 1;
+        self.counter_scoped_regs.insert(r.clone());
         r
     }
 
