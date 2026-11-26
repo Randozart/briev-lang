@@ -6502,7 +6502,7 @@ impl LlvmBackend {
                     crate::ast::PropertyValue::Identifier(s) => s.clone(),
                     _ => continue,
                 };
-                if let Some(llvm_attr) = registry.llvm_attr(key, &value_str) {
+                if let Some(llvm_attr) = registry.llvm_function_attr(key, &value_str) {
                     attrs.push(' ');
                     attrs.push_str(llvm_attr);
                 }
