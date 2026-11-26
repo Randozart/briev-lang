@@ -50,7 +50,7 @@
 "collection_assignment.rs" = 10
 "context.rs" = 9
 "dispatch.rs" = 16
-"emit_expr.rs" = 438
+"emit_expr.rs" = 439
 "emit_hir_stmt.rs" = 5
 "emit_stmt.rs" = 82
 "emit_toplevel.rs" = 281
