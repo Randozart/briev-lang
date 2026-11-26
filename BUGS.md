@@ -15793,7 +15793,7 @@ round-trip honestly through coerce once the arg is typed). Interpre
 comparison not needed (pure codegen). saltpetre's `vad_stream_probs` returned
 to `List<Float>`; the String workaround is deleted.
 
-## OPEN — coll-typed globals (`List<Int> = []`) emit a broken init_state store (2026-11-12)
+## coll-typed globals (`List<Int> = []`) emit a broken init_state store — NOT REPRODUCIBLE 2026-11-26
 
 Sibling finding to the Float-collection bug: a module-global initialized to
 an empty coll (`let sp_slot_nodes: List<Int> = [];` in saltpetre/session.bv)
@@ -15804,6 +15804,21 @@ cache was rewound to scalar per-slot globals (sp_s0_*/sp_s1_*), which also
 matches the two-slot requirement. Fix the scaffold's global-init store path
 for coll-typed globals, then the scalar rewind can become a List again if
 dynamic slot growth is ever wanted.
+
+**Status 2026-11-26 — cannot reproduce on `origin/main` (36a734480).** The
+documented shape and every nearby variant build and pass `opt -passes=verify`:
+`List<Int> = []` at module scope (assigned and read), the same in an imported
+module, an unused imported coll global, multiple coll globals, `List<String>`,
+`List<List<Int>>`, `List<enum>` and `List<obj>`, and `const`-style variants.
+The current `init_state` for `List<Int> = []` emits `%t0 =
+@__briev_region_malloc(...); %t1 = ptrtoint ptr %t0 to i64` — a `ptrtoint` on a
+genuine `ptr` operand, not on an i64 constant. The `sp_slot_nodes` global
+referenced here never appears in the saltpetre history (`git log -S` finds only
+this BUGS entry), so the original reproducer was an uncommitted draft. Likely
+fixed incidentally by the plain-global/coll-scaffold work since 2026-11-12
+(e.g. `13997cf94`, `094f58914`). If it recurs, capture the exact program and
+re-file; the scalar rewind is otherwise safe to revisit.
+**Status:** OPEN — not reproducible at the current tip (kept for the record).
 
 ## 2026-11-14 — `--verify-bodies` cannot discharge a relational goal over a sum
 
