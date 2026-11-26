@@ -1625,12 +1625,20 @@ impl LlvmBackend {
         conv: &str,
         float_tmp: &str,
     ) {
+        // 2026-11-25 (stage C): every produced width is recorded HERE, at the
+        // single producer, instead of at each of its callers. Measured:
+        // aggregate_value_arguments_marshal_handle_to_ptr — wrap's `x: Named`
+        // handle %ac0 had no record, the outbound call asked the channel, got
+        // nothing, and forwarded `ptr %ac0` over an i64 register.
         if self.is_protocol_member(ty, "Bool") {
             writeln!(out, "{}{} = zext i8 {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         } else if self.is_protocol_member(ty, "Char") {
             writeln!(out, "{}{} = zext i32 {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         } else if self.is_protocol_member(ty, "String") || self.is_protocol_member(ty, "Blob") {
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         } else if self.is_protocol_member(ty, "Float") {
             writeln!(
                 out,
@@ -1639,6 +1647,12 @@ impl LlvmBackend {
             )
             .ok();
             writeln!(out, "{}{} = zext i32 {} to i64", indent, conv, float_tmp).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
+        } else {
+            // A struct/obj VALUE boxed to its handle: ptrtoint, same as the
+            // String branch's shape (5325's own ptr-param arm documents it).
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         }
     }
 
@@ -4251,11 +4265,18 @@ impl LlvmBackend {
                 // value, but the register may hold a real pointer (a load from a
                 // ptr-typed global). Trust the recorded width when there is one,
                 // or the store writes `ptr` into an i64 slot.
+                // 2026-11-25 (stage C): ask the channel through its epoch
+                // reader. This site read the raw map and received a HELPER
+                // body's fact (the harvested pointer stops before this
+                // function's `define`, so the define-drop had not fired):
+                // `route_name`'s `%t1 = … i64` answered for `current_path`'s
+                // `%t1 = call ptr …`, and a String field initializer stored a
+                // raw ptr into an i64 slot. Facts from another body are not
+                // facts — that is the entire epoch contract.
                 let val_ty = self
                     .fun
-                    .value_llvm_ty
-                    .get(&val_reg.name)
-                    .cloned()
+                    .value_width(&val_reg.name)
+                    .map(str::to_string)
                     .unwrap_or_else(|| self.llvm_type(&val_reg.ty));
                 if val_ty == *ty {
                     writeln!(

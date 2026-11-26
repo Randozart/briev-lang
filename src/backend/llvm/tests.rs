@@ -15674,10 +15674,21 @@ fn no_path_resets_the_register_namespace_inline() {
 fn begin_function_documents_why_it_does_not_clear_the_channel() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/llvm/context.rs");
     let text = std::fs::read_to_string(path).expect("read context.rs");
+    // 2026-11-25 (stage C): the "deliberately NOT cleared" comment described the
+    // migration era — the channel could not be cleared because records were
+    // untrustworthy and sometimes the only true answer. The harvest replaced
+    // that: facts are re-derived from the emitted text, so the epoch (not a
+    // clear) is what scopes them. The pin moves to the property that survives:
+    // the epoch mechanism must still be named where begin_function lives.
     assert!(
-        text.contains("The channel is deliberately NOT cleared here"),
-        "the reasoning for not clearing the channel in `begin_function` was removed; \
-         it is the only record of two measured wasm32 failures"
+        text.contains("begin_epoch"),
+        "begin_function lost the epoch bump; without it a body's facts survive \
+         into the next body under reused names"
+    );
+    assert!(
+        text.contains("get_current"),
+        "the channel lost its current-epoch reader; a previous body's fact would \
+         silently answer this body's question again"
     );
 }
 
@@ -15741,10 +15752,14 @@ fn a_previous_epoch_record_is_invisible_to_a_current_epoch_read() {
         None,
         "the new body has not described its own %t7, so there is nothing true to say"
     );
+    // 2026-11-25 (stage C): the flip happened — the harvest landed and made
+    // producers record, which was the precondition this test's old form pinned
+    // ("the migration reader still sees the stale fact"). Now BOTH readers must
+    // answer the honest question, and neither may invent a width from another
+    // body.
     assert_eq!(
         fun.value_width("%t7"),
-        Some("i64"),
-        "the migration reader still sees the previous body's fact, which is why \
-         switching readers (stage C) has to follow making producers record (stage B)"
+        None,
+        "value_width is current-epoch since stage C; a stale fact is not an answer"
     );
 }
