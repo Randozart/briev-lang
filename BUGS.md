@@ -13333,7 +13333,7 @@ Expr::Block now delegates to the statement scanner so nested Lets count).
 **How to undo:** revert the Guarded arm — the plugin probes (target/cli_probe)
 fail at link with `@arg_*` undefined again.
 
-## reactive-loop with local let: non-dominating alloca — OPEN 2026-10-12
+## reactive-loop with local let: non-dominating alloca — FIXED (tier2 Phase 2)
 
 **Symptom:** `examples/cli-args.bv` first draft used a reactor-internal loop
 (`let i: Int = 0; when repeats > 0 { i = 1; }; when i < repeats { i = i + 1; }`)
@@ -13345,7 +13345,18 @@ in the example (dropped the loop); the shape itself needs a codegen fix
 (alloca placement or phi for loop-carried locals). Repro: restore the loop
 in examples/cli-args.bv and link.
 
-**How to undo:** n/a — open bug, not a fix.
+**Resolution (2026-10-14, tier2 Phase 2):** the assign-site alloca demotion
+landed INSIDE the `when` block, which does not dominate a sibling read. The
+SSA main now pre-declares entry allocas for reassigned lets (the
+`emit_definition` pattern), so the seed store and every later store target a
+slot at function entry that dominates all uses. Regression:
+`tests/tier2_loop_locals.rs` (`loop_local_carried_across_whens`,
+`loop_local_false_branch_sees_the_seed`), linked at `-O0`. Verified still
+green 2026-11-26; the entry's `OPEN` header was stale. The original
+`examples/cli-args.bv` loop is not restored (the example uses `arg_int`
+directly), so the "re-add and link" acceptance step is covered by the two
+fixtures instead.
+**Status:** FIXED (tier2 Phase 2, 2026-10-14).
 
 ## byte_at WASM emission: i64 length load vs i32 param — OPEN 2026-10-12
 
