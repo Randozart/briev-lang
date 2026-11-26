@@ -10387,13 +10387,6 @@ impl LlvmBackend {
                 ty: ret_type,
             };
         }
-        // 2026-11-25 (stage C follow-up): record the return register's EMITTED
-        // form for every non-void call. `proto_bytes` returns Custom(Bytes) whose
-        // llvm_type is i64, but the ABI says the call yields `ptr` — a downstream
-        // `as Ptr` cast asked the channel, got nothing, fell back to the type, and
-        // emitted `inttoptr i64 %t176` over a ptr register (conformance.bv). A
-        // producer stating what it emitted is cheaper than every consumer guessing.
-        self.fun.record_value_width(v.to_string(), ret_llvm.clone());
         TypedRegister {
             name: v.to_string(),
             ty: ret_type,
@@ -13127,18 +13120,7 @@ impl LlvmBackend {
         }
 
         let mut cur = src.name.clone();
-        // 2026-11-25 (stage C): the step widths come from the channel (harvest-
-        // dated to this body), not from the Briev type. Measured on
-        // conformance.bv: `proto_bytes` returns a real `ptr` (its own body's
-        // call line is harvested), but its Briev type's llvm_type is i64 — so a
-        // downstream `as Ptr` bitcast lane computed cur=i64 and emitted
-        // `inttoptr i64 %t176` over a ptr register. The record is the truth
-        // about what was EMITTED; the type is the intent.
-        let mut cur_ll = self
-            .fun
-            .value_width(&src.name)
-            .map(str::to_string)
-            .unwrap_or_else(|| self.llvm_type(&src.ty));
+        let mut cur_ll = self.llvm_type(&src.ty);
         let total = path.len();
 
         for (i, step) in path.iter().enumerate() {

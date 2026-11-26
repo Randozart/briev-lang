@@ -53,7 +53,7 @@
 "emit_expr.rs" = 439
 "emit_hir_stmt.rs" = 5
 "emit_stmt.rs" = 82
-"emit_toplevel.rs" = 287
+"emit_toplevel.rs" = 281
 "helpers.rs" = 130
 "intrinsics.rs" = 172
 "kernel.rs" = 15

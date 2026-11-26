@@ -388,16 +388,6 @@ impl LlvmBackend {
         // from main's phi). Reset so init_pred resolves to "entry" unless a
         // block-emitting init runs IN THIS function.
         self.fun.cur_block = None;
-        // 2026-11-25 (stage C): a new @main is a NEW BODY — the epoch must move
-        // with the name restart. Not every main-body emitter goes through
-        // begin_function (the reactor/web paths emit the header directly), so
-        // the previous body's harvested facts were current-epoch during THIS
-        // body: init_state's `%t8 = widen_bits(...) -> i32` answered for @main's
-        // `%t8 = bitcast … to ptr`, and a String argument was emitted
-        // `preserve(i32 %t8)` against a ptr parameter
-        // (bit_string_roundtrip_wasm). The counter was already rewound by these
-        // paths — this is the same event, finished properly.
-        self.fun.begin_function();
         // 2026-09-13 (defn-liveness emission, embedded main): on bare-metal
         // targets the argv capture is dead — nothing reads __briev_argc/
         // __briev_argv, and without LTO the surviving stores emit HI20
@@ -3835,11 +3825,7 @@ impl LlvmBackend {
                 // register width and convert only when it differs; an unknown
                 // width still passes through, so the ptr-typed arms below can
                 // never double-ptrtoint a handle.
-                // 2026-11-25 (stage C): epoch-scoped, like every reader.
-                let recorded = self
-                    .fun
-                    .value_width(val)
-                    .map(str::to_string);
+                let recorded = self.fun.value_llvm_ty.get(val).cloned();
                 if let Some(from) = recorded {
                     if from != *expected_llvm_ty {
                         if let Some(converted) =
