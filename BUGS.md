@@ -559,8 +559,6 @@ suites now hold the claim across their whole build/run/teardown window.
 Verified: `c_driver_cancel` + `c_driver_library` in parallel under nextest
 `-j 2` pass.
 
-## 2026-11-22 — a `defn` that creates, appends to and returns a `List<struct>` hands back a corrupt element store (OPEN)
-
 ## 2026-11-22 — The reference interpreter has no cast-lane prelude, so `Float as String` renders differently (OPEN)
 
 `1.25 as String` prints `1.25` from codegen and `1.25000` from the reference
@@ -593,7 +591,12 @@ dispatch the lane body when the defn is absent), then add the string-equality
 case to the fixture. Do NOT paper over it by changing `float_format`'s contract
 — the `%g` rendering is the specified one (SPEC §8.2 / C `%g`).
 
-## 2026-11-21 — The wave-8 contract tightening makes the kiosk daemon uncompilable (OPEN)
+## 2026-11-22 — a `defn` that creates, appends to and returns a `List<struct>` hands back a corrupt element store (OPEN)
+
+> 2026-11-26 cleanup: this body had been sitting under an orphaned header
+> ("The wave-8 contract tightening makes the kiosk daemon uncompilable"); the
+> matching title now sits with its body. The kiosk-daemon finding is recorded
+> in the 2026-11-21 "41 refutations" entry below.
 
 Found while building the P3 Gemm baseline fixture (plan
 `2026-11-22-saltpetre-gemm-graduation.md`, M1). The defect is in the shape of
@@ -1038,8 +1041,6 @@ failures documented in the same helper; library-only tests do not build it.
 The fixture now inherits `BuildOptions::default()` and overrides only its path,
 Webstack backend and 32-bit integer width. Every other old explicit value
 matched the default. Existing binary/view tests exercise these options.
-
-## 2026-11-19 — trunk owners-census regressed +1 conservative drop (2196→2197); kiosk pin advance blocked (OPEN)
 
 ## 2026-11-19 — named Data values recursively entered numeric String casts (FIXED)
 
@@ -2092,7 +2093,6 @@ Trade-off: real stack growth per level. For deep recursion prefer an
 accumulator shape that never allocates per iteration.
 
 ---
-## 2026-11-16 — bump arena unreachable: `AllocStrategy::Arena` never fires
 ## 2026-11-16 — RETRACTED: "bump arena unreachable" (and the real bug it hid)
 
 **Retracted the same day.** The report claimed `AllocStrategy::Arena` never
@@ -2967,21 +2967,11 @@ non-GEMM gates.
 hand-written OpenCL C reference; check byte-offset state addressing bounds
 and NEO's handling of the serial loop (watchdog/recovery). Track under W2/W3
 of the lane-ceilings plan.
-## Publish into an incoming parameter leaked the storage — FIX IMPLEMENTED 2026-11-09
+## Publish into an incoming parameter leaks the storage — FIXED 2026-11-09
 
-**Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*
-incoming object parameter left the storage unreclaimed when the object died with
-the caller's frame. Minimal repro:
-
-```briev
-obj Holder { addr: Ptr<Bit<8>>; };
-defn make() -> Ptr<Bit<8>> { let p: Ptr<Bit<8>> = Malloc#(16); Store#(p,1,8); term p; };
-defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
-defn exercise() -> Int {
-    let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
-    let ok: Bool = publish(h);
-
-## Publish into an incoming parameter leaks the storage — OPEN 2026-11-09
+> 2026-11-26 cleanup: a truncated duplicate of this entry (header "FIX
+> IMPLEMENTED 2026-11-09", body cut off mid-code-block) preceded it and was
+> removed. The residual recursive-producer leak is the separate entry below.
 
 **Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*
 incoming object parameter leaves the storage unreclaimed when the owning object
@@ -4332,8 +4322,6 @@ of each async node, nodes in sorted order). Companion rewritten as a
 semantic mirror of the source; harness → MATCH.
 
 **Status:** FIXED 2026-09-30 (found by the 5c IR A/B gate).
-
-## GEMM 4096³: SPIR-V/Vulkan correct, CUDA/cubin IMA — FIXED 2026-09-30 (cubin tier)
 
 ## GEMM 4096³: SPIR-V/Vulkan correct, CUDA/cubin IMA — FIXED 2026-09-30 (cubin tier)
 
@@ -9470,36 +9458,6 @@ it, asserts stdout "999\n42" — PASS.
   parse; Briev exports one pure `step()` (lib/tamer/main.bv +
   tamer/install_sim.c).
 
-## Two-guard task spawn + cross-guard state arithmetic: undefined guard label (2026-08-22)
-
-**Status:** CLOSED 2026-08-22. Two stacked causes, both fixed:
-1. The countable Guarded arm trusted inherited `fun.cur_block` as its merge
-   phi's fall-through predecessor — it could name a pre-loop guard merge
-   from an earlier emission region (`%guard.end49`). Condition blocks are
-   now freshly labeled (`.cmgcN`) with an explicit fall-through branch.
-2. `.cm_body` entry never reset `terminated`/`cur_block`, so a stale
-   terminated flag skipped that fall-through branch and left an empty
-   predecessor block (slice_state regression during fix). Body entry now
-   resets both by construction.
-Also found in the same audit: FreeHint/KeepHint/Yield were silently
-DROPPED by emit_countable_body\'s `_ => {}` — they now delegate to the
-standard emitter. Verified: repro 4221, all five pinned fixtures, suite
-1928 green. Original report:
-**Repro:** `bugs/repro_task_free_second_guard.bv` — node with TWO sequential
-`when` guards; guard A spawns a local task, awaits/frees it, assigns a state
-field; guard B reads that field with arithmetic under `endprogram`.
-**Behavior:** emitted IR cites `%guard.end49` (an emit_stmt-style guard-end
-label) inside a countable-loop merge phi (`%cmgm…`) that references it as a
-PREDECESSOR, but no such label exists — clang/opt reject. Single-guard
-spawn+await (_g3 shape) and spawn+free (_g4 shape) compile and run correctly;
-static linearity gates all pass. Suspect: an inner emit_stmt-emitted guard
-(candidates: the scheduled-Free# epilogue or a coll/spawn grow guard)
-advances `fun.cur_block` past a block whose label is later renamed or never
-written, so the outer merge phi captures a phantom predecessor.
-**Fix direction:** audit cur_block updates across nested emit_statement calls
-inside countable bodies (same family as the match-edge fix); make the merge-
-phi predecessor cite the block that ACTUALLY branches.
-
 ## Convergent-txn loop: body side-effects don't persist across iterations (2026-08-23)
 
 **Status:** CLOSED-AS-ARCHITECTED 2026-08-23 — superseded, no longer a
@@ -9637,14 +9595,6 @@ rewritten onto Fill#/Copy#, archived module-orphaned benchmarks.
    data-briev dbv positions, link-demo missing helper.c module
 
 (Older triages preserved below.)
-
-## Conformance sweep: CLOSED (2026-08-23)
-
-**Status:** RESOLVED — the sweep runs as a first-class test in `cargo
-test --lib`. Campaign cleared 152 → 0 non-tamer failures across 8 passes.
-Excludes: glue.dbv (own test suite) and lib/compiler/*.bv (tamer WIP).
-Any new file that fails parse/typecheck will be caught immediately by
-cargo test.
 
 ## Conformance sweep: 119 active sources fail
 
@@ -15516,7 +15466,7 @@ Ownership analysis omitted trait default bodies and concrete free-call member re
 
 Tuple construction and destructuring merged unrelated fields. A scalar/string key inherited pointer contents from its paired value, making a synchronous send appear to publish the entire graph. Preserve index-labelled tuple fields through construction, let destructuring, and tuple patterns; raw memory loads remain conservative. Regressions exercise safe unselected fields and genuinely escaping selected/raw fields.
 
-## Multi-node counted-loop array writes invisible mid-run at 33 MB state scale — OPEN 2026-11-06
+## Multi-node counted-loop array writes invisible mid-run at 33 MB state scale — FIXED 2026-11-08
 
 **Symptom:** a three-fold-node program (init → minrow → maxrow → folds_done →
 verify → report, ALL nodes plain — zero accel involvement) at state scale
