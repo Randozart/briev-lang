@@ -44,10 +44,10 @@ as BackendMapping {
     > llvm; overflow; "wrapping"; "nuw nsw"; instruction;
     > llvm; overflow; "checked"; "nsw"; instruction;
     > llvm; overflow; "saturating"; "nuw"; instruction;
-    > llvm; associative; "*"; "reassoc"; function;
-    > llvm; fp_contract; "*"; "contract"; function;
-    > llvm; fp_math; "fast"; "fast"; function;
-    > llvm; fp_math; "ieee754"; ""; function;
+    > llvm; associative; "*"; "reassoc"; instruction;
+    > llvm; fp_contract; "*"; "contract"; instruction;
+    > llvm; fp_math; "fast"; "fast"; instruction;
+    > llvm; fp_math; "ieee754"; ""; instruction;
     > llvm; readonly; "*"; "readonly"; function;
     > llvm; inline_hint; "always"; "alwaysinline"; function;
     > llvm; inline_hint; "never"; "noinline"; function;

@@ -15525,7 +15525,7 @@ survives). `g0_minmax` is a required PTL rung again and PASSES
 `docs/plans/2026-11-08-general-workstream-countable-body-and-folds.md`.
 **Status:** FIXED 2026-11-08.
 
-## `!> associative` / `!> fp_math: fast` emit INVALID IR — OPEN 2026-11-08
+## `!> associative` / `!> fp_math: fast` emit INVALID IR — FIXED 2026-11-26
 
 **Symptom:** a txn carrying `!> associative: true` or `!> fp_math: fast`
 makes the LLVM backend append `reassoc` / `fast` as BARE function attributes
@@ -15548,11 +15548,21 @@ consumed by the frontend fold-lane decision and disclosed in diagnostics.
 The `!>` numeric keys are being retired from the author surface in favor of
 the keyword pair.
 
-**Fix direction:** when the `!>` retirement lands, either (a) map these keys
-to per-instruction fast flags via the dead `emit_fast_math_flags` helper, or
-(b) delete the registry rows with the retired vocabulary — whichever the
-retirement plan chooses — and add a regression that builds each hint.
-**Status:** OPEN (latent; not triggered by the keyword path).
+**Resolution (2026-11-26):** the mapping's `applies_to` scope is now honoured.
+`MetadataRegistry::llvm_function_attr` returns a mapping only when its scope is
+`function`; the `meta_attrs` block and `apply_llvm_function_metadata` use it, so
+instruction/loop-scoped rows (`associative`→`reassoc`, `fp_contract`→`contract`,
+`fp_math: fast`→`fast`, `overflow`→`nuw nsw`) can no longer reach the
+function-attribute position. The four instruction-flag rows in
+`config/meta-vocab.dbv` are corrected from scope `function` to `instruction`,
+making the data honest (they are per-instruction flags, consumed — when the
+vocabulary is revived — by `emit_fast_math_flags`). No reachable program changes:
+`txn.metadata` is populated only by `address_wired` (machine-entry nodes) and the
+`!>` surface that set these keys is a compile error. Regression:
+`backend::metadata::tests::test_function_metadata_skips_instruction_scoped_keys`
+asserts the function-attribute applier drops every instruction-scoped key and
+keeps `readonly`/`inline_hint`.
+**Status:** FIXED 2026-11-26.
 
 ## FIXED — `List<Float> <- call()` emitted INVALID IR (`sitofp i64 <float>`) (2026-11-10, fixed 2026-11-12)
 

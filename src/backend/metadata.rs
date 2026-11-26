@@ -131,6 +131,25 @@ impl MetadataRegistry {
         self.match_mapping(&self.llvm_idx, key, value)
     }
 
+    /// Look up an LLVM **function-level** attribute for a (key, value) pair.
+    ///
+    /// 2026-11-26: `match_mapping` ignores the mapping's `applies_to` scope, so
+    /// instruction/loop-scoped rows (`associative` → `reassoc`, `fp_math: fast`
+    /// → `fast`, `overflow` → `nuw nsw`) were emitted as BARE function
+    /// attributes — invalid IR that clang rejects (BUGS.md 2026-11-08).
+    /// Function-attribute emission must only consult `function`-scoped rows.
+    pub fn llvm_function_attr(&self, key: &str, value: &str) -> Option<&str> {
+        self.llvm_idx
+            .iter()
+            .map(|&idx| &self.mappings[idx])
+            .find(|m| {
+                m.applies_to == "function"
+                    && m.metadata_key == key
+                    && (m.value_pattern == "*" || m.value_pattern == value)
+            })
+            .map(|m| m.ir_attribute.as_str())
+    }
+
     /// Look up a Webstack option for a (key, value) metadata pair.
     pub fn webstack_option(&self, key: &str, value: &str) -> Option<&str> {
         self.match_mapping(&self.webstack_idx, key, value)
@@ -223,13 +242,17 @@ fn value_as_string(df: &DataField) -> Option<String> {
 }
 
 /// Apply LLVM function-level attributes from attr metadata.
+///
+/// 2026-11-26: only `function`-scoped mappings are valid in the function-
+/// attribute position; instruction/loop flags (`reassoc`, `fast`, `nuw nsw`)
+/// emitted here are invalid IR (BUGS.md 2026-11-08).
 pub fn apply_llvm_function_metadata(
     fn_attrs: &mut Vec<String>,
     metadata: &[(&str, &str)],
     registry: &MetadataRegistry,
 ) {
     for (key, value) in metadata {
-        if let Some(attr) = registry.llvm_attr(key, value) {
+        if let Some(attr) = registry.llvm_function_attr(key, value) {
             fn_attrs.push(attr.to_string());
         }
     }
@@ -442,6 +465,31 @@ mod tests {
         apply_llvm_function_metadata(&mut attrs, &metadata, &reg);
         assert!(attrs.contains(&"readonly".to_string()));
         assert!(attrs.contains(&"alwaysinline".to_string()));
+    }
+
+    /// 2026-11-26 (BUGS.md 2026-11-08): instruction/loop-scoped mappings are
+    /// NOT valid function attributes. `associative`/`fp_math`/`overflow` must
+    /// be skipped here — emitting `reassoc`/`fast`/`nuw nsw` as bare function
+    /// attributes is invalid IR that clang rejects.
+    #[test]
+    fn test_function_metadata_skips_instruction_scoped_keys() {
+        let reg = test_registry();
+        let mut attrs = Vec::new();
+        let metadata = vec![
+            ("associative", "true"),
+            ("fp_math", "fast"),
+            ("fp_contract", "fast"),
+            ("overflow", "wrapping"),
+            ("readonly", "true"),
+        ];
+        apply_llvm_function_metadata(&mut attrs, &metadata, &reg);
+        assert_eq!(attrs, vec!["readonly".to_string()], "{attrs:?}");
+        assert!(reg.llvm_function_attr("associative", "true").is_none());
+        assert!(reg.llvm_function_attr("fp_math", "fast").is_none());
+        assert_eq!(
+            reg.llvm_function_attr("inline_hint", "always"),
+            Some("alwaysinline")
+        );
     }
 
     #[test]
