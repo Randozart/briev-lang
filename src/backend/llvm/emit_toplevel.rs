@@ -5061,6 +5061,13 @@ impl LlvmBackend {
     }
 
     pub(super) fn emit_definition(&mut self, out: &mut String, spec: DefinitionEmitSpec<'_>) {
+        // 2026-11-25 (stage C): every function body is a fresh epoch — plain
+        // defns previously shared the caller's epoch, so a harvested fact from
+        // one body (widen_bits' `%t8 = … i64`) answered for another body's
+        // same-named register (main's `%t8 = bitcast … to ptr`) and a String
+        // argument went out as `preserve(i32 %t8)` against a ptr parameter
+        // (bit_string_roundtrip_wasm).
+        self.fun.begin_epoch_public();
         let d: &crate::ast::Definition = spec.definition;
         let needs_state = spec.needs_state;
         // 2026-11-12 (H5 phase A): the caller supplies the callable's HIR
@@ -8152,6 +8159,9 @@ impl LlvmBackend {
         name: &str,
         pair_hir: Option<&[crate::hir::stmt::HirStmt]>,
     ) {
+        // 2026-11-25 (stage C): same contract as emit_definition — every body
+        // starts a fresh epoch.
+        self.fun.begin_epoch_public();
         // 2026-11-01: entry allocas and body registers share one namespace.
         // Reset before emitting either; a later reset can reuse entry names.
         // Retire when function construction owns a dedicated register allocator.
