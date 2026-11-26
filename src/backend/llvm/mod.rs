@@ -2467,32 +2467,8 @@ impl LlvmBackend {
         indent: &str,
         int_reg: &str,
     ) -> String {
-        // 2026-11-25 (stage C): the cached "canonical ptr" must still BE a
-        // pointer in the current body. The entry-prologue seeds
-        // `canonical_ptrs[%ac0] = %arg0` for ptr-ABI params — but
-        // `begin_function`-adjacent code paths (the folded-pure-counter main
-        // and any body that restarts names without a fresh entry seed) reuse
-        // the name %ac0 for an I64 handle, and the stale cache then answered
-        // `ptr %ac0` for a register whose definition is i64 (measured:
-        // aggregate_value_arguments_marshal_handle_to_ptr). The width channel
-        // is epoch-scoped; the cache must agree with it.
         if let Some(p) = self.fun.canonical_ptrs.get(int_reg) {
-            let cached_is_ptr = self
-                .fun
-                .value_width(p)
-                .map(|w| w == "ptr")
-                .unwrap_or(true);
-            let reg_is_ptr = self
-                .fun
-                .value_width(int_reg)
-                .map(|w| w == "ptr")
-                .unwrap_or(false);
-            if cached_is_ptr && !(reg_is_ptr && int_reg == p) {
-                return p.clone();
-            }
-            // Cache disagrees with the recorded widths: fall through and
-            // re-derive (the arm below inttoptrs unless the register itself
-            // is already a pointer).
+            return p.clone();
         }
         // 2026-11-17 (corpus slice C): the argument is USUALLY an i64 handle that
         // has to become a pointer, but a value read from a ptr-typed global
@@ -8658,14 +8634,6 @@ impl LlvmBackend {
                     node.name, tv
                 ));
                 self.emit_main_header(out, "#9", true);
-                // 2026-11-25 (stage C): a NEW function body starts here, but this
-                // path never called begin_function (init_state already did, at a
-                // DIFFERENT body). Without an epoch bump, init_state's harvested
-                // facts (%t8 = i32 from its widen_bits call) were current-epoch
-                // during THIS body's emission, and the folded main's String arg
-                // went out as `preserve(i32 %t8)` against a ptr parameter
-                // (bit_string_roundtrip_wasm). Same contract as every body start.
-                self.fun.begin_function();
                 self.emit_state_base(out);
                 self.emit_inline_init_stores(out, "%state");
                 self.emit_folded_pure_counter(out, counter_idx, tv);
