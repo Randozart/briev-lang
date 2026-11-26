@@ -1082,6 +1082,15 @@ impl WidthChannel {
     /// Same signature as `HashMap::insert`, so a caller that used the map directly
     /// keeps compiling — and can no longer record an unstamped fact.
     pub fn insert(&mut self, reg: String, llvm_ty: String) -> Option<String> {
+        if std::env::var_os("BRIEV_DBG_INS").is_some() && reg.starts_with("%ac") {
+            let at = std::panic::Location::caller();
+            eprintln!(
+                "[ins-ac] {reg} = {llvm_ty} <- {}:{} epoch={}",
+                at.file(),
+                at.line(),
+                self.epoch
+            );
+        }
         let epoch = self.epoch;
         self.facts
             .insert(reg, WidthFact { epoch, llvm_ty })

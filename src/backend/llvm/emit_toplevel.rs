@@ -1625,12 +1625,20 @@ impl LlvmBackend {
         conv: &str,
         float_tmp: &str,
     ) {
+        // 2026-11-25 (stage C): every produced width is recorded HERE, at the
+        // single producer, instead of at each of its callers. Measured:
+        // aggregate_value_arguments_marshal_handle_to_ptr — wrap's `x: Named`
+        // handle %ac0 had no record, the outbound call asked the channel, got
+        // nothing, and forwarded `ptr %ac0` over an i64 register.
         if self.is_protocol_member(ty, "Bool") {
             writeln!(out, "{}{} = zext i8 {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         } else if self.is_protocol_member(ty, "Char") {
             writeln!(out, "{}{} = zext i32 {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         } else if self.is_protocol_member(ty, "String") || self.is_protocol_member(ty, "Blob") {
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         } else if self.is_protocol_member(ty, "Float") {
             writeln!(
                 out,
@@ -1639,6 +1647,12 @@ impl LlvmBackend {
             )
             .ok();
             writeln!(out, "{}{} = zext i32 {} to i64", indent, conv, float_tmp).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
+        } else {
+            // A struct/obj VALUE boxed to its handle: ptrtoint, same as the
+            // String branch's shape (5325's own ptr-param arm documents it).
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, conv, raw).ok();
+            self.fun.record_value_width(conv.to_string(), "i64");
         }
     }
 
@@ -5324,6 +5338,9 @@ impl LlvmBackend {
             if param_llvm_ty == "ptr" {
                 let conv = format!("%ac{}", i);
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", conv, raw).ok();
+                if std::env::var_os("BRIEV_DBG_SITE").is_some() {
+                    eprintln!("[acdef] {} in {}", conv, n);
+                }
                 // 2026-11-13 (aggregate-arg ABI): `%ac{i}` is a genuine i64 SSA
                 // value. Record it, or a later outbound call marshalling sees
                 // the register typed by its Briev type (a struct/aggregate
@@ -8331,6 +8348,9 @@ impl LlvmBackend {
             if param_llvm_ty == "ptr" {
                 let ac = format!("%ac{}", i);
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", ac, raw).ok();
+                if std::env::var_os("BRIEV_DBG_SITE").is_some() {
+                    eprintln!("[actxn] {} in {}", ac, n);
+                }
                 // 2026-11-13 (aggregate-arg ABI): the handle is a real i64 SSA
                 // value — record it so outbound call marshalling converts it
                 // back to ptr instead of forwarding an i64 as a ptr operand.
