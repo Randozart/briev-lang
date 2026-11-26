@@ -4251,11 +4251,18 @@ impl LlvmBackend {
                 // value, but the register may hold a real pointer (a load from a
                 // ptr-typed global). Trust the recorded width when there is one,
                 // or the store writes `ptr` into an i64 slot.
+                // 2026-11-25 (stage C): ask the channel through its epoch
+                // reader. This site read the raw map and received a HELPER
+                // body's fact (the harvested pointer stops before this
+                // function's `define`, so the define-drop had not fired):
+                // `route_name`'s `%t1 = … i64` answered for `current_path`'s
+                // `%t1 = call ptr …`, and a String field initializer stored a
+                // raw ptr into an i64 slot. Facts from another body are not
+                // facts — that is the entire epoch contract.
                 let val_ty = self
                     .fun
-                    .value_llvm_ty
-                    .get(&val_reg.name)
-                    .cloned()
+                    .value_width(&val_reg.name)
+                    .map(str::to_string)
                     .unwrap_or_else(|| self.llvm_type(&val_reg.ty));
                 if val_ty == *ty {
                     writeln!(
