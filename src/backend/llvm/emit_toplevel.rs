@@ -1,6 +1,6 @@
 use crate::ast::{BinaryOpKind, Expr, OutputType, Statement, TopLevel, Type};
 use crate::backend::llvm::emit_stmt::emit_statement;
-use crate::backend::llvm::helpers::WordImageCopy;
+use crate::backend::llvm::helpers::{is_float_llvm_type, WordImageCopy};
 use crate::backend::llvm::{
     LlvmBackend, TypedRegister, f32_to_f16_hex, float_to_llvm_hex, float64_to_llvm_hex,
     llvm_type_byte_size, protocol_llvm_type,
@@ -4144,22 +4144,21 @@ impl LlvmBackend {
                         .ok();
                         writeln!(out, "{}store i64 {}, ptr {}", indent, n, first).ok();
                     }
+                } else if is_float_llvm_type(ty) {
+                    // 2026-11-26: an Int literal initializing a Float-typed
+                    // slot must become a float constant; `store float 0` is
+                    // invalid IR (BUGS.md 2026-11-06). Routes every floating
+                    // width through the shared float-literal emitter — this
+                    // supersedes the 2026-11-17 float/double-only fix ("class B
+                    // survivor") and additionally emits a proper `half`.
+                    self.emit_float_literal_store(out, indent, n as f64, (ty, gep));
                 } else {
-                    // 2026-11-17 (class B survivor): `store float 0, ptr …` is
-                    // invalid IR — a float slot needs a floating constant
-                    // ("integer/byte constant must have integer/byte type"). A
-                    // Decimal initializer for a float-typed field is a
-                    // whole-number value; print it in the slot's own form.
-                    let literal = match ty {
-                        "float" | "double" => super::float_to_llvm_str(n as f64, ty),
-                        _ => n.to_string(),
-                    };
                     writeln!(
                         out,
                         "{}store {} {}, ptr {}, align {}",
                         indent,
                         ty,
-                        literal,
+                        n,
                         gep,
                         self.align_of(ty)
                     )
@@ -4176,15 +4175,24 @@ impl LlvmBackend {
                     self.emit_float_literal_store(out, indent, -*f, (ty, gep));
                 }
                 Expr::Decimal(n) => {
-                    writeln!(
-                        out,
-                        "{}store i64 -{}, ptr {}, align {}",
-                        indent,
-                        n,
-                        gep,
-                        self.align_of("i64")
-                    )
-                    .ok();
+                    // 2026-11-26: the same literal/type rule as the positive
+                    // Decimal arm — a negative Int literal into a Float slot
+                    // is a float constant (`store float -0` is invalid IR),
+                    // and a narrow Int slot needs its own width, not i64.
+                    if is_float_llvm_type(ty) {
+                        self.emit_float_literal_store(out, indent, -(*n as f64), (ty, gep));
+                    } else {
+                        writeln!(
+                            out,
+                            "{}store {} -{}, ptr {}, align {}",
+                            indent,
+                            ty,
+                            n,
+                            gep,
+                            self.align_of(ty)
+                        )
+                        .ok();
+                    }
                 }
                 _ => {
                     writeln!(

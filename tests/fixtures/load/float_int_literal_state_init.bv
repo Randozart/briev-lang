@@ -1,0 +1,22 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Float state fields initialized from Int literals.
+//
+// 2026-11-26: `let f: Float = 0;` (and the Float64/Float16/negative
+// spellings) seeded `init_state` with an integer constant in a floating
+// slot — `store float 0` / `store double 0` / `store half 0` — which
+// clang/opt reject as invalid IR (BUGS.md 2026-11-06). The literal must be
+// emitted at the slot's declared width.
+let f: Float = 0;
+let neg: Float = -2;
+let d: Float64 = 0;
+let h: Float16 = 0;
+let done: Int = 0;
+
+node main [done == 0][done == 1] {
+    f = f + 1.0;
+    neg = neg + 1.0;
+    done = 1;
+    endprogram println!("{} {}", f, neg);
+};

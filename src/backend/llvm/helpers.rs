@@ -27,6 +27,19 @@ pub(crate) struct WordImageCopy<'a> {
     pub words: usize,
 }
 
+/// True when an LLVM type string denotes an IEEE-style floating scalar.
+///
+/// 2026-11-26: literal-init paths (state fields, aggregate elements) that
+/// store a numeric literal must not store an integer constant into a
+/// floating slot — `store float 0` is invalid IR (BUGS.md 2026-11-06,
+/// `let f: Float = 0;`). Covers every floating width the type universe can
+/// stamp, so a Float16/Float64 field is routed through the float-literal
+/// emitter too. Operates on LLVM type strings (like `tbaa_node`), never on
+/// Briev type names (Golden Rule 19).
+pub(crate) fn is_float_llvm_type(ty: &str) -> bool {
+    matches!(ty, "float" | "double" | "half" | "bfloat" | "fp128")
+}
+
 impl LlvmBackend {
     // ═══════════════════════════════════════════════════════════════
     // Section 1: Cell Rewriting
@@ -3591,6 +3604,35 @@ impl LlvmBackend {
             ("float", "i32") => {
                 writeln!(out, "{}{} = fptosi float {} to i32", indent, r, val.name).is_ok()
             }
+            // 2026-11-26: floating-width family (Float16 ↔ Float32 ↔ Float64)
+            // and the integer↔half pairs. Missing before, so a Float16 return
+            // or binding kept a `float` register and emitted `ret half
+            // <floatreg>` (invalid IR). Value-semantic: fpext widens, fptrunc
+            // narrows, sitofp/fptosi convert to/from integer.
+            ("half", "float") | ("half", "double") => writeln!(
+                out,
+                "{}{} = fpext {} {} to {}",
+                indent, r, have_ll, val.name, want_ll
+            )
+            .is_ok(),
+            ("float", "half") | ("double", "half") => writeln!(
+                out,
+                "{}{} = fptrunc {} {} to {}",
+                indent, r, have_ll, val.name, want_ll
+            )
+            .is_ok(),
+            ("i64", "half") | ("i32", "half") => writeln!(
+                out,
+                "{}{} = sitofp {} {} to half",
+                indent, r, have_ll, val.name
+            )
+            .is_ok(),
+            ("half", "i64") | ("half", "i32") => writeln!(
+                out,
+                "{}{} = fptosi half {} to {}",
+                indent, r, val.name, want_ll
+            )
+            .is_ok(),
             _ => false,
         };
         if !emitted {
@@ -3877,6 +3919,45 @@ impl LlvmBackend {
                 writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr, val).ok();
                 let r = self.fun.gen_reg();
                 writeln!(out, "{}{} = bitcast i32 {} to float", indent, r, tr).ok();
+                r
+            }
+            // 2026-11-26: floating-width family (Float16 ↔ Float32 ↔ Float64).
+            // The destination slot is a real floating width; convert the VALUE
+            // (fpext/fptrunc). Leaving `val` unchanged emitted
+            // `store half <floatreg>` — invalid IR (BUGS.md). A bitcast is
+            // impossible across differing widths.
+            ("float", "double") | ("half", "float") | ("half", "double") => {
+                let r = self.fun.gen_reg();
+                writeln!(
+                    out,
+                    "{indent}{r} = fpext {actual_ty_clone} {val} to {expected_llvm_ty}"
+                )
+                .ok();
+                r
+            }
+            ("double", "float") | ("float", "half") | ("double", "half") => {
+                let r = self.fun.gen_reg();
+                writeln!(
+                    out,
+                    "{indent}{r} = fptrunc {actual_ty_clone} {val} to {expected_llvm_ty}"
+                )
+                .ok();
+                r
+            }
+            // Integer ↔ half storage adaptation, mirroring the float↔i64 arms:
+            // keep the 16-bit image in the low word.
+            ("i64", "half") => {
+                let tr = self.fun.gen_reg();
+                writeln!(out, "{indent}{tr} = trunc i64 {val} to i16").ok();
+                let r = self.fun.gen_reg();
+                writeln!(out, "{indent}{r} = bitcast i16 {tr} to half").ok();
+                r
+            }
+            ("half", "i64") => {
+                let bits = self.fun.gen_reg();
+                writeln!(out, "{indent}{bits} = bitcast half {val} to i16").ok();
+                let r = self.fun.gen_reg();
+                writeln!(out, "{indent}{r} = zext i16 {bits} to i64").ok();
                 r
             }
             ("i8", "i64") => {

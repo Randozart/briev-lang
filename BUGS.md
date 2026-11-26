@@ -15354,7 +15354,7 @@ heap. Repro: `benchmarks/intel_ptl/g0_elem.bv` without the gate's ulimit.
 and enforce a stack requirement for large-state programs. G0 runs under
 `ulimit -s 65536` meanwhile.
 
-## `let f: Float = 0` emits `store float 0` (invalid IR) — OPEN 2026-11-06
+## `let f: Float = 0` emits `store float 0` (invalid IR) — FIXED 2026-11-26
 
 **Symptom:** writing `let gpu_sum: Float = 0;` made `opt` reject the module:
 `error: integer constant must have integer type / store float 0`. `0.0`
@@ -15362,7 +15362,46 @@ works. Nonzero integer literals presumably have the same form.
 
 **Scope:** frontend literal typing for Float-typed initializers. Repro:
 G0 gate draft (first revision) with `Float = 0` initializers.
-**Status:** OPEN — use `0.0` in Float initializers until narrowed/fixed.
+**Status:** FIXED 2026-11-26.
+
+**Resolution (rebased onto origin/main 2026-11-26):** `origin/main` had
+already fixed the state-field sink for `float`/`double` (2026-11-17 "class B
+survivor"). This change completes the class: a literal Int in a *floating*
+slot is now emitted as a floating constant at every declaration sink —
+`emit_field_init_value` (both `Expr::Decimal` arms, superseding the
+float/double-only fix and additionally emitting a proper `half`), the
+plain-global declaration, and the `const` declaration (value + dedup key).
+Routing goes through `float_to_llvm_str` via the new `is_float_llvm_type` /
+`int_literal_as_llvm_const` / `zero_literal_for_llvm_type` helpers, so
+`Float`, `Float64` and `Float16` fields/globals/consts emit
+`store float %t` / `store double %t` / `store half 0xH....`,
+`@d = global double bitcast (i64 0 to double)`, and
+`@Z = constant float bitcast (i32 0 to float)` respectively. Negative and
+narrow-integer literal inits are width-correct too. Still broken on
+`origin/main` (verified against its `brievc`): `const Z: Float = 0`,
+`h = 1.0` into a Float16 field, and `let x: Float16 = 1.0`. Regression:
+`tests/float_int_literal_state_init.rs` (+ fixture
+`tests/fixtures/load/float_int_literal_state_init.bv`) builds under
+`brievc` (clang rejects invalid IR) and runs `1 -1` at O0/O3, AST and HIR.
+
+**Same-family follow-on, FIXED 2026-11-26 (post-rebase scope).** `origin/main`
+had already fixed, via `fp_cast_op` at the cast/call/return sites,
+mixed-width float arithmetic (`Float64 + 1.0`), the `f16 as Float` cast, and
+Float16 returns from an explicitly-cast value. This change closes the
+remaining **direct-literal** shapes — where a `Float` literal flows into a
+Float16 slot with no cast, so the value's declared type is still `float` at
+the store/binding:
+1. **Float16 state/binding store.** `h = 1.0;` (Float16 field) emitted
+   `store half <floatreg>` — `ensure_typed_value` had no float-width arms.
+   Added the floating family (fpext/fptrunc) plus integer↔half arms.
+2. **Float16 local binding.** `let x: Float16 = 1.0;` kept a `float`
+   register — `coerce_register_value` (the declared-let site) had no half
+   arms. Added the half family (fpext/fptrunc/sitofp/fptosi).
+3. **Float16 print.** `println!("{}", f16)` passed a half register to
+   `@print_float(float)`; the print arm now inserts `fpext half → float`.
+Regression: `tests/float_width_conversions.rs` (+ fixture
+`tests/fixtures/load/float_width_conversions.bv`) covers all three and runs
+`4.5 4 2.5` at O0/O3, AST and HIR.
 
 ## IGC compiles Briev's Vulkan-flavored SPIR-V IL to an EMPTY kernel set — OPEN 2026-11-06
 
