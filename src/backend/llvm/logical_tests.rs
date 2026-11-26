@@ -123,6 +123,74 @@ fn logical_guards_skip_invalid_reads_and_execute_required_rhs_once() {
 }
 
 #[test]
+fn division_rhs_is_short_circuited_not_speculated() {
+    // 2026-11-26 (BUGS.md 2026-11-09): a `Div`/`Mod` on the right of `&&`/`||`
+    // can trap on a zero divisor, so it is not speculation-safe. `e != 0 &&
+    // s / e > 0` used to emit `sdiv` BEFORE the short-circuit branch — with
+    // e == 0 that is a division the left operand was meant to skip, and the
+    // eager form produced corrupted output (or a trap). The RHS must sit on
+    // the taken edge only, i.e. the CFG form with `logical.rhs.` labels.
+    let mut backend = LlvmBackend::new();
+    let div_rhs = Expr::BinaryOp(
+        BinaryOpKind::Gt,
+        Box::new(Expr::BinaryOp(
+            BinaryOpKind::Div,
+            Box::new(Expr::Identifier("s".to_string())),
+            Box::new(Expr::Identifier("e".to_string())),
+        )),
+        Box::new(Expr::Decimal(0)),
+    );
+    let mut ir = "define i8 @guard() {\nentry:\n".to_string();
+    let value = backend.emit_short_circuit(&mut ir, (&Expr::Bool(true), &div_rhs), false, "  ");
+    ir.push_str(&format!("  ret i8 {}\n}}\n", value.name));
+    assert!(
+        ir.contains("logical.rhs."),
+        "a Div/Mod RHS must use the lazy CFG, not an eager `and`: {ir}"
+    );
+    clang_ir(&ir, "-O0", false);
+
+    // A shift by >= the bit width is UB too; it must also stay lazy.
+    let shl_rhs = Expr::BinaryOp(
+        BinaryOpKind::Gt,
+        Box::new(Expr::BinaryOp(
+            BinaryOpKind::Shl,
+            Box::new(Expr::Identifier("s".to_string())),
+            Box::new(Expr::Identifier("e".to_string())),
+        )),
+        Box::new(Expr::Decimal(0)),
+    );
+    let mut backend = LlvmBackend::new();
+    let mut ir = "define i8 @guard_shl() {\nentry:\n".to_string();
+    let value = backend.emit_short_circuit(&mut ir, (&Expr::Bool(true), &shl_rhs), false, "  ");
+    ir.push_str(&format!("  ret i8 {}\n}}\n", value.name));
+    assert!(
+        ir.contains("logical.rhs."),
+        "a Shl/Shr RHS must use the lazy CFG: {ir}"
+    );
+    clang_ir(&ir, "-O0", false);
+
+    // A pure (non-trapping) RHS keeps the cheap register fast path.
+    let add_rhs = Expr::BinaryOp(
+        BinaryOpKind::Gt,
+        Box::new(Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(Expr::Identifier("s".to_string())),
+            Box::new(Expr::Identifier("e".to_string())),
+        )),
+        Box::new(Expr::Decimal(0)),
+    );
+    let mut backend = LlvmBackend::new();
+    let mut ir = "define i8 @guard2() {\nentry:\n".to_string();
+    let value = backend.emit_short_circuit(&mut ir, (&Expr::Bool(true), &add_rhs), false, "  ");
+    ir.push_str(&format!("  ret i8 {}\n}}\n", value.name));
+    assert!(
+        !ir.contains("logical.rhs."),
+        "a pure Add RHS should keep the register fast path: {ir}"
+    );
+    clang_ir(&ir, "-O0", false);
+}
+
+#[test]
 fn nested_exit_predicates_merge_before_widening() {
     let (items, universe) = crate::library::parse_and_check(
         "scratch/logical_exit.bv",
