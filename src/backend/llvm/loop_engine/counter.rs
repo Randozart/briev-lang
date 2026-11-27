@@ -2935,7 +2935,6 @@ impl LlvmBackend {
                     let val = self.emit_expr(out, e, "  ");
                     let name = format!("%t{}", self.fun.txn_counter);
                     self.fun.txn_counter += 1;
-                    self.fun.note_counter_scoped(name.clone());
                     writeln!(out, "  {} = add i64 0, {}", name, val.name).ok();
                 }
                 Statement::Defer(body) => {
