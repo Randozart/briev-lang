@@ -15674,10 +15674,19 @@ fn no_path_resets_the_register_namespace_inline() {
 fn begin_function_documents_why_it_does_not_clear_the_channel() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/llvm/context.rs");
     let text = std::fs::read_to_string(path).expect("read context.rs");
+    // 2026-11-26: the pin moved to the properties that survive — begin_function
+    // bumps the epoch, and the channel exposes a current-epoch reader. The old
+    // pin ("deliberately NOT cleared") described the migration era and was
+    // superseded when the define-crossing epoch bump landed.
     assert!(
-        text.contains("The channel is deliberately NOT cleared here"),
-        "the reasoning for not clearing the channel in `begin_function` was removed; \
-         it is the only record of two measured wasm32 failures"
+        text.contains("begin_epoch"),
+        "begin_function lost the epoch bump; without it a body's facts survive \
+         into the next body under reused names"
+    );
+    assert!(
+        text.contains("get_current"),
+        "the channel lost its current-epoch reader; a previous body's fact would \
+         silently answer this body's question again"
     );
 }
 
@@ -15741,10 +15750,13 @@ fn a_previous_epoch_record_is_invisible_to_a_current_epoch_read() {
         None,
         "the new body has not described its own %t7, so there is nothing true to say"
     );
+    // 2026-11-26: the define-crossing epoch bump landed — BOTH readers are
+    // epoch-scoped now. A previous body's fact is invisible everywhere: the
+    // harvest re-stamps what the emitting body's own text proves, and a
+    // fact from another body is never an answer for this one.
     assert_eq!(
         fun.value_width("%t7"),
-        Some("i64"),
-        "the migration reader still sees the previous body's fact, which is why \
-         switching readers (stage C) has to follow making producers record (stage B)"
+        None,
+        "the migration reader is epoch-scoped too; a stale fact is not an answer"
     );
 }
