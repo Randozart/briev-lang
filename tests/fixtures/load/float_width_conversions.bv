@@ -1,0 +1,29 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Floating-width conversions across the Float16 / Float32 / Float64 family.
+//
+// 2026-11-26: several codegen paths only recognized `float`/`double`, so a
+// Float16 slot, return, or cast kept a `float` register and emitted invalid
+// IR (`store half <floatreg>`, `ret half <floatreg>`, `fadd float %half, …`).
+// This fixture exercises: Float16 state assignment from a Float literal,
+// Float64 arithmetic with a Float literal (fpext), a Float16 defn return, a
+// Float16 local binding, an `as Float` cast from Float16 (fpext), and a
+// direct `println!` of a Float16 (fpext to the print ABI).
+let f16: Float16 = 0;
+let f64: Float64 = 0;
+let done: Int = 0;
+
+defn half_round_trip() -> Float16 {
+    let x: Float16 = 1.5;
+    term x;
+};
+
+node main [done == 0][done == 1] {
+    f16 = 2.5;
+    f64 = 3.5 + 1.0;
+    let h: Float16 = half_round_trip();
+    let total: Float = (f16 as Float) + (h as Float);
+    done = 1;
+    endprogram println!("{} {} {}", f64, total, f16);
+};

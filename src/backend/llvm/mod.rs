@@ -496,10 +496,45 @@ pub(crate) fn float64_to_llvm_hex(f: f64) -> String {
 /// 2026-07-15: Emit a float constant in the correct LLVM format.
 /// For `float` (32-bit): `bitcast (i32 <bits> to float)`
 /// For `double` (64-bit): `bitcast (i64 <bits> to double)`
+/// For `half` (16-bit): the `0xH....` hex form LLVM uses for half literals.
 pub(crate) fn float_to_llvm_str(f: f64, llvm_ty: &str) -> String {
     match llvm_ty {
         "float" => format!("bitcast (i32 {} to float)", float_to_llvm_hex(f)),
+        "half" => f32_to_f16_hex(f),
         _ => format!("bitcast (i64 {} to double)", float64_to_llvm_hex(f)),
+    }
+}
+
+/// Render a numeric literal as a global/const declaration constant for
+/// `llvm_ty`.
+///
+/// 2026-11-26: an Int literal initializing a *floating*-typed slot must be a
+/// floating constant — `@x = global double 0` / `@x = constant float 0` are
+/// invalid IR that clang/opt reject (BUGS.md 2026-11-06, `let f: Float = 0;`
+/// and its `const`/plain-global siblings). Integer slots keep the plain
+/// decimal form. The value is generic over integer literal widths; negative
+/// values are supplied by the caller.
+pub(crate) fn int_literal_as_llvm_const(n: impl std::fmt::Display, llvm_ty: &str) -> String {
+    let decimal = n.to_string();
+    if is_float_llvm_type(llvm_ty) {
+        // `decimal` is always a valid integer's text; a float slot needs the
+        // numeric value rendered in the slot's own form (`float_to_llvm_str`).
+        float_to_llvm_str(decimal.parse::<f64>().unwrap_or_default(), llvm_ty)
+    } else {
+        decimal
+    }
+}
+
+/// The zero constant for a global/const declaration of `llvm_ty`, matching
+/// `int_literal_as_llvm_const`'s form so a Float slot never receives an
+/// integer constant. `half` needs its explicit hex zero (`0` is not a half
+/// literal).
+pub(crate) fn zero_literal_for_llvm_type(llvm_ty: &str) -> &'static str {
+    match llvm_ty {
+        "float" | "double" => "0.0",
+        "half" => "0xH0000",
+        "ptr" => "null",
+        _ => "0",
     }
 }
 
@@ -593,6 +628,7 @@ fn llvm_type_byte_size(t: &str) -> i64 {
 //     unblocks Path A (no-dead-stores) emission in emit_countable_main.
 
 use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Type};
+use crate::backend::llvm::helpers::is_float_llvm_type;
 
 // 2026-07-18: Allocation strategy — tracks how a pointer was allocated.
 // Arena: bump-allocated from per-txn arena (Free# is no-op).
@@ -5379,11 +5415,13 @@ impl LlvmBackend {
             let llvm_ty = self.llvm_type(ty);
             let key = match expr {
                 Expr::Float(f) => format!("{}:{}", llvm_ty, float_to_llvm_str(*f, &llvm_ty)),
-                Expr::Decimal(n) => format!("{}:{}", llvm_ty, n),
+                Expr::Decimal(n) => format!("{}:{}", llvm_ty, int_literal_as_llvm_const(*n, &llvm_ty)),
                 Expr::Bool(b) => format!("{}:{}", llvm_ty, if *b { "true" } else { "false" }),
                 Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match inner.as_ref() {
                     Expr::Float(f) => format!("{}:{}", llvm_ty, float_to_llvm_str(-*f, &llvm_ty)),
-                    Expr::Decimal(n) => format!("{}:-{}", llvm_ty, n),
+                    Expr::Decimal(n) => {
+                        format!("{}:{}", llvm_ty, int_literal_as_llvm_const(-*n, &llvm_ty))
+                    }
                     _ => format!("{}:neg:{}", llvm_ty, name),
                 },
                 // 2026-10-19 (fix: const String `ptr null`): dedup String
@@ -5434,13 +5472,13 @@ impl LlvmBackend {
             let llvm_ty = self.llvm_type(ty);
             let val_str = match expr {
                 Expr::Float(f) => float_to_llvm_str(*f, &llvm_ty),
-                Expr::Decimal(n) => n.to_string(),
+                Expr::Decimal(n) => int_literal_as_llvm_const(*n, &llvm_ty),
                 Expr::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
                 Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match inner.as_ref() {
                     Expr::Float(f) => float_to_llvm_str(-*f, &llvm_ty),
-                    Expr::Decimal(n) => format!("-{}", n),
+                    Expr::Decimal(n) => int_literal_as_llvm_const(-*n, &llvm_ty),
                     _ => {
-                        if *ty == Type::float() {
+                        if is_float_llvm_type(&llvm_ty) {
                             "0.0".to_string()
                         } else {
                             "0".to_string()
@@ -5525,15 +5563,7 @@ impl LlvmBackend {
         for name in &sorted_inits {
             let init = &self.ctx.inits[name];
             let llvm_ty = protocol_llvm_type(&init.ty, self.ctx.type_universe.as_ref());
-            let zero = if llvm_ty == "float" {
-                "0.0"
-            } else if llvm_ty == "double" {
-                "0.0"
-            } else if llvm_ty == "ptr" {
-                "null"
-            } else {
-                "0"
-            };
+            let zero = zero_literal_for_llvm_type(&llvm_ty);
             writeln!(out, "@{} = global {} {}", name, llvm_ty, zero).ok();
         }
         if !self.ctx.inits.is_empty() {
@@ -5556,17 +5586,9 @@ impl LlvmBackend {
         for name in &sorted_plain {
             let (ty, init) = &self.ctx.plain_global_types[name];
             let llvm_ty = self.plain_global_llvm_type(ty);
-            let zero = if llvm_ty == "float" {
-                "0.0"
-            } else if llvm_ty == "double" {
-                "0.0"
-            } else if llvm_ty == "ptr" {
-                "null"
-            } else {
-                "0"
-            };
+            let zero = zero_literal_for_llvm_type(&llvm_ty);
             let literal = match init {
-                Some(Expr::Decimal(n)) => Some(n.to_string()),
+                Some(Expr::Decimal(n)) => Some(int_literal_as_llvm_const(*n, &llvm_ty)),
                 Some(Expr::Float(f)) => Some(float_to_llvm_str(*f, &llvm_ty)),
                 // 2026-11-11: Bool storage is i8, not i1 — `true`/`false`
                 // constants are invalid in an i8 global declaration.

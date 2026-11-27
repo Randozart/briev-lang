@@ -4398,13 +4398,23 @@ fn emit_intrinsic_print(
             } else {
                 ("float", "print_float", "frgn__print_float", "__print_float")
             };
+            // 2026-11-26: the print ABI takes `float`/`double`; a Float16
+            // register must be widened (fpext half → float) or the call emits
+            // `@print_float(float %halfreg)` — invalid IR (BUGS.md).
+            let print_reg = if backend.llvm_type(&a.ty) == "half" {
+                let wide = backend.fun.gen_reg();
+                writeln!(out, "{}{} = fpext half {} to float", indent, wide, unboxed).ok();
+                wide
+            } else {
+                unboxed
+            };
             let sym = print_symbol(backend, helper, briev_name, fallback_c);
             let pre = defn_call_prefix(backend, &sym, out, indent);
             let ret_ty = print_call_ret_ty(backend, &sym);
             writeln!(
                 out,
                 "{}{} = call {ret_ty} @{}({}{} {})",
-                indent, v, sym, pre, arg_llvm, unboxed
+                indent, v, sym, pre, arg_llvm, print_reg
             )
             .ok();
         }
