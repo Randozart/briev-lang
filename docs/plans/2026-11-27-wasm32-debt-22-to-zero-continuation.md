@@ -185,3 +185,20 @@ Gate: full `scripts/gate.sh full` green; ll determinism ALL DETERMINISTIC.
   27 → 0.
 - BUGS.md entries for the fixed classes moved to resolved with the
   producer/consumer fix references.
+
+
+---
+
+## 8. Disposition update (2026-11-27, post-handoff)
+
+PR #165 (float-slot invalid IR) merged clean as ecb5ffee2 once the docs
+merges (#167-#170) resolved the BUGS.md conflict — CI 14/14 jobs green on
+the merge. All seven PRs from this lane are now merged; no open PRs remain.
+
+Trunk state at write time: main @ ecb5ffee2, wasm32 baseline declared 22
+(the restored emission shape), saltpetre/rbv_list_each/aggregate marshal all
+green on the stage-C code that is now ON main (the per-body epoch + harvest
+machinery landed via PR #172 merge 55b395d5a).
+
+The next session picks up from §3/§4 with the 22-fixture table verified at
+the current tip.
