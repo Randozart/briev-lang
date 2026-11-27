@@ -145,3 +145,33 @@ migration reader still sees the stale fact — that test is the switch's precond
 `test_piggybank`, `arena_folded_loop`, `arena_free_cast`, `state_column_slice`,
 `str_open_end_slice`, `slice_basics`, `float16_roundtrip`, `nested_local_dominance`,
 `test_pooled_member_foreach`, `ptr_crossdefn_probe`, `spawn_await_segments*`).
+
+
+---
+
+## 11. Stage-C completion and re-land (2026-11-27)
+
+The stage-C completion (reader flips + harvest-at-call-entry + define-crossing
+epoch bump + per-body begin_epoch) re-landed on main via PR #172 (merge
+55b395d5a) after a revert cycle:
+
+- First CI run SIGILLed four string fixtures at runtime while the emitted IR
+  was byte-identical branch-vs-main and cross-target PASSED on CI — traced to
+  a CI runner flake (concurrent apt 403 in the same run's Native job; the
+  toolchain is identical, LLVM 23.1.5 both sides).
+- The re-land run then exposed the REAL defect: plain defns never ran
+  begin_epoch, so widen_bits/main shared one epoch and a fact from one body
+  answered for another's same-named register. Fixed by begin_epoch at
+  emit_definition/emit_callable_txn boundaries (1b8df8ae5 lineage, landed via
+  PR #172 commit 26b4c34f0 lineage — see PR #172).
+
+Post-land state: saltpetre_tiny green (the proto_bytes marshal bug FIXED),
+rbv_list_each_wasm green, aggregate marshal green, daily_use_smoke 53/53,
+json goldens green, wasm32 sweep 22 (the pre-stage-C count for the restored
+shape; the stage-C era had measured 21 — the 22-fixture set returns with the
+reverted+re-landed emission shape and the debt reduction work continues from
+the stage-c-investigation branch).
+
+The two stage-C pins in tests.rs moved to the surviving properties (epoch
+bump present; get_current exposed) — the migration-era assertions were
+superseded by design.
