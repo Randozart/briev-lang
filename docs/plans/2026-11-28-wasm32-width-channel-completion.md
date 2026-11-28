@@ -486,3 +486,28 @@ should instrument (BRIEV_DBG-style backtrace on `inttoptr i32` emission when
 the operand's record is i64) BEFORE editing — the same discipline that found
 the stage-1 site. The #165 float-slot fixtures (3) remain live-foreign
 (excluded by rule).
+
+### §13.1 Addendum — the remaining 4 root-caused (same session)
+
+Instrumentation-by-elimination found the mechanism for all four:
+
+**`FunctionContext::reset_register_names()` (context.rs:1765) clears the
+ENTIRE width channel** — `value_llvm_ty.clear()` — at every register-namespace
+restart. `restart_register_names()` (emit_toplevel 8787/8853/8989/9019, the
+loop engines) does the same mid-body. Any register recorded BEFORE such a
+restart and consumed AFTER it loses its fact, and the consumer silently falls
+back to the type-derived guess — exactly the failure this wave exists to kill.
+
+The slice fixtures' chain: `slice[0:8:2]` → `briev_slice_strided64` →
+`box_gather_as_tier_list` records the handle i64 → a later `restart_register_names()`
+(a nested loop engine) wipes it → the member deref (`Count` at +16) asks and
+gets nothing → `inttoptr i32 <i64>`.
+
+**The fix is scoped and mechanical but too large to land unreviewed here**:
+make the restart paths PRESERVE facts whose registers were not re-minted
+(epoch bump already distinguishes stale names; the clear is redundant with
+the epoch for `.get_current` readers, and harmful for `.get` readers). This
+touches `reset_register_names`/`restart_register_names` + the four call sites
+and needs the `rbv_list_each_wasm` regression re-run (its 2026-11-25 comment
+records the opposite failure mode). Recorded here as the next wave's exact
+first change; the sweep baseline stands at 4 until it lands.
