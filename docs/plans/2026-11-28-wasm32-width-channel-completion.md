@@ -436,3 +436,53 @@ record-first, `convert_int_width`), wired into the arith/store/icmp/GEP
 operand positions. RC2 needs the runtime Int lanes to use `i{int_bits}`.
 Neither is a `trunc` at `inttoptr`; both stay byte-identical on x86-64
 because every native record is already `i64`.
+
+---
+
+## 13. Execution record (2026-11-28, this session)
+
+Six committed stages, each with native-identity + determinism + cross-target
+verification. wasm32 invalid-IR debt: **22 → 4**.
+
+| stage | commit | debt | mechanism |
+|---|---|---|---|
+| 1 | `d54954ab9` | 22→21 | record-aware central `inttoptr` + `canonical_ptr`; harvest wiring |
+| 2 | `680319a3c` | 21→18 | record-carrying conversions (`convert_int_width` records; `adapt_to_i64` record-first; binop operand adaptation; comparator lanes) |
+| 3 | `4f8b3cf42` | 18→12 | VolatileLoad#/Store# via `inttoptr_word`; arena-entry size widen; ExtCall integer ABI; FloatToInt lane |
+| 4 | `281919da2` | 12→9 | slot-typed stores (assign pop, extract); foreach bound adaptation |
+| 5 | `72ad01ab5` | 9→6 | `str_len_bytes` real ABI; ExtCall arg record spelling |
+| 6 | `6236e584a` + `6471d5886` + `ec7ee320a` | 6→4 | record-carrying copies; config comparator templates; cast-step record init; `boxed_list_handle` helper |
+
+### Lessons recorded
+
+1. **Always export `BRIEVC` to the fresh binary before sweeping** (§12). The
+   stale-binary trap consumed most of a day.
+2. **A conversion that forgets its own result re-creates the bug one consumer
+   later.** Every width conversion now records (`convert_int_width` is the
+   choke point).
+3. **Record-first beats type-first at every consumption site, but the
+   DIRECTION matters**: only truncate wider records. Widening narrow records
+   (i8 bools) broke 4 native tests — consumers declare the narrow width.
+4. **Mid-cast harvest desyncs the channel** (the 18-failure regression):
+   harvest at the loop head only, never per-step.
+5. **Stale `ptr` records make `inttoptr_word` dangerous on free lanes** (the
+   88-failure regression): a record says what a register WAS; adapters that
+   trust it must be sure the record is still true of THIS register.
+
+### The remaining 4 (next wave's entry point)
+
+All four share one shape: a **boxed-handle deref whose receiver spelling is
+still type-derived** (`inttoptr i32 %t79` where `%t79` carries an honest i64
+record):
+
+- `arena_smoke` — `inttoptr i64 %t0` over a ptr record (Alloc# → store path).
+- `plain_ptr_smoke` — `store i64 %t0` over a ptr record (plain global store).
+- `slice_basics` / `state_column_slice` — `inttoptr i32 %t520/%t79` over i64
+  records (slice-view handle consumed by a member body whose receiver
+  spelling comes from `llvm_type`).
+
+The consumer emitters were NOT identified with certainty; the next wave
+should instrument (BRIEV_DBG-style backtrace on `inttoptr i32` emission when
+the operand's record is i64) BEFORE editing — the same discipline that found
+the stage-1 site. The #165 float-slot fixtures (3) remain live-foreign
+(excluded by rule).
