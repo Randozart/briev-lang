@@ -2820,8 +2820,7 @@ impl LlvmBackend {
         .ok();
         writeln!(out, "{}  store i64 {}, ptr {}", indent, len0, d2).ok();
         let handle = self.fun.gen_reg();
-        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, block).ok();
-        // 2026-11-28 (RC1): the boxed-list HANDLE ABI is an i64 word on every
+        let handle = self.boxed_list_handle(out, indent, &block);
         // target (the 24-byte header is i64-slot); recording it lets the
         // consumer's slot-spelling question answer honestly.
         self.fun.record_value_width(&handle, "i64");
@@ -2875,12 +2874,24 @@ impl LlvmBackend {
         )
         .ok();
         writeln!(out, "{}store i64 {}, ptr {}", indent, len_p, d2).ok();
-        let handle = self.fun.gen_reg();
-        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, block).ok();
+        let handle = self.boxed_list_handle(out, indent, &block);
         TypedRegister {
             name: handle,
             ty: Type::Applied("List".into(), vec![elem_ty]),
         }
+    }
+
+    /// 2026-11-28 (RC1, rule 17 DRY): the boxed-tier-list HANDLE ABI is an
+    /// i64 word on every target (the 24-byte [data, cap, len] header has
+    /// i64 slots). One helper for every `ptrtoint ptr block` producer so
+    /// each records the i64 honestly — the consumer's slot-spelling question
+    /// (a Ptr-View over the handle) then answers from the record instead of
+    /// a type-derived guess (state_column_slice/slice_basics).
+    fn boxed_list_handle(&mut self, out: &mut String, indent: &str, block: &str) -> String {
+        let handle = self.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, block).ok();
+        self.fun.record_value_width(&handle, "i64");
+        handle
     }
 
     fn emit_masked_index(
@@ -3075,8 +3086,7 @@ impl LlvmBackend {
             )
             .ok();
             writeln!(out, "{}store i64 {}, ptr {}", indent, sel_len, d2).ok();
-            let handle = self.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, block).ok();
+            let handle = self.boxed_list_handle(out, indent, &block);
             return TypedRegister {
                 name: handle,
                 ty: op.obj_reg.ty.clone(),
@@ -5389,12 +5399,33 @@ impl LlvmBackend {
             "i8" | "i16" | "i32" | "i64" => recv_llvm.clone(),
             _ => "i64".to_string(),
         };
-        writeln!(
-            out,
-            "{}  {} = inttoptr {} {} to ptr",
-            indent, ptr, recv_hw, recv_reg.name
-        )
-        .ok();
+        // 2026-11-28 (RC1): the receiver's spelling is its RECORD — an
+        // applied-type handle carrying an i64 arena/view word spelled i32 and
+        // the deref emitted `inttoptr i32 <i64>` (state_column_slice,
+        // slice_basics).
+        self.harvest_emitted_widths(out);
+        let recv_hw = self
+            .fun
+            .value_llvm_ty
+            .get(&recv_reg.name)
+            .filter(|w| w.starts_with('i') || w.as_str() == "ptr")
+            .cloned()
+            .unwrap_or(recv_hw);
+        if recv_hw == "ptr" {
+            writeln!(
+                out,
+                "{}  {} = bitcast ptr {} to ptr",
+                indent, ptr, recv_reg.name
+            )
+            .ok();
+        } else {
+            writeln!(
+                out,
+                "{}  {} = inttoptr {} {} to ptr",
+                indent, ptr, recv_hw, recv_reg.name
+            )
+            .ok();
+        }
         let gep = self.fun.gen_reg();
         writeln!(
             out,

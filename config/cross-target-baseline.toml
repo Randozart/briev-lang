@@ -49,4 +49,4 @@
 # 2026-11-26 (stage-C revert): restored to 22 — the 21 count was measured
 # with the stage-C reader flips (since reverted to 36a734480); the reverted
 # emission shape is back to the 22-fixture set.
-"wasm32-unknown-wasi" = 6
+"wasm32-unknown-wasi" = 4
