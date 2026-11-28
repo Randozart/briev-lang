@@ -1770,15 +1770,10 @@ fn emit_volatile_load(
     };
     let llvm_ty = backend.llvm_type(&inner_ty);
     let ptr = backend.fun.gen_reg();
-    writeln!(
-        out,
-        "{}{} = inttoptr {} {} to ptr",
-        indent,
-        ptr,
-        backend.llvm_type(&Type::int()),
-        arg.name
-    )
-    .ok();
+    // 2026-11-28 (RC1): record-aware, mirroring emit_volatile_store — the
+    // address may already BE a ptr (`inttoptr i32 <ptr>` was the
+    // arena_scope_reset failure).
+    backend.inttoptr_word(out, indent, &ptr, &arg.name);
     writeln!(
         out,
         "{}{} = load volatile {}, ptr {}, align {}",
@@ -1806,15 +1801,11 @@ fn emit_volatile_store(
 ) -> BTypedRegister {
     let ptr_arg = backend.emit_expr(out, &args[0], indent);
     let addr_ptr = backend.fun.gen_reg();
-    writeln!(
-        out,
-        "{}{} = inttoptr {} {} to ptr",
-        indent,
-        addr_ptr,
-        backend.llvm_type(&Type::int()),
-        ptr_arg.name
-    )
-    .ok();
+    // 2026-11-28 (RC1): record-aware — the address may already BE a ptr
+    // (an inttoptr'd malloc result flowing into a second store site), and
+    // `inttoptr i32 <ptr>` was the arena_scope_reset failure. inttoptr_word
+    // bitcasts ptr records and casts at the operand's recorded width.
+    backend.inttoptr_word(out, indent, &addr_ptr, &ptr_arg.name);
     let mut val_reg = backend.emit_expr(out, &args[1], indent);
     let inner_ty = match &ptr_arg.ty {
         Type::Ptr(i) => *i.clone(),

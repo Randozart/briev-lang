@@ -2796,6 +2796,22 @@ impl LlvmBackend {
         indent: &str,
         size_reg: &str,
     ) -> String {
+        // 2026-11-28 (RC1, arena family): every downstream arena instruction
+        // names its operand `i64` (the GEP index, the growth `shl`, malloc).
+        // A size register with an i32 record (a target-word Int on wasm32)
+        // fed those sites raw. Widen ONCE at the arena entry, record the
+        // result, and hand the widened register to every site. On x86-64 the
+        // record is already i64 and the emission is byte-identical.
+        self.harvest_emitted_widths(out);
+        let size_reg = if self.fun.value_llvm_ty.get(size_reg).map(|w| w == "i32") == Some(true) {
+            let w = self.fun.gen_reg();
+            writeln!(out, "{indent}{w} = zext i32 {size_reg} to i64").ok();
+            self.fun.record_value_width(&w, "i64");
+            w
+        } else {
+            size_reg.to_string()
+        };
+        let size_reg: &str = &size_reg;
         // 2026-09-24 (stateless-defn × arena): a stateless body has no
         // %state parameter — arena fields live in %State, so referencing
         // them emits `ptr %state` inside `define @f(i64 ...)` and clang

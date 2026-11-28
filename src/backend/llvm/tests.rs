@@ -15538,7 +15538,10 @@ fn inline_asm_syscalls_have_one_operand_per_input_constraint() {
             .trim_end_matches(|c: char| c == ')' || c.is_whitespace())
             .split(',')
             .count();
-        let input_count = constraints.split(',').filter(|c| c.starts_with('{')).count();
+        let input_count = constraints
+            .split(',')
+            .filter(|c| c.starts_with('{'))
+            .count();
         assert_eq!(
             input_count, operand_count,
             "{triple}: every input constraint needs exactly one operand: {out}"
@@ -15571,10 +15574,7 @@ fn there_is_one_width_channel_with_one_writer() {
     }
     // Built from fragments so this test does not match its own literals (the
     // same trick the wave-9 spelling tests use).
-    let retired_names = [
-        format!("reg_{}", "llvm_ty"),
-        format!("reg_{}", "value_ll"),
-    ];
+    let retired_names = [format!("reg_{}", "llvm_ty"), format!("reg_{}", "value_ll")];
     for retired in retired_names {
         let live = sources
             .lines()
@@ -15631,8 +15631,7 @@ fn no_path_resets_the_register_namespace_inline() {
                 // Only RESETS are the subject here. `+= 1` bumps outside
                 // `FunctionContext` are a separate (larger) cleanup: they are
                 // legitimate minting, and they do not orphan the channel.
-                let is_reset = code.contains("txn_counter = 0")
-                    || code.contains("txn_counter=0");
+                let is_reset = code.contains("txn_counter = 0") || code.contains("txn_counter=0");
                 if !is_reset {
                     continue;
                 }
@@ -15725,7 +15724,10 @@ fn only_register_name_restarts_start_an_epoch() {
     assert!(after_body > start, "a new body must be a new epoch");
     fun.reset_register_names();
     let after_reset = fun.value_llvm_ty.epoch();
-    assert!(after_reset > after_body, "a namespace reset must be a new epoch");
+    assert!(
+        after_reset > after_body,
+        "a namespace reset must be a new epoch"
+    );
     fun.restart_register_names();
     assert!(
         fun.value_llvm_ty.epoch() > after_reset,

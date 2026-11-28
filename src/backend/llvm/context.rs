@@ -1193,7 +1193,10 @@ impl WidthChannel {
             Some(reg) => {
                 self.facts.insert(
                     reg.to_string(),
-                    WidthFact { epoch: self.epoch, llvm_ty: ty.to_string() },
+                    WidthFact {
+                        epoch: self.epoch,
+                        llvm_ty: ty.to_string(),
+                    },
                 );
             }
         });
@@ -1225,7 +1228,6 @@ pub struct FunctionContext {
     /// and every counter restart starts an epoch, so a fact in the channel is
     /// either this body's or invisible. Provenance was scaffolding for the
     /// migration; the epoch replaced it.
-
     // Local variable bindings (let x = ...)
     pub let_bindings: HashMap<String, String>,
     pub let_binding_types: HashMap<String, Type>,

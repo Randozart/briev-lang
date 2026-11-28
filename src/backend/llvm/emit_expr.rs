@@ -13402,7 +13402,24 @@ impl LlvmBackend {
                     .ok();
                 }
                 crate::casting::graph::LaneKind::FloatToInt => {
-                    writeln!(out, "{}{} = fptosi {} {} to i64", indent, dst, cur_ll, cur).ok();
+                    // 2026-11-28 (RC2): the Int destination's width is the
+                    // SOURCE type's resolved spelling (`i32` on wasm32), not a
+                    // hardcoded i64 — `fptosi double → i64` followed by the
+                    // target-word consumer produced `zext i32 <i64>`
+                    // (float64_precision, literal_float_coercion). On x86-64
+                    // cur_ll is i64 already, so the emission is unchanged.
+                    let int_dst = if cur_ll.starts_with('i') {
+                        cur_ll.clone()
+                    } else {
+                        format!("i{}", self.ctx.int_bits)
+                    };
+                    writeln!(
+                        out,
+                        "{}{} = fptosi {} {} to {}",
+                        indent, dst, cur_ll, cur, int_dst
+                    )
+                    .ok();
+                    self.fun.record_value_width(&dst, &int_dst);
                 }
                 crate::casting::graph::LaneKind::ExtCall(fn_name) => {
                     // 2026-08-01: the ExtCall's return type must match the
@@ -13483,6 +13500,37 @@ impl LlvmBackend {
                                     indent, w, op, arg_ll, arg, param_ll
                                 )
                                 .ok();
+                                arg_ll_final = param_ll;
+                                arg_final = w;
+                            } else if param_ll.starts_with('i')
+                                && arg_ll.starts_with('i')
+                                && param_ll != arg_ll
+                            {
+                                // 2026-11-28 (RC2): the same callee-ABI rule for
+                                // INTEGER widths. `fptosi double → i64` fed
+                                // int_to_str's i32 param on wasm32 (the
+                                // float64_precision failure): fp_cast_op only
+                                // handles float deltas, so an i64 record slid
+                                // through and the call named i32 over an i64
+                                // register. convert_int_width also records the
+                                // result, so the record moves with the value.
+                                let w = self.fun.gen_reg();
+                                let op = {
+                                    let bits =
+                                        |s: &str| -> u32 { s[1..].parse::<u32>().unwrap_or(64) };
+                                    if bits(&arg_ll) < bits(&param_ll) {
+                                        "zext"
+                                    } else {
+                                        "trunc"
+                                    }
+                                };
+                                writeln!(
+                                    out,
+                                    "{}{} = {} {} {} to {}",
+                                    indent, w, op, arg_ll, arg, param_ll
+                                )
+                                .ok();
+                                self.fun.record_value_width(&w, &param_ll);
                                 arg_ll_final = param_ll;
                                 arg_final = w;
                             } else {
