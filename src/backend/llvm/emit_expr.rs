@@ -3249,12 +3249,19 @@ impl LlvmBackend {
                     } else {
                         ""
                     };
+                    // 2026-11-28 (RC2): the call's declared return width is the
+                    // defn's ACTUAL ABI (i32 on wasm32), not a hardcoded i64 —
+                    // `call i64` over `define i32 @str_len_bytes` mismatched
+                    // call signatures AND fed an i64-recorded length into the
+                    // substr call's i32 param (str_open_end_slice).
+                    let len_ll = self.defn_call_ret_ll("str_len_bytes");
                     writeln!(
                         out,
-                        "{}{} = call i64 @str_len_bytes({}ptr {})",
-                        indent, len, st_len, sp
+                        "{}{} = call {} @str_len_bytes({}ptr {})",
+                        indent, len, len_ll, st_len, sp
                     )
                     .ok();
+                    self.fun.record_value_width(&len, &len_ll);
                     TypedRegister {
                         name: len,
                         ty: Type::int(),
@@ -13437,12 +13444,27 @@ impl LlvmBackend {
                     let c_char = cur_ll == "i32"
                         && self.is_protocol_member(&src.ty, "Char")
                         && !self.ctx.defn_params.contains_key(&fn_name.to_string());
+                    // 2026-11-28 (RC1): the arg's spelling is its RECORD when
+                    // one exists — a typed-Int register carrying an i64 await
+                    // result (briev_await_impl returns i64 by ABI) spelled
+                    // `i32` from llvm_type and the later callee-ABI adaptation
+                    // zext'd the i64 register as i32 (spawn_await_segments).
+                    self.harvest_emitted_widths(out);
+                    let cur_ll_effective = self
+                        .fun
+                        .value_llvm_ty
+                        .get(&cur)
+                        .filter(|w| w.starts_with('i'))
+                        .cloned()
+                        .unwrap_or_else(|| cur_ll.clone());
+                    let cur_ll_ref: &str = &cur_ll_effective;
+                    let c_char = c_char && cur_ll_ref == "i32";
                     let (arg_ll, arg) = if c_char {
                         let w = self.fun.gen_reg();
                         writeln!(out, "{}{} = zext i32 {} to i64", indent, w, cur).ok();
                         ("i64".to_string(), w)
                     } else {
-                        (cur_ll.clone(), cur.clone())
+                        (cur_ll_effective.clone(), cur.clone())
                     };
                     // 2026-09-09 (Family A, briev-native runtime): when the
                     // lane symbol is a pure-Briev defn, the call must pass the
