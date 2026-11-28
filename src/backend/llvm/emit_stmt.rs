@@ -1574,14 +1574,25 @@ fn emit_arrow_store_name(
     name: &str,
     result: &str,
 ) {
-    if let Some(reg) = backend.fun.let_bindings.get(name) {
+    let slot_bound = backend.fun.let_bindings.get(name).cloned();
+    if let Some(reg) = slot_bound {
         // 2026-08-18 (Phase D, PiggyBank): a local bound to a VALUE register
         // (`let all: List<Int> = []; all ~<- piggy`) must REBIND to the extract
         // result, never `store i64 …, ptr <value-reg>` (a store into a value
         // is invalid IR). Only alloca/param-slot bindings store in place —
         // their address is the persistent slot.
-        if is_persistent_slot(backend, reg) {
-            writeln!(out, "{}store i64 {}, ptr {}", indent, result, reg).ok();
+        if is_persistent_slot(backend, &reg) {
+            // 2026-11-28 (RC1): the slot's DECLARED type rules the store — an
+            // i32 binding alloca on wasm32 took `store i64 <i32 record>`
+            // (the piggybank member-exit failure). Adapt via the record.
+            let slot_ty = backend
+                .fun
+                .let_binding_types
+                .get(name)
+                .map(|t| backend.llvm_type(t))
+                .unwrap_or_else(|| "i64".to_string());
+            let adapted = backend.adapt_emitted_to_width(out, indent, result, &slot_ty);
+            writeln!(out, "{}store {} {}, ptr {}", indent, slot_ty, adapted, reg).ok();
         } else {
             backend
                 .fun
@@ -2305,6 +2316,15 @@ pub(crate) fn emit_foreach_statement(
         .ok();
     } else {
         let cmp = backend.fun.gen_reg();
+        // 2026-11-28 (RC1): the bound must be AT slot_ty for the header icmp
+        // — a member-exit bound arrives i64-boxed (record) on wasm32 and the
+        // compact counter slot is i32 (`icmp slt i32 <i64>` was the
+        // piggybank/pooled-foreach failure). Record-first adapt.
+        let bound_reg = if slot_ty.starts_with('i') {
+            backend.adapt_emitted_to_width(out, indent, &bound_reg, &slot_ty)
+        } else {
+            bound_reg
+        };
         writeln!(
             out,
             "{}{} = icmp {} {} {}, {}",
@@ -3134,8 +3154,20 @@ pub(crate) fn emit_assign_statement(
                 ty: Type::int(),
             };
         };
-        if let Some(reg) = backend.fun.let_bindings.get(name) {
-            writeln!(out, "{}store i64 {}, ptr {}", indent, result, reg).ok();
+        let slot_bound = backend.fun.let_bindings.get(name).cloned();
+        if let Some(reg) = slot_bound {
+            // 2026-11-28 (RC1): the pop lane hardcoded `store i64` — but the
+            // slot may be an i32 alloca (a wasm32 Int binding) and `result`
+            // may carry an i32 record. Adapt to the SLOT's recorded type via
+            // the value's record (piggybank member-exit store failure).
+            let slot_ty = backend
+                .fun
+                .let_binding_types
+                .get(name)
+                .map(|t| backend.llvm_type(t))
+                .unwrap_or_else(|| "i64".to_string());
+            let adapted = backend.adapt_emitted_to_width(out, indent, &result, &slot_ty);
+            writeln!(out, "{}store {} {}, ptr {}", indent, slot_ty, adapted, reg).ok();
         } else if backend.ctx.field_index_map.contains_key(name) {
             backend.emit_state_store_i64(out, indent, name, &result);
         }
