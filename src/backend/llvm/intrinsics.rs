@@ -1598,10 +1598,12 @@ fn emit_free(
             // at store); the handle must be inttoptr'd before the @free call.
             // 2026-10-06 (wasm32): adapt the handle to the pointer width first
             // (`inttoptr i64 <i32 reg>` is an operand-type mismatch).
-            let ity = backend.ptr_int_ty();
-            let h = adapt_to_ptr_width(backend, out, &ptr_reg, indent);
+            // 2026-11-28 (RC1): record-aware — an i64-recorded handle (an
+            // `add i64` over an arena phi, arena_free_cast) fed the hardcoded
+            // i32 spelling. inttoptr_word consults the record and bitcasts
+            // ptr records outright.
             let p = backend.fun.gen_reg();
-            writeln!(out, "{}  {} = inttoptr {} {} to ptr", indent, p, ity, h).ok();
+            backend.inttoptr_word(out, indent, &p, &ptr_reg.name);
             writeln!(out, "{}call void @free(ptr {})", indent, p).ok();
         }
     }
@@ -3082,6 +3084,18 @@ fn emit_atomic_store(
     let ptr = backend.fun.gen_reg();
     backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let val = emit_arg(backend, out, &args[1], indent);
+    // 2026-11-28 (RC1): the value's spelling is its record — an i32-recorded
+    // `add` (spsc `next` at the target word) fed `store atomic i64 <i32>`.
+    // Widen to the slot's i64 with a record so the store names honestly.
+    backend.harvest_emitted_widths(out);
+    let val = if backend.fun.value_llvm_ty.get(&val).map(|w| w == "i64") == Some(true) {
+        val
+    } else {
+        let w = backend.fun.gen_reg();
+        writeln!(out, "{}{} = zext i32 {} to i64", indent, w, val).ok();
+        backend.fun.record_value_width(&w, "i64");
+        w
+    };
     // 2026-07-15: LLVM 18 syntax: no comma before ordering, align required
     writeln!(
         out,
@@ -3397,13 +3411,36 @@ fn emit_atomic_store_n(
     let ptr = backend.fun.gen_reg();
     backend.inttoptr_word(out, indent, &ptr, &addr.to_string());
     let val_wide = emit_arg(backend, out, &args[1], indent);
-    let val = backend.fun.gen_reg();
-    writeln!(
-        out,
-        "{}{} = trunc i64 {} to {}",
-        indent, val, val_wide, ll_ty
-    )
-    .ok();
+    // 2026-11-28 (RC1): the value's spelling is its record — an i32-recorded
+    // add (target-word arithmetic) fed `trunc i64 <i32>` (spsc_smoke Store64#).
+    backend.harvest_emitted_widths(out);
+    let val_ll = backend
+        .fun
+        .value_llvm_ty
+        .get(&val_wide)
+        .filter(|w| w.starts_with('i'))
+        .cloned()
+        .unwrap_or_else(|| "i64".to_string());
+    let val = if val_ll == ll_ty {
+        val_wide
+    } else {
+        let r = backend.fun.gen_reg();
+        let op = {
+            let bits = |s: &str| -> u32 { s[1..].parse::<u32>().unwrap_or(64) };
+            if bits(&val_ll) < bits(ll_ty) {
+                "zext"
+            } else {
+                "trunc"
+            }
+        };
+        writeln!(
+            out,
+            "{}{} = {} {} {} to {}",
+            indent, r, op, val_ll, val_wide, ll_ty
+        )
+        .ok();
+        r
+    };
     writeln!(
         out,
         "{}store atomic {} {}, ptr {} {}, align {}",

@@ -2069,7 +2069,7 @@ impl LlvmBackend {
     /// 2026-07-31: Phase 3 (§8.4-D7) — protocol-membership dispatch replaces
     /// the hardcoded type-name match.
     pub(super) fn emit_trg_load_finish(
-        &self,
+        &mut self,
         out: &mut String,
         indent: &str,
         dst: &str,
@@ -2080,7 +2080,20 @@ impl LlvmBackend {
             writeln!(out, "{}{} = trunc i8 {} to i1", indent, dst, raw).ok();
         } else if self.is_protocol_member(trg_ty, "Int") || self.is_protocol_member(trg_ty, "UInt")
         {
-            writeln!(out, "{}{} = add i64 0, {}", indent, dst, raw).ok();
+            // 2026-11-28 (RC1): the copied register's spelling is its RECORD
+            // — an arena-phi handle (`add i64 0, %aapi86`) copied verbatim
+            // is an i64 value, and the consumer (Store#'s canonical_ptr)
+            // then trusted a stale i32 type guess (arena_free_cast).
+            self.harvest_emitted_widths(out);
+            let w = self
+                .fun
+                .value_llvm_ty
+                .get(&raw)
+                .filter(|w| w.starts_with('i'))
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string());
+            writeln!(out, "{}{} = add {} 0, {}", indent, dst, w, raw).ok();
+            self.fun.record_value_width(dst, &w);
         } else if self.is_protocol_member(trg_ty, "Float") {
             writeln!(out, "{}{} = add float 0.0, {}", indent, dst, raw).ok();
         } else if self.is_protocol_member(trg_ty, "Char") {

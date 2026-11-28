@@ -4007,6 +4007,17 @@ pub(crate) fn emit_assign_statement(
                 } else {
                     backend.llvm_type(&field_ty)
                 };
+                // 2026-11-28 (RC1): the value's spelling is its record — an
+                // i32-recorded add fed `store atomic i64 <i32>` (spsc_smoke's
+                // queue cell). ensure_typed_value then converts honestly.
+                backend.harvest_emitted_widths(out);
+                let alt = backend
+                    .fun
+                    .value_llvm_ty
+                    .get(&val.name)
+                    .filter(|w| w.starts_with('i'))
+                    .cloned()
+                    .unwrap_or(alt);
                 let asz = crate::backend::llvm::types::type_size(
                     &field_ty,
                     backend.ctx.type_universe.as_ref(),

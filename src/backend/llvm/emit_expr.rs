@@ -3890,6 +3890,18 @@ impl LlvmBackend {
             } else {
                 "i64".to_string()
             };
+            // 2026-11-28 (RC1): the SLOT spelling is the record when the
+            // receiver carries one — a Ptr<Bit<8>> view over an arena handle
+            // stores/loads 8-byte words, so the element slot is i64 even where
+            // the target Int is i32 (arena_free_cast's `inttoptr i32 <i64>`).
+            self.harvest_emitted_widths(out);
+            let slot_ty = self
+                .fun
+                .value_llvm_ty
+                .get(&ptr)
+                .filter(|w| w.starts_with('i'))
+                .cloned()
+                .unwrap_or(slot_ty);
             let gep_idx = self.gep_index(out, indent, &idx_clone);
             if is_list_type {
                 writeln!(out, "{}{} = add i64 {}, 1", indent, offset, gep_idx).ok();
@@ -7522,7 +7534,19 @@ impl LlvmBackend {
                 // 2026-08-13 (Phase 5): an `atomic` array element field is
                 // written with an atomic store (before the packed path).
                 if let Some(ordering) = self.atomic_field_ordering(type_name, field_name) {
-                    let alt = if matches!(val.ty, Type::Ptr(_)) {
+                    // 2026-11-28 (RC1): the slot spelling is the record when
+                    // the value carries one — an i64-recorded handle in an
+                    // i32-Int field store spelled i32 over an i64 register
+                    // (spsc_smoke atomic field).
+                    self.harvest_emitted_widths(out);
+                    let alt = if let Some(w) = self
+                        .fun
+                        .value_llvm_ty
+                        .get(&val.name)
+                        .filter(|w| w.starts_with('i'))
+                    {
+                        w.clone()
+                    } else if matches!(val.ty, Type::Ptr(_)) {
                         format!("i{}", self.ctx.int_bits)
                     } else {
                         self.llvm_type(&val.ty)
