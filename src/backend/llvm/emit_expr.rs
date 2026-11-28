@@ -2715,32 +2715,26 @@ impl LlvmBackend {
         // Clamp lo/hi into [0, n] and hi >= lo (mirrors the runtime gather's
         // coll_min/coll_hi_fix contract). min(x,n) = (x<n ? x : n);
         // max(a,b) = (a>b ? a : b) — icmp+select (valid LLVM IR).
+        // 2026-11-28 (RC1): the bounds live at the i64 word here (the clamp
+        // names i64) — a target-word Int arg was passed raw (state_column_slice).
+        let lo_a = self.adapt_emitted_to_width(out, indent, &lo.name, "i64");
+        let hi_a = self.adapt_emitted_to_width(out, indent, &hi.name, "i64");
         let lo_lt_n = self.fun.gen_reg();
-        writeln!(
-            out,
-            "{}{} = icmp slt i64 {}, {}",
-            indent, lo_lt_n, lo.name, n
-        )
-        .ok();
+        writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, lo_lt_n, lo_a, n).ok();
         let lo_c = self.fun.gen_reg();
         writeln!(
             out,
             "{}{} = select i1 {}, i64 {}, i64 {}",
-            indent, lo_c, lo_lt_n, lo.name, n
+            indent, lo_c, lo_lt_n, lo_a, n
         )
         .ok();
         let hi_lt_n = self.fun.gen_reg();
-        writeln!(
-            out,
-            "{}{} = icmp slt i64 {}, {}",
-            indent, hi_lt_n, hi.name, n
-        )
-        .ok();
+        writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, hi_lt_n, hi_a, n).ok();
         let hi_c = self.fun.gen_reg();
         writeln!(
             out,
             "{}{} = select i1 {}, i64 {}, i64 {}",
-            indent, hi_c, hi_lt_n, hi.name, n
+            indent, hi_c, hi_lt_n, hi_a, n
         )
         .ok();
         let hi_gt_lo = self.fun.gen_reg();
@@ -2827,6 +2821,10 @@ impl LlvmBackend {
         writeln!(out, "{}  store i64 {}, ptr {}", indent, len0, d2).ok();
         let handle = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, block).ok();
+        // 2026-11-28 (RC1): the boxed-list HANDLE ABI is an i64 word on every
+        // target (the 24-byte header is i64-slot); recording it lets the
+        // consumer's slot-spelling question answer honestly.
+        self.fun.record_value_width(&handle, "i64");
         TypedRegister {
             name: handle,
             ty: crate::ast::Type::Applied("List".into(), vec![elem_ty]),
@@ -3523,6 +3521,12 @@ impl LlvmBackend {
                     "@briev_slice_strided64"
                 };
                 let st = emit_view_expr(self, out, stride_expr, indent);
+                // 2026-11-28 (RC1): the helper's Int params are i64 words; a
+                // target-word Int arg (i32 record on wasm32) was passed raw
+                // (state_column_slice). Record-first adapt per argument.
+                let lo_a = self.adapt_emitted_to_width(out, indent, &lo.name, "i64");
+                let hi_a = self.adapt_emitted_to_width(out, indent, &hi.name, "i64");
+                let st_a = self.adapt_emitted_to_width(out, indent, &st.name, "i64");
                 // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
                 let gp = if self.ctx.defn_takes_state(&helper[1..]) {
                     "ptr %state, "
@@ -3533,7 +3537,7 @@ impl LlvmBackend {
                 writeln!(
                     out,
                     "{}{} = call ptr {}({}ptr {}, i64 {}, i64 {}, i64 {}, i64 {})",
-                    indent, buf, helper, gp, data_ptr, n, lo.name, hi.name, st.name
+                    indent, buf, helper, gp, data_ptr, n, lo_a, hi_a, st_a
                 )
                 .ok();
                 let elem_ty = match &vec_ty {
@@ -12005,7 +12009,23 @@ impl LlvmBackend {
             return None;
         }
         // Get the llvm_type of the LHS operand to drive template dispatch
-        let llvm_ty = self.llvm_type(&l.ty);
+        // 2026-11-28 (RC1): comparator templates name the RECORDED width —
+        // llvm_type(Int) = i32 on wasm32 while both records were i64 (atomic
+        // loads), and the config template then emitted `icmp eq i32 <i64>`
+        // (spsc sring_pop). Same rule as compare_width_for in the fallback.
+        let llvm_ty = if matches!(
+            kind,
+            BinaryOpKind::Eq
+                | BinaryOpKind::Neq
+                | BinaryOpKind::Lt
+                | BinaryOpKind::Le
+                | BinaryOpKind::Gt
+                | BinaryOpKind::Ge
+        ) {
+            self.compare_width_for(l, r)
+        } else {
+            self.llvm_type(&l.ty)
+        };
         // Get byte width from the universe if available
         let bytes = self
             .ctx
@@ -13268,7 +13288,20 @@ impl LlvmBackend {
         }
 
         let mut cur = src.name.clone();
-        let mut cur_ll = self.llvm_type(&src.ty);
+        let mut cur_ll = self
+            .fun
+            .value_llvm_ty
+            .get(&src.name)
+            .filter(|w| w.starts_with('i') || w.as_str() == "ptr")
+            .cloned()
+            .unwrap_or_else(|| self.llvm_type(&src.ty));
+        // 2026-11-28 (RC1): the loop variable cur tracks the register whose
+        // width each step names. When a record exists (an arena-phi handle
+        // copied as i64 under an Int stamp), cur_ll must start there —
+        // `inttoptr i32 <i64>` was the arena_free_cast cast-step failure.
+        // Harvest first so the copy is visible, but no further harvest inside
+        // the loop: the in-loop harvest desynced the channel mid-cast
+        // (measured 18-failure regression, reverted).
         let total = path.len();
 
         for (i, step) in path.iter().enumerate() {
