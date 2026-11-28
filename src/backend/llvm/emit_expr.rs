@@ -4334,8 +4334,23 @@ impl LlvmBackend {
         if width == "i64" {
             return idx.name.clone();
         }
+        // 2026-11-28 (RC1): the extension must name the operand's RECORDED
+        // width, not assume the target word. A boxed i64 slot read (a GEP
+        // handle loaded from a state word) arrives with an i64 record on
+        // wasm32, and `sext i32 <i64>` was invalid (rehash contains-lane).
+        // A record NARROWER than the declared Int is a sext as before; a
+        // wider record is a trunc (GEP indices are i64; from i64 record no
+        // instruction is needed at all).
+        self.harvest_emitted_widths(out);
+        let recorded = self.fun.value_llvm_ty.get(&idx.name).cloned();
+        if recorded.as_deref() == Some("i64") {
+            return idx.name.clone();
+        }
         let r = self.fun.gen_reg();
-        writeln!(out, "{}{} = sext {} {} to i64", indent, r, width, idx.name).ok();
+        let from = recorded
+            .filter(|w| w.starts_with('i'))
+            .unwrap_or(width.clone());
+        writeln!(out, "{}{} = sext {} {} to i64", indent, r, from, idx.name).ok();
         r
     }
 
@@ -10406,7 +10421,15 @@ impl LlvmBackend {
         // helper emitted `inttoptr i64 <ptr>`, invalid IR.
         if ret_llvm == "ptr" && matches!(ret_type, Type::Ptr(_) | Type::PtrConst(_)) {
             let int_v = self.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, int_v, v).ok();
+            // 2026-11-28 (RC1): the recovered handle lives at the TARGET WORD
+            // (i32 on wasm32), matching Ptr params (zext to the boxed word
+            // only at an explicit boxing boundary). Emitting i64 here made the
+            // record i64 while the next consumer assumed the target word
+            // (`zext i32 %t100` over an i64 record — the rehash/nested/
+            // hashmap failures). Record what was emitted.
+            let hw = format!("i{}", self.ctx.int_bits);
+            writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, int_v, v, hw).ok();
+            self.fun.record_value_width(&int_v, &hw);
             return TypedRegister {
                 name: int_v,
                 ty: ret_type,
@@ -11166,6 +11189,28 @@ impl LlvmBackend {
                 r
             }
         }
+    }
+
+    /// 2026-11-28 (RC1): the comparator lane's declared width. Comparators
+    /// used to name `llvm_type(l.ty)` while arithmetic named
+    /// `binop_int_type()` — the same two registers could then be adapted by
+    /// the record channel for arithmetic (trunc to the target word) but
+    /// compared at the type width (i64), an impossible pair
+    /// (`icmp eq i64 <i32>`, the rehash contains-lane). Record-first:
+    /// an iN record on the LEFT operand is the value's real form and the
+    /// compare must name it; the type spelling is the fallback.
+    fn compare_width_for(&self, l: &TypedRegister, r: &TypedRegister) -> String {
+        if let Some(w) = self.fun.value_llvm_ty.get(&l.name) {
+            if w.starts_with('i') {
+                return w.clone();
+            }
+        }
+        if let Some(w) = self.fun.value_llvm_ty.get(&r.name) {
+            if w.starts_with('i') {
+                return w.clone();
+            }
+        }
+        self.llvm_type(&l.ty)
     }
 
     /// Emit a literal pattern's integer value register.
@@ -12137,6 +12182,53 @@ impl LlvmBackend {
         } else {
             Type::int()
         };
+        // 2026-11-28 (wasm32 width-channel completion, RC1): an integer operand
+        // must be AT the op's width before any instruction names it — config
+        // templates included. An argv word load is i64 by ABI even where the
+        // op is `i{int_bits}` (wasm32) — `mul i32 %t8` over `%t8 = load i64`
+        // was the spawn/spsc failures. Adapt each integer operand to the op
+        // width via its RECORDED emitted width.
+        //
+        // Direction guard (measured): only a record WIDER than the op is
+        // converted (trunc). Widening (i8 bool/char records at an i64 native
+        // op) broke 4 native tests — the consumer declares the NARROW width
+        // (icmp eq i8), so widening invents a mismatch that did not exist.
+        // Unknown records stay untouched, so x86-64 (i64 records at i64 ops
+        // never convert) is byte-identical.
+        if !is_float && !matches!(l.ty, Type::Ptr(_)) && !matches!(r.ty, Type::Ptr(_)) {
+            let lw = self.fun.value_llvm_ty.get(&l.name).cloned();
+            let rw = self.fun.value_llvm_ty.get(&r.name).cloned();
+            let width_of = |w: &Option<String>| -> Option<u32> {
+                w.as_ref()?.strip_prefix('i')?.parse::<u32>().ok()
+            };
+            let (lb, rb) = (width_of(&lw), width_of(&rw));
+            // The op width is the pair's common width when the records agree
+            // (normalize_integer_pair has already widened the narrow side to
+            // the wide side — truncating that pair to the target word was the
+            // rehash contains-lane failure). Otherwise the target word.
+            let op_bits = match (lb, rb) {
+                (Some(a), Some(b)) => format!("i{}", a.max(b)),
+                _ => self.binop_int_type(),
+            };
+            let op_num = op_bits[1..].parse::<u32>().ok();
+            let wider = |w: &Option<String>, op: Option<u32>| -> bool {
+                match (w, op) {
+                    (Some(s), Some(op)) => s[1..].parse::<u32>().map(|b| b > op).unwrap_or(false),
+                    _ => false,
+                }
+            };
+            if wider(&lw, op_num) || wider(&rw, op_num) {
+                let ln = self.narrow_emitted_to_width(out, indent, &l.name, &op_bits);
+                let rn = self.narrow_emitted_to_width(out, indent, &r.name, &op_bits);
+                if ln != l.name || rn != r.name {
+                    let mut l2 = l.clone();
+                    let mut r2 = r.clone();
+                    l2.name = ln;
+                    r2.name = rn;
+                    return self.emit_binary_op(out, v, kind, &l2, &r2, indent);
+                }
+            }
+        }
         // 2026-07-18: Phase 0 — try config-driven dispatch first.
         // The OP_CONFIG maps (op_name, type_name, bytes) → LLVM IR template.
         // If the config has an entry, fill the template and skip hardcoded matches.
@@ -12367,7 +12459,7 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let cmp_ty = self.compare_width_for(l, r);
                     writeln!(
                         out,
                         "{}{} = icmp eq {} {}, {}",
@@ -12424,7 +12516,7 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let cmp_ty = self.compare_width_for(l, r);
                     writeln!(
                         out,
                         "{}{} = icmp ne {} {}, {}",
@@ -12448,7 +12540,7 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let cmp_ty = self.compare_width_for(l, r);
                     writeln!(
                         out,
                         "{}{} = icmp slt {} {}, {}",
@@ -12472,7 +12564,7 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let cmp_ty = self.compare_width_for(l, r);
                     writeln!(
                         out,
                         "{}{} = icmp sle {} {}, {}",
@@ -12496,7 +12588,7 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let cmp_ty = self.compare_width_for(l, r);
                     writeln!(
                         out,
                         "{}{} = icmp sgt {} {}, {}",
@@ -12520,7 +12612,7 @@ impl LlvmBackend {
                     )
                     .ok();
                 } else {
-                    let cmp_ty = self.llvm_type(&l.ty);
+                    let cmp_ty = self.compare_width_for(l, r);
                     writeln!(
                         out,
                         "{}{} = icmp sge {} {}, {}",

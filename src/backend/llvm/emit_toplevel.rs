@@ -1,6 +1,6 @@
 use crate::ast::{BinaryOpKind, Expr, OutputType, Statement, TopLevel, Type};
 use crate::backend::llvm::emit_stmt::emit_statement;
-use crate::backend::llvm::helpers::{is_float_llvm_type, WordImageCopy};
+use crate::backend::llvm::helpers::{WordImageCopy, is_float_llvm_type};
 use crate::backend::llvm::{
     LlvmBackend, TypedRegister, f32_to_f16_hex, float_to_llvm_hex, float64_to_llvm_hex,
     llvm_type_byte_size, protocol_llvm_type,
@@ -4605,8 +4605,7 @@ impl LlvmBackend {
                 };
                 // 2026-11-24 (BUGS.md wasm32 width class): box a handle at this
                 // publish boundary rather than storing the SSA width verbatim.
-                let published =
-                    self.box_plain_global_value(out, indent, name, &reg.name, &llvm_ty);
+                let published = self.box_plain_global_value(out, indent, name, &reg.name, &llvm_ty);
                 writeln!(
                     out,
                     "{}store {} {}, ptr @{}, align 8",
@@ -10634,6 +10633,12 @@ impl crate::backend::llvm::LlvmBackend {
             .ok();
             let val = self.fun.gen_reg();
             writeln!(out, "  {val} = load i64, ptr {slot}").ok();
+            // 2026-11-28 (wasm32 width-channel completion, RC1): the argv slot
+            // is an i64 WORD but the bound param's SSA form must be the
+            // declared width — an Int param is i32 on wasm32. Record the
+            // emitted width so the next consumer adapts (trunc) instead of
+            // emitting `mul i32 <i64>` (spawn_await_segments, spsc_smoke).
+            self.fun.record_value_width(&val, "i64");
             // Real declared types — Phase D arms dispatch on Event(_) here;
             // Int-typed wires and scalars share the i64 representation, so
             // the LOAD stays uniform either way.

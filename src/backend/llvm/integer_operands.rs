@@ -68,6 +68,11 @@ impl LlvmBackend {
             narrow.name
         )
         .ok();
+        // 2026-11-28 (RC1): the widened register's record moves with it — an
+        // unrecorded i64 result fell back to the Briev type at the next
+        // consumer (binop adapter saw the type's i32 and truncated the
+        // normalized pair back apart; rehash contains-lane).
+        self.fun.record_value_width(name.clone(), &target);
         TypedRegister {
             name,
             ty: wide.ty.clone(),

@@ -2746,6 +2746,26 @@ impl LlvmBackend {
         indent: &str,
         reg: &TypedRegister,
     ) -> String {
+        // 2026-11-28 (RC1): the RECORD decides before the type. An argv word
+        // load is i64 by ABI even where the bound param's Briev type is Int
+        // (i32 on wasm32) — `sext i32 <i64 reg>` was the spawn/echo failure.
+        self.harvest_emitted_widths(out);
+        let recorded = self.fun.value_llvm_ty.get(&reg.name).cloned();
+        if let Some(w) = recorded {
+            if w == "i64" {
+                return reg.name.clone();
+            }
+            if w == "ptr" {
+                // adapt_to_i64's contract: the caller stores into a BOXED
+                // i64 slot. A real ptr register converts to i64 (with
+                // record) — the target-word spelling broke 77 store sites
+                // (accel_lane_report `store i64 %t45`).
+                let conv = self.fun.gen_reg();
+                writeln!(out, "{indent}{conv} = ptrtoint ptr {} to i64", reg.name).ok();
+                self.fun.record_value_width(conv.clone(), "i64");
+                return conv;
+            }
+        }
         // 2026-07-30: If already i64 (from state load), return as-is.
         // State fields are always stored as i64 regardless of Briev type,
         // so loads from %State produce i64 values that need no conversion.
@@ -2876,12 +2896,18 @@ impl LlvmBackend {
             .unwrap_or(false)
         {
             let converted = self.fun.gen_reg();
+            // 2026-11-28 (RC1): the handle lives at the TARGET WORD (i32 on
+            // wasm32) — `ptrtoint ptr -> i64` hardcoded the boxed width, and
+            // the next consumer adapted from a wrong record (the rehash
+            // `zext i32 %t100` over an i64 record). Record what was emitted.
+            let hw = format!("i{}", self.ctx.int_bits);
             writeln!(
                 out,
-                "{indent}{converted} = ptrtoint ptr {} to i64",
+                "{indent}{converted} = ptrtoint ptr {} to {hw}",
                 reg.name
             )
             .ok();
+            self.fun.record_value_width(converted.clone(), hw);
             return converted;
         }
         if self.ctx.int_bits == 64 {
@@ -3821,6 +3847,58 @@ impl LlvmBackend {
         self.llvm_type(&reg.ty)
     }
 
+    /// 2026-11-28 (wasm32 width-channel completion, RC1): adapt `val` to `to`
+    /// using its RECORDED emitted width, never the Briev type. Harvests first
+    /// so an already-emitted `load i64` is visible, then converts (zext/trunc)
+    /// only when the record disagrees with `to`.
+    ///
+    /// Returns `val` unchanged when the record is absent (never invent — the
+    /// unknown case keeps today's behaviour, which is why x86-64 stays
+    /// byte-identical: every native record is already `i64`) or already equal.
+    pub(crate) fn adapt_emitted_to_width(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        val: &str,
+        to: &str,
+    ) -> String {
+        self.harvest_emitted_widths(out);
+        let recorded = self.fun.value_llvm_ty.get(val).cloned();
+        match recorded {
+            Some(from) if from != to && from.starts_with('i') && to.starts_with('i') => self
+                .convert_int_width(out, indent, val, &from, to)
+                .unwrap_or_else(|| val.to_string()),
+            _ => val.to_string(),
+        }
+    }
+
+    /// 2026-11-28 (wasm32 width-channel completion, RC1): narrow `val` to
+    /// `to` when its RECORDED emitted width is wider. The one-directional
+    /// sibling of `convert_int_width`'s both-ways form: the wasm32 debt is
+    /// exclusively "i64 word consumed at i32" — widening a narrow record
+    /// (i8 bool at an i64 op) broke 4 native tests because the consumer
+    /// declares the narrow width. Unknown/shorter records return `val`.
+    pub(crate) fn narrow_emitted_to_width(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        val: &str,
+        to: &str,
+    ) -> String {
+        self.harvest_emitted_widths(out);
+        let recorded = self.fun.value_llvm_ty.get(val).cloned();
+        let width_of = |w: &str| -> Option<u32> { w[1..].parse::<u32>().ok() };
+        let (to_bits, from_bits) = match (width_of(to), recorded.as_deref().and_then(width_of)) {
+            (Some(t), Some(f)) => (t, f),
+            _ => return val.to_string(),
+        };
+        if from_bits <= to_bits {
+            return val.to_string();
+        }
+        self.convert_int_width(out, indent, val, recorded.as_deref().unwrap(), to)
+            .unwrap_or_else(|| val.to_string())
+    }
+
     pub(crate) fn convert_int_width(
         &mut self,
         out: &mut String,
@@ -3837,6 +3915,12 @@ impl LlvmBackend {
         let op = if from_bits < to_bits { "zext" } else { "trunc" };
         let result = self.fun.gen_reg();
         writeln!(out, "{indent}{result} = {op} {from} {val} to {to}").ok();
+        // 2026-11-28 (RC1): the converted register's record must move WITH it
+        // — an unrecorded result falls back to the Briev type at the next
+        // consumer, which is exactly the type-derived guess this channel
+        // exists to replace (the rehash `%t311` trunc consumed by
+        // `icmp eq i64` was the measured failure).
+        self.fun.record_value_width(result.clone(), to);
         Some(result)
     }
 

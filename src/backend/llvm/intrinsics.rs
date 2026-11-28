@@ -3068,6 +3068,11 @@ fn emit_atomic_load(
         indent, v, ptr, ord
     )
     .ok();
+    // 2026-11-28 (RC1): the atomic slot is an i64 WORD; the loaded value's
+    // record must say so, or the next consumer (an `add i32` at the target
+    // word) names i32 over an unrecorded-then-type-guessed register
+    // (spsc_smoke). The record-first consumer adapts (trunc) correctly.
+    backend.fun.record_value_width(v, "i64");
     BTypedRegister {
         name: v.to_string(),
         ty: Type::int(),
