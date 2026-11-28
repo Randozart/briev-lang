@@ -2474,23 +2474,68 @@ impl LlvmBackend {
         self
     }
 
-    /// Emit an inttoptr instruction with the correct pointer-width integer type.
-    /// Uses int_bits (from data layout or CLI --int-bits) for the integer side.
-    /// 2026-07-27: DataLayout-driven int_bits replaces pointer_llvm_type().
+    /// Emit an `inttoptr`, taking the source width from the register's RECORD.
+    ///
+    /// 2026-11-28 (wasm32 width-channel completion, W2): this used to hardcode
+    /// `i{int_bits}`, which is only correct when the operand really is the
+    /// target word. On wasm32 three programs fed it an operand that was
+    /// already a `ptr` (`'%t39' defined with type 'ptr' but expected 'i32'`) and
+    /// several fed it an i64 boxed word from a state/argv slot.
+    ///
+    /// The record answers both questions, and only when a record exists:
+    ///   * `ptr`  → the operand is already a pointer: emit the identity so the
+    ///              caller still has a value to consume;
+    ///   * `iN`   → cast at N, the width actually emitted;
+    ///   * absent → keep today's `i{int_bits}`, so unknown operands behave
+    ///              exactly as they did (a blanket switch was measured and broke
+    ///              72 programs — see `inttoptr_word` for that history).
+    ///
+    /// The destination is recorded as `ptr`, because that is what it is.
     pub(super) fn emit_inttoptr(
-        &self,
+        &mut self,
         out: &mut String,
         indent: &str,
         dest: &dyn Display,
         src: &dyn Display,
     ) {
-        let int_ty = format!("i{}", self.ctx.int_bits);
-        writeln!(
-            out,
-            "{}{} = inttoptr {} {} to ptr",
-            indent, dest, int_ty, src
-        )
-        .ok();
+        self.harvest_emitted_widths(out);
+        let src_name = src.to_string();
+        let dest_name = dest.to_string();
+        let recorded = self.fun.value_llvm_ty.get(&src_name).cloned();
+        match recorded.as_deref() {
+            Some("ptr") => {
+                writeln!(out, "{indent}{dest_name} = bitcast ptr {src_name} to ptr").ok();
+            }
+            Some(w) if w.starts_with('i') => {
+                writeln!(out, "{indent}{dest_name} = inttoptr {w} {src_name} to ptr").ok();
+            }
+            _ => {
+                let int_ty = format!("i{}", self.ctx.int_bits);
+                writeln!(
+                    out,
+                    "{indent}{dest_name} = inttoptr {int_ty} {src_name} to ptr"
+                )
+                .ok();
+            }
+        }
+        self.fun.record_value_width(dest_name, "ptr");
+    }
+
+    /// 2026-11-28 (wasm32 width-channel completion, W1): harvest defined-width
+    /// facts from already-emitted text into the width channel, stamped with
+    /// this body's epoch.
+    ///
+    /// The emitted text is the one recorder that cannot forget — it IS the
+    /// emission — so a `load i64, ptr %slot` already written into `out` is
+    /// visible to the very next width question in this body (definitions
+    /// precede uses, exactly the ordering LLVM text guarantees). Pure
+    /// bookkeeping: it touches no IR text, so on x86-64 (int_bits == 64)
+    /// every record agrees with today's emission and the full-corpus native
+    /// `.ll` diff stays empty.
+    pub(crate) fn harvest_emitted_widths(&mut self, out: &str) {
+        self.fun
+            .value_llvm_ty
+            .harvest_new_definitions(out, &mut self.fun.harvest_state);
     }
 
     /// Return the canonical `ptr` value for an i64 pointer register, emitting
@@ -2514,14 +2559,24 @@ impl LlvmBackend {
         // from the two channels the emitters already maintain — `reg_value_ll`
         // (cast lanes) and `reg_llvm_ty` (loads) — never guessed from the stamped
         // Briev type, which is `Ptr` for both shapes.
-        let already_ptr = self
-            .fun
-            .value_llvm_ty
-            .get(int_reg)
-            .map(|w| w == "ptr")
-            .unwrap_or(false);
-        if already_ptr {
-            return int_reg.to_string();
+        //
+        // 2026-11-28 (wasm32 width-channel completion, W2): inttoptr at the
+        // operand's RECORDED width, not the target word. A state/argv i64 word
+        // holding a 32-bit handle on wasm32 was cast as `inttoptr i32 <i64>`
+        // (the 6 of 22 family-A failures, e.g. hashmap_insert_is_first_statement
+        // line 5069). `inttoptr i64` over an i64 operand is valid on every
+        // triple; unknown widths keep today's `i{int_bits}` emission, so x86-64
+        // (record i64 == int_bits i64) stays byte-identical.
+        self.harvest_emitted_widths(out);
+        let width = self.fun.value_llvm_ty.get(int_reg).cloned();
+        match width.as_deref() {
+            Some("ptr") => return int_reg.to_string(),
+            Some(w) if w.starts_with('i') => {
+                let p = self.fun.gen_reg();
+                writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, w, int_reg).ok();
+                return p;
+            }
+            _ => {}
         }
         let p = self.fun.gen_reg();
         self.emit_inttoptr(out, indent, &p, &int_reg);
@@ -5415,7 +5470,9 @@ impl LlvmBackend {
             let llvm_ty = self.llvm_type(ty);
             let key = match expr {
                 Expr::Float(f) => format!("{}:{}", llvm_ty, float_to_llvm_str(*f, &llvm_ty)),
-                Expr::Decimal(n) => format!("{}:{}", llvm_ty, int_literal_as_llvm_const(*n, &llvm_ty)),
+                Expr::Decimal(n) => {
+                    format!("{}:{}", llvm_ty, int_literal_as_llvm_const(*n, &llvm_ty))
+                }
                 Expr::Bool(b) => format!("{}:{}", llvm_ty, if *b { "true" } else { "false" }),
                 Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match inner.as_ref() {
                     Expr::Float(f) => format!("{}:{}", llvm_ty, float_to_llvm_str(-*f, &llvm_ty)),

@@ -1378,6 +1378,12 @@ impl LlvmBackend {
                 }
                 let loaded = self.fun.gen_reg();
                 writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
+                // 2026-11-28 (wasm32 width-channel completion): record the
+                // loaded width so the very next consumer sees it — this is the
+                // producer-side record that the harvest alone cannot provide.
+                if load_ty == "i64" {
+                    self.fun.record_value_width(&loaded, "i64");
+                }
                 return TypedRegister {
                     name: loaded,
                     ty: row_ty,
@@ -1388,13 +1394,13 @@ impl LlvmBackend {
             // per-heap block, not a pooled column) — resolve the member
             // through the boxed_offsets layout directly: inttoptr the
             // handle + GEP the byte offset.
-            if let Some(offsets) = self.ctx.boxed_offsets.get(prefix.as_str()) {
+            if let Some(offsets) = self.ctx.boxed_offsets.get(prefix.as_str()).cloned() {
                 if let Some((off, mty)) = offsets.get(name) {
                     // 2026-10-23 (wasm32 obj-init): boxed obj handles
                     // and pointer-sized member slots follow
                     // `ctx.int_bits`; the native i64 boxed-word form
                     // is invalid on wasm32.
-                    let hw = self.value_width_or_target_width(&row_reg);
+                    let hw = self.value_width_or_target_width(out, &row_reg);
                     let ptr = self.fun.gen_reg();
                     writeln!(
                         out,
@@ -3330,7 +3336,7 @@ impl LlvmBackend {
             // 2026-11-24 (BUGS.md wasm32 width class): the expected width for the
             // adaptation is the VALUE's recorded width (a boxed i64 slot load is
             // i64; a target-width handle stays the target word).
-            let hw = self.value_width_or_target_width(&array_reg.name);
+            let hw = self.value_width_or_target_width(out, &array_reg.name);
             // block ptr from the handle (List handles are target-width ints).
             let handle = self.ensure_typed_value(
                 out,
@@ -3844,12 +3850,12 @@ impl LlvmBackend {
                 // loads/stores at i64 (the boxed-handle ABI), so inttoptr
                 // at i64 when the receiver value is i64; a local Ptr handle
                 // is i{int_bits}. Match the receiver register's LLVM type.
-                let recv_llvm = self.llvm_type(&obj_reg.ty);
-                let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
-                    "i64".to_string()
-                } else {
-                    format!("i{}", self.ctx.int_bits)
-                };
+                //
+                // 2026-11-28 (wasm32 width-channel completion): ask the
+                // recorded width first — a boxed-handle load is i64 even when
+                // the Briev type says List, so the type-derived guess is
+                // wrong. The harvest + producer-side record answers it.
+                let hw = self.value_width_or_target_width(out, &obj_reg.name);
                 writeln!(
                     out,
                     "{}{} = inttoptr {} {} to ptr",
@@ -5092,6 +5098,12 @@ impl LlvmBackend {
         }
         let loaded = self.fun.gen_reg();
         writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
+        // 2026-11-28 (wasm32 width-channel completion): record the loaded
+        // width so the very next consumer sees it — this is the
+        // producer-side record that the harvest alone cannot provide.
+        if load_ty == "i64" {
+            self.fun.record_value_width(&loaded, "i64");
+        }
         Some(TypedRegister {
             name: loaded,
             ty: row_ty,
@@ -5169,7 +5181,7 @@ impl LlvmBackend {
                 let offset = self.lookup_field_offset(&obj_type, field);
                 let base = self.fun.gen_reg();
                 // 2026-08-11 (wasm32): obj handles are i{int_bits}.
-                let hw = self.value_width_or_target_width(&obj_reg.name);
+                let hw = self.value_width_or_target_width(out, &obj_reg.name);
                 writeln!(
                     out,
                     "{}{} = inttoptr {} {} to ptr",
@@ -5242,6 +5254,13 @@ impl LlvmBackend {
                     }
                     let loaded = self.fun.gen_reg();
                     writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
+                    // 2026-11-28 (wasm32 width-channel completion): a column-row
+                    // load is a value producer — record its width so the very
+                    // next consumer's width question is answered by the
+                    // emission itself, not by a type-derived guess.
+                    if load_ty == "i64" {
+                        self.fun.record_value_width(&loaded, "i64");
+                    }
                     return TypedRegister {
                         name: loaded,
                         ty: row_ty,
@@ -5249,7 +5268,7 @@ impl LlvmBackend {
                 }
                 // Boxed instance (per-heap block): inttoptr the handle + GEP
                 // the member byte offset.
-                if let Some(offsets) = self.ctx.boxed_offsets.get(base.as_str()) {
+                if let Some(offsets) = self.ctx.boxed_offsets.get(base.as_str()).cloned() {
                     if let Some((off, mty)) = offsets.get(name) {
                         // 2026-10-23 (wasm32 obj-init): a boxed obj handle is
                         // pointer-sized (`i32` on wasm32), and a pointer-typed
@@ -5257,7 +5276,7 @@ impl LlvmBackend {
                         // to the native i64 boxed-word ABI here, producing
                         // `inttoptr i64 <i32>` and an 8-byte load from a
                         // 4-byte wasm pointer slot.
-                        let hw = self.value_width_or_target_width(&row_reg);
+                        let hw = self.value_width_or_target_width(out, &row_reg);
                         let ptr = self.fun.gen_reg();
                         writeln!(
                             out,
@@ -6362,13 +6381,13 @@ impl LlvmBackend {
             .map(|(k, _)| k.clone());
         if let Some(slot_name) = slot_name {
             if let Some((base, member)) = slot_name.split_once('.') {
-                if let Some(offsets) = self.ctx.boxed_offsets.get(base) {
+                if let Some(offsets) = self.ctx.boxed_offsets.get(base).cloned() {
                     if let Some((off, mty)) = offsets.get(member) {
                         // 2026-10-23 (wasm generic collections): the boxed
                         // instance handle and `Ptr<T>` members use the target
                         // pointer width; loading a 4-byte pointer as i64 was
                         // the List construction failure.
-                        let hw = self.value_width_or_target_width(&row_reg);
+                        let hw = self.value_width_or_target_width(out, &row_reg);
                         let ptr = self.fun.gen_reg();
                         writeln!(
                             out,
@@ -7243,7 +7262,6 @@ impl LlvmBackend {
         }
     }
 
-    /// 2026-07-31: Element count of a fixed-size vector type; 1 for scalars.
     /// Physical width of a handle register, falling back to the target word.
     ///
     /// 2026-11-24 (BUGS.md wasm32 width class): an `inttoptr` requires its
@@ -7251,7 +7269,14 @@ impl LlvmBackend {
     /// not implicitly narrower. Handle producers record their width
     /// (`reg_value_ll`); consult it, and keep the pre-existing target-word
     /// assumption when it is unknown, so this can only fix, never invent.
-    fn value_width_or_target_width(&self, reg: &str) -> String {
+    ///
+    /// 2026-11-28 (wasm32 width-channel completion): before asking the record,
+    /// harvest the emitted text. The harvester is the one recorder that cannot
+    /// forget — it IS the emission — so a `load i64, ptr %slot` already written
+    /// into `out` is visible to the very next consumer in this body, which is
+    /// exactly the ordering LLVM text guarantees (definitions precede uses).
+    fn value_width_or_target_width(&mut self, out: &str, reg: &str) -> String {
+        self.harvest_emitted_widths(out);
         self.fun
             .value_llvm_ty
             .get(reg)
@@ -8897,7 +8922,7 @@ impl LlvmBackend {
         member_ty: &Type,
     ) -> TypedRegister {
         let base = self.fun.gen_reg();
-        let hw = self.value_width_or_target_width(&handle);
+        let hw = self.value_width_or_target_width(out, &handle);
         writeln!(
             out,
             "{}{} = inttoptr {} {} to ptr",
